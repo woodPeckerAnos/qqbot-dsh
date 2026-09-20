@@ -41,6 +41,10 @@ if [ ! -d "$DSH_HOME/profiles/sdk" ]; then
   dsh --profile sdk --patch "$QQ_DSH_PROFILE_PATCH" --dump-config >/dev/null
   log "[entrypoint] profile 初始化完成"
 else
+  # 复用已有 profile 目录。这里刻意不再校验 patch：profile 是
+  # patchReload=startup 的，每个 DSH runtime 进程启动时按传入的 --patch
+  # 自行组合。所以改了 patch 后 `docker compose restart qqbot` 即生效，
+  # 不需要重建镜像（详见 docs/DEPLOY.md 第 8 节）。
   log "[entrypoint] 复用已有 profile：$DSH_HOME/profiles/sdk"
 fi
 
