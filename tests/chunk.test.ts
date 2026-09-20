@@ -142,7 +142,6 @@ describe('renderMessage', () => {
   it('纯文本模式设置 content 而不是 markdown', () => {
     const body = renderMessage('**hi**', {
       msgType: 0,
-      groupOpenid: 'g1',
       msgId: 'm1',
       msgSeq: 1,
     });
@@ -156,7 +155,6 @@ describe('renderMessage', () => {
   it('markdown 模式设置 markdown.content', () => {
     const body = renderMessage('## 标题', {
       msgType: 2,
-      groupOpenid: 'g1',
       msgId: 'm1',
       msgSeq: 2,
     });
@@ -168,7 +166,6 @@ describe('renderMessage', () => {
   it('msg_id 与 event_id 互斥：同时给出时优先 msg_id', () => {
     const body = renderMessage('hi', {
       msgType: 0,
-      groupOpenid: 'g1',
       msgId: 'm1',
       eventId: 'e1',
       msgSeq: 1,
@@ -180,7 +177,6 @@ describe('renderMessage', () => {
   it('只有 event_id 时使用 event_id', () => {
     const body = renderMessage('hi', {
       msgType: 0,
-      groupOpenid: 'g1',
       eventId: 'e1',
       msgSeq: 1,
     });
@@ -191,7 +187,6 @@ describe('renderMessage', () => {
   it('quoteMessageId 生成 message_reference', () => {
     const body = renderMessage('hi', {
       msgType: 0,
-      groupOpenid: 'g1',
       msgId: 'm1',
       msgSeq: 1,
       quoteMessageId: 'prev',

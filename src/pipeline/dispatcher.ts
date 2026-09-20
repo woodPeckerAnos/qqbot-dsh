@@ -1,22 +1,27 @@
 /**
- * 编排器：把一条群消息变成一次 DSH turn，再把结果变成 QQ 回复。
+ * 编排器：把一条用户消息（群聊或单聊）变成一次 DSH turn，再把结果变成 QQ 回复。
  *
  * 一次完整流程：
  *
  *   1. 事件去重（claim）——重复投递直接丢弃
  *   2. 记录用户消息到对话记录（供重启后回放）
  *   3. 取全局并发名额（有界，满了就礼貌拒绝而不是无限排队）
- *   4. 每群串行（同一群同时只跑一条，避免事件流交错）
- *   5. 取该群的 DSH runtime（必要时新建进程 + 冷启动回放）
- *   6. 起进度回执调度器（守住 5 分钟窗口）
+ *   4. 每会话串行（同一群/同一人同时只跑一条，避免事件流交错）
+ *   5. 取该会话的 DSH runtime（必要时新建进程 + 冷启动回放）
+ *   6. 起进度回执调度器（守被动回复窗口）
  *   7. session/prompt 派发
  *   8. 消费事件：累积 assistant 文本、记 turn/end
  *   9. status 回 idle 且本轮已 turn/end → 结束
- *  10. 分段 + 按配额发回复
+ *  10. 分段 + 按配额发回复（群聊走 sendGroupMessage，单聊走 sendUserMessage）
  *  11. 记录助手消息
  *
  * 关键不变量：`ReplyLedger` 是**唯一**分配 msg_seq 的地方，且进度回执永远不能
  * 吃掉最终答案的配额。
+ *
+ * 群聊与单聊共用同一条代码路径，区别只有两处：
+ *   - 会话键/工作区/锁用 `message.target.key`（单聊带 `c2c:` 前缀）；
+ *   - 回复配额取各自的配置（官方单聊上限 4 条 < 群聊 5 条），发送端点按
+ *     `message.target.kind` 选择。
  */
 
 import type { Config } from '../config.js';
@@ -25,7 +30,14 @@ import type { RuntimeEntry, RuntimePool } from '../dsh/pool.js';
 import type { SessionStatusNotification } from '../dsh/protocol.js';
 import { TurnAccumulator, type TurnOutcome } from '../dsh/turns.js';
 import type { QqApi } from '../qq/api.js';
-import type { NormalizedEvent, NormalizedGroupMessage } from '../qq/gateway.js';
+import {
+  isUserMessage,
+  type ConversationKind,
+  type ConversationTarget,
+  type NormalizedEvent,
+  type NormalizedMessage,
+} from '../qq/gateway.js';
+import type { SendMessageRequest } from '../qq/types.js';
 import type { ConversationStore } from '../store/conversations.js';
 import { renderReplay } from '../store/conversations.js';
 import type { SeenStore } from '../store/seen.js';
@@ -46,7 +58,7 @@ export interface DispatcherDeps {
   config: Config;
   logger: Logger;
   pool: RuntimePool;
-  api: Pick<QqApi, 'sendGroupMessage'>;
+  api: Pick<QqApi, 'sendGroupMessage' | 'sendUserMessage'>;
   conversations: ConversationStore;
   seen: SeenStore;
   sessions: SessionStore;
@@ -59,6 +71,7 @@ export interface DispatcherStats {
   received: number;
   deduplicated: number;
   rejectedBusy: number;
+  skippedC2C: number;
   completed: number;
   failed: number;
   timedOut: number;
@@ -68,11 +81,12 @@ export interface DispatcherStats {
 
 export class Dispatcher {
   private readonly semaphore: Semaphore;
-  private readonly groupLock = new KeyedMutex();
+  private readonly conversationLock = new KeyedMutex();
   private readonly stats: DispatcherStats = {
     received: 0,
     deduplicated: 0,
     rejectedBusy: 0,
+    skippedC2C: 0,
     completed: 0,
     failed: 0,
     timedOut: 0,
@@ -81,7 +95,7 @@ export class Dispatcher {
   };
 
   /**
-   * 每个群当前进行中的 turn 累积器，供事件路由定位。
+   * 每个会话当前进行中的 turn 累积器，供事件路由定位。
    * 结束判定用轮询 `isSettled`（见 runTurn），因此这里不需要额外的完成回调。
    */
   private readonly activeTurns = new Map<string, TurnAccumulator>();
@@ -100,46 +114,56 @@ export class Dispatcher {
 
   /** 入口：处理一个归一化事件。永不抛错（所有失败都转成回复或日志）。 */
   async handleEvent(event: NormalizedEvent): Promise<void> {
-    if (event.kind === 'group-at-message') {
-      await this.handleGroupMessage(event);
+    if (isUserMessage(event)) {
+      await this.handleMessage(event);
       return;
     }
-    if (event.kind === 'group-add-robot') {
-      await this.handleGroupAddRobot(event);
+    if (event.kind === 'group-add-robot' || event.kind === 'c2c-friend-add') {
+      await this.handleWelcome(event);
       return;
     }
     this.deps.logger.debug('忽略系统事件', { kind: event.kind, reason: event.reason });
   }
 
-  /** 把 runtime 推送的事件路由到对应群的在途 turn。 */
+  /** 把 runtime 推送的事件路由到对应会话的在途 turn。 */
   routeSessionEvent(
-    groupKey: string,
+    conversationKey: string,
     event: { type: string; seq: number; data: Record<string, unknown> },
   ): void {
-    const accumulator = this.activeTurns.get(groupKey);
+    const accumulator = this.activeTurns.get(conversationKey);
     if (accumulator === undefined) {
       // 没有在途 turn（例如回收竞态、或事件属于上一轮）——记录到 debug 便于排查
-      this.deps.logger.debug('收到无归属的会话事件', { group: groupKey, type: event.type });
+      this.deps.logger.debug('收到无归属的会话事件', {
+        conversation: conversationKey,
+        type: event.type,
+      });
       return;
     }
     accumulator.observe({ type: event.type, seq: event.seq, data: event.data });
   }
 
-  /** 把 runtime 推送的 agent 状态变化路由到对应群。 */
-  routeSessionStatus(groupKey: string, status: SessionStatusNotification): void {
-    const accumulator = this.activeTurns.get(groupKey);
+  /** 把 runtime 推送的 agent 状态变化路由到对应会话。 */
+  routeSessionStatus(conversationKey: string, status: SessionStatusNotification): void {
+    const accumulator = this.activeTurns.get(conversationKey);
     if (accumulator === undefined) return;
     accumulator.observeStatus(status.status);
     // 结束判定由 runTurn 的 waitUntil 轮询 isSettled 完成，这里只更新状态
   }
 
   // -------------------------------------------------------------------------
-  // 群消息
+  // 用户消息（群聊 / 单聊）
   // -------------------------------------------------------------------------
 
-  private async handleGroupMessage(message: NormalizedGroupMessage): Promise<void> {
+  private async handleMessage(message: NormalizedMessage): Promise<void> {
     const { logger, seen } = this.deps;
     this.stats.received += 1;
+
+    // 单聊开关：intent 层无法只订群聊（1<<25 两者共用），所以在业务层拦。
+    if (message.target.kind === 'c2c' && !this.deps.config.qq.c2c.enabled) {
+      this.stats.skippedC2C += 1;
+      logger.debug('单聊已禁用，忽略私聊消息', { conversation: message.target.key });
+      return;
+    }
 
     const eventKey = message.eventId !== '' ? message.eventId : message.msgId;
     if (!seen.claim(eventKey)) {
@@ -148,22 +172,26 @@ export class Dispatcher {
       return;
     }
 
-    const groupKey = message.groupOpenid;
-    const groupLogger = logger.child({ group: message.groupOpenid, msgId: message.msgId });
+    const conversationKey = message.target.key;
+    const messageLogger = logger.child({
+      conversation: conversationKey,
+      kind: message.target.kind,
+      msgId: message.msgId,
+    });
 
     // 记录用户消息（供重启后回放）
-    this.deps.conversations.append(groupKey, {
+    this.deps.conversations.append(conversationKey, {
       role: 'user',
-      speaker: message.username ?? message.memberOpenid,
+      speaker: message.username ?? message.senderId,
       text: message.content,
       ts: message.ts,
     });
 
     // 拿全局并发名额：不排队，满员直接拒绝。
-    // 排队是没有意义的——被动回复窗口只有 5 分钟，排到时消息早已发不出去。
+    // 排队是没有意义的——被动回复窗口有限，排到时消息早已发不出去。
     if (this.semaphore.inUse >= this.deps.config.pool.maxConcurrentTurns) {
       this.stats.rejectedBusy += 1;
-      groupLogger.warn('并发已满，礼貌拒绝本次提问', {
+      messageLogger.warn('并发已满，礼貌拒绝本次提问', {
         inUse: this.semaphore.inUse,
         max: this.deps.config.pool.maxConcurrentTurns,
       });
@@ -177,10 +205,10 @@ export class Dispatcher {
 
     const release = await this.semaphore.acquire();
     try {
-      await this.groupLock.run(groupKey, () => this.runTurn(message, groupLogger));
+      await this.conversationLock.run(conversationKey, () => this.runTurn(message, messageLogger));
     } catch (error) {
       this.stats.failed += 1;
-      groupLogger.error('处理提问时发生未预期错误', {
+      messageLogger.error('处理提问时发生未预期错误', {
         error: error instanceof Error ? error.message : String(error),
       });
       await this.replySimple(message, '处理你的请求时出错了，我已经记录到日志。', 'error').catch(
@@ -191,15 +219,14 @@ export class Dispatcher {
     }
   }
 
-  private async runTurn(message: NormalizedGroupMessage, logger: Logger): Promise<void> {
+  private async runTurn(message: NormalizedMessage, logger: Logger): Promise<void> {
     const { config, pool, sessions, paths } = this.deps;
-    const groupKey = message.groupOpenid;
+    const conversationKey = message.target.key;
 
-    const workspacePath = ensureWorkspace(paths, groupKey);
+    const workspacePath = ensureWorkspace(paths, conversationKey);
     const ledger = new ReplyLedger({
       msgId: message.msgId,
-      totalQuota: config.qq.maxRepliesPerMsg,
-      progressQuota: config.qq.progressMax,
+      ...this.replyLimits(message.target.kind),
     });
 
     // 先声明，再构造依赖它们的 ProgressScheduler：
@@ -227,15 +254,15 @@ export class Dispatcher {
     let entry: RuntimeEntry | undefined;
 
     try {
-      entry = await pool.acquire(groupKey, workspacePath);
+      entry = await pool.acquire(conversationKey, workspacePath);
 
       // 会话：新建的 runtime 需要新 sessionId + 冷启动回放
-      const session = sessions.ensure(groupKey, /* rotate */ !entry.replayed);
+      const session = sessions.ensure(conversationKey, /* rotate */ !entry.replayed);
 
       accumulator = new TurnAccumulator(session.currentSessionId);
-      this.activeTurns.set(groupKey, accumulator);
+      this.activeTurns.set(conversationKey, accumulator);
 
-      const prompt = this.buildPrompt(message, groupKey, session.generation, !entry.replayed);
+      const prompt = this.buildPrompt(message, conversationKey, session.generation, !entry.replayed);
       entry.replayed = true;
       entry.busy = true;
 
@@ -263,38 +290,49 @@ export class Dispatcher {
           toolsInvoked: accumulator.toolsInvoked,
         });
         // 没有取消 API，唯一可靠的终止方式是回收整个 runtime 进程
-        void pool.drop(groupKey).catch(() => {});
+        void pool.drop(conversationKey).catch(() => {});
       }
 
       await this.deliverOutcome(message, outcome, ledger, logger);
     } finally {
       progress.stop();
-      this.activeTurns.delete(groupKey);
-      if (entry !== undefined) pool.release(groupKey);
+      this.activeTurns.delete(conversationKey);
+      if (entry !== undefined) pool.release(conversationKey);
     }
   }
 
+  /** 按会话类型取回复配额（官方单聊上限低于群聊，必须分开）。 */
+  private replyLimits(kind: ConversationKind): { totalQuota: number; progressQuota: number } {
+    const { qq } = this.deps.config;
+    return kind === 'c2c'
+      ? { totalQuota: qq.c2c.maxRepliesPerMsg, progressQuota: qq.c2c.progressMax }
+      : { totalQuota: qq.maxRepliesPerMsg, progressQuota: qq.progressMax };
+  }
+
   private buildPrompt(
-    message: NormalizedGroupMessage,
-    groupKey: string,
+    message: NormalizedMessage,
+    conversationKey: string,
     generation: number,
     coldStart: boolean,
   ): string {
     const { conversations, config } = this.deps;
-    const speaker = message.username ?? message.memberOpenid;
-    const current = `[群成员 ${speaker}] ${message.content}`;
+    const speaker = message.username ?? message.senderId;
+    // 明确标注渠道：同一个人在群里的 member_openid 与单聊的 user_openid 不同，
+    // 标清楚能避免模型把两个会话的身份混起来。
+    const role = message.target.kind === 'c2c' ? '私聊用户' : '群成员';
+    const current = `[${role} ${speaker}] ${message.content}`;
 
     if (!coldStart || config.pool.replayTurns <= 0) return current;
 
     // 冷启动：把最近的对话记录作为上下文一并给出。
     // 注意排除刚追加进去的当前这条，避免重复。
-    const history = conversations.readTail(groupKey, config.pool.replayTurns * 2);
+    const history = conversations.readTail(conversationKey, config.pool.replayTurns * 2);
     const withoutCurrent = history.filter(
       (turn) => !(turn.role === 'user' && turn.text === message.content && turn.ts === message.ts),
     );
     const replay = renderReplay(withoutCurrent);
     this.deps.logger.info('冷启动回放历史', {
-      group: groupKey,
+      conversation: conversationKey,
       generation,
       turns: withoutCurrent.length,
     });
@@ -303,13 +341,13 @@ export class Dispatcher {
   }
 
   private async deliverOutcome(
-    message: NormalizedGroupMessage,
+    message: NormalizedMessage,
     outcome: TurnOutcome,
     ledger: ReplyLedger,
     logger: Logger,
   ): Promise<void> {
-    const { config, conversations } = this.deps;
-    const groupKey = message.groupOpenid;
+    const { conversations } = this.deps;
+    const conversationKey = message.target.key;
 
     let text = outcome.text;
 
@@ -354,7 +392,7 @@ export class Dispatcher {
     }
 
     // 记录助手回复（供下次冷启动回放）
-    conversations.append(groupKey, {
+    conversations.append(conversationKey, {
       role: 'assistant',
       speaker: 'bot',
       text,
@@ -365,14 +403,13 @@ export class Dispatcher {
 
   /** 发一条简单回复（错误/忙提示）。配额不足时静默失败。 */
   private async replySimple(
-    message: NormalizedGroupMessage,
+    message: NormalizedMessage,
     text: string,
     kind: 'error',
   ): Promise<void> {
     const ledger = new ReplyLedger({
       msgId: message.msgId,
-      totalQuota: this.deps.config.qq.maxRepliesPerMsg,
-      progressQuota: this.deps.config.qq.progressMax,
+      ...this.replyLimits(message.target.kind),
     });
     await this.sendLong(message, text, ledger, this.deps.logger, kind);
   }
@@ -382,7 +419,7 @@ export class Dispatcher {
    * @returns 是否至少成功发出一条
    */
   private async sendLong(
-    message: NormalizedGroupMessage,
+    message: NormalizedMessage,
     text: string,
     ledger: ReplyLedger,
     logger: Logger,
@@ -390,7 +427,7 @@ export class Dispatcher {
   ): Promise<boolean> {
     const { config } = this.deps;
     // 剩余配额决定最多能分几段
-    const maxSegments = Math.min(ledger.remaining, config.qq.maxRepliesPerMsg);
+    const maxSegments = Math.min(ledger.remaining, this.replyLimits(message.target.kind).totalQuota);
 
     const result = segmentText(text, { maxChars: config.qq.maxChars, maxSegments });
     if (result.truncated) {
@@ -426,23 +463,22 @@ export class Dispatcher {
     return sent > 0;
   }
 
-  /** 实际发送一条消息（含 event_id / msg_id 互斥处理）。 */
+  /** 实际发送一条消息（按会话类型选端点，含 event_id / msg_id 互斥处理）。 */
   private async sendSegment(
-    message: NormalizedGroupMessage,
+    message: NormalizedMessage,
     text: string,
     ticket: ReplyTicket,
     quoteMessageId: string | undefined,
     logger: Logger,
   ): Promise<void> {
-    const { config, api } = this.deps;
+    const { config } = this.deps;
     const body = renderMessage(text, {
       msgType: config.qq.msgType,
-      groupOpenid: message.groupOpenid,
       msgId: message.msgId,
       msgSeq: ticket.msgSeq,
       ...(quoteMessageId !== undefined ? { quoteMessageId } : {}),
     });
-    await api.sendGroupMessage(message.groupOpenid, body);
+    await this.sendTo(message.target, body);
     this.stats.repliesSent += 1;
     logger.debug('已发送回复', {
       msgSeq: ticket.msgSeq,
@@ -451,27 +487,41 @@ export class Dispatcher {
     });
   }
 
+  /** 按会话类型选择发送端点（群聊 /v2/groups，单聊 /v2/users）。 */
+  private async sendTo(target: ConversationTarget, body: SendMessageRequest): Promise<void> {
+    if (target.kind === 'c2c') {
+      await this.deps.api.sendUserMessage(target.id, body);
+      return;
+    }
+    await this.deps.api.sendGroupMessage(target.id, body);
+  }
+
   // -------------------------------------------------------------------------
-  // 进群事件
+  // 进群 / 加好友欢迎
   // -------------------------------------------------------------------------
 
-  private async handleGroupAddRobot(event: NormalizedEvent): Promise<void> {
-    if (event.kind !== 'group-add-robot' || event.groupOpenid === undefined) return;
-    const { logger, api, config } = this.deps;
-    const welcome = '我是运行在 Docker 里的 DSH 助手。在群里 @我 并说明需求即可。';
-    logger.info('机器人进群，发送欢迎语', { group: event.groupOpenid });
+  private async handleWelcome(event: NormalizedEvent): Promise<void> {
+    if (event.kind !== 'group-add-robot' && event.kind !== 'c2c-friend-add') return;
+    const target = event.target;
+    if (target === undefined) return;
+    if (target.kind === 'c2c' && !this.deps.config.qq.c2c.enabled) return;
+
+    const { logger, config } = this.deps;
+    const text =
+      target.kind === 'c2c'
+        ? '我是运行在 Docker 里的 DSH 助手。直接给我发消息说明需求即可。'
+        : '我是运行在 Docker 里的 DSH 助手。在群里 @我 并说明需求即可。';
+    logger.info(target.kind === 'c2c' ? '用户添加好友，发送欢迎语' : '机器人进群，发送欢迎语', {
+      conversation: target.key,
+    });
     try {
-      // 进群事件必须用 event_id 回复（与 msg_id 互斥）
-      await api.sendGroupMessage(event.groupOpenid, {
-        msg_type: config.qq.msgType === 2 ? 2 : 0,
-        ...(config.qq.msgType === 2
-          ? { markdown: { content: welcome } }
-          : { content: welcome }),
-        ...(event.eventId !== undefined && event.eventId !== ''
-          ? { event_id: event.eventId }
-          : {}),
-        msg_seq: 1,
+      // 进群/加好友事件必须用 event_id 回复（与 msg_id 互斥）
+      const body = renderMessage(text, {
+        msgType: config.qq.msgType,
+        ...(event.eventId !== undefined && event.eventId !== '' ? { eventId: event.eventId } : {}),
+        msgSeq: 1,
       });
+      await this.sendTo(target, body);
       this.stats.repliesSent += 1;
     } catch (error) {
       logger.warn('发送欢迎语失败（不影响主要功能）', {

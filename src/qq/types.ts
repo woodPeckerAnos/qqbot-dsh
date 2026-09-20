@@ -1,7 +1,7 @@
 /**
  * QQ 官方开放平台 wire 类型（api-v2）。
  *
- * 只声明本 MVP 真正用到的部分：鉴权、网关生命周期、群 @ 消息事件、发消息。
+ * 只声明本 MVP 真正用到的部分：鉴权、网关生命周期、群 @ 消息 / 单聊消息事件、发消息。
  * 未核实的字段一律标 `unknown` 而不是猜类型——猜错类型比没有类型更危险。
  *
  * 依据：docs/DESIGN.md 第 9 节列出的实况文档；旧仓库
@@ -163,7 +163,13 @@ export const Intent = {
   PUBLIC_GUILD_MESSAGES: 1 << 30,
 } as const;
 
-/** 群 @消息 + 进群事件（默认订阅集合） */
+/**
+ * 群 @消息 + 单聊消息 + 进群事件（默认订阅集合）。
+ *
+ * `GROUP_AND_C2C_EVENT (1<<25)` 同时承载 `GROUP_AT_MESSAGE_CREATE` 与
+ * `C2C_MESSAGE_CREATE`——想只服务群聊也绕不开它（intent 粒度就是这样的）。
+ * 关闭单聊请在业务层用 `QQ_C2C_ENABLED=false`，而不是改 intent。
+ */
 export const DEFAULT_INTENTS = Intent.GROUP_AND_C2C_EVENT | Intent.GROUP_MEMBER_EVENT;
 
 /** 把掩码还原成可读的 intent 名列表，用于日志与排障 */
@@ -208,10 +214,42 @@ export interface GroupMessageEvent {
   }>;
 }
 
+/** C2C_MESSAGE_CREATE（单聊消息）的 d */
+export interface C2CMessageEvent {
+  /** 消息 id，被动回复时作为 msg_id 使用 */
+  id: string;
+  content: string;
+  /** RFC3339 字符串 */
+  timestamp: string;
+  message_type?: number;
+  author: {
+    id?: string;
+    /** 单聊用户在机器人下的 openid（与群里的 member_openid 不是同一个） */
+    user_openid?: string;
+    union_openid?: string;
+  };
+  message_scene?: { source?: string; ext?: string[] };
+  attachments?: Array<{
+    url?: string;
+    filename?: string;
+    content_type?: string;
+    size?: number;
+    voice_wav_url?: string;
+    asr_refer_text?: string;
+  }>;
+}
+
 /** GROUP_ADD_ROBOT 的 d（时间戳是 unix 秒，不是 RFC3339） */
 export interface GroupAddRobotEvent {
   group_openid: string;
   op_member_openid: string;
+  timestamp: number;
+}
+
+/** FRIEND_ADD（用户添加机器人好友）的 d */
+export interface FriendAddEvent {
+  /** 添加机器人的用户 openid */
+  openid: string;
   timestamp: number;
 }
 
@@ -227,14 +265,16 @@ export const MsgType = {
 } as const;
 
 /**
- * POST /v2/groups/{group_openid}/messages 请求体。
+ * 发送消息请求体。**群聊与单聊共用同一套字段**，只是端点不同：
+ *   - 群聊：POST /v2/groups/{group_openid}/messages
+ *   - 单聊：POST /v2/users/{user_openid}/messages
  *
  * ⚠ `msg_id` 与 `event_id` **互斥**：
  *   - 回复用户提问 → 用 `msg_id`（来自事件 d.id）
- *   - 回复进群、按钮交互 → 用 `event_id`（来自信封 id）
+ *   - 回复进群/加好友、按钮交互 → 用 `event_id`（来自信封 id）
  * `msg_seq` 默认 1；同一 (msg_id, msg_seq) 组合不能重复发送，否则 40054005。
  */
-export interface SendGroupMessageRequest {
+export interface SendMessageRequest {
   msg_type: number;
   content?: string;
   markdown?: { content: string };
@@ -245,38 +285,24 @@ export interface SendGroupMessageRequest {
   msg_seq?: number;
 }
 
-/**
- * POST /v2/users/{user_openid}/messages 请求体。
- *
- * ⚠ `msg_id` 与 `event_id` **互斥**：
- *   - 回复用户提问 → 用 `msg_id`（来自事件 d.id）
- *   - 回复进群、按钮交互 → 用 `event_id`（来自信封 id）
- * `msg_seq` 默认 1；同一 (msg_id, msg_seq) 组合不能重复发送，否则 40054005。
- */
-export interface SendUserMessageRequest {
-  msg_type: number;
-  content?: string;
-  markdown?: { content: string };
-  media?: { file_info: string };
-  message_reference?: { message_id: string };
-  msg_id?: string;
-  event_id?: string;
-  msg_seq?: number;
-}
+/** 群聊发消息请求体（字段与单聊完全一致，保留独立名字便于端点上做类型区分） */
+export type SendGroupMessageRequest = SendMessageRequest;
+
+/** 单聊发消息请求体（字段与群聊完全一致） */
+export type SendUserMessageRequest = SendMessageRequest;
 
 /**
- * POST /v2/users/{user_openid}/messages 请求体。
+ * POST /v2/users/{user_openid}/stream_messages 请求体（流式单聊）。
  *
- * ⚠ `msg_id` 与 `event_id` **互斥**：
- *   - 回复用户提问 → 用 `msg_id`（来自事件 d.id）
- *   - 回复进群、按钮交互 → 用 `event_id`（来自信封 id）
- * `msg_seq` 默认 1；同一 (msg_id, msg_seq) 组合不能重复发送，否则 40054005。
+ * 本 MVP 不使用流式发送（DSH 的一轮结果在 turn 结束后整体取回），
+ * 这里保留类型定义以便将来接入"边生成边刷新"的输出方式。
+ * `input_state`：1 生成中 / 2 生成结束 / 3 生成超时（以官方文档为准）。
  */
 export interface SendUserStreamMessageRequest {
-  input_mode?: "append"|"replace";
+  input_mode?: 'append' | 'replace';
   input_state?: number;
   index?: number;
-  content_type?: "text"|"markdown";
+  content_type?: 'text' | 'markdown';
   content_raw?: string;
   event_id?: string;
   msg_id?: string;

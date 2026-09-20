@@ -11,7 +11,7 @@
 |---|---|---|
 | 操作系统 | Linux x86_64 / arm64 | 需要内核支持 Landlock（≥ 5.13）或允许非特权 user namespace |
 | Docker | 24+ | 需要 `docker compose` 子命令 |
-| 内存 | ≥ 2 GB 可用 | 默认给容器 2 GB 上限；每活跃群一个 DSH 进程 |
+| 内存 | ≥ 2 GB 可用 | 默认给容器 2 GB 上限；每活跃会话一个 DSH 进程 |
 | 磁盘 | ≥ 5 GB | 镜像约 1.5 GB，另加会话日志与工作区 |
 | 出网 | 可访问 `api.bot.qq.com` 与 `api.deepseek.com` | WebSocket 长连接是主动出网，**不需要公网 IP、域名或证书** |
 
@@ -31,9 +31,13 @@
    - **企业认证**：无此限制。
    - 开发调试可以在控制台配置最多 20 个**内部体验号码**，不受服务范围限制。
 
-> ⚠ 群聊被动回复窗口只有 **5 分钟**、每条消息最多回 **5 次**。本程序已按此设计
-> （进度回执 + 配额账本），请不要把 `QQ_TURN_TIMEOUT_MS` 调到 300000 以上——
-> 配置层会直接拒绝。
+> ⚠ 被动回复窗口：**群聊 5 分钟 / 每条最多 5 次**，**单聊 60 分钟 / 每条最多 4 次**。
+> 本程序已按此设计（进度回执 + 群聊/单聊各自的配额账本），请不要把
+> `QQ_TURN_TIMEOUT_MS` 调到 300000 以上——配置层会直接拒绝（单聊虽然窗口更宽，
+> 也沿用这个更保守的上限）。
+>
+> 单聊默认开启（`QQ_C2C_ENABLED=true`）；只想服务群聊就设为 `false`，
+> 因为 `1<<25` 这个 intent 同时承载群聊与单聊，无法在订阅层区分。
 
 ---
 
@@ -77,7 +81,7 @@ docker compose logs -f qqbot
 {"level":"info","msg":"已获取 access_token","expiresInSec":7200,...}
 {"level":"info","msg":"连接 QQ 网关","url":"wss://api.bot.qq.com/websocket/","mode":"identify"}
 {"level":"info","msg":"网关就绪（READY）","sessionId":"...","bot":"..."}
-{"level":"info","msg":"qqbot-dsh 已就绪，等待群消息"}
+{"level":"info","msg":"qqbot-dsh 已就绪，等待群聊/单聊消息"}
 ```
 
 容器入口还会打印沙箱后端自检结果：
@@ -106,7 +110,7 @@ docker compose exec qqbot node -e "
 fetch('http://127.0.0.1:8080/metrics').then(r=>r.text()).then(console.log)"
 ```
 
-在群里 @机器人 发一句：
+在群里 @机器人 发一句（或直接私聊机器人，效果相同）：
 
 ```
 @机器人 用 python 算一下 1 到 100 的平方和，把脚本存到工作区
@@ -177,7 +181,7 @@ docker compose exec qqbot bash
 docker compose exec qqbot ls -la /data/workspaces /data/bot
 docker compose exec qqbot tail -20 /data/bot/conversations/*.jsonl
 
-# 查看资源占用（每活跃群一个 DSH 进程）
+# 查看资源占用（每活跃会话一个 DSH 进程）
 docker compose exec qqbot ps -ef
 docker stats qqbot-dsh
 ```
@@ -196,8 +200,10 @@ docker stats qqbot-dsh
 | 不想让机器人记很久之前的事 | 降低 `QQ_REPLAY_TURNS`（0 = 完全不回放，重启即失忆） |
 | 回答太长被截断 | 提高 `QQ_MAX_CHARS`，但注意平台上限未知（超限会报 40054007 并自动折半重试） |
 | 希望代码块渲染更好看 | `QQ_MSG_TYPE=2`（Markdown）。注意部分客户端版本渲染效果不稳定 |
+| 只想服务群聊，不接受私聊 | `QQ_C2C_ENABLED=false`（`1<<25` 无法只订群聊，只能在这里关） |
+| 单聊回复条数不够 | 调小 `QQ_C2C_PROGRESS_MAX`；上限 `QQ_C2C_MAX_REPLIES_PER_MSG=4`，不能再高 |
 | 日志太吵 | `QQ_LOG_LEVEL=warn` |
-| 想给某个群定规矩 | 在该群工作区目录下写 `AGENTS.md`，DSH 会自动加载（改规则不用重建镜像） |
+| 想给某个会话定规矩 | 在该会话工作区目录下写 `AGENTS.md`，DSH 会自动加载（改规则不用重建镜像） |
 
 ---
 
@@ -212,14 +218,14 @@ docker stats qqbot-dsh
 | `package.json` 依赖 | `docker compose up -d --build` | **是**（要重跑 `npm install`） | 否 |
 | `.env` 里任何变量 | `docker compose up -d` | 否（重建容器即可） | 否 |
 | `dsh-profile/cordis.patch.yml`（人设、权限模式） | `docker compose restart qqbot` | 否 | 否 |
-| 某个群的行为规矩（`AGENTS.md`） | 直接改文件 | **都不用** | 否 |
+| 某个会话的行为规矩（`AGENTS.md`） | 直接改文件 | **都不用** | 否 |
 | `docker-compose.yml` 本身 | `docker compose up -d` | 否 | 否 |
 
 **永远不需要 `docker compose down`。** `up -d --build` 会自己重建镜像并替换容器；
 `down` 只用于"要改网络/端口映射，或想彻底停止服务"。注意 `down` 默认删容器但
 保留卷（记忆与工作区不丢），加 `-v` 才会连数据一起删。
 
-### 8.1 最省事的调优手段：改群规矩不用碰容器
+### 8.1 最省事的调优手段：改会话规矩不用碰容器
 
 `AGENTS.md` 是最值得优先使用的调整方式。DSH 的 `dsh-agent-instructions` 按会话
 惰性加载工作区里的指令文件，**文件变更会在后续请求中反映出来**（首次请求注入基线，
@@ -228,7 +234,8 @@ docker stats qqbot-dsh
 所以"这个群要按我们的代码规范回答"这类需求，直接写文件即可：
 
 ```sh
-# 1) 找到该群的工作区目录（目录名 = 群 openid 的 sha256 前 16 位）
+# 1) 找到该会话的工作区目录（目录名 = 会话键的 sha256 前 16 位；
+#    群聊的会话键就是 group_openid，单聊是 c2c:<user_openid>）
 docker compose exec qqbot ls /data/workspaces
 
 # 2) 写规矩

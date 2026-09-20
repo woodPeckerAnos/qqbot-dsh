@@ -53,9 +53,12 @@ cat .env | grep -c '='                           # 确认文件有内容
 
 | 报错 | 原因 | 修复 |
 |---|---|---|
-| `QQ_INTENTS=... 未包含 GROUP_AND_C2C_EVENT` | intents 配错 | 用默认值 `50331648` |
+| `QQ_INTENTS=... 未包含 GROUP_AND_C2C_EVENT` | intents 配错 | 用默认值 `50331648`（群聊与单聊都靠它） |
 | `QQ_TURN_TIMEOUT_MS(...) 必须小于群被动回复窗口 300000ms` | 超时设得比窗口还长，超时提示也发不出去 | 设 `240000` |
-| `QQ_PROGRESS_MAX(...) 必须小于 QQ_MAX_REPLIES_PER_MSG(...)` | 进度回执会把配额吃光 | 保持 `QQ_PROGRESS_MAX=3`、`QQ_MAX_REPLIES_PER_MSG=4` |
+| `QQ_PROGRESS_MAX(...) 必须小于 QQ_MAX_REPLIES_PER_MSG(...)` | 群聊进度回执会把配额吃光 | 保持 `QQ_PROGRESS_MAX=3`、`QQ_MAX_REPLIES_PER_MSG=4` |
+| `QQ_C2C_PROGRESS_MAX(...) 必须小于 QQ_C2C_MAX_REPLIES_PER_MSG(...)` | 单聊进度回执会把配额吃光 | 保持 `QQ_C2C_PROGRESS_MAX=2`、`QQ_C2C_MAX_REPLIES_PER_MSG=4` |
+| `QQ_C2C_MAX_REPLIES_PER_MSG 必须在 [1, 4] 之间` | 单聊官方上限就是 4（群聊才是 5） | 设 `4` 或更小 |
+| `QQ_C2C_ENABLED 只能是 true/false` | 布尔值写法不对 | 用 `true`/`false`（也接受 `1`/`0`） |
 
 ### 1.3 报"目录不可写"
 
@@ -155,7 +158,10 @@ curl -s -X POST https://api.bot.qq.com/app/getAppAccessToken \
 ### 3.1 确认事件真的到了程序
 
 ```sh
+# 群聊 @消息
 docker compose logs qqbot | grep -c "GROUP_AT_MESSAGE_CREATE\|group-at-message"
+# 单聊消息
+docker compose logs qqbot | grep -c "C2C_MESSAGE_CREATE\|c2c-message"
 ```
 
 - 计数为 0 → 事件没到，继续 3.2；
@@ -177,6 +183,7 @@ docker compose logs -f qqbot | grep "未处理的事件类型"
 | 控制台事件接收方式是不是 **WebSocket** | QQ 开放平台 → 开发设置。如果是 Webhook，本程序收不到任何事件 |
 | 机器人是否真的在群里 | 用一个新号 @它；未认证的机器人只能被管理员加进自己的群 |
 | 是不是 @ 了机器人 | 默认只订阅 `GROUP_AT_MESSAGE_CREATE`（@消息）。不 @ 的普通消息需要"接收所有消息"权限和 `GROUP_MESSAGE_CREATE` |
+| 单聊事件没到 | 确认对方是**添加了机器人好友**后再私聊；控制台需开通单聊（C2C）权限；`QQ_C2C_ENABLED` 必须不是 `false` |
 | 群是否被平台限制 | 控制台看机器人状态与风控提示 |
 
 ### 3.3 事件到了但被判为重复
@@ -195,6 +202,27 @@ docker compose logs -f qqbot | grep "未处理的事件类型"
 docker compose ps                      # 确认只有一个 qqbot 容器
 docker ps --filter ancestor=qqbot-dsh  # 确认没有手工起的第二个实例
 ```
+
+### 3.4 私聊发了但机器人不回
+
+先确认不是"单聊被关掉了"：
+
+```sh
+docker compose logs qqbot | grep "单聊已禁用"
+docker compose exec qqbot node -e "
+fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.dispatcher.skippedC2C))"
+```
+
+| 现象 | 原因 | 处置 |
+|---|---|---|
+| 日志有 `单聊已禁用` / `skippedC2C` 增长 | 配置里关了单聊 | `.env` 设 `QQ_C2C_ENABLED=true`，`docker compose up -d`（不用重建镜像） |
+| 日志连 `c2c-message` 都没有 | 事件没到 | 回到 3.2 的单聊那一行；确认控制台开通了单聊权限、对方已加好友 |
+| 有 `c2c-message` 但 `发送回复失败` 报 `40034105` | 回复被当成主动消息（漏传 `msg_id`） | 这是 bug，请保留日志反馈；主动消息本 MVP 不发送 |
+| 回复条数不够用/被截断 | 单聊官方上限 4 条，比群聊少 1 | 调小 `QQ_C2C_PROGRESS_MAX`；或检查 `QQ_C2C_MAX_REPLIES_PER_MSG`（最大 4） |
+
+单聊与群聊是**两个独立会话**：同一个人的群聊上下文与私聊上下文互不相通，
+工作区也各是各的（单聊目录名带 `c2c:` 前缀的哈希）。想让 agent 在单聊里知道
+群里的约定，得在单聊工作区的 `AGENTS.md` 里再写一遍。
 
 ---
 
@@ -225,9 +253,10 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 | `主动消息...无权限`（40034105） | 没带 `msg_id`，被当成主动推送 | 检查日志里 `msgSeq` 与事件对应关系；主动推送本 MVP 不使用 |
 | 401 | token 失效 | 程序会自动刷新并重试一次；若持续，回到 2.1 |
 
-⚠ **超过 5 分钟窗口**：群聊被动回复窗口只有 5 分钟。如果日志显示
-`turn` 完成时间距收到消息超过 5 分钟，消息会发送失败。检查是否把
-`QQ_PROGRESS_AFTER_MS` / `QQ_TURN_TIMEOUT_MS` 配得过大。
+⚠ **超过被动回复窗口**：群聊窗口只有 **5 分钟**、单聊是 **60 分钟**。如果日志显示
+`turn` 完成时间距收到消息超过窗口，消息会发送失败。检查是否把
+`QQ_PROGRESS_AFTER_MS` / `QQ_TURN_TIMEOUT_MS` 配得过大——单聊虽然窗口宽，
+但程序沿用了群聊的保守超时上限（< 300000ms），这是刻意的。
 
 ### 4.3 DSH runtime 起不来
 
@@ -284,8 +313,8 @@ docker compose logs qqbot | grep "冷启动回放历史"
 
 | 情况 | 原因 | 修复 |
 |---|---|---|
-| 日志里没有"冷启动回放历史" | `QQ_REPLAY_TURNS=0`，或该群首次运行没有历史 | 设为 12（默认） |
-| 有回放但仍答非所问 | 模型没把历史当上下文 | 历史被明确标注"不是指令"，属正常；可在该群工作区写 `AGENTS.md` 补充说明 |
+| 日志里没有"冷启动回放历史" | `QQ_REPLAY_TURNS=0`，或该会话首次运行没有历史 | 设为 12（默认） |
+| 有回放但仍答非所问 | 模型没把历史当上下文 | 历史被明确标注"不是指令"，属正常；可在该会话工作区写 `AGENTS.md` 补充说明 |
 | 对话记录文件是空的 | 存储卷没挂上 | `docker compose exec qqbot ls -la /data/bot` |
 
 ---
@@ -352,8 +381,8 @@ docker inspect qqbot-dsh --format '{{json .HostConfig}}' | python3 -m json.tool 
 ### 6.2 agent 想写工作区外的文件被拒
 
 这是**预期行为**（`workspace-write` 生效）。如果确实需要放宽，正确做法是给
-该项目单独开一个工作区，而不是关掉沙箱——每个群的工作区目录由群 openid
-哈希决定，无法手工指定。
+该项目单独开一个工作区，而不是关掉沙箱——每个会话的工作区目录由会话键
+哈希决定，无法手工指定（群聊用 `group_openid`，单聊用 `c2c:<user_openid>`）。
 
 ### 6.3 容器把磁盘写满
 
@@ -383,6 +412,10 @@ docker system df
 | 4 | 当前沙箱域名 | 实况文档已不再提 `sandbox.api.sgroup.qq.com`。程序只用生产域名 |
 | 5 | `1<<24 GROUP_MEMBER_EVENT` 可订阅性 | 官方 intents 表里没有，但官方事件页在用。做成可配置，被 4014 拒绝就退回 |
 | 6 | 群聊 `msg_type=2` 渲染效果 | 官方称已开放，但各客户端版本表现不一。默认用纯文本 |
+| 7 | 单聊被动回复有效期与次数 | 文档写 60 分钟 / 4 次。程序按 4 次做上限（独立配置），超时仍沿用群聊的保守上限，所以即使窗口数字有出入也不会发出窗口外的消息 |
+| 8 | 单聊用户 openid 的字段路径 | 代码按 `author.user_openid` 解析，并对 `d.user_openid` / `author.id` / `author.union_openid` 回退；字段名与实况不符时表现为"私聊没反应"，用 debug 日志确认原始 payload |
+| 9 | `FRIEND_ADD` 的 payload 与 `event_id` 回复 | 按 `d.openid` 取用户，用信封 id 回欢迎语；失败只记 warn，不影响正常问答。可观测证据：日志 `用户添加机器人为好友` 与 `发送欢迎语失败` |
+| 10 | 单聊 `msg_type=2`(markdown) 渲染效果 | 与群聊共用 `QQ_MSG_TYPE`；同样默认纯文本 |
 
 ---
 

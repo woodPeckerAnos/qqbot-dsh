@@ -1,15 +1,17 @@
 /**
- * QQ OpenAPI 调用（只实现本 MVP 用到的三个端点）。
+ * QQ OpenAPI 调用（只实现本 MVP 用到的端点）。
  *
  * 端点（2026-08-10 起域名统一为 api.bot.qq.com）：
- *   - GET  /gateway                                   取 WebSocket 接入点
- *   - POST /v2/groups/{group_openid}/messages         发群消息
+ *   - GET  /gateway                                    取 WebSocket 接入点
+ *   - POST /v2/groups/{group_openid}/messages          发群消息
+ *   - POST /v2/users/{user_openid}/messages            发单聊消息
+ *   - POST /v2/users/{user_openid}/stream_messages     流式发单聊消息（本 MVP 未使用）
  *
- * 发消息关键约束：
+ * 发消息关键约束（群聊与单聊一致）：
  *   - `Authorization: QQBot <access_token>`；
- *   - `msg_id` 与 `event_id` **互斥**：回复用户提问用 msg_id，回复进群/按钮交互用 event_id；
+ *   - `msg_id` 与 `event_id` **互斥**：回复用户提问用 msg_id，回复进群/加好友/按钮交互用 event_id；
  *   - `msg_seq` 与 msg_id 联合去重，同一组合不能重复发（否则 40054005）；
- *   - 群被动回复窗口 5 分钟、每条消息最多 5 次。
+ *   - 被动回复窗口：群聊 5 分钟 / 单聊 60 分钟；每条消息最多回复 群聊 5 次 / 单聊 4 次。
  */
 
 import type { Logger } from '../logger.js';
@@ -172,10 +174,10 @@ export class QqApi {
    *
    * 调用方负责分配 `msg_seq`（见 pipeline 的配额账本），因为去重是按
    * (msg_id, msg_seq) 组合判定的。
-   * 
+   *
    * # Note
    * 100 QPS，包括主动、被动等所有消息类型
-   * 
+   *
    * # Doc
    * https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html
    */
@@ -185,20 +187,20 @@ export class QqApi {
   ): Promise<SendMessageResponse> {
     return this.request<SendMessageResponse>(
       'POST',
-      `/v2/users/${userOpenId}/messages`,
+      `/v2/users/${encodeURIComponent(userOpenId)}/messages`,
       message,
     );
   }
 
   /**
-   * 流式发送私聊消息
+   * 流式发送私聊消息。
    *
-   * 调用方负责分配 `msg_seq`（见 pipeline 的配额账本），因为去重是按
-   * (msg_id, msg_seq) 组合判定的。
-   * 
+   * 本 MVP 不使用：`session/prompt` 的结果在 turn 结束后才整体取回，
+   * 没有增量文本可推。保留实现以便将来接流式输出。
+   *
    * # Note
    * 50 QPS (单独)
-   * 
+   *
    * # Doc
    * https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_stream_messages.post.html
    */
@@ -208,7 +210,7 @@ export class QqApi {
   ): Promise<SendMessageResponse> {
     return this.request<SendMessageResponse>(
       'POST',
-      `/v2/users/${userOpenId}/stream_messages`,
+      `/v2/users/${encodeURIComponent(userOpenId)}/stream_messages`,
       message,
     );
   }

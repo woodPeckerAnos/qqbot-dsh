@@ -305,7 +305,7 @@ describe('QqGateway 事件归一化', () => {
     return { ...harness, events, socket };
   }
 
-  it('GROUP_AT_MESSAGE_CREATE 归一化出 msgId / groupOpenid / memberOpenid', async () => {
+  it('GROUP_AT_MESSAGE_CREATE 归一化出 msgId / 会话目标 / senderId', async () => {
     const { gateway, events, socket } = await readyGateway();
     socket.fireMessage({
       id: 'EVENT-1',
@@ -324,18 +324,63 @@ describe('QqGateway 事件归一化', () => {
     const message = events.find((e) => (e as { kind: string }).kind === 'group-at-message') as {
       eventId: string;
       msgId: string;
-      groupOpenid: string;
-      memberOpenid: string;
+      target: { kind: string; id: string; key: string };
+      senderId: string;
       username?: string;
       content: string;
     };
     expect(message).toBeDefined();
     expect(message.eventId).toBe('EVENT-1');
     expect(message.msgId).toBe('MSG-1');
-    expect(message.groupOpenid).toBe('GROUP-A');
-    expect(message.memberOpenid).toBe('MEMBER-1');
+    // 群聊沿用原始 group_openid 作为会话键（不迁移既有目录）
+    expect(message.target).toEqual({ kind: 'group', id: 'GROUP-A', key: 'GROUP-A' });
+    expect(message.senderId).toBe('MEMBER-1');
     expect(message.username).toBe('小明');
     expect(message.content).toBe('帮我算个数');
+    await gateway.stop();
+  });
+
+  it('C2C_MESSAGE_CREATE 归一化出单聊目标（会话键带 c2c: 前缀，避免与群 openid 混用）', async () => {
+    const { gateway, events, socket } = await readyGateway();
+    socket.fireMessage({
+      id: 'EVENT-C2C',
+      op: OpCode.DISPATCH,
+      s: 3,
+      t: 'C2C_MESSAGE_CREATE',
+      d: {
+        id: 'MSG-C2C',
+        content: '你好',
+        timestamp: '2026-07-21T10:00:00+08:00',
+        author: { user_openid: 'USER-1' },
+      },
+    });
+
+    const message = events.find((e) => (e as { kind: string }).kind === 'c2c-message') as {
+      eventId: string;
+      msgId: string;
+      target: { kind: string; id: string; key: string };
+      senderId: string;
+      content: string;
+    };
+    expect(message).toBeDefined();
+    expect(message.eventId).toBe('EVENT-C2C');
+    expect(message.msgId).toBe('MSG-C2C');
+    expect(message.target).toEqual({ kind: 'c2c', id: 'USER-1', key: 'c2c:USER-1' });
+    expect(message.senderId).toBe('USER-1');
+    expect(message.content).toBe('你好');
+    await gateway.stop();
+  });
+
+  it('单聊事件缺少 user_openid 时被忽略而不崩', async () => {
+    const { gateway, events, socket } = await readyGateway();
+    const before = events.length;
+    socket.fireMessage({
+      op: OpCode.DISPATCH,
+      s: 4,
+      t: 'C2C_MESSAGE_CREATE',
+      d: { id: 'MSG-X', content: 'x', author: {} },
+    });
+    expect(events.length).toBe(before);
     await gateway.stop();
   });
 
@@ -362,18 +407,37 @@ describe('QqGateway 事件归一化', () => {
       d: { group_openid: 'GROUP-B', op_member_openid: 'M-1', timestamp: 1699240248 },
     });
     const event = events.find((e) => (e as { kind: string }).kind === 'group-add-robot') as {
-      groupOpenid: string;
+      target: { kind: string; id: string; key: string };
       eventId: string;
     };
-    expect(event.groupOpenid).toBe('GROUP-B');
+    expect(event.target).toEqual({ kind: 'group', id: 'GROUP-B', key: 'GROUP-B' });
     expect(event.eventId).toBe('EVENT-ADD');
+    await gateway.stop();
+  });
+
+  it('FRIEND_ADD 归一化成单聊加好友事件（用 event_id 发欢迎语）', async () => {
+    const { gateway, events, socket } = await readyGateway();
+    socket.fireMessage({
+      id: 'EVENT-FRIEND',
+      op: OpCode.DISPATCH,
+      s: 5,
+      t: 'FRIEND_ADD',
+      d: { openid: 'USER-F', timestamp: 1699240248 },
+    });
+    const event = events.find((e) => (e as { kind: string }).kind === 'c2c-friend-add') as {
+      target: { kind: string; id: string; key: string };
+      eventId: string;
+    };
+    expect(event).toBeDefined();
+    expect(event.target).toEqual({ kind: 'c2c', id: 'USER-F', key: 'c2c:USER-F' });
+    expect(event.eventId).toBe('EVENT-FRIEND');
     await gateway.stop();
   });
 
   it('未订阅的事件类型被安静忽略', async () => {
     const { gateway, events, socket } = await readyGateway();
     const before = events.length;
-    socket.fireMessage({ op: OpCode.DISPATCH, s: 5, t: 'C2C_MESSAGE_CREATE', d: { id: 'x' } });
+    socket.fireMessage({ op: OpCode.DISPATCH, s: 6, t: 'MESSAGE_AUDIT', d: { id: 'x' } });
     expect(events.length).toBe(before);
     await gateway.stop();
   });

@@ -54,6 +54,26 @@ describe('loadConfig', () => {
     ).toThrow(/必须小于/);
   });
 
+  it('单聊有独立默认配额，且遵守官方上限 4 与"进度 < 总额"不变量', () => {
+    expect(loadConfig(baseEnv).qq.c2c).toEqual({
+      enabled: true,
+      maxRepliesPerMsg: 4,
+      progressMax: 2,
+    });
+    expect(() =>
+      loadConfig({ ...baseEnv, QQ_C2C_MAX_REPLIES_PER_MSG: '2', QQ_C2C_PROGRESS_MAX: '2' }),
+    ).toThrow(/QQ_C2C_PROGRESS_MAX/);
+    // 单聊每条消息官方最多回 4 次，配 5 必须被拒绝（群聊才是 5）
+    expect(() => loadConfig({ ...baseEnv, QQ_C2C_MAX_REPLIES_PER_MSG: '5' })).toThrow(/必须在/);
+  });
+
+  it('QQ_C2C_ENABLED 接受 true/false 与 1/0，其余报错', () => {
+    expect(loadConfig({ ...baseEnv, QQ_C2C_ENABLED: 'false' }).qq.c2c.enabled).toBe(false);
+    expect(loadConfig({ ...baseEnv, QQ_C2C_ENABLED: '0' }).qq.c2c.enabled).toBe(false);
+    expect(loadConfig({ ...baseEnv, QQ_C2C_ENABLED: 'true' }).qq.c2c.enabled).toBe(true);
+    expect(() => loadConfig({ ...baseEnv, QQ_C2C_ENABLED: 'maybe' })).toThrow(/true\/false/);
+  });
+
   it('单轮超时必须小于群被动回复窗口 300000ms', () => {
     expect(() => loadConfig({ ...baseEnv, QQ_TURN_TIMEOUT_MS: '300000' })).toThrow(/300000/);
     expect(() => loadConfig({ ...baseEnv, QQ_TURN_TIMEOUT_MS: '240000' })).not.toThrow();
@@ -93,6 +113,7 @@ describe('describeConfig', () => {
     expect(summary).not.toContain('secret-1');
     expect(summary).not.toContain('sk-test');
     expect(summary).toContain('deepseek-flash');
+    expect(summary).toContain('"c2c"');
   });
 });
 

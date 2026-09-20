@@ -39,17 +39,61 @@ import {
 } from './types.js';
 
 // ---------------------------------------------------------------------------
+// 会话目标（群聊 / 单聊共用一套编排逻辑）
+// ---------------------------------------------------------------------------
+
+export type ConversationKind = 'group' | 'c2c';
+
+/**
+ * 一次对话的寻址信息。
+ *
+ * `id` 是调用 OpenAPI 时用的原始 openid；`key` 是编排层的**会话命名空间键**，
+ * 同时用作工作区目录、对话记录、会话映射、串行锁与 runtime 池的键。
+ *
+ * 为什么 key 与 id 不总是相同：
+ *   - 群聊沿用原始 `group_openid` 作为 key——保持既有部署的目录/记录不迁移；
+ *   - 单聊用 `c2c:<user_openid>`——用户的 openid 与群 openid 是两套命名空间，
+ *     加前缀才能保证"字面相同的字符串"不会把群和单聊混成一个会话。
+ * （QQ openid 的字符集里不含 `:`，所以该前缀不会与任何真实群 openid 冲突。）
+ */
+export interface ConversationTarget {
+  kind: ConversationKind;
+  /** 群 openid / 用户 openid，用于调用 OpenAPI */
+  id: string;
+  /** 会话命名空间键，用于工作区/存储/锁/池 */
+  key: string;
+}
+
+/** 单聊会话键前缀 */
+export const C2C_KEY_PREFIX = 'c2c:';
+
+export function groupTarget(groupOpenid: string): ConversationTarget {
+  return { kind: 'group', id: groupOpenid, key: groupOpenid };
+}
+
+export function c2cTarget(userOpenid: string): ConversationTarget {
+  return { kind: 'c2c', id: userOpenid, key: `${C2C_KEY_PREFIX}${userOpenid}` };
+}
+
+// ---------------------------------------------------------------------------
 // 归一化事件（接入层对外只吐这一种形状）
 // ---------------------------------------------------------------------------
 
-export interface NormalizedGroupMessage {
-  kind: 'group-at-message';
+/**
+ * 归一化后的用户消息。
+ *
+ * 群聊（GROUP_AT_MESSAGE_CREATE / GROUP_MESSAGE_CREATE）与单聊
+ * （C2C_MESSAGE_CREATE）除 `target` 外字段语义一致，这样编排层只有一条代码路径。
+ */
+export interface NormalizedMessage {
+  kind: 'group-at-message' | 'c2c-message';
+  target: ConversationTarget;
   /** 信封 id，用于 event_id 回复 */
   eventId: string;
   /** 消息 id，用于 msg_id 被动回复 */
   msgId: string;
-  groupOpenid: string;
-  memberOpenid: string;
+  /** 发送者 openid：群里是 member_openid，单聊是 user_openid */
+  senderId: string;
   username?: string;
   content: string;
   /** 毫秒时间戳 */
@@ -59,16 +103,28 @@ export interface NormalizedGroupMessage {
 }
 
 export interface NormalizedSystemEvent {
-  kind: 'ready' | 'resumed' | 'connected' | 'disconnected' | 'group-add-robot';
+  kind:
+    | 'ready'
+    | 'resumed'
+    | 'connected'
+    | 'disconnected'
+    | 'group-add-robot'
+    | 'c2c-friend-add';
   at: number;
   reason?: string;
-  groupOpenid?: string;
-  /** 事件信封 id（进群类事件用它做 event_id 回复） */
+  /** 需要主动回一条问候语时的目标（进群 / 加好友事件） */
+  target?: ConversationTarget;
+  /** 事件信封 id（进群/加好友类事件用它做 event_id 回复） */
   eventId?: string;
   raw?: Record<string, unknown>;
 }
 
-export type NormalizedEvent = NormalizedGroupMessage | NormalizedSystemEvent;
+export type NormalizedEvent = NormalizedMessage | NormalizedSystemEvent;
+
+/** 是否为用户消息（群聊或单聊），用于把消息事件与系统事件分开。 */
+export function isUserMessage(event: NormalizedEvent): event is NormalizedMessage {
+  return event.kind === 'group-at-message' || event.kind === 'c2c-message';
+}
 
 // ---------------------------------------------------------------------------
 // WebSocket 抽象（便于测试注入假实现）
@@ -369,13 +425,40 @@ export class QqGateway implements QqEventSource {
       const author = (d['author'] ?? {}) as Record<string, unknown>;
       this.emit({
         kind: 'group-at-message',
+        target: groupTarget(groupOpenid),
         eventId: payload.id ?? '',
         msgId,
-        groupOpenid,
-        memberOpenid: asString(author['member_openid']) ?? asString(author['id']) ?? 'unknown',
+        senderId: asString(author['member_openid']) ?? asString(author['id']) ?? 'unknown',
         ...(asString(author['username']) !== undefined
           ? { username: asString(author['username']) as string }
           : {}),
+        content: asString(d['content']) ?? '',
+        ts: parseTimestamp(d['timestamp']) ?? this.now(),
+        raw: d,
+      });
+      return;
+    }
+
+    if (type === 'C2C_MESSAGE_CREATE') {
+      const author = (d['author'] ?? {}) as Record<string, unknown>;
+      // 单聊的用户 openid 在 author.user_openid；对字段缺失保持防御性回退，
+      // 否则整条私聊会因为一个字段名猜错而被静默丢弃。
+      const userOpenid =
+        asString(author['user_openid']) ??
+        asString(d['user_openid']) ??
+        asString(author['id']) ??
+        asString(author['union_openid']);
+      const msgId = asString(d['id']);
+      if (userOpenid === undefined || msgId === undefined) {
+        this.options.logger.warn('单聊消息事件缺少 user_openid 或 id，已忽略', { type });
+        return;
+      }
+      this.emit({
+        kind: 'c2c-message',
+        target: c2cTarget(userOpenid),
+        eventId: payload.id ?? '',
+        msgId,
+        senderId: userOpenid,
         content: asString(d['content']) ?? '',
         ts: parseTimestamp(d['timestamp']) ?? this.now(),
         raw: d,
@@ -389,14 +472,29 @@ export class QqGateway implements QqEventSource {
       this.emit({
         kind: 'group-add-robot',
         at: this.now(),
-        ...(groupOpenid !== undefined ? { groupOpenid } : {}),
+        ...(groupOpenid !== undefined ? { target: groupTarget(groupOpenid) } : {}),
         ...(payload.id !== undefined ? { eventId: payload.id } : {}),
         raw: d,
       });
       return;
     }
 
-    // 其余事件（C2C 消息、交互、审核等）本 MVP 不处理，降级为 debug 日志。
+    if (type === 'FRIEND_ADD') {
+      // 单聊加好友。openid 字段是 `d.openid`，其余写法只作兼容回退。
+      const userOpenid =
+        asString(d['openid']) ?? asString(d['user_openid']) ?? asString(d['union_openid']);
+      this.options.logger.info('用户添加机器人为好友', { userOpenid, raw: d });
+      this.emit({
+        kind: 'c2c-friend-add',
+        at: this.now(),
+        ...(userOpenid !== undefined ? { target: c2cTarget(userOpenid) } : {}),
+        ...(payload.id !== undefined ? { eventId: payload.id } : {}),
+        raw: d,
+      });
+      return;
+    }
+
+    // 其余事件（互动召回、审核、频道等）本 MVP 不处理，降级为 debug 日志。
     this.options.logger.debug('未处理的事件类型', { type });
   }
 

@@ -1,16 +1,16 @@
 /**
- * 每群一个 DSH runtime 的进程池，带 LRU 回收与空闲回收。
+ * 每个会话（群聊/单聊）一个 DSH runtime 的进程池，带 LRU 回收与空闲回收。
  *
- * 为什么必须"每群一个进程"：DSH 的 `initialize.cwd` 是**进程级**的，同进程内
+ * 为什么必须"每会话一个进程"：DSH 的 `initialize.cwd` 是**进程级**的，同进程内
  * 所有会话共用同一个 cwd（见 dsh-sdk-jsonrpc-server 的 `HarnessSdkJsonRpcServer.cwd`）。
- * 若多个群共用一个进程，群 A 的 agent 能读到群 B 工作区的文件。
+ * 若多个会话共用一个进程，会话 A 的 agent 能读到会话 B 工作区的文件。
  *
- * 代价是进程数与内存随活跃群数增长，因此需要：
+ * 代价是进程数与内存随活跃会话数增长，因此需要：
  *   - `maxRuntimes` 上限，超出按 LRU 回收最久未使用的（回收前先优雅 shutdown）；
  *   - `runtimeIdleMs` 空闲回收（0 表示不回收）；
  *   - 处理"进程自己死了"的情况：下次取用自动重建。
  *
- * 回收后该群会失忆（DSH 侧历史不续），由桥接层的对话记录回放补偿（见 store/）。
+ * 回收后该会话会失忆（DSH 侧历史不续），由桥接层的对话记录回放补偿（见 store/）。
  */
 
 import { EventEmitter } from 'node:events';
@@ -20,22 +20,22 @@ import { DshRuntime, type DshRuntimeOptions } from './process.js';
 import type { SessionEventNotification, SessionStatusNotification } from './protocol.js';
 
 export interface RuntimeEntry {
-  groupKey: string;
+  conversationKey: string;
   runtime: DshRuntime;
-  /** 该群当前使用的 DSH sessionId */
+  /** 该会话当前使用的 DSH sessionId */
   sessionId: string;
   /** 是否已做过冷启动回放（每个 sessionId 只回放一次） */
   replayed: boolean;
   createdAt: number;
   lastUsedAt: number;
-  /** 该群正在进行中的 turn 数（串行化后应为 0 或 1） */
+  /** 该会话正在进行中的 turn 数（串行化后应为 0 或 1） */
   busy: boolean;
 }
 
 export interface RuntimePoolOptions {
   maxRuntimes: number;
   runtimeIdleMs: number;
-  /** new DshRuntime 用的模板（cwd 与 logger 由池按群替换） */
+  /** new DshRuntime 用的模板（cwd 与 logger 由池按会话替换） */
   base: Omit<DshRuntimeOptions, 'cwd' | 'logger'>;
   logger: Logger;
   /** 注入时钟，便于单测 */
@@ -43,23 +43,26 @@ export interface RuntimePoolOptions {
   /** 注入 runtime 工厂，便于单测 */
   runtimeFactory?: (options: DshRuntimeOptions) => DshRuntime;
   /** sessionId 生成器，便于单测断言 */
-  sessionIdFactory?: (groupKey: string) => string;
+  sessionIdFactory?: (conversationKey: string) => string;
 }
 
 export interface RuntimePoolEvents {
-  'session.event': (groupKey: string, notification: SessionEventNotification) => void;
-  'session.status': (groupKey: string, notification: SessionStatusNotification) => void;
-  'runtime.exit': (groupKey: string, code: number | null, signal: NodeJS.Signals | null) => void;
+  'session.event': (conversationKey: string, notification: SessionEventNotification) => void;
+  'session.status': (conversationKey: string, notification: SessionStatusNotification) => void;
+  'runtime.exit': (conversationKey: string, code: number | null, signal: NodeJS.Signals | null) => void;
 }
 
 /**
- * 为一个群生成稳定的 sessionId。
+ * 为一个会话生成稳定的 sessionId。
  *
  * 注意：进程重启后**不会**因为这个 id 相同而恢复上下文（见 DESIGN 2.3）。
  * 用稳定 id 只是为了让 DSH 的会话日志目录可读、便于排查。
+ *
+ * 做字符净化：单聊的会话键形如 `c2c:<openid>`，冒号等字符可能出现在 DSH 的
+ * 会话文件名里，统一替换为 `_` 以免踩到路径解析。
  */
-export function stableSessionId(groupKey: string): string {
-  return `qq-${groupKey}`;
+export function stableSessionId(conversationKey: string): string {
+  return `qq-${conversationKey.replace(/[^A-Za-z0-9._-]/g, '_')}`;
 }
 
 export class RuntimePool extends EventEmitter {
@@ -75,16 +78,16 @@ export class RuntimePool extends EventEmitter {
     return this.entries.size;
   }
 
-  /** 当前所有活跃群的 key（用于 health 展示） */
-  activeGroupKeys(): string[] {
+  /** 当前所有活跃会话的 key（用于 health 展示） */
+  activeConversationKeys(): string[] {
     return [...this.entries.keys()];
   }
 
-  /** 取该群的条目，不存在则创建运行时并完成 initialize。 */
-  async acquire(groupKey: string, workspacePath: string): Promise<RuntimeEntry> {
+  /** 取该会话的条目，不存在则创建运行时并完成 initialize。 */
+  async acquire(conversationKey: string, workspacePath: string): Promise<RuntimeEntry> {
     if (this.disposed) throw new Error('runtime 池已关闭');
 
-    const existing = this.entries.get(groupKey);
+    const existing = this.entries.get(conversationKey);
     if (existing !== undefined) {
       if (existing.runtime.isReady) {
         existing.lastUsedAt = this.now();
@@ -92,36 +95,39 @@ export class RuntimePool extends EventEmitter {
       }
       // 进程死了或未就绪：清掉重建，保证调用方总能拿到可用运行时
       this.options.logger.warn('runtime 不可用，重建', {
-        group: groupKey,
+        conversation: conversationKey,
         state: existing.runtime.state,
       });
-      await this.drop(groupKey);
+      await this.drop(conversationKey);
     }
 
     await this.evictIfNeeded();
-    const entry = await this.create(groupKey, workspacePath);
-    this.entries.set(groupKey, entry);
+    const entry = await this.create(conversationKey, workspacePath);
+    this.entries.set(conversationKey, entry);
     this.scheduleReclaim();
     return entry;
   }
 
-  /** 标记该群空闲（turn 结束）。 */
-  release(groupKey: string): void {
-    const entry = this.entries.get(groupKey);
+  /** 标记该会话空闲（turn 结束）。 */
+  release(conversationKey: string): void {
+    const entry = this.entries.get(conversationKey);
     if (entry === undefined) return;
     entry.busy = false;
     entry.lastUsedAt = this.now();
   }
 
-  /** 立即移除并关闭某群的 runtime。 */
-  async drop(groupKey: string): Promise<void> {
-    const entry = this.entries.get(groupKey);
+  /** 立即移除并关闭某会话的 runtime。 */
+  async drop(conversationKey: string): Promise<void> {
+    const entry = this.entries.get(conversationKey);
     if (entry === undefined) return;
-    this.entries.delete(groupKey);
-    this.options.logger.info('关闭 runtime', { group: groupKey, pid: entry.runtime.pid });
+    this.entries.delete(conversationKey);
+    this.options.logger.info('关闭 runtime', {
+      conversation: conversationKey,
+      pid: entry.runtime.pid,
+    });
     await entry.runtime.dispose().catch((error: unknown) => {
       this.options.logger.warn('关闭 runtime 时出错', {
-        group: groupKey,
+        conversation: conversationKey,
         error: error instanceof Error ? error.message : String(error),
       });
     });
@@ -142,29 +148,29 @@ export class RuntimePool extends EventEmitter {
     return this.options.now?.() ?? Date.now();
   }
 
-  private async create(groupKey: string, workspacePath: string): Promise<RuntimeEntry> {
+  private async create(conversationKey: string, workspacePath: string): Promise<RuntimeEntry> {
     const { base, logger } = this.options;
     const runtimeOptions: DshRuntimeOptions = {
       ...base,
       cwd: workspacePath,
-      logger: logger.child({ group: groupKey }),
+      logger: logger.child({ conversation: conversationKey }),
     };
     const factory = this.options.runtimeFactory ?? ((opts: DshRuntimeOptions) => new DshRuntime(opts));
     const runtime = factory(runtimeOptions);
 
-    runtime.on('session.event', (n) => this.emit('session.event', groupKey, n));
-    runtime.on('session.status', (n) => this.emit('session.status', groupKey, n));
+    runtime.on('session.event', (n) => this.emit('session.event', conversationKey, n));
+    runtime.on('session.status', (n) => this.emit('session.status', conversationKey, n));
     runtime.on('exit', (code, signal) => {
-      this.options.logger.warn('runtime 退出', { group: groupKey, code, signal });
-      this.emit('runtime.exit', groupKey, code, signal);
+      this.options.logger.warn('runtime 退出', { conversation: conversationKey, code, signal });
+      this.emit('runtime.exit', conversationKey, code, signal);
     });
 
     await runtime.start();
     const at = this.now();
     return {
-      groupKey,
+      conversationKey,
       runtime,
-      sessionId: (this.options.sessionIdFactory ?? stableSessionId)(groupKey),
+      sessionId: (this.options.sessionIdFactory ?? stableSessionId)(conversationKey),
       replayed: false,
       createdAt: at,
       lastUsedAt: at,
@@ -188,8 +194,8 @@ export class RuntimePool extends EventEmitter {
         });
         return;
       }
-      logger.info('按 LRU 回收 runtime', { group: victim.groupKey, size: this.entries.size });
-      await this.drop(victim.groupKey);
+      logger.info('按 LRU 回收 runtime', { conversation: victim.conversationKey, size: this.entries.size });
+      await this.drop(victim.conversationKey);
     }
   }
 
@@ -213,10 +219,10 @@ export class RuntimePool extends EventEmitter {
       if (entry.busy) continue;
       if (now - entry.lastUsedAt < idleMs) continue;
       this.options.logger.info('空闲回收 runtime', {
-        group: entry.groupKey,
+        conversation: entry.conversationKey,
         idleMs: now - entry.lastUsedAt,
       });
-      await this.drop(entry.groupKey);
+      await this.drop(entry.conversationKey);
     }
   }
 }

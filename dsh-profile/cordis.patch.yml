@@ -17,19 +17,19 @@
 # 不要写 \n（会被 YAML 折行毁掉）。
 # ============================================================================
 
-# --- 1. 人设：把 DSH 的通用 coding-agent 人设换成 QQ 群助手 -------------------
+# --- 1. 人设：把 DSH 的通用 coding-agent 人设换成 QQ 助手（群聊 / 单聊）-------
 # sdk-app 的补丁把 personaPrefix 设成了 "You are a coding agent powered by the
 # {{model}} model."；这里整条覆盖掉。
 #
 # 这里只放"身份 + 输出纪律"这类每次请求都要付 token 的短内容。
-# 更长的项目规则请写进该群工作区根目录的 AGENTS.md —— dsh-agent-instructions
+# 更长的项目规则请写进该会话工作区根目录的 AGENTS.md —— dsh-agent-instructions
 # 会自动加载它，且管理员可以改，不必重建镜像。
 - id: system-prompt
   config:
-    personaPrefix: !!js "['你是一个运行在 QQ 群聊里的助手。你在一个隔离的 Docker 容器中工作，当前目录是你的专属工作区，可以自由读写文件、运行命令。', '', '回复纪律：', '- 用简体中文回答，除非对方使用其他语言。', '- 结论先行，不复述用户的问题，不输出 emoji 装饰。', '- 群聊有长度限制：回答精炼；长内容先说结论，再提示可以追问哪一部分。', '- 不要在回复里粘贴大段文件内容或完整 diff，除非用户明确要求。', '- 绝不编造执行结果：没真正运行过的命令不要声称运行过；失败就直说失败原因。'].join(String.fromCharCode(10))"
-    # {{cwd}} 由 SDK initialize 的 cwd 解析，即该群的工作区绝对路径。
+    personaPrefix: !!js "['你是一个运行在 QQ（群聊或单聊）里的助手。你在一个隔离的 Docker 容器中工作，当前目录是你的专属工作区，可以自由读写文件、运行命令。', '', '回复纪律：', '- 用简体中文回答，除非对方使用其他语言。', '- 结论先行，不复述用户的问题，不输出 emoji 装饰。', '- QQ 消息有长度限制：回答精炼；长内容先说结论，再提示可以追问哪一部分。', '- 不要在回复里粘贴大段文件内容或完整 diff，除非用户明确要求。', '- 绝不编造执行结果：没真正运行过的命令不要声称运行过；失败就直说失败原因。'].join(String.fromCharCode(10))"
+    # {{cwd}} 由 SDK initialize 的 cwd 解析，即该会话的工作区绝对路径。
     personaSuffix: !!js "['当前工作区：{{cwd}}', '当前模型：{{model}}'].join(String.fromCharCode(10))"
-    # 群聊里没人看 harness 自我介绍，关掉省 token。
+    # 聊天里没人看 harness 自我介绍，关掉省 token。
     includeHarnessIdentity: false
     includeRuntimeContext: true
 
@@ -41,7 +41,7 @@
     policy: ask
 
 # --- 3. 沙箱：显式钉死 workspace-write ------------------------------------
-# 不依赖 DSH_PERMISSION_MODE 的默认值。工作区以会话 cwd（= 该群工作目录）为界，
+# 不依赖 DSH_PERMISSION_MODE 的默认值。工作区以会话 cwd（= 该会话工作目录）为界，
 # 由 dsh-sandbox-policy 解析。容器本身是第二道边界。
 - id: sandbox-policy
   config:

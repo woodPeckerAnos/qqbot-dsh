@@ -24,8 +24,13 @@ import { ConversationStore } from '../src/store/conversations.js';
 import { ensureStoreDirs, resolveStorePaths } from '../src/store/paths.js';
 import { SeenStore } from '../src/store/seen.js';
 import { SessionStore } from '../src/store/sessions.js';
-import type { SendGroupMessageRequest } from '../src/qq/types.js';
-import type { NormalizedGroupMessage } from '../src/qq/gateway.js';
+import type { SendMessageRequest } from '../src/qq/types.js';
+import {
+  c2cTarget,
+  groupTarget,
+  type ConversationTarget,
+  type NormalizedMessage,
+} from '../src/qq/gateway.js';
 
 // ---------------------------------------------------------------------------
 // 测试替身
@@ -94,14 +99,14 @@ class FakeRuntime {
 function createFakePool(runtime: FakeRuntime) {
   const pool = {
     size: 1,
-    activeGroupKeys: () => ['g'],
+    activeConversationKeys: () => ['g'],
     on: vi.fn(),
     acquire: vi.fn(
-      async (groupKey: string, workspacePath: string): Promise<RuntimeEntry> => {
-        // workspacePath 应指向该群的专属工作区（由 ensureWorkspace 创建）
+      async (conversationKey: string, workspacePath: string): Promise<RuntimeEntry> => {
+        // workspacePath 应指向该会话的专属工作区（由 ensureWorkspace 创建）
         expect(workspacePath).toContain('ws');
         return {
-          groupKey,
+          conversationKey,
           runtime: runtime as never,
           sessionId: 's',
           replayed: false,
@@ -119,8 +124,9 @@ function createFakePool(runtime: FakeRuntime) {
 }
 
 interface SentMessage {
-  groupOpenid: string;
-  body: SendGroupMessageRequest;
+  /** 发往哪个会话（群 openid 或用户 openid） */
+  target: ConversationTarget;
+  body: SendMessageRequest;
 }
 
 function setup(options: { configOverrides?: Record<string, string> } = {}) {
@@ -148,8 +154,12 @@ function setup(options: { configOverrides?: Record<string, string> } = {}) {
   const pool = createFakePool(runtime);
   const sent: SentMessage[] = [];
   const api = {
-    sendGroupMessage: vi.fn(async (groupOpenid: string, body: SendGroupMessageRequest) => {
-      sent.push({ groupOpenid, body });
+    sendGroupMessage: vi.fn(async (groupOpenid: string, body: SendMessageRequest) => {
+      sent.push({ target: groupTarget(groupOpenid), body });
+      return { id: `resp-${sent.length}` };
+    }),
+    sendUserMessage: vi.fn(async (userOpenid: string, body: SendMessageRequest) => {
+      sent.push({ target: c2cTarget(userOpenid), body });
       return { id: `resp-${sent.length}` };
     }),
   };
@@ -172,12 +182,12 @@ function setup(options: { configOverrides?: Record<string, string> } = {}) {
   // 接线：真实实现里 main.ts 把 pool 的事件转给 dispatcher。
   // 这里的假池 on() 只是 spy，所以直接订阅假 runtime 的事件。
   runtime.on('session.event', (n: SessionEventNotification) => {
-    const groupKey = groupKeyOf(n.sessionId, sessions);
-    dispatcher.routeSessionEvent(groupKey, n.event);
+    const conversationKey = conversationKeyOf(n.sessionId, sessions);
+    dispatcher.routeSessionEvent(conversationKey, n.event);
   });
   runtime.on('session.status', (n: { sessionId: string; status: 'idle' | 'running' }) => {
-    const groupKey = groupKeyOf(n.sessionId, sessions);
-    dispatcher.routeSessionStatus(groupKey, n);
+    const conversationKey = conversationKeyOf(n.sessionId, sessions);
+    dispatcher.routeSessionStatus(conversationKey, n);
   });
 
   return {
@@ -196,25 +206,40 @@ function setup(options: { configOverrides?: Record<string, string> } = {}) {
 }
 
 /**
- * 假 runtime 的事件不带群信息，测试里只有一个群，直接映射回去即可。
- * 用 sessionId → groupOpenid 反查，避免硬编码。
+ * 假 runtime 的事件不带会话信息，测试里只有一个会话，直接映射回去即可。
+ * 用 sessionId → conversationKey 反查，避免硬编码。
  */
-function groupKeyOf(sessionId: string, sessions: SessionStore): string {
+function conversationKeyOf(sessionId: string, sessions: SessionStore): string {
   for (const record of sessions.all()) {
-    if (record.currentSessionId === sessionId) return record.groupOpenid;
+    if (record.currentSessionId === sessionId) return record.conversationKey;
   }
   return 'GROUP-1';
 }
 
-function makeMessage(overrides: Partial<NormalizedGroupMessage> = {}): NormalizedGroupMessage {
+function makeMessage(overrides: Partial<NormalizedMessage> = {}): NormalizedMessage {
   return {
     kind: 'group-at-message',
+    target: groupTarget('GROUP-1'),
     eventId: 'EVENT-1',
     msgId: 'MSG-1',
-    groupOpenid: 'GROUP-1',
-    memberOpenid: 'MEMBER-1',
+    senderId: 'MEMBER-1',
     username: '小明',
     content: '帮我看看',
+    ts: 1_700_000_000_000,
+    raw: {},
+    ...overrides,
+  };
+}
+
+/** 造一条单聊消息（会话键 `c2c:USER-1`）。 */
+function makeC2CMessage(overrides: Partial<NormalizedMessage> = {}): NormalizedMessage {
+  return {
+    kind: 'c2c-message',
+    target: c2cTarget('USER-1'),
+    eventId: 'EVENT-C2C-1',
+    msgId: 'MSG-C2C-1',
+    senderId: 'USER-1',
+    content: '在吗',
     ts: 1_700_000_000_000,
     raw: {},
     ...overrides,
@@ -257,7 +282,7 @@ describe('Dispatcher 正常一轮', () => {
     expect(ctx.sent[0]!.body.content).toBe('结论是 42');
     expect(ctx.sent[0]!.body.msg_id).toBe('MSG-1');
     expect(ctx.sent[0]!.body.msg_seq).toBe(1);
-    expect(ctx.sent[0]!.groupOpenid).toBe('GROUP-1');
+    expect(ctx.sent[0]!.target).toEqual(groupTarget('GROUP-1'));
   });
 
   it('把用户消息与助手回复都写进对话记录', async () => {
@@ -460,28 +485,123 @@ describe('Dispatcher 冷启动回放', () => {
   });
 });
 
-describe('Dispatcher 进群欢迎', () => {
-  it('用 event_id 而非 msg_id 回复（平台要求二者互斥）', async () => {
+describe('Dispatcher 进群/加好友欢迎', () => {
+  it('群进群事件用 event_id 而非 msg_id 回复（平台要求二者互斥）', async () => {
     ctx = setup();
     await ctx.dispatcher.handleEvent({
       kind: 'group-add-robot',
       at: 1,
-      groupOpenid: 'GROUP-1',
+      target: groupTarget('GROUP-1'),
       eventId: 'EVENT-ADD',
       raw: {},
     });
 
     expect(ctx.sent).toHaveLength(1);
+    expect(ctx.sent[0]!.target).toEqual(groupTarget('GROUP-1'));
     expect(ctx.sent[0]!.body.event_id).toBe('EVENT-ADD');
     expect(ctx.sent[0]!.body.msg_id).toBeUndefined();
     expect(ctx.sent[0]!.body.msg_seq).toBe(1);
   });
 
+  it('单聊加好友走 sendUserMessage，并用 event_id 回复', async () => {
+    ctx = setup();
+    await ctx.dispatcher.handleEvent({
+      kind: 'c2c-friend-add',
+      at: 1,
+      target: c2cTarget('USER-1'),
+      eventId: 'EVENT-FRIEND',
+      raw: {},
+    });
+
+    expect(ctx.api.sendUserMessage).toHaveBeenCalledTimes(1);
+    expect(ctx.sent).toHaveLength(1);
+    expect(ctx.sent[0]!.target).toEqual(c2cTarget('USER-1'));
+    expect(ctx.sent[0]!.body.event_id).toBe('EVENT-FRIEND');
+    expect(ctx.sent[0]!.body.msg_id).toBeUndefined();
+  });
+
   it('缺少 eventId 时不崩（只记日志）', async () => {
     ctx = setup();
-    await ctx.dispatcher.handleEvent({ kind: 'group-add-robot', at: 1, groupOpenid: 'GROUP-1', raw: {} });
+    await ctx.dispatcher.handleEvent({
+      kind: 'group-add-robot',
+      at: 1,
+      target: groupTarget('GROUP-1'),
+      raw: {},
+    });
     // 没有 event_id 也没有 msg_id 的请求会被发出，但不应抛错
     expect(ctx.sent.length).toBeLessThanOrEqual(1);
+  });
+
+  it('单聊被禁用时不发欢迎语', async () => {
+    ctx = setup({ configOverrides: { QQ_C2C_ENABLED: 'false' } });
+    await ctx.dispatcher.handleEvent({
+      kind: 'c2c-friend-add',
+      at: 1,
+      target: c2cTarget('USER-1'),
+      eventId: 'EVENT-FRIEND',
+      raw: {},
+    });
+    expect(ctx.sent).toHaveLength(0);
+  });
+});
+
+describe('Dispatcher 单聊', () => {
+  it('单聊消息走 sendUserMessage，并落到 c2c: 会话键下', async () => {
+    ctx = setup();
+    const pending = ctx.dispatcher.handleEvent(makeC2CMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+
+    const sessionId = ctx.sessions.peek('c2c:USER-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['在的']);
+    await pending;
+
+    expect(ctx.api.sendUserMessage).toHaveBeenCalledTimes(1);
+    expect(ctx.api.sendGroupMessage).not.toHaveBeenCalled();
+    expect(ctx.sent).toHaveLength(1);
+    expect(ctx.sent[0]!.target).toEqual(c2cTarget('USER-1'));
+    expect(ctx.sent[0]!.body.content).toBe('在的');
+    expect(ctx.sent[0]!.body.msg_id).toBe('MSG-C2C-1');
+    expect(ctx.sent[0]!.body.msg_seq).toBe(1);
+    // prompt 里标明渠道与发送者，避免模型把群/私聊身份混起来
+    expect(ctx.runtime.prompts[0]!.text).toContain('私聊用户');
+    expect(ctx.runtime.prompts[0]!.text).toContain('USER-1');
+    // 对话记录落在单聊自己的会话键下
+    expect(ctx.conversations.readAll('c2c:USER-1').map((t) => t.text)).toEqual(['在吗', '在的']);
+  });
+
+  it('单聊使用自己的回复配额（默认 4 条，而不是群聊的 5 条）', async () => {
+    ctx = setup({
+      configOverrides: {
+        QQ_C2C_MAX_REPLIES_PER_MSG: '2',
+        QQ_C2C_PROGRESS_MAX: '0',
+        QQ_MAX_CHARS: '100',
+      },
+    });
+    const pending = ctx.dispatcher.handleEvent(makeC2CMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('c2c:USER-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['X'.repeat(1000)]);
+    await pending;
+
+    expect(ctx.sent.length).toBeLessThanOrEqual(2);
+    const sequences = ctx.sent.map((s) => s.body.msg_seq!);
+    expect(new Set(sequences).size).toBe(sequences.length);
+  });
+
+  it('QQ_C2C_ENABLED=false 时单聊消息被忽略（不回复、不进 runtime）', async () => {
+    ctx = setup({ configOverrides: { QQ_C2C_ENABLED: 'false' } });
+    await ctx.dispatcher.handleEvent(makeC2CMessage());
+
+    expect(ctx.sent).toHaveLength(0);
+    expect(ctx.runtime.prompts).toHaveLength(0);
+    expect(ctx.api.sendUserMessage).not.toHaveBeenCalled();
+    expect(ctx.dispatcher.snapshotStats().skippedC2C).toBe(1);
+  });
+
+  it('群聊与单聊的 openid 即使字面相同也不会串成一个会话', () => {
+    expect(groupTarget('SAME').key).toBe('SAME');
+    expect(c2cTarget('SAME').key).toBe('c2c:SAME');
+    expect(groupTarget('SAME').key).not.toBe(c2cTarget('SAME').key);
   });
 });
 

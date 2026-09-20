@@ -12,9 +12,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNullLogger } from '../src/logger.js';
 import {
   conversationFileFor,
+  conversationHash,
   ensureStoreDirs,
   ensureWorkspace,
-  groupHash,
   resolveStorePaths,
   workspacePathFor,
 } from '../src/store/paths.js';
@@ -39,11 +39,11 @@ afterEach(() => {
 });
 
 describe('paths', () => {
-  it('群 hash 稳定且长度固定', () => {
-    const a = groupHash('group-openid-AAA');
+  it('会话键 hash 稳定且长度固定', () => {
+    const a = conversationHash('group-openid-AAA');
     expect(a).toHaveLength(16);
-    expect(groupHash('group-openid-AAA')).toBe(a);
-    expect(groupHash('group-openid-BBB')).not.toBe(a);
+    expect(conversationHash('group-openid-AAA')).toBe(a);
+    expect(conversationHash('group-openid-BBB')).not.toBe(a);
   });
 
   it('工作区目录名不含原始 openid（避免特殊字符问题）', () => {
@@ -59,8 +59,14 @@ describe('paths', () => {
     expect(existsSync(first)).toBe(true);
   });
 
-  it('不同群得到不同工作区', () => {
+  it('不同会话得到不同工作区', () => {
     expect(ensureWorkspace(paths, 'g1')).not.toBe(ensureWorkspace(paths, 'g2'));
+  });
+
+  it('单聊会话键 c2c:<openid> 与同名群 openid 落在不同工作区', () => {
+    // 关键隔离：同一个字面值可能是群 openid 也可能是用户 openid
+    expect(workspacePathFor(paths, 'SAME')).not.toBe(workspacePathFor(paths, 'c2c:SAME'));
+    expect(conversationFileFor(paths, 'SAME')).not.toBe(conversationFileFor(paths, 'c2c:SAME'));
   });
 });
 
@@ -273,9 +279,33 @@ describe('SessionStore', () => {
     const store = new SessionStore({
       paths,
       logger,
-      sessionIdFactory: (group, gen) => `fixed-${groupHash(group)}-${gen}`,
+      sessionIdFactory: (conversationKey, gen) => `fixed-${conversationHash(conversationKey)}-${gen}`,
     });
     const record = store.ensure('g1');
-    expect(record.currentSessionId).toBe(`fixed-${groupHash('g1')}-1`);
+    expect(record.currentSessionId).toBe(`fixed-${conversationHash('g1')}-1`);
+  });
+
+  it('旧版 sessions.json（groups + groupOpenid）仍能加载', () => {
+    writeFileSync(
+      paths.sessionsFile,
+      JSON.stringify({
+        version: 1,
+        groups: {
+          g1: {
+            groupOpenid: 'g1',
+            logicalId: 'logical-g1',
+            currentSessionId: 'sess-old',
+            generation: 3,
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        },
+      }),
+    );
+    const store = new SessionStore({ paths, logger });
+    const record = store.peek('g1');
+    expect(record?.conversationKey).toBe('g1');
+    expect(record?.currentSessionId).toBe('sess-old');
+    expect(record?.generation).toBe(3);
   });
 });

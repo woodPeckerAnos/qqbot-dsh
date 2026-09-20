@@ -21,7 +21,7 @@ export interface HealthSnapshot {
   ok: boolean;
   uptimeMs: number;
   gateway: EventSourceHealth & { staleMs?: number };
-  runtime: { size: number; activeGroupKeys: string[] };
+  runtime: { size: number; activeConversationKeys: string[] };
   dispatcher: DispatcherStats & { inFlight: number; queued: number };
   token: { hasToken: boolean; expiresInMs: number };
   /** 最近一次收到网关事件的时间距今毫秒；undefined 表示还没收到过 */
@@ -125,7 +125,7 @@ export const GATEWAY_STALE_THRESHOLD_MS = 150_000;
 export function buildHealthSnapshot(input: {
   startedAt: number;
   gateway: EventSourceHealth;
-  runtime: { size: number; activeGroupKeys: string[] };
+  runtime: { size: number; activeConversationKeys: string[] };
   dispatcher: DispatcherStats & { inFlight: number; queued: number };
   token: { hasToken: boolean; expiresInMs: number };
   now?: number;

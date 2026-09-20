@@ -27,6 +27,20 @@ export interface Config {
     progressIntervalMs: number;
     progressMax: number;
     turnTimeoutMs: number;
+    /**
+     * 单聊（C2C）相关配置。
+     *
+     * 单聊与群聊共用 `1<<25` 这一个 intent，无法在订阅层屏蔽，所以用一个
+     * 显式开关在业务层决定是否响应私聊。
+     */
+    c2c: {
+      /** 是否响应单聊消息（false = 只服务群聊） */
+      enabled: boolean;
+      /** 单聊每条消息的最大回复条数（官方上限 4） */
+      maxRepliesPerMsg: number;
+      /** 单聊进度回执条数上限，必须 < maxRepliesPerMsg */
+      progressMax: number;
+    };
   };
   dsh: {
     provider: string;
@@ -109,6 +123,16 @@ function optionalEnum<T extends string>(env: Env, key: string, allowed: readonly
   return value;
 }
 
+/** 布尔解析：接受 true/false/1/0/yes/no（大小写不敏感），其余视为配置错误。 */
+function optionalBool(env: Env, key: string, fallback: boolean): boolean {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = raw.trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(value)) return true;
+  if (['false', '0', 'no', 'off'].includes(value)) return false;
+  throw new ConfigError(`${key} 只能是 true/false（也接受 1/0），收到 ${JSON.stringify(raw)}`);
+}
+
 export function loadConfig(env: Env = process.env): Config {
   const hints = ['请复制 .env.example 为 .env 并填写后重试'];
 
@@ -117,11 +141,11 @@ export function loadConfig(env: Env = process.env): Config {
   requiredString(env, 'DEEPSEEK_API_KEY', hints);
 
   const intents = optionalInt(env, 'QQ_INTENTS', DEFAULT_INTENTS, { min: 1, max: 0x7fffffff });
-  // GROUP_AND_C2C_EVENT(1<<25) 是收群消息的最低要求。缺了它机器人会连着但收不到消息，
-  // 属于"看起来正常其实废掉"的配置错误，直接快速失败。
+  // GROUP_AND_C2C_EVENT(1<<25) 是收群聊/单聊消息的最低要求。缺了它机器人会连着但收不到
+  // 消息，属于"看起来正常其实废掉"的配置错误，直接快速失败。
   if ((intents & Intent.GROUP_AND_C2C_EVENT) === 0) {
     throw new ConfigError(
-      `QQ_INTENTS=${intents} 未包含 GROUP_AND_C2C_EVENT(1<<25)=33554432，将收不到任何群消息`,
+      `QQ_INTENTS=${intents} 未包含 GROUP_AND_C2C_EVENT(1<<25)=33554432，将收不到任何群聊/单聊消息`,
       [`正确示例：QQ_INTENTS=${DEFAULT_INTENTS}（= ${describeIntents(DEFAULT_INTENTS).join(' | ')}）`],
     );
   }
@@ -136,17 +160,30 @@ export function loadConfig(env: Env = process.env): Config {
     );
   }
 
+  // 单聊：官方上限是 4 次（群聊是 5），所以单独校验，不能共用群聊的上限。
+  const c2cMaxReplies = optionalInt(env, 'QQ_C2C_MAX_REPLIES_PER_MSG', 4, { min: 1, max: 4 });
+  const c2cProgressMax = optionalInt(env, 'QQ_C2C_PROGRESS_MAX', 2, { min: 0, max: 4 });
+  if (c2cProgressMax >= c2cMaxReplies) {
+    throw new ConfigError(
+      `QQ_C2C_PROGRESS_MAX(${c2cProgressMax}) 必须小于 QQ_C2C_MAX_REPLIES_PER_MSG(${c2cMaxReplies})，` +
+        '否则单聊的进度回执会把配额用光，最终答案发不出去',
+    );
+  }
+
   const msgTypeRaw = optionalInt(env, 'QQ_MSG_TYPE', 0, { min: 0, max: 7 });
   if (msgTypeRaw !== 0 && msgTypeRaw !== 2) {
     throw new ConfigError(
       `QQ_MSG_TYPE 本 MVP 只支持 0(纯文本) 或 2(markdown)，收到 ${msgTypeRaw}`,
-      ['群聊不支持 6(input_notify 打字状态)，那是单聊专属'],
+      ['6(input_notify 打字状态)只有单聊支持，且本 MVP 不发送打字状态'],
     );
   }
 
   // 群被动回复窗口 5 分钟（官方硬约束）。单轮超时必须**小于**该窗口，
   // 否则超时后那条"任务已中断"的回复本身也会因为窗口过期而发送失败。
   // 默认 4 分钟：留出 1 分钟做收尾和发送。
+  //
+  // 单聊的被动窗口更宽（官方文档为 60 分钟），这里**故意共用**同一个更保守的
+  // 上限：更容易配错也更难排查的是"超时提示发不出去"，而不是任务跑得不够久。
   const turnTimeoutMs = optionalInt(env, 'QQ_TURN_TIMEOUT_MS', 240_000, { min: 5_000, max: 295_000 });
   if (turnTimeoutMs >= 300_000) {
     throw new ConfigError(
@@ -178,6 +215,11 @@ export function loadConfig(env: Env = process.env): Config {
       progressIntervalMs: optionalInt(env, 'QQ_PROGRESS_INTERVAL_MS', 90_000, { min: 1_000, max: 280_000 }),
       progressMax,
       turnTimeoutMs,
+      c2c: {
+        enabled: optionalBool(env, 'QQ_C2C_ENABLED', true),
+        maxRepliesPerMsg: c2cMaxReplies,
+        progressMax: c2cProgressMax,
+      },
     },
     dsh: {
       provider: optionalString(env, 'DSH_PROVIDER', 'deepseek-official'),
@@ -223,6 +265,7 @@ export function describeConfig(config: Config): Record<string, unknown> {
       max: config.qq.progressMax,
     },
     turnTimeoutMs: config.qq.turnTimeoutMs,
+    c2c: config.qq.c2c,
     dsh: {
       provider: config.dsh.provider,
       model: config.dsh.model,

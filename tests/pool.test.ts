@@ -1,8 +1,8 @@
 /**
  * runtime 池单测（假 runtime 工厂，全离线）。
  *
- * 池的行为直接决定"群与群之间会不会串味"以及"进程会不会泄漏"，
- * 所以重点测：每群独立、死进程重建、LRU 回收、空闲回收、忙碌时不被强杀。
+ * 池的行为直接决定"会话与会话之间会不会串味"以及"进程会不会泄漏"，
+ * 所以重点测：每会话独立、死进程重建、LRU 回收、空闲回收、忙碌时不被强杀。
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -73,7 +73,7 @@ function makePool(options: { maxRuntimes?: number; runtimeIdleMs?: number; now?:
 }
 
 describe('RuntimePool', () => {
-  it('同一群复用同一个 runtime', async () => {
+  it('同一会话复用同一个 runtime', async () => {
     const { pool, created } = makePool();
     const first = await pool.acquire('GROUP-A', '/ws/a');
     const second = await pool.acquire('GROUP-A', '/ws/a');
@@ -84,7 +84,7 @@ describe('RuntimePool', () => {
     await pool.disposeAll();
   });
 
-  it('不同群得到不同 runtime（这是群间隔离的前提）', async () => {
+  it('不同会话得到不同 runtime（这是会话间隔离的前提）', async () => {
     const { pool, created } = makePool();
     const a = await pool.acquire('GROUP-A', '/ws/a');
     const b = await pool.acquire('GROUP-B', '/ws/b');
@@ -111,7 +111,7 @@ describe('RuntimePool', () => {
     await pool.disposeAll();
   });
 
-  it('会话 id 由 groupKey 稳定推导', async () => {
+  it('会话 id 由会话键稳定推导', async () => {
     const { pool } = makePool();
     const entry = await pool.acquire('GROUP-A', '/ws/a');
     expect(entry.sessionId).toBe(stableSessionId('GROUP-A'));
@@ -141,8 +141,8 @@ describe('RuntimePool', () => {
     await pool.acquire('G3', '/ws/3');
 
     expect(pool.size).toBeLessThanOrEqual(2);
-    expect(pool.activeGroupKeys()).toContain('G3');
-    expect(pool.activeGroupKeys()).not.toContain('G1');
+    expect(pool.activeConversationKeys()).toContain('G3');
+    expect(pool.activeConversationKeys()).not.toContain('G1');
     expect((created[0] as unknown as FakeRuntime).disposeCount).toBe(1);
     await pool.disposeAll();
   });
@@ -154,7 +154,7 @@ describe('RuntimePool', () => {
 
     // 池已满且唯一成员在忙：不应丢弃 G1
     await pool.acquire('G2', '/ws/2');
-    expect(pool.activeGroupKeys()).toContain('G1');
+    expect(pool.activeConversationKeys()).toContain('G1');
     await pool.disposeAll();
   });
 

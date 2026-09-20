@@ -2,7 +2,7 @@
   "name": "qqbot-dsh",
   "version": "0.1.0",
   "private": true,
-  "description": "QQ 官方开放平台群机器人，agent 内核使用 DeepSeek Harness (DSH)，仅支持 Docker 部署",
+  "description": "QQ 官方开放平台群聊/单聊机器人，agent 内核使用 DeepSeek Harness (DSH)，仅支持 Docker 部署",
   "type": "module",
   "engines": {
     "node": ">=22.4"

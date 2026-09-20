@@ -15,7 +15,7 @@
  *     （机器人不该替用户 at 别人），统一加零宽间隔或替换。
  */
 
-import { MsgType, type SendGroupMessageRequest } from '../qq/types.js';
+import { MsgType, type SendMessageRequest } from '../qq/types.js';
 
 /** 零宽空格，用来打断 @ 语义但仍可读 */
 const ZERO_WIDTH = '\u200b';
@@ -82,11 +82,9 @@ export function sanitizeMarkdown(markdown: string): string {
 
 export interface RenderOptions {
   msgType: 0 | 2;
-  /** 该群的 openid（构造请求体用） */
-  groupOpenid: string;
   /** 被动回复的 msg_id */
   msgId?: string;
-  /** 或用 event_id 回复（进群、按钮交互） */
+  /** 或用 event_id 回复（进群、加好友、按钮交互） */
   eventId?: string;
   /** 平台分配的 msg_seq */
   msgSeq: number;
@@ -97,11 +95,14 @@ export interface RenderOptions {
 /**
  * 渲染成可直接发送的请求体。
  * `text` 是 agent 的原始输出（可能是 Markdown）。
+ *
+ * 群聊与单聊的请求体字段完全一致，端点由调用方按会话类型选择，
+ * 所以这里不需要知道消息发往哪里。
  */
-export function renderMessage(text: string, options: RenderOptions): SendGroupMessageRequest {
+export function renderMessage(text: string, options: RenderOptions): SendMessageRequest {
   const cleaned = defuseMentions(normalizeWhitespace(stripControlChars(text)));
 
-  const body: SendGroupMessageRequest = {
+  const body: SendMessageRequest = {
     msg_type: options.msgType === 2 ? MsgType.MARKDOWN : MsgType.TEXT,
     msg_seq: options.msgSeq,
   };
@@ -127,6 +128,6 @@ export function renderMessage(text: string, options: RenderOptions): SendGroupMe
 }
 
 /** 从请求体里取出实际要发送的文本长度（用于日志与超限判断）。 */
-export function messageTextLength(body: SendGroupMessageRequest): number {
+export function messageTextLength(body: SendMessageRequest): number {
   return body.content?.length ?? body.markdown?.content.length ?? 0;
 }

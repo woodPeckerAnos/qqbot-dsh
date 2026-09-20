@@ -19,7 +19,7 @@ import { loadConfig, describeConfig, ConfigError, type Config } from './config.j
 import { createLogger, type Logger } from './logger.js';
 import { RuntimePool } from './dsh/pool.js';
 import { QqApi } from './qq/api.js';
-import { QqGateway, type NormalizedEvent } from './qq/gateway.js';
+import { QqGateway, isUserMessage, type NormalizedEvent } from './qq/gateway.js';
 import { TokenManager, TokenError } from './qq/token.js';
 import { Dispatcher } from './pipeline/dispatcher.js';
 import { ConversationStore } from './store/conversations.js';
@@ -110,24 +110,23 @@ async function main(): Promise<void> {
     paths,
   });
 
-  // runtime 事件 → 编排器（按群路由）
-  pool.on('session.event', (groupKey, notification) => {
-    dispatcher.routeSessionEvent(groupKey, notification.event);
+  // runtime 事件 → 编排器（按会话路由：群聊用 group_openid，单聊用 c2c:<user_openid>）
+  pool.on('session.event', (conversationKey, notification) => {
+    dispatcher.routeSessionEvent(conversationKey, notification.event);
   });
-  pool.on('session.status', (groupKey, notification) => {
-    dispatcher.routeSessionStatus(groupKey, notification);
+  pool.on('session.status', (conversationKey, notification) => {
+    dispatcher.routeSessionStatus(conversationKey, notification);
   });
 
   // --- QQ 事件 → 编排器 ------------------------------------------------------
-  // QQ 的 handler 是同步回调，我们在内部按群串行链式调用，避免同一群并发进入。
+  // QQ 的 handler 是同步回调，我们在内部按会话串行链式调用，避免同一会话并发进入。
   const eventChains = new Map<string, Promise<void>>();
   gateway.on((event: NormalizedEvent) => {
+    // 消息与进群/加好友事件都按各自会话串行；其余系统事件共用一条链。
     const key =
-      event.kind === 'group-at-message'
-        ? event.groupOpenid
-        : event.kind === 'group-add-robot'
-          ? (event.groupOpenid ?? '__system__')
-          : '__system__';
+      isUserMessage(event) || event.kind === 'group-add-robot' || event.kind === 'c2c-friend-add'
+        ? (event.target?.key ?? '__system__')
+        : '__system__';
     const previous = eventChains.get(key) ?? Promise.resolve();
     const next = previous
       .catch(() => {})
@@ -152,7 +151,7 @@ async function main(): Promise<void> {
       buildHealthSnapshot({
         startedAt,
         gateway: gateway.health(),
-        runtime: { size: pool.size, activeGroupKeys: pool.activeGroupKeys() },
+        runtime: { size: pool.size, activeConversationKeys: pool.activeConversationKeys() },
         dispatcher: dispatcher.snapshotStats(),
         token: tokenManager.snapshot(),
       }),
@@ -211,7 +210,7 @@ async function main(): Promise<void> {
     // 先验证一次鉴权，把配置错误挡在"连着但没权限"之前
     await tokenManager.get();
     await gateway.start();
-    logger.info('qqbot-dsh 已就绪，等待群消息');
+    logger.info('qqbot-dsh 已就绪，等待群聊/单聊消息');
   } catch (error) {
     if (error instanceof TokenError) {
       logger.error('鉴权失败，无法启动', { error: error.message, code: error.code });
