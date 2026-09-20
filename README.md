@@ -79,7 +79,30 @@ npm run typecheck
 npm test                 # 143 项单测，全离线：不触网、不启动 DSH 子进程
 ```
 
-容器内验证脚本（需要 `DEEPSEEK_API_KEY`，会真实调用一次模型）：
+### 改了东西要怎么生效
+
+**没有热更新**，但只有改后端代码/依赖才需要重建镜像：
+
+| 改动 | 命令 | 重建镜像 |
+|---|---|---|
+| `src/**` 后端代码 | `docker compose up -d --build` | 是 |
+| `.env` 变量 | `docker compose up -d` | 否 |
+| `dsh-profile/cordis.patch.yml`（人设/权限） | `docker compose restart qqbot` | 否 |
+| 某个群的规矩（`AGENTS.md`） | 直接写文件，连重启都不用 | 否 |
+
+**永远不需要 `docker compose down`**——`up -d --build` 会自行重建镜像并替换容器。
+
+改代码时想跳过镜像构建，用自带的开发覆盖文件：
+
+```sh
+npx tsc -p tsconfig.json --watch                                       # 终端 A
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up       # 终端 B
+docker compose -f docker-compose.yml -f docker-compose.dev.yml restart qqbot  # 改完代码
+```
+
+详见 [DEPLOY.md 第 8 节](docs/DEPLOY.md)。
+
+### 容器内验证脚本（需要 `DEEPSEEK_API_KEY`，会真实调用一次模型）
 
 ```sh
 docker compose run --rm --entrypoint node qqbot scripts/smoke-dsh.mjs      # 端到端驱动一轮 DSH
@@ -90,6 +113,8 @@ docker compose run --rm --entrypoint node qqbot scripts/probe-dsh.mjs      # 诊
 ## 目录结构
 
 ```
+docker-compose.yml       生产部署入口
+docker-compose.dev.yml   开发覆盖文件（挂载本地 dist，跳过镜像重建）
 src/qq/         QQ 接入层：token / WS 生命周期 / OpenAPI / wire 类型
 src/dsh/        DSH 桥接：NDJSON JSON-RPC 客户端 / 子进程监督 / 进程池 / turn 归并
 src/pipeline/   编排：调度 / 配额与进度 / 分段 / 渲染 / 并发原语

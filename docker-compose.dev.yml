@@ -1,0 +1,32 @@
+# 开发用 compose 覆盖文件 —— 不要用于生产
+#
+# 生产部署请直接用 docker-compose.yml（代码烘焙进镜像，可复现、可回滚）。
+#
+# 这个文件解决的问题：改一行后端代码就要重建镜像（要重跑 npm install +
+# tsc）太慢。用它可以只重建 dist 并重启容器，跳过镜像构建那一层。
+#
+# 用法（在仓库根目录）：
+#
+#   # 终端 A：本地增量编译，改代码自动重编
+#   npm install
+#   npx tsc -p tsconfig.json --watch
+#
+#   # 终端 B：用本地的 dist 覆盖镜像里的 dist 起容器
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   # 改完代码后只需重启容器：
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml restart qqbot
+#
+# 生产用：
+#   docker compose up -d --build
+#
+# 注意：
+#   - 依赖（node_modules）仍来自镜像。改了 package.json 必须重建镜像。
+#   - dist 以只读挂载，容器内进程不会污染你本地的编译产物。
+#   - 必须先成功编译过一次（本地存在 dist/），否则容器起不来。
+
+services:
+  qqbot:
+    volumes:
+      - ./dist:/app/dist:ro
+      # 本地 dsh-profile 覆盖镜像里的，改人设/审批桩配置不用重建镜像
+      - ./dsh-profile:/app/dsh-profile:ro

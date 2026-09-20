@@ -201,7 +201,74 @@ docker stats qqbot-dsh
 
 ---
 
-## 8. 升级
+## 8. 改动的生效方式（要不要重建镜像？）
+
+本项目**没有热更新**：后端代码编译进镜像，配置在进程启动时读取。但**不同层次的
+改动代价差别很大**——只有前两种才需要重建镜像。
+
+| 你想改的东西 | 需要做什么 | 需要重建镜像？ | 需要 `down`？ |
+|---|---|---|---|
+| 后端代码（`src/**`） | `docker compose up -d --build` | **是** | 否 |
+| `package.json` 依赖 | `docker compose up -d --build` | **是**（要重跑 `npm install`） | 否 |
+| `.env` 里任何变量 | `docker compose up -d` | 否（重建容器即可） | 否 |
+| `dsh-profile/cordis.patch.yml`（人设、权限模式） | `docker compose restart qqbot` | 否 | 否 |
+| 某个群的行为规矩（`AGENTS.md`） | 直接改文件 | **都不用** | 否 |
+| `docker-compose.yml` 本身 | `docker compose up -d` | 否 | 否 |
+
+**永远不需要 `docker compose down`。** `up -d --build` 会自己重建镜像并替换容器；
+`down` 只用于"要改网络/端口映射，或想彻底停止服务"。注意 `down` 默认删容器但
+保留卷（记忆与工作区不丢），加 `-v` 才会连数据一起删。
+
+### 8.1 最省事的调优手段：改群规矩不用碰容器
+
+`AGENTS.md` 是最值得优先使用的调整方式。DSH 的 `dsh-agent-instructions` 按会话
+惰性加载工作区里的指令文件，**文件变更会在后续请求中反映出来**（首次请求注入基线，
+之后成功的读写操作会让新出现的指令文件生效）。
+
+所以"这个群要按我们的代码规范回答"这类需求，直接写文件即可：
+
+```sh
+# 1) 找到该群的工作区目录（目录名 = 群 openid 的 sha256 前 16 位）
+docker compose exec qqbot ls /data/workspaces
+
+# 2) 写规矩
+docker compose exec qqbot sh -c 'cat > /data/workspaces/<hash>/AGENTS.md <<EOF
+- 本群只讨论后端相关话题。
+- 回答代码时统一用 Python 3.12 语法。
+- 不要贴超过 30 行的代码，长内容写进工作区文件再告诉我文件名。
+EOF'
+```
+
+### 8.2 改代码时的快速迭代（跳过镜像构建）
+
+镜像重建里最慢的是 `npm install` + `tsc`。开发时用自带的覆盖文件跳过这一层：
+
+```sh
+# 终端 A：本地增量编译，改代码自动重编
+npm install
+npx tsc -p tsconfig.json --watch
+
+# 终端 B：用本地 dist 覆盖镜像里的 dist
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+# 之后每次改完代码只需重启，不必重建镜像
+docker compose -f docker-compose.yml -f docker-compose.dev.yml restart qqbot
+```
+
+`docker-compose.dev.yml` 把 `./dist` 与 `./dsh-profile` 以**只读**方式覆盖进容器，
+所以改代码、改人设都只需重启。
+
+**两个限制**：
+- `node_modules` 仍来自镜像，改了 `package.json` 必须重建镜像；
+- 绑定挂载要求容器内用户（uid 10001）能读到这些文件。原生 Linux 上若文件权限是
+  `600` 会失败，用 `sudo chmod a+r -R dist dsh-profile` 修一下（本仓库的文件权限
+  已归一化为 644/755）。
+
+生产部署请回到普通的 `docker compose up -d --build`。
+
+---
+
+## 9. 升级
 
 ```sh
 git pull
@@ -220,7 +287,7 @@ docker compose up -d --build
 
 ---
 
-## 9. 卸载
+## 10. 卸载
 
 ```sh
 docker compose down -v          # 删除容器与所有卷（工作区、会话日志、对话记录）
