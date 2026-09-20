@@ -114,6 +114,8 @@ describe('loadConfig', () => {
       end: '08:30',
       timeZone: 'Asia/Shanghai',
       modelPattern: 'deepseek',
+      weekendsAllDay: true,
+      holidays: [],
     });
   });
 
@@ -131,6 +133,23 @@ describe('loadConfig', () => {
       /不是有效时区/,
     );
     expect(loadConfig({ ...baseEnv, QQ_OFFPEAK_TZ: 'UTC' }).offpeak.timeZone).toBe('UTC');
+  });
+
+  it('QQ_OFFPEAK_HOLIDAYS 校验日期合法性（跨年数据由此追加）', () => {
+    expect(
+      loadConfig({ ...baseEnv, QQ_OFFPEAK_HOLIDAYS: '2027-01-01, 2027-01-02' }).offpeak.holidays,
+    ).toEqual(['2027-01-01', '2027-01-02']);
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_HOLIDAYS: '2027-02-30' })).toThrow(
+      /无效日期/,
+    );
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_HOLIDAYS: '元旦' })).toThrow(/无效日期/);
+  });
+
+  it('QQ_OFFPEAK_WEEKENDS 默认 true，可显式关闭', () => {
+    expect(loadConfig(baseEnv).offpeak.weekendsAllDay).toBe(true);
+    expect(loadConfig({ ...baseEnv, QQ_OFFPEAK_WEEKENDS: 'false' }).offpeak.weekendsAllDay).toBe(
+      false,
+    );
   });
 
   it('QQ_ADMIN_OPENIDS 按逗号拆分并去空白，默认无管理员（fail-closed）', () => {

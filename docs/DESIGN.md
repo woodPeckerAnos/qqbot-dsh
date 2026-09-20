@@ -380,9 +380,18 @@ DeepSeek 有错峰优惠时段，正价时段跑 agent 的成本可能高一个�
   历史已回放、进度回执可能已发）。
 
 判定链（见 `src/offpeak.ts` 的 `evaluateGate`）：管理员 → 放行；闸关闭 → 放行；
-`<provider>/<model>` 不含 `modelPattern` → 放行；当前时间在窗口内 → 放行；
+`<provider>/<model>` 不含 `modelPattern` → 放行；当天在节假日表 → 放行；
+当天是周六/日且 `weekendsAllDay` → 放行；当前时间在窗口内 → 放行；
 否则拦截并回复提示。窗口按 `[start, end)` 语义、支持跨零点，时区用
 `Intl` 显式指定（容器内默认 UTC，不能依赖宿主时区）。
+
+**节假日与周末（DeepSeek 2026-09-19《API 峰谷时间说明》）**：周六、周日
+全天谷价（2026-08-23 起），调休上班的周末仍是周六/日故被自动覆盖；
+法定节假日（放假调休期间）全天谷价，日历不可算法推导，内置
+国办发明电〔2025〕7 号的 2026 年放假表，跨年数据由
+`QQ_OFFPEAK_HOLIDAYS` 或管理员 `/offpeak holiday add/del` 热维护
+（增删并入运行期覆盖、持久化）。`/offpeak status` 会显示节假日表覆盖到
+哪天，便于发现"该加下一年的数据了"。
 
 **热切换**：配置分三层——运行期覆盖（`/offpeak` 命令）> env 默认 > 代码内置。
 覆盖持久化到 `/data/bot/offpeak-override.json`（临时文件 + rename 原子写），

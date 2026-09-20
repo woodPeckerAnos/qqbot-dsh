@@ -29,6 +29,7 @@ import { join } from 'node:path';
 import type { Config } from '../config.js';
 import type { Logger } from '../logger.js';
 import {
+  CN_HOLIDAYS_2026,
   commandNeedsAdmin,
   evaluateGate,
   formatMinutes,
@@ -138,6 +139,8 @@ export class Dispatcher {
         },
         timeZone: deps.config.offpeak.timeZone,
         modelPattern: deps.config.offpeak.modelPattern,
+        weekendsAllDay: deps.config.offpeak.weekendsAllDay,
+        holidays: new Set([...CN_HOLIDAYS_2026, ...deps.config.offpeak.holidays]),
       },
       filePath: join(deps.paths.stateDir, 'offpeak-override.json'),
       logger: deps.logger.child({ component: 'offpeak' }),
@@ -557,6 +560,42 @@ export class Dispatcher {
         }
         return;
       }
+      case 'holiday-add':
+      case 'holiday-del': {
+        const adding = command.action === 'holiday-add';
+        try {
+          if (adding) {
+            this.offpeak.addHoliday(command.date, message.senderId);
+          } else {
+            this.offpeak.delHoliday(command.date, message.senderId);
+          }
+          const snapshot = this.offpeak.snapshot();
+          logger.warn('谷时段节假日表已被管理员热更新', {
+            senderId: message.senderId,
+            action: command.action,
+            date: command.date,
+          });
+          await this.replySimple(
+            message,
+            `已${adding ? '追加' : '移除'}全天谷价日期 ${command.date}（运行期覆盖）。` +
+              `当前节假日表共 ${snapshot.holidaysCount} 天。`,
+            'error',
+          ).catch(() => {});
+        } catch (error) {
+          const detail = error instanceof OffpeakConfigError ? error.message : '日期参数无效';
+          await this.replySimple(message, `设置失败：${detail}`, 'error').catch(() => {});
+        }
+        return;
+      }
+      case 'holiday-list': {
+        const holidays = [...this.offpeak.effective().holidays].sort();
+        const text =
+          holidays.length === 0
+            ? '节假日表为空。'
+            : `全天谷价日期（${holidays.length} 天）：${holidays.join('、')}`;
+        await this.replySimple(message, text, 'error').catch(() => {});
+        return;
+      }
       case 'reset': {
         this.offpeak.clearOverride(message.senderId);
         logger.warn('谷时段闸覆盖已被管理员清除，恢复 env 默认', { senderId: message.senderId });
@@ -585,11 +624,24 @@ export class Dispatcher {
       isAdmin: false,
       now: this.now(),
     });
+    const reasonText: Record<string, string> = {
+      weekend: '周末全天谷价',
+      holiday: '法定节假日全天谷价',
+      'in-window': '谷时段窗口内',
+      'model-mismatch': '模型不匹配',
+      disabled: '闸已关闭',
+      admin: '管理员',
+    };
     const lines = [
       `谷时段闸：${snapshot.enabled ? '开启' : '关闭'}${snapshot.overridden ? '（管理员覆盖）' : '（env 默认）'}`,
-      `窗口：${snapshot.window}（${snapshot.timeZone}）`,
+      `工作日窗口：${snapshot.window}（${snapshot.timeZone}）`,
+      `周末全天谷价：${snapshot.weekendsAllDay ? '是' : '否'}；` +
+        `节假日表 ${snapshot.holidaysCount} 天` +
+        (snapshot.holidaysCoverageUntil !== undefined
+          ? `（覆盖至 ${snapshot.holidaysCoverageUntil}，之后年份需管理员 /offpeak holiday add）`
+          : ''),
       `模型匹配：${snapshot.modelPattern}；当前模型 ${config.dsh.provider}/${config.dsh.model}`,
-      `当前判定：${decision.gated ? '拦截中（正价时段）' : `放行（${decision.reason}）`}`,
+      `当前判定：${decision.gated ? '拦截中（正价时段）' : `放行（${reasonText[decision.reason] ?? decision.reason}）`}`,
       OFFPEAK_COMMAND_USAGE,
     ];
     return lines.join('\n');

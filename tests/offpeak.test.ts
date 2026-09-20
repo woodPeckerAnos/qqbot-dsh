@@ -12,10 +12,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createNullLogger } from '../src/logger.js';
 import {
+  CN_HOLIDAYS_2026,
+  dateStringInTimeZone,
   evaluateGate,
   formatMinutes,
   isInOffpeakWindow,
+  isValidDateString,
   isValidTimeZone,
+  isWeekendInTimeZone,
   minutesInTimeZone,
   OffpeakConfigError,
   OffpeakGate,
@@ -40,7 +44,16 @@ const DEFAULT_CONFIG: OffpeakGateConfig = {
   window: { startMin: 30, endMin: 510 }, // 00:30–08:30
   timeZone: 'Asia/Shanghai',
   modelPattern: 'deepseek',
+  weekendsAllDay: true,
+  holidays: new Set(CN_HOLIDAYS_2026),
 };
+
+// 2026-01-17 是周六：04:00 UTC = 12:00 Asia/Shanghai（周末中午）
+const SHANGHAI_SATURDAY_NOON = Date.UTC(2026, 0, 17, 4, 0);
+// 2026-10-01 是周四（国庆）：04:00 UTC = 12:00 Asia/Shanghai（节假日中午）
+const SHANGHAI_NATIONAL_DAY_NOON = Date.UTC(2026, 9, 1, 4, 0);
+// 2026-09-20 是调休上班的周日：04:00 UTC = 12:00 Asia/Shanghai
+const SHANGHAI_ADJUSTED_SUNDAY_NOON = Date.UTC(2026, 8, 20, 4, 0);
 
 describe('parseTimeHHMM / formatMinutes', () => {
   it('解析合法的 HH:MM', () => {
@@ -125,6 +138,31 @@ describe('evaluateGate', () => {
       now: SHANGHAI_NOON,
     });
     expect(decision).toEqual({ gated: false, reason: 'disabled' });
+  });
+
+  it('周六全天谷价（DeepSeek 2026-08-23 起规则），周末中午不拦', () => {
+    const decision = evaluateGate({ ...base, isAdmin: false, now: SHANGHAI_SATURDAY_NOON });
+    expect(decision).toEqual({ gated: false, reason: 'weekend' });
+  });
+
+  it('调休上班的周末仍是周六/日，自动被周末规则覆盖（2026-09-20 周日上班）', () => {
+    const decision = evaluateGate({ ...base, isAdmin: false, now: SHANGHAI_ADJUSTED_SUNDAY_NOON });
+    expect(decision).toEqual({ gated: false, reason: 'weekend' });
+  });
+
+  it('法定节假日全天谷价（2026-10-01 周四，国庆），工作日的中午也不拦', () => {
+    const decision = evaluateGate({ ...base, isAdmin: false, now: SHANGHAI_NATIONAL_DAY_NOON });
+    expect(decision).toEqual({ gated: false, reason: 'holiday' });
+  });
+
+  it('weekendsAllDay=false 时周末回到时间窗口判定', () => {
+    const decision = evaluateGate({
+      ...base,
+      config: { ...DEFAULT_CONFIG, weekendsAllDay: false },
+      isAdmin: false,
+      now: SHANGHAI_SATURDAY_NOON,
+    });
+    expect(decision).toEqual({ gated: true, reason: 'peak-hours' });
   });
 
   it('模型不匹配时不拦（大小写不敏感，匹配 provider/model 组合）', () => {
@@ -277,5 +315,122 @@ describe('renderGateNotice', () => {
     expect(text).toContain('23:00–07:00');
     expect(text).toContain('Asia/Shanghai');
     expect(text).toContain('正价时段');
+  });
+});
+
+describe('日期工具', () => {
+  it('dateStringInTimeZone 按指定时区取日历日期', () => {
+    // 2026-01-15 04:00 UTC 在上海是 1 月 15 日，在 UTC-12 还是 1 月 14 日
+    expect(dateStringInTimeZone(SHANGHAI_NOON, 'Asia/Shanghai')).toBe('2026-01-15');
+    expect(dateStringInTimeZone(SHANGHAI_NOON, 'Etc/GMT+12')).toBe('2026-01-14');
+  });
+
+  it('isWeekendInTimeZone 判定周六周日', () => {
+    expect(isWeekendInTimeZone(SHANGHAI_SATURDAY_NOON, 'Asia/Shanghai')).toBe(true);
+    expect(isWeekendInTimeZone(SHANGHAI_NOON, 'Asia/Shanghai')).toBe(false); // 周四
+  });
+
+  it('isValidDateString 拒绝不存在的日期', () => {
+    expect(isValidDateString('2026-10-01')).toBe(true);
+    expect(isValidDateString('2026-02-30')).toBe(false);
+    expect(isValidDateString('2026-13-01')).toBe(false);
+    expect(isValidDateString('10月1日')).toBe(false);
+  });
+});
+
+describe('OffpeakGate 节假日增删', () => {
+  let dir: string;
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  function makeGate() {
+    dir = mkdtempSync(join(tmpdir(), 'qqbot-offpeak-holiday-'));
+    return new OffpeakGate({
+      defaults: DEFAULT_CONFIG,
+      filePath: join(dir, 'offpeak-override.json'),
+      logger: createNullLogger(),
+      now: () => 1234567890,
+    });
+  }
+
+  it('addHoliday 追加跨年日期并持久化，重建后保留', () => {
+    const gate = makeGate();
+    gate.addHoliday('2027-01-01', 'ADMIN-1');
+    expect(gate.effective().holidays.has('2027-01-01')).toBe(true);
+    expect(gate.snapshot().holidaysCoverageUntil).toBe('2027-01-01');
+
+    const revived = new OffpeakGate({
+      defaults: DEFAULT_CONFIG,
+      filePath: join(dir, 'offpeak-override.json'),
+      logger: createNullLogger(),
+    });
+    expect(revived.effective().holidays.has('2027-01-01')).toBe(true);
+  });
+
+  it('delHoliday 从内置官方表里移除日期', () => {
+    const gate = makeGate();
+    expect(gate.effective().holidays.has('2026-10-01')).toBe(true);
+    gate.delHoliday('2026-10-01', 'ADMIN-1');
+    expect(gate.effective().holidays.has('2026-10-01')).toBe(false);
+    // 同表内其他日期不受影响
+    expect(gate.effective().holidays.has('2026-10-02')).toBe(true);
+  });
+
+  it('add/del 拒绝非法日期', () => {
+    const gate = makeGate();
+    expect(() => gate.addHoliday('2026-02-30', 'ADMIN-1')).toThrow(OffpeakConfigError);
+    expect(() => gate.delHoliday('国庆节', 'ADMIN-1')).toThrow(OffpeakConfigError);
+  });
+
+  it('snapshot 暴露周末规则与节假日覆盖范围', () => {
+    const gate = makeGate();
+    const snapshot = gate.snapshot();
+    expect(snapshot.weekendsAllDay).toBe(true);
+    expect(snapshot.holidaysCount).toBe(CN_HOLIDAYS_2026.length);
+    expect(snapshot.holidaysCoverageUntil).toBe('2026-10-07');
+  });
+});
+
+describe('parseOffpeakCommand 的 holiday 子命令', () => {
+  it('识别 add/del/list', () => {
+    expect(parseOffpeakCommand('/offpeak holiday add 2027-01-01')).toEqual({
+      action: 'holiday-add',
+      date: '2027-01-01',
+    });
+    expect(parseOffpeakCommand('/offpeak holiday del 2027-01-01')).toEqual({
+      action: 'holiday-del',
+      date: '2027-01-01',
+    });
+    expect(parseOffpeakCommand('/offpeak holiday list')).toEqual({ action: 'holiday-list' });
+    expect(parseOffpeakCommand('/offpeak holiday')).toEqual({ action: 'holiday-list' });
+  });
+
+  it('参数不全返回 invalid', () => {
+    expect(parseOffpeakCommand('/offpeak holiday add')?.action).toBe('invalid');
+  });
+
+  it('权限标注：add/del 需要管理员，list 不需要', () => {
+    expect(commandNeedsAdmin({ action: 'holiday-add', date: '2027-01-01' })).toBe(true);
+    expect(commandNeedsAdmin({ action: 'holiday-del', date: '2027-01-01' })).toBe(true);
+    expect(commandNeedsAdmin({ action: 'holiday-list' })).toBe(false);
+  });
+});
+
+describe('官方节假日表（CN_HOLIDAYS_2026）', () => {
+  it('与国办发明电〔2025〕7 号通知逐条对应', () => {
+    const set = new Set(CN_HOLIDAYS_2026);
+    // 元旦 / 春节 / 清明 / 劳动节 / 端午 / 中秋 / 国庆
+    expect(set.has('2026-01-01')).toBe(true);
+    expect(set.has('2026-02-17')).toBe(true); // 正月初一
+    expect(set.has('2026-02-23')).toBe(true); // 春节假期最后一天
+    expect(set.has('2026-04-06')).toBe(true); // 清明调休日
+    expect(set.has('2026-05-01')).toBe(true);
+    expect(set.has('2026-06-19')).toBe(true); // 端午
+    expect(set.has('2026-09-25')).toBe(true); // 中秋
+    expect(set.has('2026-10-07')).toBe(true); // 国庆最后一天
+    // 调休上班日绝不能出现在表里
+    expect(set.has('2026-02-14')).toBe(false); // 春节调休上班（周六）
+    expect(set.has('2026-09-20')).toBe(false); // 国庆调休上班（周日）
+    // 每个日期都合法
+    for (const date of CN_HOLIDAYS_2026) expect(isValidDateString(date)).toBe(true);
   });
 });

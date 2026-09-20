@@ -10,7 +10,7 @@
  */
 
 import { Intent, DEFAULT_INTENTS, describeIntents } from './qq/types.js';
-import { isValidTimeZone, parseTimeHHMM, OffpeakConfigError } from './offpeak.js';
+import { isValidDateString, isValidTimeZone, parseTimeHHMM, OffpeakConfigError } from './offpeak.js';
 
 export interface Config {
   qq: {
@@ -87,6 +87,10 @@ export interface Config {
     timeZone: string;
     /** 命中判定：`<provider>/<model>` 包含该子串（QQ_OFFPEAK_MODEL_PATTERN，默认 deepseek） */
     modelPattern: string;
+    /** 周六、周日全天谷价（QQ_OFFPEAK_WEEKENDS，默认 true，DeepSeek 2026-08-23 起规则） */
+    weekendsAllDay: boolean;
+    /** 追加的全天谷价日期（QQ_OFFPEAK_HOLIDAYS，逗号分隔 YYYY-MM-DD），与内置官方节假日表合并 */
+    holidays: string[];
   };
   health: {
     port: number;
@@ -254,6 +258,18 @@ export function loadConfig(env: Env = process.env): Config {
       '使用 IANA 时区名，例如 Asia/Shanghai、UTC',
     ]);
   }
+  const offpeakHolidays = optionalString(env, 'QQ_OFFPEAK_HOLIDAYS', '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+  for (const date of offpeakHolidays) {
+    if (!isValidDateString(date)) {
+      throw new ConfigError(`QQ_OFFPEAK_HOLIDAYS 含无效日期：${JSON.stringify(date)}`, [
+        '格式为逗号分隔的 YYYY-MM-DD，例如 QQ_OFFPEAK_HOLIDAYS=2027-01-01,2027-01-02',
+        '内置已含 2026 年官方节假日（国办发明电〔2025〕7 号），这里只需追加跨年或临时日期',
+      ]);
+    }
+  }
 
   return {
     qq: {
@@ -303,6 +319,8 @@ export function loadConfig(env: Env = process.env): Config {
       end: offpeakEnd,
       timeZone: offpeakTimeZone,
       modelPattern: optionalString(env, 'QQ_OFFPEAK_MODEL_PATTERN', 'deepseek'),
+      weekendsAllDay: optionalBool(env, 'QQ_OFFPEAK_WEEKENDS', true),
+      holidays: offpeakHolidays,
     },
     health: {
       port: optionalInt(env, 'QQ_HEALTH_PORT', 8080, { min: 0, max: 65_535 }),
@@ -340,6 +358,8 @@ export function describeConfig(config: Config): Record<string, unknown> {
       window: `${config.offpeak.start}\u2013${config.offpeak.end}`,
       timeZone: config.offpeak.timeZone,
       modelPattern: config.offpeak.modelPattern,
+      weekendsAllDay: config.offpeak.weekendsAllDay,
+      extraHolidays: config.offpeak.holidays.length,
     },
   };
 }

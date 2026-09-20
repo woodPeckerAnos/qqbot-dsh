@@ -708,6 +708,61 @@ describe('谷时段闸', () => {
   });
 });
 
+describe('谷时段闸（周末与法定节假日）', () => {
+  it('周六全天谷价：周末中午正常处理（DeepSeek 2026-08-23 起规则）', async () => {
+    // 2026-01-17 是周六
+    ctx = setup({ configOverrides: OFFPEAK_ON, now: () => Date.UTC(2026, 0, 17, 4, 0) });
+    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await pending;
+
+    expect(ctx.runtime.prompts).toHaveLength(1);
+    expect(ctx.dispatcher.snapshotStats().gatedOffpeak).toBe(0);
+  });
+
+  it('法定节假日全天谷价：国庆中午正常处理（内置官方日历，2026-10-01 周四）', async () => {
+    ctx = setup({ configOverrides: OFFPEAK_ON, now: () => Date.UTC(2026, 9, 1, 4, 0) });
+    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await pending;
+
+    expect(ctx.runtime.prompts).toHaveLength(1);
+    expect(ctx.dispatcher.snapshotStats().gatedOffpeak).toBe(0);
+  });
+
+  it('管理员 /offpeak holiday add 追加日期后，该日中午立即放行（跨年数据维护路径）', async () => {
+    // 2026-01-15 周四中午：默认被拦
+    ctx = setup({
+      configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
+      now: () => SHANGHAI_NOON,
+    });
+    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak holiday add 2026-01-15' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('已追加');
+
+    const pending = ctx.dispatcher.handleEvent(
+      makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY' }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await pending;
+
+    expect(ctx.runtime.prompts).toHaveLength(1);
+  });
+
+  it('/offpeak holiday list 对所有人开放，列出官方节假日', async () => {
+    ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_NOON });
+    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak holiday list' }));
+    const text = ctx.sent.map((item) => item.body.content ?? '').join('\n');
+    expect(text).toContain('2026-10-01');
+    expect(ctx.runtime.prompts).toHaveLength(0);
+  });
+});
+
 describe('/offpeak 命令', () => {
   it('非管理员变更配置被拒绝，闸保持拦截', async () => {
     ctx = setup({
