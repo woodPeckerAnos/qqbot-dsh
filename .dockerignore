@@ -1,0 +1,13 @@
+# 构建上下文剔除项。目标是让镜像层缓存稳定、上下文最小。
+node_modules
+dist
+.git
+.github
+.smoke
+.npm-cache
+.env
+.env.local
+docs
+tests
+*.log
+.DS_Store

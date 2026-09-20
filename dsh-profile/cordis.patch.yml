@@ -1,0 +1,76 @@
+# ============================================================================
+# qqbot profile —— 在 shipped 的 `sdk` profile 之上打的一层补丁
+#   bundles: [@deepseek-ai/dsh-base, @deepseek-ai/dsh-sdk-app]
+#
+# 启动方式（由 docker-compose / scripts/entrypoint.sh 负责）：
+#   dsh --profile sdk --patch /opt/qqbot/dsh-profile/cordis.patch.yml
+#
+# 本文件是 patch 列表，不是完整配置：只写要改/要加的行，其余继承 sdk profile。
+# 顶层为 YAML 数组，条目顺序即应用顺序。
+#
+# 注意（踩过的坑，别改回去）：`!!js` 的值是被 **eval** 执行的，所以
+#   1. 不能跟反引号模板字面量；
+#   2. 不能独占一行接块标量（`!!js >-` / `!!js` + 缩进块）；
+#   3. 双引号标量里**不能出现字面换行**——YAML 折行会把真实换行喂给 eval，
+#      直接 SyntaxError: Invalid or unexpected token。
+# 结论：表达式必须真正写在一行里；需要换行符时用 String.fromCharCode(10)，
+# 不要写 \n（会被 YAML 折行毁掉）。
+# ============================================================================
+
+# --- 1. 人设：把 DSH 的通用 coding-agent 人设换成 QQ 群助手 -------------------
+# sdk-app 的补丁把 personaPrefix 设成了 "You are a coding agent powered by the
+# {{model}} model."；这里整条覆盖掉。
+#
+# 这里只放"身份 + 输出纪律"这类每次请求都要付 token 的短内容。
+# 更长的项目规则请写进该群工作区根目录的 AGENTS.md —— dsh-agent-instructions
+# 会自动加载它，且管理员可以改，不必重建镜像。
+- id: system-prompt
+  config:
+    personaPrefix: !!js "['你是一个运行在 QQ 群聊里的助手。你在一个隔离的 Docker 容器中工作，当前目录是你的专属工作区，可以自由读写文件、运行命令。', '', '回复纪律：', '- 用简体中文回答，除非对方使用其他语言。', '- 结论先行，不复述用户的问题，不输出 emoji 装饰。', '- 群聊有长度限制：回答精炼；长内容先说结论，再提示可以追问哪一部分。', '- 不要在回复里粘贴大段文件内容或完整 diff，除非用户明确要求。', '- 绝不编造执行结果：没真正运行过的命令不要声称运行过；失败就直说失败原因。'].join(String.fromCharCode(10))"
+    # {{cwd}} 由 SDK initialize 的 cwd 解析，即该群的工作区绝对路径。
+    personaSuffix: !!js "['当前工作区：{{cwd}}', '当前模型：{{model}}'].join(String.fromCharCode(10))"
+    # 群聊里没人看 harness 自我介绍，关掉省 token。
+    includeHarnessIdentity: false
+    includeRuntimeContext: true
+
+# --- 2. 审批：保留 ask 策略，挂上自动应答桩 --------------------------------
+# dsh-base 已经配了 policy: ask（因为 DSH_PERMISSION_MODE 不是 danger-full-access）。
+# 这里显式钉死，避免宿主环境变量把策略改成 never 而让所有工具调用失败。
+- id: approval
+  config:
+    policy: ask
+
+# --- 3. 沙箱：显式钉死 workspace-write ------------------------------------
+# 不依赖 DSH_PERMISSION_MODE 的默认值。工作区以会话 cwd（= 该群工作目录）为界，
+# 由 dsh-sandbox-policy 解析。容器本身是第二道边界。
+- id: sandbox-policy
+  config:
+    mode: workspace-write
+
+# --- 4. 收窄对群机器人无意义的能力 ----------------------------------------
+# 重要教训（实测踩过）：**不要 disable 服务提供者**。关掉 `subagent` / `goal` /
+# `jobs` 这些行后，依赖它们的消费行会一直 pending，boot 阶段直接报
+# "6 entries did not activate" 并拒绝启动。要靠 disabled 收窄能力，只能关
+# **不提供任何服务、纯消费**的行。
+#
+# 因此这里只关掉一个真正的纯叶子：tool-jobs（给模型的控制后台任务的工具）。
+# 后台任务本身仍可被 bash 工具以 `&` 方式创建，所以真正的兜底是容器级的
+# pids_limit / mem_limit，而不是 profile（见 docker-compose.yml）。
+- id: tool-jobs
+  disabled: true
+
+# --- 5. 自动审批桩 --------------------------------------------------------
+# 相对 name 会被 dsh-app-boot 解析为相对本文件的 file:// URL，
+# 因此不需要把插件装进 profile 的 node_modules。
+- insert:
+    - id: qqbot-auto-approve
+      name: ./plugins/auto-approve.js
+      inject: [approval]
+      config:
+        # 留空 = 所有普通审批请求都放行。把工具名加进来可让它们退回 fail-closed。
+        denyTools: []
+        # 是否放行「沙箱提权到 danger-full-access」的请求。
+        # true  ：无沙箱后端的主机（macOS、缺 bubblewrap 的容器）上机器人仍可用，
+        #         但实际权限 = 完全访问，workspace-write 那道闸失效（会打 warn 日志）。
+        # false ：提权一律拒绝，机器人只能做不需要执行命令的工作。
+        allowEscalation: true

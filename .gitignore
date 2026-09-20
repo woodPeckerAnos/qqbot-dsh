@@ -1,0 +1,16 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 密钥：绝不提交
+.env
+.env.local
+
+# 本地调试产物（不由程序创建，仅为隔离工作区外的写入）
+.npm-cache/
+.npm-lock-staging/
+.smoke/
+
+# 杂项
+*.log
+.DS_Store

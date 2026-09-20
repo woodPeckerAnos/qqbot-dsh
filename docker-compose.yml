@@ -1,0 +1,85 @@
+# ============================================================================
+# QQ 机器人 × DSH —— 目标部署入口
+#
+#   cp .env.example .env   # 填 QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# 安全模型（详见 docs/DESIGN.md 第 6 节）：
+#   agent 在容器内拥有 workspace-write 权限，工作区之外由沙箱挡住；
+#   容器本身是第二道边界——只读根文件系统、能力收敛、资源上限。
+# ============================================================================
+
+services:
+  qqbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qqbot-dsh:0.1.0
+    container_name: qqbot-dsh
+    restart: unless-stopped
+
+    env_file:
+      - .env
+    environment:
+      DSH_HOME: /data/dsh
+      QQ_WORKSPACES_ROOT: /data/workspaces
+      QQ_STATE_DIR: /data/bot
+      QQ_DSH_PROFILE_PATCH: /app/dsh-profile/cordis.patch.yml
+      # A 方案：保持 workspace-write。审批由 profile 里的 auto-approve 桩兜住。
+      # 注意 DSH_PERMISSION_MODE 只能设成 danger-full-access 或留空；
+      # profile patch 已显式钉死 sandbox 模式，这里不用动。
+      TZ: Asia/Shanghai
+
+    volumes:
+      - dsh-home:/data/dsh            # DSH 会话日志、settings、凭证
+      - workspaces:/data/workspaces   # 每个 QQ 群一个工作区目录
+      - bot-state:/data/bot           # 机器人自身的对话记录 / 去重 / 会话映射
+
+    # --- 容器加固 -----------------------------------------------------------
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+
+    # 资源上限。注意 agent 可能拉起重型构建，按需调整。
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+        reservations:
+          memory: 256m
+
+    # --- 可观测性 -----------------------------------------------------------
+    healthcheck:
+      test: ["CMD", "node", "dist/health-probe.js"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+    # 出网：容器需要访问 api.bot.qq.com（QQ 网关）与 api.deepseek.com（模型）。
+    # 默认使用 bridge 网络即可。要强制走代理，取消下面注释并设置 .env 里的代理变量。
+    # extra_hosts:
+    #   - "api.bot.qq.com:${QQ_API_HOST_IP}"
+    networks:
+      - qqbot-net
+
+networks:
+  qqbot-net:
+    driver: bridge
+
+volumes:
+  dsh-home:
+  workspaces:
+  bot-state:

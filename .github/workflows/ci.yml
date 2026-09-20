@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 与 Dockerfile 保持一致；本项目用 Node 内置的 WebSocket/fetch
+          node-version: '24'
+
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 类型检查
+        run: npx tsc -p tsconfig.json --noEmit
+
+      # 单测必须全离线可跑：不触网、不启动 DSH 子进程。
+      # 这是刻意的约束，保证 CI 不需要任何密钥。
+      - name: 单元测试
+        run: npx vitest run
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建镜像
+        run: docker build -t qqbot-dsh:ci .
+
+      - name: 验证入口脚本的快速失败（缺密钥时必须报错退出）
+        run: |
+          set +e
+          docker run --rm qqbot-dsh:ci > /tmp/entrypoint.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/entrypoint.log
+          if [ "$code" -eq 0 ]; then
+            echo "::error::缺少必需环境变量时入口脚本应当失败退出"
+            exit 1
+          fi
+          grep -q "缺少必需环境变量" /tmp/entrypoint.log
+
+      - name: 验证沙箱后端可用性（workspace-write 是否为真闸）
+        run: |
+          docker run --rm --entrypoint node qqbot-dsh:ci \
+            scripts/verify-sandbox-capability.mjs | tee /tmp/sandbox.log
+          # 在 GitHub runner 上 bwrap 通常不可用，但 Landlock 应可用。
+          # 若两者都不可用，说明 A 方案的隔离前提被破坏，需要显式告警而不是静默通过。
+          if ! grep -q "SANDBOX-EFFECTIVE" /tmp/sandbox.log; then
+            echo "::warning::沙箱后端不可用（DEGRADED）。workspace-write 会退化为完全访问，请检查 runner 内核配置。"
+          fi
