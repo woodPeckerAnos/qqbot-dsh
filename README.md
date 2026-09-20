@@ -107,9 +107,14 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml restart qqbot  # 
 
 ```sh
 docker compose run --rm --entrypoint node qqbot scripts/smoke-dsh.mjs      # 端到端驱动一轮 DSH
+docker compose run --rm --entrypoint node qqbot scripts/smoke-web-fetch.mjs # 验证 web_fetch 真能抓到正文
 docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox.mjs # 判定沙箱是否真闸
 docker compose run --rm --entrypoint node qqbot scripts/probe-dsh.mjs      # 诊断 profile 组合问题
 ```
+
+`smoke-web-fetch.mjs` 用于排查"能搜索、但抓不到原文"：它让模型真的读一个网页并核对
+正文内容。抓不到通常是宿主 fake-IP 代理与 DSH 公网地址校验冲突，见
+[DEPLOY.md 第 9 节](docs/DEPLOY.md)。
 
 ## 目录结构
 
@@ -121,7 +126,7 @@ src/dsh/        DSH 桥接：NDJSON JSON-RPC 客户端 / 子进程监督 / 进�
 src/pipeline/   编排：调度 / 配额与进度 / 分段 / 渲染 / 并发原语（群聊单聊共用一条链路）
 src/store/      持久化：对话记录（JSONL）/ 事件去重 / 会话映射 / 路径布局
 dsh-profile/    DSH profile 补丁 + 自动审批桩
-scripts/        容器入口 + 四个验证脚本
+scripts/        容器入口 + 五个验证脚本
 tests/          156 项离线单测
 docs/           方案设计 / 部署手册 / 排障手册
 ```

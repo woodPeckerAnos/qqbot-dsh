@@ -31,6 +31,24 @@ services:
       # profile patch 已显式钉死 sandbox 模式，这里不用动。
       TZ: Asia/Shanghai
 
+      # --- 出网代理：web_fetch 能不能抓到正文，取决于这三行 ----------------
+      # 为什么必须显式设代理（详见 docs/DEPLOY.md 第 9 节）：
+      #   DSH 的 http fetch provider 发请求前会自己解析域名，并要求解析结果
+      #   全部是公网单播地址，否则直接抛 WEB_BLOCKED_URL，连请求都不发。
+      #   宿主如果开了 fake-IP 模式的代理（Clash/Surge 一类），域名会被解析成
+      #   RFC2544 保留段 198.18.0.0/15，于是每次 web_fetch 都被自家策略拦下，
+      #   表现为"能搜索、但抓不到原文"。
+      #   设了代理后 provider 会命中它的代理分支：跳过 DNS 与公网校验，由代理
+      #   去解析源站。web_search 不受影响（那是 DeepSeek 服务端搜索）。
+      #
+      # ⚠ 端口要与你宿主代理的「HTTP/混合端口」一致（这里 7897 是 Clash 的
+      #   混合端口；常见值还有 7890）。改端口只改这两行。
+      # ⚠ 必须是 HTTP(S) 代理。dsh-http-proxy 不支持 SOCKS/PAC，会打诊断后跳过。
+      # ⚠ 绝对不要把想抓取的站点写进 NO_PROXY：那会让它退回直连分支，公网校验
+      #   重新生效，又变成 WEB_BLOCKED_URL。
+      HTTPS_PROXY: http://host.docker.internal:7897
+      HTTP_PROXY: http://host.docker.internal:7897
+
     volumes:
       - dsh-home:/data/dsh            # DSH 会话日志、settings、凭证
       - workspaces:/data/workspaces   # 每个 QQ 群一个工作区目录
@@ -74,10 +92,13 @@ services:
         max-size: "20m"
         max-file: "5"
 
-    # 出网：容器需要访问 api.bot.qq.com（QQ 网关）与 api.deepseek.com（模型）。
-    # 默认使用 bridge 网络即可。要强制走代理，取消下面注释并设置 .env 里的代理变量。
-    # extra_hosts:
-    #   - "api.bot.qq.com:${QQ_API_HOST_IP}"
+    # 出网：容器需要访问 api.bot.qq.com（QQ 网关）、api.deepseek.com（模型）
+    # 以及上面 HTTPS_PROXY 指向的宿主代理。默认 bridge 网络即可。
+    #
+    # extra_hosts 是代理方案的一部分：让 host.docker.internal 在所有平台上都
+    # 指向宿主（Docker Desktop 自带该名称，Linux 原生 Docker 没有，靠这行补上）。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - qqbot-net
 

@@ -275,7 +275,97 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml restart qqbot
 
 ---
 
-## 9. 升级
+## 9. 联网能力：搜索能用但抓不到原文怎么办
+
+### 9.1 现象与原因
+
+典型症状：机器人**能搜索**，但被要求读某个具体网页时，会回一句类似
+"我容器里抓不到原文（网络策略拦截），以上来自搜索结果标题"。
+
+这句话是模型对工具报错的**推断**，不是真的网络被拦。真实原因在 DSH 的
+HTTP 抓取后端（`@deepseek-ai/dsh-web-fetch-http`）：
+
+1. 该 provider 发请求前会**自己解析域名**，并要求解析结果**全部是公网单播地址**，
+   否则直接抛 `WEB_BLOCKED_URL`，**连请求都不发**。
+2. 宿主（开发机/服务器）如果装了 fake-IP 模式的代理（Clash、Surge 一类），
+   DNS 会把**所有**域名解析成 RFC2544 保留段 `198.18.0.0/15`：
+
+   ```sh
+   # 在宿主上执行，看到 198.18.x.x 就说明命中了这个坑
+   node -e "require('dns').promises.lookup('example.com',{all:true}).then(console.log)"
+   # [ { address: '198.18.0.52', family: 4 } ]
+   ```
+
+   `198.18.0.0/15` 不是公网单播地址，于是**每次 web_fetch 都被自家策略拦下**。
+   Docker Desktop 的 DNS 转发到宿主解析器，容器里解析出来是同一批 fake IP。
+
+**注意区分两条链路**：
+- `web_search` 走的是 **DeepSeek 服务端搜索**，只回标题/URL/摘要，与容器出网无关，
+  所以它一直是好的；
+- `web_fetch` 才是容器自己发请求的那个，被上面的校验挡住。
+
+### 9.2 解决办法：显式配置 HTTP 代理
+
+`dsh-web-fetch-http` 只有在**目标命中代理策略**时才会跳过 DNS 与公网地址校验
+（交给代理解析源站）。`dsh` 启动器在 boot 时会读取标准代理环境变量并安装全局
+dispatcher，所以只需在 `docker-compose.yml` 的 `qqbot.environment` 里给出：
+
+```yaml
+      HTTPS_PROXY: http://host.docker.internal:7897
+      HTTP_PROXY: http://host.docker.internal:7897
+```
+
+配套的 `extra_hosts: ["host.docker.internal:host-gateway"]` 也要在（Linux 原生
+Docker 没有 `host.docker.internal` 这个名字，靠它补上；Docker Desktop 自带）。
+
+**三个必须注意的点**：
+
+1. **端口要对**：`7897` 是 Clash 的 HTTP/混合端口，常见值还有 `7890`。换端口只改
+   这两行。必须是 **HTTP(S) 代理**——`dsh-http-proxy` 不支持 SOCKS/PAC，遇到这类
+   值会打一条诊断然后跳过（表现为"设了也没用"）。
+2. **不要把想抓取的站点写进 `NO_PROXY`**。`no_proxy` 命中的 URL 会退回直连分支，
+   公网 IP 校验重新生效，又变成 `WEB_BLOCKED_URL`。实测：
+
+   ```sh
+   NO_PROXY=example.com  →  example.com 抓取失败（WEB_BLOCKED_URL）
+   NO_PROXY=example.com  →  baidu.com   抓取成功（走代理）
+   ```
+3. **代理变量不要写进项目根目录的 `.env`**。`dsh` 启动器对项目 `.env` 里的代理
+   名字有 fail-loud 守卫（怕仓库决定流量去向），写进去会**拒绝启动**。要覆盖就用
+   `docker-compose.yml` 的 `environment`，或 `$DSH_HOME/.env`（容器内
+   `/data/dsh/.env`，属"用户级默认值"层）。
+
+### 9.3 改了之后怎么确认
+
+```sh
+# 1) 配置已进容器
+docker compose exec qqbot env | grep -i proxy
+
+# 2) 代理可达（这一步不通，web_fetch 一定不通）
+docker compose exec qqbot curl -sS -o /dev/null -w '%{http_code}\n' \
+  -x http://host.docker.internal:7897 https://example.com
+
+# 3) 一次性端到端自检（真的驱动 dsh 抓一个网页并核对正文）
+docker compose exec qqbot node scripts/smoke-web-fetch.mjs
+
+# 4) 或者在群里发一条"帮我读一下 <某个具体网址> 的正文并总结"
+```
+
+第 3 步会花掉一次真实模型调用（约十几秒），它断言四件事：`web_fetch` 被调用、
+回复里出现了目标页面正文独有的字符串、回复里没有 `WEB_BLOCKED_URL` 一类失败措辞、
+协议通道全程干净。全 PASS 时会打印 `--- 失败项 ---（无）`，退出码 0。
+
+**代价与回退**：设了代理后，宿主的代理进程成为**硬依赖**——代理没起来时
+`web_fetch` 会直接失败（报 `WEB_FETCH_TIMEOUT` / `WEB_PROVIDER_ERROR`），而不再是
+静默降级。想回退就删掉那两行并 `docker compose up -d`。
+
+**若代理不可用时的兜底**：容器内 `curl` 本身能出网，可以在会话工作区写个
+`AGENTS.md` 规则，让模型在 `web_fetch` 报 `WEB_BLOCKED_URL` 时改用 shell 抓取。
+但这条路径绕开了 DSH 的受限输出与 HTML→Markdown 转换，回答质量更差，只当止血用。
+
+---
+
+## 10. 升级
 
 ```sh
 git pull
@@ -294,7 +384,7 @@ docker compose up -d --build
 
 ---
 
-## 10. 卸载
+## 11. 卸载
 
 ```sh
 docker compose down -v          # 删除容器与所有卷（工作区、会话日志、对话记录）
