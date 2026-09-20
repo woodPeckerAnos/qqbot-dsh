@@ -44,14 +44,20 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    pids_limit: 512
 
     # 资源上限。注意 agent 可能拉起重型构建，按需调整。
+    #
+    # ⚠ 只在这一处写资源限制，不要与顶层旧式字段（pids_limit / mem_limit / cpus）
+    #   混用：Docker Compose 2.x+ 会把 deploy.resources.limits 映射到同一批
+    #   底层键，重复设置会直接报
+    #   "can't set distinct values on 'pids_limit' and 'deploy.resources.limits.pids'"。
+    #   pids 上限的意义：agent 能执行任意命令，必须挡 fork 炸弹。
     deploy:
       resources:
         limits:
           cpus: "2.0"
           memory: 2g
+          pids: 512
         reservations:
           memory: 256m
 

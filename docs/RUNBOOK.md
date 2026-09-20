@@ -292,6 +292,45 @@ docker compose logs qqbot | grep "冷启动回放历史"
 
 ## 6. 沙箱相关
 
+### 6.0 compose 报 `can't set distinct values on 'pids_limit' and 'deploy.resources.limits.pids'`
+
+```
+services.qqbot: can't set distinct values on 'pids_limit' and
+'deploy.resources.limits.pids': invalid compose project
+```
+
+Docker Compose 2.x 起会把 `deploy.resources.limits` 映射到与旧式顶层字段
+（`pids_limit` / `mem_limit` / `cpus`）**同一批底层键**，两处都写就判定冲突。
+
+处置：**只在一处写资源限制**。本仓库统一放在 `deploy.resources.limits` 下：
+
+```yaml
+deploy:
+  resources:
+    limits:
+      cpus: "2.0"
+      memory: 2g
+      pids: 512        # 不要同时写顶层的 pids_limit
+```
+
+改完先验证再启动（`docker compose config` 只做解析，不会起容器）：
+
+```sh
+docker compose config >/dev/null && echo "compose 配置合法"
+```
+
+确认限制真的落到了容器上：
+
+```sh
+docker inspect qqbot-dsh --format \
+  'PidsLimit={{.HostConfig.PidsLimit}} Memory={{.HostConfig.Memory}} \
+NanoCpus={{.HostConfig.NanoCpus}} ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}} \
+CapDrop={{.HostConfig.CapDrop}} User={{.Config.User}}'
+```
+
+期望看到：`PidsLimit=512 Memory=2147483648 NanoCpus=2000000000
+ReadonlyRootfs=true CapDrop=[ALL] User=qqbot`。
+
 ### 6.1 日志出现大量 `sandbox escalation auto-approved`
 
 含义：工作区内操作本不该提权，但 DSH 请求了提权到 `danger-full-access`，

@@ -64,6 +64,12 @@ docker compose up -d --build
 docker compose logs -f qqbot
 ```
 
+> 如果 `up` 报 `can't set distinct values on 'pids_limit' and
+> 'deploy.resources.limits.pids'`，说明资源限制被同时写在了顶层旧式字段与
+> `deploy.resources.limits` 两处。本仓库的 `docker-compose.yml` 已统一放在
+> `deploy.resources.limits` 下；手动改过该文件的话请只保留一处，详见
+> [RUNBOOK 6.0](RUNBOOK.md)。改完用 `docker compose config >/dev/null` 先验证。
+
 启动成功的日志特征（JSON 行，逐行）：
 
 ```json
