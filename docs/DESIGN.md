@@ -368,6 +368,33 @@ release(conversationKey)  → 标记空闲时间，不一定立刻回收
 
 两层是因为内存 LRU 在重启后失效，而 QQ 平台在重连/resume 时可能重放事件。
 
+### 5.8 谷时段闸（DeepSeek 错峰成本控制）
+
+DeepSeek 有错峰优惠时段，正价时段跑 agent 的成本可能高一个数量级。
+闸的位置在**编排层入口**而不是 DSH plugin，原因：
+
+- 决策依据（模型身份、时间策略）就是桥接层配置，不需要 agent 参与；
+- 在入口处拦截 = 不写对话记录、不占并发名额、不碰 DSH 进程，
+  也不会把伪造的 turn 混进会话历史污染冷启动回放；
+- DSH 插件体系没有公开的"模型请求前"钩子，且拦截点太晚（进程已拉起、
+  历史已回放、进度回执可能已发）。
+
+判定链（见 `src/offpeak.ts` 的 `evaluateGate`）：管理员 → 放行；闸关闭 → 放行；
+`<provider>/<model>` 不含 `modelPattern` → 放行；当前时间在窗口内 → 放行；
+否则拦截并回复提示。窗口按 `[start, end)` 语义、支持跨零点，时区用
+`Intl` 显式指定（容器内默认 UTC，不能依赖宿主时区）。
+
+**热切换**：配置分三层——运行期覆盖（`/offpeak` 命令）> env 默认 > 代码内置。
+覆盖持久化到 `/data/bot/offpeak-override.json`（临时文件 + rename 原子写），
+重启后保留；文件损坏则告警并回落到 env 默认。每条消息进来现算一次生效配置，
+所以改完下一条消息即生效，不动网关连接和 runtime 池。
+
+**管理员模型**：`QQ_ADMIN_OPENIDS` 白名单（注意群聊 member_openid 与单聊
+user_openid 是两套值）。管理员永不被拦，且独占变更类子命令
+（on/off/window/reset）；status/whoami 对所有人开放——whoami 是管理员发现
+自己 openid 的入口。白名单留空 = 变更类命令对所有人关闭（fail-closed）。
+命令处理优先于闸判定，管理员在峰时段也能关闸。
+
 ---
 
 ## 6. 权限与安全（必须知情）
@@ -469,6 +496,7 @@ qqbot-dsh/
 │   ├── logger.ts                 结构化 JSON 日志 → stderr
 │   ├── health.ts                 /healthz + /metrics
 │   ├── health-probe.js           容器 HEALTHCHECK 用的轻量探针
+│   ├── offpeak.ts                谷时段闸：判定 + 运行期覆盖持久化 + /offpeak 命令
 │   ├── qq/
 │   │   ├── token.ts              access_token 缓存与刷新
 │   │   ├── gateway.ts            WS 生命周期状态机 + 事件归一化（群聊/单聊）

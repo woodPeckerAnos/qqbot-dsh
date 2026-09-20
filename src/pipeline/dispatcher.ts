@@ -24,8 +24,23 @@
  *     `message.target.kind` 选择。
  */
 
+import { join } from 'node:path';
+
 import type { Config } from '../config.js';
 import type { Logger } from '../logger.js';
+import {
+  commandNeedsAdmin,
+  evaluateGate,
+  formatMinutes,
+  OffpeakConfigError,
+  OffpeakGate,
+  OFFPEAK_COMMAND_USAGE,
+  parseOffpeakCommand,
+  parseTimeHHMM,
+  renderGateNotice,
+  type OffpeakCommand,
+  type OffpeakSnapshot,
+} from '../offpeak.js';
 import type { RuntimeEntry, RuntimePool } from '../dsh/pool.js';
 import type { SessionStatusNotification } from '../dsh/protocol.js';
 import { TurnAccumulator, type TurnOutcome } from '../dsh/turns.js';
@@ -72,6 +87,10 @@ export interface DispatcherStats {
   deduplicated: number;
   rejectedBusy: number;
   skippedC2C: number;
+  /** 被谷时段闸拦截的消息数（未调用 API） */
+  gatedOffpeak: number;
+  /** 处理过的 /offpeak 命令数 */
+  adminCommands: number;
   completed: number;
   failed: number;
   timedOut: number;
@@ -87,6 +106,8 @@ export class Dispatcher {
     deduplicated: 0,
     rejectedBusy: 0,
     skippedC2C: 0,
+    gatedOffpeak: 0,
+    adminCommands: 0,
     completed: 0,
     failed: 0,
     timedOut: 0,
@@ -100,15 +121,36 @@ export class Dispatcher {
    */
   private readonly activeTurns = new Map<string, TurnAccumulator>();
 
+  /**
+   * 谷时段闸。生效配置 = env 默认 + 运行期覆盖（持久化在 stateDir，
+   * 由管理员 /offpeak 命令热切换，下一条消息即生效）。
+   */
+  private readonly offpeak: OffpeakGate;
+
   constructor(private readonly deps: DispatcherDeps) {
     this.semaphore = new Semaphore(deps.config.pool.maxConcurrentTurns);
+    this.offpeak = new OffpeakGate({
+      defaults: {
+        enabled: deps.config.offpeak.enabled,
+        window: {
+          startMin: parseTimeHHMM(deps.config.offpeak.start),
+          endMin: parseTimeHHMM(deps.config.offpeak.end),
+        },
+        timeZone: deps.config.offpeak.timeZone,
+        modelPattern: deps.config.offpeak.modelPattern,
+      },
+      filePath: join(deps.paths.stateDir, 'offpeak-override.json'),
+      logger: deps.logger.child({ component: 'offpeak' }),
+      now: deps.now,
+    });
   }
 
-  snapshotStats(): DispatcherStats & { inFlight: number; queued: number } {
+  snapshotStats(): DispatcherStats & { inFlight: number; queued: number; offpeak: OffpeakSnapshot } {
     return {
       ...this.stats,
       inFlight: this.semaphore.inUse,
       queued: this.semaphore.queued,
+      offpeak: this.offpeak.snapshot(),
     };
   }
 
@@ -178,6 +220,39 @@ export class Dispatcher {
       kind: message.target.kind,
       msgId: message.msgId,
     });
+
+    // --- 谷时段闸：命令与拦截都发生在「记录对话 / 占名额」之前 -------------
+    // 被拦截的消息不写对话记录、不占并发名额、不碰 DSH 进程，就像它没来过。
+    const isAdmin = this.deps.config.qq.adminOpenids.includes(message.senderId);
+
+    // /offpeak 命令优先于闸：管理员必须能在峰时段发命令关闸。
+    const command = parseOffpeakCommand(message.content);
+    if (command !== undefined) {
+      await this.handleOffpeakCommand(message, command, isAdmin, messageLogger);
+      return;
+    }
+
+    const decision = evaluateGate({
+      config: this.offpeak.effective(),
+      provider: this.deps.config.dsh.provider,
+      model: this.deps.config.dsh.model,
+      isAdmin,
+      now: this.now(),
+    });
+    if (decision.gated) {
+      this.stats.gatedOffpeak += 1;
+      messageLogger.info('谷时段闸拦截：当前为正价时段，未调用 API', {
+        senderId: message.senderId,
+        offpeak: this.offpeak.snapshot(),
+      });
+      await this.replySimple(message, renderGateNotice(this.offpeak.effective()), 'error').catch(
+        () => {},
+      );
+      return;
+    }
+    if (decision.reason === 'admin') {
+      messageLogger.debug('管理员消息，谷时段闸放行', { senderId: message.senderId });
+    }
 
     // 记录用户消息（供重启后回放）
     this.deps.conversations.append(conversationKey, {
@@ -399,6 +474,125 @@ export class Dispatcher {
       ts: this.now(),
       replyToMsgId: message.msgId,
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // 谷时段闸：/offpeak 命令
+  // -------------------------------------------------------------------------
+
+  /**
+   * 处理 /offpeak 命令。整个流程不触碰对话记录、并发名额与 DSH runtime。
+   *
+   * 权限模型：status / whoami 对所有人开放（不消耗 API，且 whoami 是管理员
+   * 发现自己 openid 的唯一入口）；变更类操作（on/off/window/reset）仅管理员。
+   * 白名单为空时变更类命令对所有人关闭——fail-closed。
+   */
+  private async handleOffpeakCommand(
+    message: NormalizedMessage,
+    command: OffpeakCommand,
+    isAdmin: boolean,
+    logger: Logger,
+  ): Promise<void> {
+    if (commandNeedsAdmin(command) && !isAdmin) {
+      logger.warn('非管理员尝试变更谷时段闸，已拒绝', {
+        senderId: message.senderId,
+        action: command.action,
+      });
+      await this.replySimple(
+        message,
+        '无权限：/offpeak 的变更操作仅限管理员（QQ_ADMIN_OPENIDS 白名单）。',
+        'error',
+      ).catch(() => {});
+      return;
+    }
+
+    this.stats.adminCommands += 1;
+
+    switch (command.action) {
+      case 'whoami': {
+        const idKind = message.target.kind === 'c2c' ? '单聊 user_openid' : '群聊 member_openid';
+        await this.replySimple(
+          message,
+          `你的 senderId：${message.senderId}（${idKind}）。` +
+            '把它加进环境变量 QQ_ADMIN_OPENIDS（逗号分隔）即可成为管理员。',
+          'error',
+        ).catch(() => {});
+        return;
+      }
+      case 'status': {
+        await this.replySimple(message, this.renderOffpeakStatus(), 'error').catch(() => {});
+        return;
+      }
+      case 'set-enabled': {
+        const effective = this.offpeak.setEnabled(command.enabled, message.senderId);
+        logger.warn('谷时段闸已被管理员热切换', {
+          senderId: message.senderId,
+          enabled: command.enabled,
+        });
+        await this.replySimple(
+          message,
+          `谷时段闸已${command.enabled ? '开启' : '关闭'}（运行期覆盖，重启后保留）。` +
+            `当前窗口：${formatMinutes(effective.window.startMin)}–${formatMinutes(effective.window.endMin)}（${effective.timeZone}）。`,
+          'error',
+        ).catch(() => {});
+        return;
+      }
+      case 'set-window': {
+        try {
+          const effective = this.offpeak.setWindow(command.start, command.end, message.senderId);
+          logger.warn('谷时段窗口已被管理员热切换', {
+            senderId: message.senderId,
+            start: command.start,
+            end: command.end,
+          });
+          await this.replySimple(
+            message,
+            `谷时段窗口已更新为 ${formatMinutes(effective.window.startMin)}–${formatMinutes(effective.window.endMin)}（${effective.timeZone}，运行期覆盖）。`,
+            'error',
+          ).catch(() => {});
+        } catch (error) {
+          const detail =
+            error instanceof OffpeakConfigError ? error.message : '窗口参数无效';
+          await this.replySimple(message, `设置失败：${detail}`, 'error').catch(() => {});
+        }
+        return;
+      }
+      case 'reset': {
+        this.offpeak.clearOverride(message.senderId);
+        logger.warn('谷时段闸覆盖已被管理员清除，恢复 env 默认', { senderId: message.senderId });
+        await this.replySimple(message, this.renderOffpeakStatus(), 'error').catch(() => {});
+        return;
+      }
+      case 'invalid': {
+        await this.replySimple(
+          message,
+          `${command.detail}。${OFFPEAK_COMMAND_USAGE}`,
+          'error',
+        ).catch(() => {});
+        return;
+      }
+    }
+  }
+
+  /** 闸状态的纯文本描述（status 命令与 reset 后的回执共用）。 */
+  private renderOffpeakStatus(): string {
+    const snapshot = this.offpeak.snapshot();
+    const { config } = this.deps;
+    const decision = evaluateGate({
+      config: this.offpeak.effective(),
+      provider: config.dsh.provider,
+      model: config.dsh.model,
+      isAdmin: false,
+      now: this.now(),
+    });
+    const lines = [
+      `谷时段闸：${snapshot.enabled ? '开启' : '关闭'}${snapshot.overridden ? '（管理员覆盖）' : '（env 默认）'}`,
+      `窗口：${snapshot.window}（${snapshot.timeZone}）`,
+      `模型匹配：${snapshot.modelPattern}；当前模型 ${config.dsh.provider}/${config.dsh.model}`,
+      `当前判定：${decision.gated ? '拦截中（正价时段）' : `放行（${decision.reason}）`}`,
+      OFFPEAK_COMMAND_USAGE,
+    ];
+    return lines.join('\n');
   }
 
   /** 发一条简单回复（错误/忙提示）。配额不足时静默失败。 */

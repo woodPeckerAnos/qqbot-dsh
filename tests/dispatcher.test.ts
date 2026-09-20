@@ -129,7 +129,7 @@ interface SentMessage {
   body: SendMessageRequest;
 }
 
-function setup(options: { configOverrides?: Record<string, string> } = {}) {
+function setup(options: { configOverrides?: Record<string, string>; now?: () => number } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'qqbot-disp-'));
   const paths = resolveStorePaths({
     workspacesRoot: join(root, 'ws'),
@@ -177,6 +177,7 @@ function setup(options: { configOverrides?: Record<string, string> } = {}) {
     seen,
     sessions,
     paths,
+    ...(options.now !== undefined ? { now: options.now } : {}),
   });
 
   // 接线：真实实现里 main.ts 把 pool 的事件转给 dispatcher。
@@ -622,5 +623,195 @@ describe('Dispatcher 统计', () => {
     expect(stats.completed).toBe(1);
     expect(stats.repliesSent).toBe(1);
     expect(stats.inFlight).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 谷时段闸（DeepSeek 正价时段不调用 API）
+// ---------------------------------------------------------------------------
+
+// 固定时间戳：Asia/Shanghai 的 12:00（正价）与 02:00（谷内）
+const SHANGHAI_NOON = Date.UTC(2026, 0, 15, 4, 0);
+const SHANGHAI_2AM = Date.UTC(2026, 0, 14, 18, 0);
+
+const OFFPEAK_ON = {
+  QQ_OFFPEAK_ENABLED: 'true',
+  QQ_OFFPEAK_START: '00:30',
+  QQ_OFFPEAK_END: '08:30',
+  QQ_OFFPEAK_TZ: 'Asia/Shanghai',
+};
+
+describe('谷时段闸', () => {
+  it('峰时段拦截：直接回复提示，不派发给 runtime、不写对话记录', async () => {
+    ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_NOON });
+    await ctx.dispatcher.handleEvent(makeMessage());
+
+    expect(ctx.runtime.prompts).toHaveLength(0);
+    expect(ctx.sent).toHaveLength(1);
+    const body = ctx.sent[0]!.body;
+    expect(body.content).toContain('正价时段');
+    expect(body.content).toContain('00:30–08:30');
+    expect(ctx.conversations.readTail('GROUP-1', 10)).toHaveLength(0);
+    expect(ctx.dispatcher.snapshotStats().gatedOffpeak).toBe(1);
+  });
+
+  it('谷时段内正常处理', async () => {
+    ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_2AM });
+    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await pending;
+
+    expect(ctx.sent.at(-1)!.body.content).toBe('好');
+    expect(ctx.dispatcher.snapshotStats().gatedOffpeak).toBe(0);
+  });
+
+  it('默认关闭：不配 QQ_OFFPEAK_ENABLED 时峰时段也正常处理（不影响既有部署）', async () => {
+    ctx = setup({ now: () => SHANGHAI_NOON });
+    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await pending;
+
+    expect(ctx.runtime.prompts).toHaveLength(1);
+  });
+
+  it('模型不匹配时不拦（换成非 DeepSeek 模型后峰时段也放行）', async () => {
+    ctx = setup({
+      configOverrides: { ...OFFPEAK_ON, DSH_PROVIDER: 'other-provider', DSH_MODEL: 'some-other-model' },
+      now: () => SHANGHAI_NOON,
+    });
+    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await pending;
+
+    expect(ctx.runtime.prompts).toHaveLength(1);
+  });
+
+  it('管理员任何时段都不被拦', async () => {
+    ctx = setup({
+      configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
+      now: () => SHANGHAI_NOON,
+    });
+    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await pending;
+
+    expect(ctx.runtime.prompts).toHaveLength(1);
+    expect(ctx.dispatcher.snapshotStats().gatedOffpeak).toBe(0);
+  });
+});
+
+describe('/offpeak 命令', () => {
+  it('非管理员变更配置被拒绝，闸保持拦截', async () => {
+    ctx = setup({
+      configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'SOMEONE-ELSE' },
+      now: () => SHANGHAI_NOON,
+    });
+    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak off' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('无权限');
+    expect(ctx.runtime.prompts).toHaveLength(0);
+
+    // 闸仍然生效
+    await ctx.dispatcher.handleEvent(makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('正价时段');
+    expect(ctx.runtime.prompts).toHaveLength(0);
+  });
+
+  it('管理员 /offpeak off 热切换后，下一条消息立即放行，且覆盖持久化', async () => {
+    ctx = setup({
+      configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
+      now: () => SHANGHAI_NOON,
+    });
+    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak off' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('已关闭');
+    expect(ctx.runtime.prompts).toHaveLength(0);
+
+    // 下一条普通消息立即放行（热切换，无需重启）
+    const pending = ctx.dispatcher.handleEvent(
+      makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY' }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await pending;
+
+    // 覆盖已持久化到 stateDir
+    const { readFileSync } = await import('node:fs');
+    const file = JSON.parse(
+      readFileSync(join(ctx.paths.stateDir, 'offpeak-override.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    expect(file['enabled']).toBe(false);
+  });
+
+  it('管理员 /offpeak on 热开启后恢复拦截', async () => {
+    ctx = setup({
+      configOverrides: { ...OFFPEAK_ON, QQ_OFFPEAK_ENABLED: 'false', QQ_ADMIN_OPENIDS: 'MEMBER-1' },
+      now: () => SHANGHAI_NOON,
+    });
+    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak on' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('已开启');
+
+    await ctx.dispatcher.handleEvent(
+      makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY' }),
+    );
+    expect(ctx.sent.at(-1)!.body.content).toContain('正价时段');
+    expect(ctx.runtime.prompts).toHaveLength(0);
+  });
+
+  it('/offpeak status 对非管理员开放，不进 runtime、不写对话记录', async () => {
+    ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_NOON });
+    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak status' }));
+
+    const text = ctx.sent.map((item) => item.body.content ?? '').join('\n');
+    expect(text).toContain('谷时段闸：开启');
+    expect(text).toContain('拦截中');
+    expect(ctx.runtime.prompts).toHaveLength(0);
+    expect(ctx.conversations.readTail('GROUP-1', 10)).toHaveLength(0);
+  });
+
+  it('/offpeak whoami 回senderId（管理员自助发现 openid 的入口）', async () => {
+    ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_NOON });
+    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak whoami' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('MEMBER-1');
+  });
+
+  it('/offpeak window 参数非法时回复错误，不改变配置', async () => {
+    ctx = setup({
+      configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
+      now: () => SHANGHAI_NOON,
+    });
+    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak window 25:00-26:00' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('设置失败');
+
+    // 配置未被破坏：峰时段仍按原窗口拦截
+    await ctx.dispatcher.handleEvent(
+      makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY' }),
+    );
+    expect(ctx.sent.at(-1)!.body.content).toContain('00:30–08:30');
+  });
+
+  it('群聊里带 mention 前缀的命令也能识别', async () => {
+    ctx = setup({
+      configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
+      now: () => SHANGHAI_NOON,
+    });
+    await ctx.dispatcher.handleEvent(makeMessage({ content: '<@!99999> /offpeak status' }));
+    const text = ctx.sent.map((item) => item.body.content ?? '').join('\n');
+    expect(text).toContain('谷时段闸');
+  });
+
+  it('统计与 /metrics 快照里能看到闸状态', async () => {
+    ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_NOON });
+    await ctx.dispatcher.handleEvent(makeMessage());
+    const stats = ctx.dispatcher.snapshotStats();
+    expect(stats.gatedOffpeak).toBe(1);
+    expect(stats.offpeak).toMatchObject({ enabled: true, overridden: false });
   });
 });

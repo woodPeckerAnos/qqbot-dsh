@@ -105,6 +105,40 @@ describe('loadConfig', () => {
     expect(config.qq.apiBase).toBe('https://api.bot.qq.com');
     expect(config.dsh.model).toBe('deepseek-flash');
   });
+
+  it('谷时段闸默认关闭、默认窗口 00:30-08:30（Asia/Shanghai）', () => {
+    const config = loadConfig(baseEnv);
+    expect(config.offpeak).toEqual({
+      enabled: false,
+      start: '00:30',
+      end: '08:30',
+      timeZone: 'Asia/Shanghai',
+      modelPattern: 'deepseek',
+    });
+  });
+
+  it('谷时段窗口格式非法时起不起不来（配置错误要在启动期爆出来）', () => {
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_START: '八点半' })).toThrow(/HH:MM/);
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_END: '24:00' })).toThrow(/超出范围/);
+    // 空窗口（起止相同）没有语义，直接拒绝
+    expect(() =>
+      loadConfig({ ...baseEnv, QQ_OFFPEAK_START: '08:30', QQ_OFFPEAK_END: '08:30' }),
+    ).toThrow(/空窗口/);
+  });
+
+  it('QQ_OFFPEAK_TZ 必须是有效 IANA 时区', () => {
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_TZ: 'Mars/Olympus_Mons' })).toThrow(
+      /不是有效时区/,
+    );
+    expect(loadConfig({ ...baseEnv, QQ_OFFPEAK_TZ: 'UTC' }).offpeak.timeZone).toBe('UTC');
+  });
+
+  it('QQ_ADMIN_OPENIDS 按逗号拆分并去空白，默认无管理员（fail-closed）', () => {
+    expect(loadConfig(baseEnv).qq.adminOpenids).toEqual([]);
+    expect(
+      loadConfig({ ...baseEnv, QQ_ADMIN_OPENIDS: ' alice , bob ,, ' }).qq.adminOpenids,
+    ).toEqual(['alice', 'bob']);
+  });
 });
 
 describe('describeConfig', () => {

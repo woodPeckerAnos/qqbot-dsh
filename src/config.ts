@@ -10,6 +10,7 @@
  */
 
 import { Intent, DEFAULT_INTENTS, describeIntents } from './qq/types.js';
+import { isValidTimeZone, parseTimeHHMM, OffpeakConfigError } from './offpeak.js';
 
 export interface Config {
   qq: {
@@ -33,6 +34,13 @@ export interface Config {
      * 单聊与群聊共用 `1<<25` 这一个 intent，无法在订阅层屏蔽，所以用一个
      * 显式开关在业务层决定是否响应私聊。
      */
+    /**
+     * 管理员 openid 白名单（QQ_ADMIN_OPENIDS，逗号分隔）。
+     * 管理员永不被谷时段闸拦截，且可用 /offpeak 命令热切换闸配置。
+     * 注意：群聊里是 member_openid，单聊里是 user_openid，同一个人两个值不同。
+     * 留空 = 没有管理员，命令的变更类子命令对所有人关闭（fail-closed）。
+     */
+    adminOpenids: string[];
     c2c: {
       /** 是否响应单聊消息（false = 只服务群聊） */
       enabled: boolean;
@@ -63,6 +71,22 @@ export interface Config {
     dshHome: string;
     workspacesRoot: string;
     stateDir: string;
+  };
+  /**
+   * 谷时段闸：命中 modelPattern 的模型在谷时段窗口之外不调用 API，直接回复提示。
+   * 运行期可被管理员 /offpeak 命令覆盖（见 offpeak.ts），这里只是 env 默认层。
+   */
+  offpeak: {
+    /** 总开关（QQ_OFFPEAK_ENABLED，默认 false） */
+    enabled: boolean;
+    /** 窗口起，HH:MM（QQ_OFFPEAK_START，默认 00:30） */
+    start: string;
+    /** 窗口止，HH:MM（QQ_OFFPEAK_END，默认 08:30），区间为 [start, end) */
+    end: string;
+    /** 窗口所在时区（QQ_OFFPEAK_TZ，默认 Asia/Shanghai） */
+    timeZone: string;
+    /** 命中判定：`<provider>/<model>` 包含该子串（QQ_OFFPEAK_MODEL_PATTERN，默认 deepseek） */
+    modelPattern: string;
   };
   health: {
     port: number;
@@ -202,6 +226,35 @@ export function loadConfig(env: Env = process.env): Config {
     );
   }
 
+  const adminOpenids = optionalString(env, 'QQ_ADMIN_OPENIDS', '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+
+  // --- 谷时段闸：格式错误在启动期爆出来，不等到拦截时才发觉配错 -------------
+  const offpeakStart = optionalString(env, 'QQ_OFFPEAK_START', '00:30');
+  const offpeakEnd = optionalString(env, 'QQ_OFFPEAK_END', '08:30');
+  const offpeakTimeZone = optionalString(env, 'QQ_OFFPEAK_TZ', 'Asia/Shanghai');
+  try {
+    const startMin = parseTimeHHMM(offpeakStart);
+    const endMin = parseTimeHHMM(offpeakEnd);
+    if (startMin === endMin) {
+      throw new OffpeakConfigError('QQ_OFFPEAK_START 与 QQ_OFFPEAK_END 不能相同（那会是一个空窗口）');
+    }
+  } catch (error) {
+    if (error instanceof OffpeakConfigError) {
+      throw new ConfigError(`谷时段窗口配置无效：${error.message}`, [
+        '格式为 HH:MM，例如 QQ_OFFPEAK_START=00:30 / QQ_OFFPEAK_END=08:30',
+      ]);
+    }
+    throw error;
+  }
+  if (!isValidTimeZone(offpeakTimeZone)) {
+    throw new ConfigError(`QQ_OFFPEAK_TZ 不是有效时区：${JSON.stringify(offpeakTimeZone)}`, [
+      '使用 IANA 时区名，例如 Asia/Shanghai、UTC',
+    ]);
+  }
+
   return {
     qq: {
       appId,
@@ -215,6 +268,7 @@ export function loadConfig(env: Env = process.env): Config {
       progressIntervalMs: optionalInt(env, 'QQ_PROGRESS_INTERVAL_MS', 90_000, { min: 1_000, max: 280_000 }),
       progressMax,
       turnTimeoutMs,
+      adminOpenids,
       c2c: {
         enabled: optionalBool(env, 'QQ_C2C_ENABLED', true),
         maxRepliesPerMsg: c2cMaxReplies,
@@ -242,6 +296,13 @@ export function loadConfig(env: Env = process.env): Config {
       dshHome: optionalString(env, 'DSH_HOME', '/data/dsh'),
       workspacesRoot: optionalString(env, 'QQ_WORKSPACES_ROOT', '/data/workspaces'),
       stateDir: optionalString(env, 'QQ_STATE_DIR', '/data/bot'),
+    },
+    offpeak: {
+      enabled: optionalBool(env, 'QQ_OFFPEAK_ENABLED', false),
+      start: offpeakStart,
+      end: offpeakEnd,
+      timeZone: offpeakTimeZone,
+      modelPattern: optionalString(env, 'QQ_OFFPEAK_MODEL_PATTERN', 'deepseek'),
     },
     health: {
       port: optionalInt(env, 'QQ_HEALTH_PORT', 8080, { min: 0, max: 65_535 }),
@@ -273,5 +334,12 @@ export function describeConfig(config: Config): Record<string, unknown> {
     },
     pool: config.pool,
     paths: config.paths,
+    adminCount: config.qq.adminOpenids.length,
+    offpeak: {
+      enabled: config.offpeak.enabled,
+      window: `${config.offpeak.start}\u2013${config.offpeak.end}`,
+      timeZone: config.offpeak.timeZone,
+      modelPattern: config.offpeak.modelPattern,
+    },
   };
 }

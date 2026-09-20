@@ -14,6 +14,7 @@
 import { createServer, type Server } from 'node:http';
 
 import type { Logger } from './logger.js';
+import type { OffpeakSnapshot } from './offpeak.js';
 import type { EventSourceHealth } from './qq/gateway.js';
 import type { DispatcherStats } from './pipeline/dispatcher.js';
 
@@ -22,7 +23,7 @@ export interface HealthSnapshot {
   uptimeMs: number;
   gateway: EventSourceHealth & { staleMs?: number };
   runtime: { size: number; activeConversationKeys: string[] };
-  dispatcher: DispatcherStats & { inFlight: number; queued: number };
+  dispatcher: DispatcherStats & { inFlight: number; queued: number; offpeak: OffpeakSnapshot };
   token: { hasToken: boolean; expiresInMs: number };
   /** 最近一次收到网关事件的时间距今毫秒；undefined 表示还没收到过 */
   lastEventAgeMs?: number;
@@ -126,7 +127,7 @@ export function buildHealthSnapshot(input: {
   startedAt: number;
   gateway: EventSourceHealth;
   runtime: { size: number; activeConversationKeys: string[] };
-  dispatcher: DispatcherStats & { inFlight: number; queued: number };
+  dispatcher: DispatcherStats & { inFlight: number; queued: number; offpeak: OffpeakSnapshot };
   token: { hasToken: boolean; expiresInMs: number };
   now?: number;
 }): HealthSnapshot {
