@@ -245,10 +245,52 @@ export interface SendGroupMessageRequest {
   msg_seq?: number;
 }
 
+/**
+ * POST /v2/users/{user_openid}/messages 请求体。
+ *
+ * ⚠ `msg_id` 与 `event_id` **互斥**：
+ *   - 回复用户提问 → 用 `msg_id`（来自事件 d.id）
+ *   - 回复进群、按钮交互 → 用 `event_id`（来自信封 id）
+ * `msg_seq` 默认 1；同一 (msg_id, msg_seq) 组合不能重复发送，否则 40054005。
+ */
+export interface SendUserMessageRequest {
+  msg_type: number;
+  content?: string;
+  markdown?: { content: string };
+  media?: { file_info: string };
+  message_reference?: { message_id: string };
+  msg_id?: string;
+  event_id?: string;
+  msg_seq?: number;
+}
+
+/**
+ * POST /v2/users/{user_openid}/messages 请求体。
+ *
+ * ⚠ `msg_id` 与 `event_id` **互斥**：
+ *   - 回复用户提问 → 用 `msg_id`（来自事件 d.id）
+ *   - 回复进群、按钮交互 → 用 `event_id`（来自信封 id）
+ * `msg_seq` 默认 1；同一 (msg_id, msg_seq) 组合不能重复发送，否则 40054005。
+ */
+export interface SendUserStreamMessageRequest {
+  input_mode?: "append"|"replace";
+  input_state?: number;
+  index?: number;
+  content_type?: "text"|"markdown";
+  content_raw?: string;
+  event_id?: string;
+  msg_id?: string;
+  stream_msg_id?: string;
+  msg_seq?: number;
+  is_wakeup?: boolean;
+}
+
 export interface SendMessageResponse {
   id?: string;
   timestamp?: string;
   ext_info?: { ref_idx?: string };
+  // 仅流式消息生效
+  remain_msg_len?: number;
 }
 
 /**

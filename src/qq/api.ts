@@ -19,6 +19,8 @@ import {
   type GatewayResponse,
   type QqApiError,
   type SendGroupMessageRequest,
+  type SendUserMessageRequest,
+  type SendUserStreamMessageRequest,
   type SendMessageResponse,
 } from './types.js';
 
@@ -161,6 +163,52 @@ export class QqApi {
     return this.request<SendMessageResponse>(
       'POST',
       `/v2/groups/${encodeURIComponent(groupOpenid)}/messages`,
+      message,
+    );
+  }
+
+  /**
+   * 发一条私聊消息（被动回复）。
+   *
+   * 调用方负责分配 `msg_seq`（见 pipeline 的配额账本），因为去重是按
+   * (msg_id, msg_seq) 组合判定的。
+   * 
+   * # Note
+   * 100 QPS，包括主动、被动等所有消息类型
+   * 
+   * # Doc
+   * https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html
+   */
+  async sendUserMessage(
+    userOpenId: string,
+    message: SendUserMessageRequest,
+  ): Promise<SendMessageResponse> {
+    return this.request<SendMessageResponse>(
+      'POST',
+      `/v2/users/${userOpenId}/messages`,
+      message,
+    );
+  }
+
+  /**
+   * 流式发送私聊消息
+   *
+   * 调用方负责分配 `msg_seq`（见 pipeline 的配额账本），因为去重是按
+   * (msg_id, msg_seq) 组合判定的。
+   * 
+   * # Note
+   * 50 QPS (单独)
+   * 
+   * # Doc
+   * https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_stream_messages.post.html
+   */
+  async sendUserStreamMessage(
+    userOpenId: string,
+    message: SendUserStreamMessageRequest,
+  ): Promise<SendMessageResponse> {
+    return this.request<SendMessageResponse>(
+      'POST',
+      `/v2/users/${userOpenId}/stream_messages`,
       message,
     );
   }
