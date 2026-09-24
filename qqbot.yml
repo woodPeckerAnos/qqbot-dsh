@@ -4,12 +4,13 @@
 #   docker compose up -d      # 直接用；要改就改这里
 #   docker compose restart qqbot   # 改完重启生效，不用重建镜像
 #
-# 密钥**不在这里**——它们只从 .env 读：
-#   QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY / ONEBOT_ACCESS_TOKEN
+# 密钥**不在这里**——它们只从环境读（.env 提供值，compose 显式传给容器）：
+#   QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY / ONEBOT_ACCESS_TOKEN / BOT_ADMINS
 #
 # 取值优先级：环境变量 > 本文件 > 代码内置默认。
-# 也就是说本文件里每一项都可以用对应的环境变量临时覆盖（变量名见每节注释）；
-# 想临时试一个值又不想动文件，就在 compose 的 environment 里给对应变量。
+# 也就是说本文件里每一项都可以用对应的环境变量临时覆盖（变量名见每节注释），
+# 但要加到 **docker-compose.yml 的 environment 段**——.env 只用于给上面那几个
+# 密钥提供值，写在那里的行为参数不会进容器。
 #
 # 键名拼错会在启动期直接报错并列出可用项（不会静默用默认值），所以放心改。
 #
