@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "QQ Bot 编排架构：现状 vs 目标",
+    "quality_profile": "showcase",
+    "viewBox": [1480, 1040],
+    "views": [
+      {
+        "id": "view-current",
+        "label": "现状",
+        "focus": ["connNow", "mainNow", "dispNow"],
+        "note": "编排内联在 main.ts，谷时段闸与命令埋在 Dispatcher 内"
+      },
+      {
+        "id": "view-target",
+        "label": "目标管线",
+        "focus": ["conn", "dedupe", "cmd", "gate", "record", "admission", "turnrunner", "responder", "pool"],
+        "note": "Ingress 串行 stage 链（可短路）+ Egress Responder，Dispatcher 收窄为 TurnRunner"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "connNow",
+      "type": "external",
+      "label": "连接器（官方 QQ / OneBot）",
+      "sublabel": "adapters/* · 拉平的 connector 层",
+      "pos": [60, 160],
+      "size": [200, 76]
+    },
+    {
+      "id": "mainNow",
+      "type": "backend",
+      "label": "main.ts 组装层",
+      "sublabel": "eventChains 每会话串行 · 与 KeyedMutex 重复",
+      "pos": [340, 160],
+      "size": [260, 76]
+    },
+    {
+      "id": "dispNow",
+      "type": "backend",
+      "label": "Dispatcher（817 行）",
+      "sublabel": "offpeak 闸+命令 · 准入 · turn · 回复组装",
+      "pos": [700, 160],
+      "size": [300, 76]
+    },
+    {
+      "id": "conn",
+      "type": "external",
+      "label": "连接器（官方 QQ / OneBot）",
+      "sublabel": "core/connector.ts 唯一接缝",
+      "pos": [60, 560],
+      "size": [200, 76]
+    },
+    {
+      "id": "dedupe",
+      "type": "backend",
+      "label": "① 去重 dedupe",
+      "sublabel": "seen.claim · 重复即丢弃",
+      "pos": [300, 560],
+      "size": [150, 76]
+    },
+    {
+      "id": "cmd",
+      "type": "backend",
+      "label": "② 命令路由",
+      "sublabel": "/offpeak · 终态 stage",
+      "pos": [490, 560],
+      "size": [150, 76]
+    },
+    {
+      "id": "gate",
+      "type": "security",
+      "label": "③ 谷时段闸",
+      "sublabel": "拦截→回复通知 · 短路",
+      "pos": [680, 560],
+      "size": [150, 76]
+    },
+    {
+      "id": "record",
+      "type": "backend",
+      "label": "④ 记录 record",
+      "sublabel": "写对话记录（重启回放用）",
+      "pos": [870, 560],
+      "size": [150, 76]
+    },
+    {
+      "id": "admission",
+      "type": "backend",
+      "label": "⑤ 准入 admission",
+      "sublabel": "c2c 开关 · 并发闸门 · 每会话串行",
+      "pos": [1060, 560],
+      "size": [170, 76]
+    },
+    {
+      "id": "turnrunner",
+      "type": "backend",
+      "label": "⑥ TurnRunner",
+      "sublabel": "pool acquire · turn 超时 · runtime 事件路由",
+      "pos": [1270, 560],
+      "size": [170, 76]
+    },
+    {
+      "id": "responder",
+      "type": "backend",
+      "label": "Responder（每条消息一个）",
+      "sublabel": "ReplyLedger 唯一配额点 · 分段 · 进度回执",
+      "pos": [1270, 800],
+      "size": [190, 76]
+    },
+    {
+      "id": "pool",
+      "type": "cloud",
+      "label": "RuntimePool",
+      "sublabel": "DSH 进程池 · 冷启动回放",
+      "pos": [870, 800],
+      "size": [180, 76]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "现状：编排散在组装层与 Dispatcher",
+      "wraps": ["connNow", "mainNow", "dispNow"]
+    },
+    {
+      "kind": "region",
+      "label": "目标：Ingress 串行管线（stage 可短路，顺序即架构约束）",
+      "wraps": ["dedupe", "cmd", "gate", "record", "admission"]
+    }
+  ],
+  "connections": [
+    { "id": "now-event", "from": "connNow", "to": "mainNow", "label": "NormalizedEvent" },
+    { "id": "now-handle", "from": "mainNow", "to": "dispNow", "label": "handleEvent（内联串行）", "labelDy": -34 },
+    { "id": "now-reply", "from": "dispNow", "to": "connNow", "label": "回复组装也在内部", "variant": "dashed", "fromSide": "bottom", "toSide": "bottom", "via": [[850, 300], [160, 300]] },
+    { "id": "in-event", "from": "conn", "to": "dedupe", "label": "NormalizedEvent", "labelDy": -34 },
+    { "id": "in-dedupe-cmd", "from": "dedupe", "to": "cmd" },
+    { "id": "in-cmd-gate", "from": "cmd", "to": "gate", "label": "非命令" },
+    { "id": "in-gate-record", "from": "gate", "to": "record", "label": "放行" },
+    { "id": "in-record-adm", "from": "record", "to": "admission" },
+    { "id": "in-adm-turn", "from": "admission", "to": "turnrunner", "label": "串行锁内", "labelDy": -25 },
+    { "id": "turn-respond", "from": "turnrunner", "to": "responder", "label": "progress / final / error", "fromSide": "bottom", "toSide": "top" },
+    { "id": "turn-pool", "from": "turnrunner", "to": "pool", "label": "acquire / prompt" },
+    { "id": "respond-conn", "from": "responder", "to": "conn", "label": "connector.reply（分段+配额后）", "variant": "emphasis", "fromSide": "bottom", "toSide": "bottom", "via": [[1365, 950], [160, 950]] }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "现状问题（重构要消除的）",
+      "items": [
+        "main.ts 的 eventChains 与 Dispatcher 的 KeyedMutex 同为每会话串行，职责重复",
+        "offpeak 闸 + /offpeak 命令约占 Dispatcher 250 / 817 行，且是前置短路语义，不属于 turn 编排",
+        "Dispatcher 混杂四种职责：准入控制、turn 生命周期、回复组装、管理命令",
+        "ReplyLedger 在 runTurn / replySimple / deliverOutcome 三处各自 new，配额不变量靠注释维持"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Ingress 顺序约束（顺序即文档）",
+      "items": [
+        "去重 → 命令 → 闸 → 记录 → 准入，错了有真实后果",
+        "命令必须先于闸：管理员必须能在峰时段 /offpeak off",
+        "闸在记录与名额之前：被拦消息不污染回放、不占并发",
+        "每会话串行只保留在 admission 一处（KeyedMutex 原地复用）"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "迁移步骤（每步可独立验证）",
+      "items": [
+        "① 抽 Responder：收口 ledger / 分段 / 进度 / 发送，纯内聚移动",
+        "② offpeak 拆三份：Gate 服务 + GateInterceptor + CommandRouter",
+        "③ 建 Ingress 管线，main.ts 退回纯组装，删除 eventChains",
+        "④ Dispatcher 收窄为 TurnRunner，stats 改为各 stage 自报"
+      ]
+    }
+  ]
+}

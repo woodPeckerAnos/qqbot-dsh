@@ -60,14 +60,9 @@ import type { SeenStore } from '../store/seen.js';
 import type { SessionStore } from '../store/sessions.js';
 import { ensureWorkspace, type StorePaths } from '../store/paths.js';
 import { KeyedMutex, Semaphore, waitUntil } from './concurrency.js';
-import { segmentText } from './chunk.js';
-import {
-  defaultProgressText,
-  ProgressScheduler,
-  ReplyLedger,
-  ReplyQuotaExhaustedError,
-  type ReplyTicket,
-} from './progress.js';
+import { defaultProgressText } from './progress.js';
+import { Responder } from './responder.js';
+import { PipelineStats } from './stats.js';
 
 export interface DispatcherDeps {
   config: Config;
@@ -102,19 +97,7 @@ export interface DispatcherStats {
 export class Dispatcher {
   private readonly semaphore: Semaphore;
   private readonly conversationLock = new KeyedMutex();
-  private readonly stats: DispatcherStats = {
-    received: 0,
-    deduplicated: 0,
-    rejectedBusy: 0,
-    skippedC2C: 0,
-    gatedOffpeak: 0,
-    adminCommands: 0,
-    completed: 0,
-    failed: 0,
-    timedOut: 0,
-    repliesSent: 0,
-    progressSent: 0,
-  };
+  private readonly stats = new PipelineStats();
 
   /**
    * 每个会话当前进行中的 turn 累积器，供事件路由定位。
@@ -250,7 +233,7 @@ export class Dispatcher {
         senderId: message.senderId,
         offpeak: this.offpeak.snapshot(),
       });
-      await this.replySimple(message, renderGateNotice(this.offpeak.effective()), 'error').catch(
+      await this.replySimple(message, renderGateNotice(this.offpeak.effective())).catch(
         () => {},
       );
       return;
@@ -278,7 +261,6 @@ export class Dispatcher {
       await this.replySimple(
         message,
         '我现在同时在处理的请求太多，暂时忙不过来。请稍后再发一次。',
-        'error',
       ).catch(() => {});
       return;
     }
@@ -291,7 +273,7 @@ export class Dispatcher {
       messageLogger.error('处理提问时发生未预期错误', {
         error: error instanceof Error ? error.message : String(error),
       });
-      await this.replySimple(message, '处理你的请求时出错了，我已经记录到日志。', 'error').catch(
+      await this.replySimple(message, '处理你的请求时出错了，我已经记录到日志。').catch(
         () => {},
       );
     } finally {
@@ -307,34 +289,19 @@ export class Dispatcher {
     const policy = connector.policy(message.target.kind);
 
     const workspacePath = ensureWorkspace(paths, conversationKey);
-    const ledger = new ReplyLedger({
-      msgId: message.msgId,
-      totalQuota: policy.maxRepliesPerMsg,
-      progressQuota: policy.progressMax,
+    // Egress 收口：本轮的进度回执与最终答复都经它发出（唯一配额账本）
+    const responder = new Responder({
+      message,
+      connector,
+      policy,
+      conversations: this.deps.conversations,
+      stats: this.stats,
+      logger,
+      ...(this.deps.now !== undefined ? { now: this.deps.now } : {}),
     });
 
-    // 先声明，再构造依赖它们的 ProgressScheduler：
-    // 虽然 renderText 只会在 start() 之后被调用，但把声明放在使用之前更不容易出错。
     const startedAt = this.now();
     let accumulator = new TurnAccumulator('pending');
-
-    const progress = new ProgressScheduler({
-      afterMs: policy.progressAfterMs,
-      intervalMs: policy.progressIntervalMs,
-      renderText: () => defaultProgressText(this.elapsedSince(startedAt), accumulator.toolsInvoked),
-      send: async (text) => {
-        const ticket = ledger.allocate('progress');
-        await this.sendSegment(message, text, ticket, logger);
-        this.stats.progressSent += 1;
-      },
-      allocateTicket: () => {
-        // 试分配哨兵：真正的分配发生在 send 里。这里只回答"还该不该继续调度"。
-        if (ledger.progressRemaining <= 0 || ledger.remaining <= 1) return undefined;
-        return { kind: 'progress', msgSeq: -1, remaining: ledger.remaining };
-      },
-      logger,
-    });
-
     let entry: RuntimeEntry | undefined;
 
     try {
@@ -357,7 +324,9 @@ export class Dispatcher {
         generation: session.generation,
       });
 
-      progress.start();
+      responder.startProgress(() =>
+        defaultProgressText(this.elapsedSince(startedAt), accumulator.toolsInvoked),
+      );
 
       // 结束条件：status 回 idle 且本轮已 turn/end（由 routeSessionStatus 触发 finish）
       const settled = await waitUntil(() => accumulator.isSettled, policy.turnTimeoutMs, 120);
@@ -377,9 +346,9 @@ export class Dispatcher {
         void pool.drop(conversationKey).catch(() => {});
       }
 
-      await this.deliverOutcome(message, outcome, ledger, logger);
+      await responder.deliver(outcome);
     } finally {
-      progress.stop();
+      responder.stopProgress();
       this.activeTurns.delete(conversationKey);
       if (entry !== undefined) pool.release(conversationKey);
     }
@@ -433,67 +402,6 @@ export class Dispatcher {
     return `${replay}\n\n${current}`;
   }
 
-  private async deliverOutcome(
-    message: NormalizedMessage,
-    outcome: TurnOutcome,
-    ledger: ReplyLedger,
-    logger: Logger,
-  ): Promise<void> {
-    const { conversations } = this.deps;
-    const conversationKey = message.target.key;
-
-    let text = outcome.text;
-
-    switch (outcome.kind) {
-      case 'completed':
-        if (text === '') {
-          text = '（这次没有产生可回复的内容）';
-        }
-        break;
-      case 'max-tokens':
-        text = `${text}\n\n（回答达到长度上限被截断，可以让我继续）`.trim();
-        break;
-      case 'timeout':
-        text =
-          text === ''
-            ? '这个任务超过了单轮时限，我已经把它中断了。可以拆成更小的步骤再让我试。'
-            : `任务超过单轮时限已中断。中断前已完成的部分：\n\n${text}`;
-        break;
-      case 'aborted':
-        text = text === '' ? '任务被中断了。' : `任务被中断。中断前的部分结果：\n\n${text}`;
-        break;
-      case 'blocked':
-        text = '这个操作被安全策略阻止了，我无法执行。';
-        break;
-      case 'error':
-      default:
-        text =
-          text === ''
-            ? `执行出错了${outcome.errorMessage !== undefined ? `：${outcome.errorMessage}` : ''}`
-            : `${text}\n\n（执行过程中出现错误${
-                outcome.errorMessage !== undefined ? `：${outcome.errorMessage}` : ''
-              }）`;
-        break;
-    }
-
-    // 本轮结果按 'final' 记账：即使是 error 类结果，它也是对本轮提问的正式答复，
-    // 不应占用 replySimple 那条"系统级错误提示"的语义。
-    const sentAny = await this.sendLong(message, text, ledger, logger, 'final');
-
-    if (!sentAny) {
-      logger.warn('本轮结果未能发送出去（配额或平台错误）', { kind: outcome.kind });
-    }
-
-    // 记录助手回复（供下次冷启动回放）
-    conversations.append(conversationKey, {
-      role: 'assistant',
-      speaker: 'bot',
-      text,
-      ts: this.now(),
-      replyToMsgId: message.msgId,
-    });
-  }
-
   // -------------------------------------------------------------------------
   // 谷时段闸：/offpeak 命令
   // -------------------------------------------------------------------------
@@ -520,7 +428,6 @@ export class Dispatcher {
       await this.replySimple(
         message,
         '无权限：/offpeak 的变更操作仅限管理员（BOT_ADMINS 白名单）。',
-        'error',
       ).catch(() => {});
       return;
     }
@@ -535,12 +442,11 @@ export class Dispatcher {
           `你的管理员身份键：${message.target.platform}:${message.senderId}` +
             `（${idKind}，平台 ${message.target.platform}）。` +
             '把它加进环境变量 BOT_ADMINS（逗号分隔）即可成为管理员。',
-          'error',
         ).catch(() => {});
         return;
       }
       case 'status': {
-        await this.replySimple(message, this.renderOffpeakStatus(), 'error').catch(() => {});
+        await this.replySimple(message, this.renderOffpeakStatus()).catch(() => {});
         return;
       }
       case 'set-enabled': {
@@ -554,7 +460,6 @@ export class Dispatcher {
           message,
           `谷时段闸已${command.enabled ? '开启' : '关闭'}（运行期覆盖，重启后保留）。` +
             `当前窗口：${formatWindows(effective.windows)}（${effective.timeZone}）。`,
-          'error',
         ).catch(() => {});
         return;
       }
@@ -570,12 +475,11 @@ export class Dispatcher {
           await this.replySimple(
             message,
             `谷时段窗口已更新为 ${formatWindows(effective.windows)}（${effective.timeZone}，运行期覆盖）。`,
-            'error',
           ).catch(() => {});
         } catch (error) {
           const detail =
             error instanceof OffpeakConfigError ? error.message : '窗口参数无效';
-          await this.replySimple(message, `设置失败：${detail}`, 'error').catch(() => {});
+          await this.replySimple(message, `设置失败：${detail}`).catch(() => {});
         }
         return;
       }
@@ -599,11 +503,10 @@ export class Dispatcher {
             message,
             `已${adding ? '追加' : '移除'}全天谷价日期 ${command.date}（运行期覆盖）。` +
               `当前节假日表共 ${snapshot.holidaysCount} 天。`,
-            'error',
           ).catch(() => {});
         } catch (error) {
           const detail = error instanceof OffpeakConfigError ? error.message : '日期参数无效';
-          await this.replySimple(message, `设置失败：${detail}`, 'error').catch(() => {});
+          await this.replySimple(message, `设置失败：${detail}`).catch(() => {});
         }
         return;
       }
@@ -613,7 +516,7 @@ export class Dispatcher {
           holidays.length === 0
             ? '节假日表为空。'
             : `全天谷价日期（${holidays.length} 天）：${holidays.join('、')}`;
-        await this.replySimple(message, text, 'error').catch(() => {});
+        await this.replySimple(message, text).catch(() => {});
         return;
       }
       case 'reset': {
@@ -622,14 +525,13 @@ export class Dispatcher {
           senderId: message.senderId,
           platform: message.target.platform,
         });
-        await this.replySimple(message, this.renderOffpeakStatus(), 'error').catch(() => {});
+        await this.replySimple(message, this.renderOffpeakStatus()).catch(() => {});
         return;
       }
       case 'invalid': {
         await this.replySimple(
           message,
           `${command.detail}。${OFFPEAK_COMMAND_USAGE}`,
-          'error',
         ).catch(() => {});
         return;
       }
@@ -671,99 +573,20 @@ export class Dispatcher {
   }
 
   /** 发一条简单回复（错误/忙提示）。配额不足时静默失败。 */
-  private async replySimple(
-    message: NormalizedMessage,
-    text: string,
-    kind: 'error',
-  ): Promise<void> {
-    const policy = this.policyFor(message.target);
-    if (policy === undefined) return;
-    const ledger = new ReplyLedger({
-      msgId: message.msgId,
-      totalQuota: policy.maxRepliesPerMsg,
-      progressQuota: policy.progressMax,
-    });
-    await this.sendLong(message, text, ledger, this.deps.logger, kind);
-  }
-
-  private policyFor(target: ConversationTarget): ReplyPolicy | undefined {
-    return this.connectorFor(target)?.policy(target.kind);
-  }
-
-  /**
-   * 把长文本按配额分段发送。
-   * @returns 是否至少成功发出一条
-   */
-  private async sendLong(
-    message: NormalizedMessage,
-    text: string,
-    ledger: ReplyLedger,
-    logger: Logger,
-    kind: 'final' | 'error',
-  ): Promise<boolean> {
-    const policy = this.policyFor(message.target);
-    if (policy === undefined) return false;
-    // 剩余配额决定最多能分几段
-    const maxSegments = Math.min(ledger.remaining, policy.maxRepliesPerMsg);
-
-    const result = segmentText(text, { maxChars: policy.maxChars, maxSegments });
-    if (result.truncated) {
-      logger.warn('内容超出回复配额，已截断', {
-        originalLength: result.originalLength,
-        segments: result.segments.length,
-      });
-    }
-
-    let sent = 0;
-    for (const segment of result.segments) {
-      let ticket: ReplyTicket;
-      try {
-        ticket = ledger.allocate(kind === 'error' ? 'error' : 'final');
-      } catch (error) {
-        if (error instanceof ReplyQuotaExhaustedError) {
-          logger.warn('回复配额用尽，剩余内容未发送', { used: error.used, total: error.total });
-          break;
-        }
-        throw error;
-      }
-      try {
-        await this.sendSegment(message, segment, ticket, logger);
-        sent += 1;
-      } catch (error) {
-        logger.error('发送回复失败', {
-          seq: ticket.msgSeq,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        // 一条失败不阻塞后续分段：继续尝试，尽可能把内容送达
-      }
-    }
-    return sent > 0;
-  }
-
-  /** 实际发送一条消息：平台专有的渲染与端点选择都在连接器内部。 */
-  private async sendSegment(
-    message: NormalizedMessage,
-    text: string,
-    ticket: ReplyTicket,
-    logger: Logger,
-  ): Promise<void> {
+  private async replySimple(message: NormalizedMessage, text: string): Promise<void> {
     const connector = this.connectorFor(message.target);
     if (connector === undefined) return;
-    await connector.reply(
-      {
-        target: message.target,
-        seq: ticket.msgSeq,
-        kind: ticket.kind,
-        ...(message.msgId !== '' ? { msgId: message.msgId } : {}),
-      },
-      { text },
-    );
-    this.stats.repliesSent += 1;
-    logger.debug('已发送回复', {
-      seq: ticket.msgSeq,
-      kind: ticket.kind,
-      length: text.length,
+    const policy = connector.policy(message.target.kind);
+    const responder = new Responder({
+      message,
+      connector,
+      policy,
+      conversations: this.deps.conversations,
+      stats: this.stats,
+      logger: this.deps.logger,
+      ...(this.deps.now !== undefined ? { now: this.deps.now } : {}),
     });
+    await responder.error(text);
   }
 
   // -------------------------------------------------------------------------

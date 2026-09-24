@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "visual-check",
+  "status": "fail",
+  "visualReview": "pending",
+  "artifact": {
+    "path": "/Users/woodpeckeranos/Projects/qqbot-dsh/docs/diagrams/orchestration-redesign.html",
+    "sha256": "45ac5dadc928b3d225410dd91219595a8b4c9b092226ee8feb9cab0b39863b8b",
+    "bytes": 645330
+  },
+  "state": {
+    "detail": "read",
+    "motion": "still"
+  },
+  "chrome": {
+    "status": "available",
+    "executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  },
+  "containment": {
+    "status": "fail",
+    "viewports": []
+  },
+  "captures": {
+    "status": "fail",
+    "screenshots": [],
+    "contactSheet": null
+  },
+  "sidecars": {
+    "receipt": "orchestration-redesign.visual-check.json",
+    "contactSheet": "orchestration-redesign.visual-check.html"
+  },
+  "error": "Chrome exited before visual-check completed (null)"
+}
