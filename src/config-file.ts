@@ -97,11 +97,25 @@ export interface FileConfig {
   dsh?: DshFileConfig;
   pool?: PoolFileConfig;
   paths?: PathsFileConfig;
-  admins?: string[];
   offpeak?: OffpeakFileConfig;
   health?: HealthFileConfig;
   logLevel?: string;
 }
+
+/**
+ * 刻意**不**放进配置文件的键，以及原因。
+ *
+ * `admins` 是本文件里唯一会带个人标识的配置（真实 QQ 号 / openid）。它放在
+ * `.env` 的 `BOT_ADMINS`，这样即使仓库哪天转公开也不会泄露。写在这里直接报错，
+ * 而不是靠注释提醒——注释挡不住手快。
+ */
+const REJECTED_KEYS: Record<string, string[]> = {
+  admins: [
+    '管理员白名单含真实 QQ 号 / openid，属于个人标识，所以放在 .env 里而不是配置文件',
+    '改成在 .env 里写：BOT_ADMINS=qq-official:ABCDEF123456,onebot:123456',
+    '环境变量优先级更高，效果完全一样；发现自己身份键：给机器人发 /offpeak whoami',
+  ],
+};
 
 // ---------------------------------------------------------------------------
 // 形状校验
@@ -171,7 +185,6 @@ const HEALTH_SPEC: SectionSpec = { port: 'int' };
 
 const TOP_SCALARS: SectionSpec = {
   connectors: 'stringList',
-  admins: 'stringList',
   logLevel: 'string',
 };
 
@@ -300,6 +313,10 @@ export function parseConfigFileText(text: string, source = DEFAULT_CONFIG_FILE):
 
   const allowedTop = [...Object.keys(TOP_SCALARS), ...TOP_SECTIONS.map((s) => s.yamlKey)];
   for (const key of Object.keys(root)) {
+    const rejected = REJECTED_KEYS[key];
+    if (rejected !== undefined) {
+      throw new ConfigError(`${source}: 配置项 "${key}" 不能写在配置文件里`, rejected);
+    }
     if (!allowedTop.includes(key)) {
       throw new ConfigError(`${source}: 未知配置项 "${key}"`, [
         `可用项：${allowedTop.join('、')}`,

@@ -161,7 +161,7 @@ docker compose run --rm --entrypoint node qqbot scripts/probe-dsh.mjs      # 诊
 docker-compose.yml       生产部署入口
 docker-compose.dev.yml   开发覆盖文件（挂载本地 dist，跳过镜像重建）
 .env.example             密钥样例（只放 4 个凭证）
-qqbot.yml                行为配置（随仓库提供 = 默认配置，端口/配额/谷时段/管理员…）
+qqbot.yml                行为配置（随仓库提供 = 默认配置；不含密钥与个人标识）
 src/config.ts            env + qqbot.yml 三层合并 + 语义校验 + 启动期快速失败
 src/config-file.ts       qqbot.yml 读取与形状校验（未知键名直接报错）
 src/core/       接入层契约：BotConnector / 归一化事件 / 回复策略（编排层只依赖这里）

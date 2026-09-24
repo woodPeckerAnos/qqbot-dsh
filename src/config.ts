@@ -48,10 +48,14 @@ export interface Config {
   /** 启用的接入平台（BOT_CONNECTORS / connectors，逗号分隔） */
   connectors: ConnectorName[];
   /**
-   * 管理员白名单（BOT_ADMINS / admins），条目格式为 `platform:senderId`，
-   * 例如 `qq-official:ABCDEF...` 或 `onebot:123456`。
+   * 管理员白名单，**只来自 env**（BOT_ADMINS，逗号分隔）。
+   *
+   * 条目格式为 `platform:senderId`，例如 `qq-official:ABCDEF...` 或 `onebot:123456`。
    * 兼容项：QQ_ADMIN_OPENIDS 里的裸 openid 会自动加上 `qq-official:` 前缀。
    * 留空 = 没有管理员，/offpeak 的变更类子命令对所有人关闭（fail-closed）。
+   *
+   * 为什么只认 env：这里是真实 QQ 号 / openid，属于个人标识，不该进随仓库提交的
+   * 配置文件（写在那里会在启动期被明确拒绝）。
    */
   admins: string[];
   /** 官方开放平台接入（仅 connectors 含 qq-official 时有意义） */
@@ -377,8 +381,10 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     );
   }
 
-  // --- 管理员白名单：platform:senderId；兼容裸 openid 的旧变量 ----------------
-  const admins = [...pickList(env, 'BOT_ADMINS', file.admins)];
+  // --- 管理员白名单：platform:senderId，只认 env ----------------------------
+  // 不读配置文件：那里是真实 QQ 号/openid，属于个人标识（见 Config.admins 注释）。
+  // 配置文件里写了 admins 会被 parseConfigFileText 明确拒绝并给出迁移提示。
+  const admins = [...pickList(env, 'BOT_ADMINS', undefined)];
   for (const legacy of pickList(env, 'QQ_ADMIN_OPENIDS', undefined)) {
     // 裸 openid 一律按官方平台解释（该变量本来的语义）
     admins.push(legacy.includes(':') ? legacy : `${QQ_OFFICIAL_PLATFORM}:${legacy}`);

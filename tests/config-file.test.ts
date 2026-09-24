@@ -34,8 +34,6 @@ describe('parseConfigFileText', () => {
     const config = parseConfigFileText(
       `
 connectors: [qq-official, onebot]
-admins:
-  - onebot:123456
 logLevel: debug
 qq-official:
   intents: 50331648
@@ -64,7 +62,6 @@ health:
       'test.yml',
     );
     expect(config.connectors).toEqual(['qq-official', 'onebot']);
-    expect(config.admins).toEqual(['onebot:123456']);
     expect(config.logLevel).toBe('debug');
     expect(config.qqOfficial).toMatchObject({ intents: 50331648, msgType: 0 });
     expect(config.qqOfficial?.c2c).toEqual({ enabled: false, progressMax: 1 });
@@ -132,9 +129,23 @@ health:
       expect((error as ConfigError).hints.join(' ')).toMatch(/不要加引号/);
     }
     expect(() => parseConfigFileText('onebot:\n  c2cEnabled: yes\n')).toThrow(/必须是 true \/ false/);
-    expect(() => parseConfigFileText('admins: onebot:1\n')).toThrow(/必须是字符串数组/);
-    expect(() => parseConfigFileText('offpeak:\n  windows: 123\n')).toThrow(/窗口串或字符串数组/);
     expect(() => parseConfigFileText('connectors: qq-official\n')).toThrow(/必须是字符串数组/);
+    expect(() => parseConfigFileText('offpeak:\n  windows: 123\n')).toThrow(/窗口串或字符串数组/);
+  });
+
+  it('admins 不接受写在配置文件里（含真实 QQ 号，应放 .env 的 BOT_ADMINS）', () => {
+    for (const text of ['admins: []\n', 'admins:\n  - onebot:123456\n']) {
+      try {
+        parseConfigFileText(text, 'qqbot.yml');
+        throw new Error('应当抛错');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as ConfigError).message).toMatch(/不能写在配置文件里/);
+        const hints = (error as ConfigError).hints.join(' ');
+        expect(hints).toContain('BOT_ADMINS');
+        expect(hints).toContain('.env');
+      }
+    }
   });
 
   it('section 不是映射时报错', () => {

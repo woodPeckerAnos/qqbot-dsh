@@ -287,7 +287,6 @@ onebot:
   port: 7777
 dsh:
   model: from-file
-admins: [onebot:999]
 offpeak:
   enabled: true
 `);
@@ -306,6 +305,23 @@ offpeak:
     expect(config.dsh.model).toBe('from-env');
     expect(config.admins).toEqual(['onebot:111']);
     expect(config.offpeak.enabled).toBe(false);
+  });
+
+  it('admins 只来自 env，配置文件里的会被拒绝', () => {
+    // 不读文件：这些是真实 QQ 号/openid，不进随仓库提交的配置文件
+    expect(() => parseConfigFileText('admins: [onebot:999]\n')).toThrow(/不能写在配置文件里/);
+    // 只认 env，且旧变量 QQ_ADMIN_OPENIDS 仍兼容
+    const allSecrets = { QQ_APP_ID: 'a', QQ_APP_SECRET: 's', DEEPSEEK_API_KEY: 'k' };
+    expect(loadConfig({ ...allSecrets, BOT_ADMINS: 'qq-official:a,onebot:1' }).admins).toEqual([
+      'qq-official:a',
+      'onebot:1',
+    ]);
+    expect(loadConfig({ ...allSecrets, QQ_ADMIN_OPENIDS: 'abc,onebot:1' }).admins).toEqual([
+      'qq-official:abc',
+      'onebot:1',
+    ]);
+    // 都没设 → 空（fail-closed）
+    expect(loadConfig(allSecrets).admins).toEqual([]);
   });
 
   it('配置文件里的取值越界时，报错信息带上 YAML 路径', () => {
