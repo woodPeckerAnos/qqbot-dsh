@@ -101,10 +101,11 @@ services:
       - "host.docker.internal:host-gateway"
 
     # OneBot 反向 WS 监听端口（BOT_CONNECTORS 含 onebot 时才需要）。
-    # NapCat/LLOneBot 跑在宿主或另一个容器里，作为客户端连到容器的 6700。
-    # ⚠ 该端口有 ONEBOT_ACCESS_TOKEN 鉴权，但只在可信网络内暴露，不要映射到公网。
-    # ports:
-    #   - "127.0.0.1:6700:6700"
+    # 框架（LLBot / NapCat）原生跑在宿主时，它作为客户端连到这里的 6700。
+    # 只绑 127.0.0.1：家庭局域网里其他设备也连不上；框架在别的机器上才改成宿主局域网 IP。
+    # ⚠ 端口有 ONEBOT_ACCESS_TOKEN 鉴权，但不要映射到公网。
+    ports:
+      - "127.0.0.1:6700:6700"
 
     networks:
       - qqbot-net

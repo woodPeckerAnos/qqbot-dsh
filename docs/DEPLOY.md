@@ -99,31 +99,147 @@ docker compose logs -f qqbot
 
 ### 3.1 社区框架接入（OneBot，免审核）
 
-官方不对个人开发者开放审核时，用 NapCat / LLOneBot / Lagrange 等
-OneBot v11 实现接入（设计细节见 DESIGN.md 第 10 节）：
+官方不对个人开发者开放审核时，用 LLBot（LuckyLilliaBot，原 LLOneBot）或 NapCat
+等 OneBot v11 实现接入（设计细节见 [DESIGN.md 第 10 节](DESIGN.md)）。
 
-1. `.env` 里启用 onebot 接入（可与官方并存）：
+**推荐拓扑：框架原生跑在宿主 macOS，bot 留在 Docker。** 这也是 macOS 上唯一能
+用上「有头模式」的形态——有头模式要在容器里拉起真实 QQ 客户端并需要
+`privileged`，而官方 FAQ 明确说 macOS 上用 Docker Desktop 会「QQ 无法启动」
+（建议 OrbStack）。
 
-   ```sh
-   BOT_CONNECTORS=onebot              # 或 qq-official,onebot
-   ONEBOT_ACCESS_TOKEN=<足够长的随机串>
-   DEEPSEEK_API_KEY=...
-   ```
+#### 3.1.1 装 LLBot（宿主，有头模式）
 
-2. 放开 `docker-compose.yml` 里注释掉的 6700 端口映射（只在可信网络内暴露，
-   不要映射到公网），然后 `docker compose up -d --build`。
+LLBot 官方支持 **macOS 12 及以上**，两个包：
 
-3. 在 NapCat 里添加**反向 WebSocket**（网络配置 → WebSocket 客户端）：
-   - URL：`ws://<宿主机 IP>:6700/onebot/v11/ws`（NapCat 与本服务同机部署时用
-     宿主 IP；同 compose 网络则用服务名 `qqbot`）
-   - Token：与 `ONEBOT_ACCESS_TOKEN` 一致
+| 包 | 特点 |
+|---|---|
+| `LLBot-Desktop-macos-arm64.tar.xz` | 图形界面、可视化配置、实时日志；新手优先 |
+| `LLBot-CLI-macos-arm64.tar.xz` | 命令行，`./llbot --help` 看参数 |
 
-4. 验证：日志出现 `OneBot 客户端已连入` 与 `OneBot 框架已就绪`；
-   `curl localhost:8080/healthz` 里 `connectors.onebot.state` 为 `connected`。
+从 [LuckyLilliaBot Releases](https://github.com/LLOneBot/LuckyLilliaBot/releases)
+下载（Mac mini 是 Apple Silicon，选 `arm64`），解压到固定目录：
 
-> ⚠ 社区框架基于 NTQQ 客户端 hook，有账号风控风险，请用专门小号。
+```sh
+xattr -dr com.apple.quarantine .   # macOS 会拦未签名二进制，第一次打不开就是它
+./start.sh                          # 首次运行（CLI 版）
+./llbot                             # 之后启动；或 ./llbot --qq <QQ号> 免扫码快速登录
+```
+
+**有头模式是默认的**，不需要任何开关：它由 `bin/pmhq/pmhq_config.json` 里的
+`headless` 字段控制，默认 `false` = 拉起真实 QQ 客户端。想改用无头模式（纯协议复刻、
+不需要 QQ 客户端，但官方称掉线率更高）才把它设成 `true`。
+
+两个同机部署必踩的坑：
+
+1. **WebUI 默认端口 3080 与 DSH 的 Web GUI 冲突**（两者都默认 3080，同机必然撞）。
+   首次登录前改 `bin/llbot/default_config.json` 里的 `webui.port`；已经登录过则改
+   `bin/llbot/data/config_<你的QQ号>.json`。改成 3081 之类即可，改完再启动。
+2. **有头模式需要图形会话**：它要拉起 QQ 客户端。Mac mini 如果没人登录图形界面
+   （纯 SSH 使用），QQ 起不来——要么先用屏幕共享/VNC 登录一次图形会话，要么改用
+   无头模式。
+
+登录：二维码的网址与文件路径会打印在终端，也可以直接开 WebUI 登录。用**专门小号**。
+
+> Auth token：官方的 Docker 安装脚本把 <https://auth.luckylillia.com> 的 token 设为
+> 必填（有头模式下给 pmhq 用）。原生包是否也需要、以及会不会引导你填，我没能核实
+> （官方 CLI 说明文档里没提）——按首次启动的提示走。
+
+#### 3.1.2 配 bot 侧
+
+`.env`：
+
+```sh
+BOT_CONNECTORS=onebot                  # 或 qq-official,onebot 与官方通道并存
+ONEBOT_ACCESS_TOKEN=$(openssl rand -hex 32)
+DEEPSEEK_API_KEY=...
+```
+
+`docker-compose.yml` 里的 6700 端口映射**默认已经打开**（只绑 `127.0.0.1`，
+局域网内其他设备也连不上），直接：
+
+```sh
+docker compose up -d --build
+```
+
+这条拓扑的连通路径：
+
+```
+LLBot（宿主原生）──ws://127.0.0.1:6700/...──▶ 宿主 127.0.0.1:6700
+                                                    │ Docker Desktop 端口转发
+                                                    ▼
+                                              容器内 0.0.0.0:6700
+```
+
+> ⚠ **不要**把 `.env` 里的 `ONEBOT_WS_HOST` 改成 `127.0.0.1`。宿主看到的
+> `127.0.0.1:6700` 是 Docker 的端口转发，它落到**容器网卡**上；容器里若只绑
+> loopback，转发就够不到，症状是"端口映射看着正常但框架死活连不上"。保持
+> 默认的 `0.0.0.0`，安全性由宿主侧那个 `127.0.0.1:` 前缀保证。
+>
+> 同理，LLBot 侧填 `127.0.0.1` 是对的，**不要**填 `host.docker.internal`
+> ——那是反方向（容器访问宿主）才用的名字，从这里连反而连不上。
+
+启动顺序建议**先起 bot 容器、再起 LLBot**，这样 LLBot 首次配好反向 WS 时端口已经
+在监听。容器重启后 LLBot 若不自动重连，在它的 WebUI 里把那条反向 WS 关掉再启用一次
+即可（我们的接入层接受任意时刻重连）。
+
+#### 3.1.3 在 LLBot 里加一条反向 WebSocket
+
+WebUI（登录后）里启用 **OneBot 11 → 反向 WS**，或直接改
+`bin/llbot/data/config_<你的QQ号>.json` 的 `ob11.connect`：
+
+```json
+{
+  "type": "ws-reverse",
+  "enable": true,
+  "url": "ws://127.0.0.1:6700/onebot/v11/ws",
+  "token": "与 .env 里 ONEBOT_ACCESS_TOKEN 完全相同的值",
+  "reportSelfMessage": false,
+  "reportOfflineMessage": false,
+  "messageFormat": "array",
+  "debug": false,
+  "heartInterval": 30000
+}
+```
+
+几处是有意的，别改：
+
+- `ws-reverse` —— LLBot 当客户端连我们（本项目的接入层是 WS server）；
+- `token` 必须与 `.env` 的 `ONEBOT_ACCESS_TOKEN` **一致**，不一致会在握手阶段被 401 拒绝；
+- `messageFormat: "array"` —— 两种格式我们都支持，array 更规范；
+- `reportSelfMessage: false` —— 我们另有防自触发兜底；
+- `heartInterval: 30000` —— 低于我们 150 秒的「通道僵死」阈值，不会误报。
+
+URL 路径随便是多少都行：我们只校验 token，不校验路径。
+
+#### 3.1.4 验证
+
+```sh
+docker compose logs -f qqbot | grep -i onebot     # OneBot 反向 WS 已监听 → 客户端已连入 → 框架已就绪
+docker compose exec qqbot node dist/health-probe.js && echo HEALTHY
+```
+
+健康检查里 `connectors.onebot.state` 应为 `connected`（`listening` = 我们在等、
+框架没连上，回去查 URL 与 token）。
+
+> ⚠ 社区框架（无论有头/无头、宿主/容器）都基于 NTQQ 协议，存在账号风控/封禁风险，
+> 请用专门小号。这是平台风险，与本项目代码无关。
 > 拉群邀请默认不自动同意（`ONEBOT_AUTO_ACCEPT_GROUP_INVITE=false`），
-> 需要机器人进新群时先把它打开，进完再关回去。
+> 需要机器人进新群时先打开，进完再关回去。
+
+#### 3.1.5 如果以后想让框架也进容器
+
+官方提供一键脚本（会自动生成 compose）：
+
+```sh
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/LLOneBot/LuckyLilliaBot/refs/heads/main/script/install-llbot-docker.sh -o llbot-docker.sh \
+  && chmod u+x ./llbot-docker.sh && ./llbot-docker.sh
+```
+
+但 macOS 上要注意两点：官方在安装页直接写了 **「macOS: 推荐 OrbStack，避免
+Docker Desktop」**；而且要迁运行时的话，你现有的容器与卷不会自动跟过去。
+两条容器化路线里，**直连模式（纯协议，不需要 `privileged`）在 Docker Desktop 上是
+能跑的**，有头（PMHQ，需 `privileged`）不行——本仓库曾配好过一版直连模式的
+compose 服务，后来按"先试宿主有头模式"的决定摘掉了，需要时可以再恢复。
 
 ---
 

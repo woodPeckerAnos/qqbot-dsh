@@ -37,6 +37,12 @@ docker compose logs -f
 
 ### 用社区框架接入（免审核）
 
+官方开放平台目前不对个人开发者开放审核。社区框架（LLBot / NapCat 等 OneBot v11
+实现）不需要审核，而且没有被动回复窗口与回复次数限制，自由度更高。
+
+推荐拓扑是**框架原生跑在宿主、bot 留在 Docker**——这也是 macOS 上能用「有头模式」
+（拉起真实 QQ 客户端，官方称比纯协议模式更稳）的唯一形态：
+
 ```sh
 # .env 里：
 BOT_CONNECTORS=onebot            # 或 qq-official,onebot 并存
@@ -44,16 +50,19 @@ ONEBOT_ACCESS_TOKEN=<足够长的随机串>
 DEEPSEEK_API_KEY=...
 ```
 
-容器启动后，在 NapCat / LLOneBot 里加一条**反向 WebSocket**（WebSocket 客户端）
-连接：`ws://<本服务地址>:6700/onebot/v11/ws`，token 与 `ONEBOT_ACCESS_TOKEN` 一致。
-注意放开 `docker-compose.yml` 里注释掉的 6700 端口映射。
+然后在 LLBot 里加一条**反向 WebSocket** 指向
+`ws://127.0.0.1:6700/onebot/v11/ws`，token 与 `ONEBOT_ACCESS_TOKEN` 一致。
+6700 端口映射在 `docker-compose.yml` 里默认已打开（只绑 loopback）。
+
+完整步骤（含 macOS 安装、两个必踩的端口/图形会话坑、反向 WS 配置）见
+[docs/DEPLOY.md 第 3.1 节](docs/DEPLOY.md)。
 
 社区框架没有官方那种"5 分钟被动窗口 + 每条消息最多 5 次回复"的限制，
 所以 OneBot 通道的单轮超时默认放宽到 10 分钟（`ONEBOT_TURN_TIMEOUT_MS`），
 回复配额只是防失控的安全阀。
 
-> ⚠ 社区框架基于 NTQQ 客户端 hook，存在账号风控/封禁风险，建议用专门的小号。
-> 这是平台风险，与本项目代码无关。
+> ⚠ 社区框架（无论宿主还是容器）都基于 NTQQ 协议，存在账号风控/封禁风险，
+> 建议用专门的小号。这是平台风险，与本项目代码无关。
 
 ## 文档
 
