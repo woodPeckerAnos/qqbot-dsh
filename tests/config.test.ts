@@ -106,12 +106,15 @@ describe('loadConfig', () => {
     expect(config.dsh.model).toBe('deepseek-flash');
   });
 
-  it('谷时段闸默认关闭、默认窗口 00:30-08:30（Asia/Shanghai）', () => {
+  it('谷时段闸默认关闭、默认三个窗口（北京 00:00-09:00、12:00-14:00、18:00-24:00）', () => {
     const config = loadConfig(baseEnv);
     expect(config.offpeak).toEqual({
       enabled: false,
-      start: '00:30',
-      end: '08:30',
+      windows: [
+        { startMin: 0, endMin: 9 * 60 },
+        { startMin: 12 * 60, endMin: 14 * 60 },
+        { startMin: 18 * 60, endMin: 24 * 60 },
+      ],
       timeZone: 'Asia/Shanghai',
       modelPattern: 'deepseek',
       weekendsAllDay: true,
@@ -119,13 +122,47 @@ describe('loadConfig', () => {
     });
   });
 
-  it('谷时段窗口格式非法时起不起不来（配置错误要在启动期爆出来）', () => {
-    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_START: '八点半' })).toThrow(/HH:MM/);
-    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_END: '24:00' })).toThrow(/超出范围/);
+  it('QQ_OFFPEAK_WINDOWS 支持多窗口，非法配置在启动期爆出来', () => {
+    expect(
+      loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '08:00-12:00,22:00-24:00' }).offpeak.windows,
+    ).toEqual([
+      { startMin: 8 * 60, endMin: 12 * 60 },
+      { startMin: 22 * 60, endMin: 24 * 60 },
+    ]);
+    // 中文逗号分隔也认
+    expect(
+      loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '00:00-09:00，12:00-14:00' }).offpeak.windows,
+    ).toHaveLength(2);
+
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '八点半-九点' })).toThrow(/HH:MM/);
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '00:00-25:00' })).toThrow(/超出范围/);
     // 空窗口（起止相同）没有语义，直接拒绝
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '08:30-08:30' })).toThrow(/空窗口/);
+    // 重叠窗口拒绝
     expect(() =>
-      loadConfig({ ...baseEnv, QQ_OFFPEAK_START: '08:30', QQ_OFFPEAK_END: '08:30' }),
-    ).toThrow(/空窗口/);
+      loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '00:00-09:00,08:00-12:00' }),
+    ).toThrow(/重叠/);
+    // 全空拒绝
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: ' , ' })).toThrow(/不能为空/);
+  });
+
+  it('旧的 QQ_OFFPEAK_START / QQ_OFFPEAK_END 仍可用（当单窗口处理），新变量优先', () => {
+    expect(
+      loadConfig({ ...baseEnv, QQ_OFFPEAK_START: '00:30', QQ_OFFPEAK_END: '08:30' }).offpeak.windows,
+    ).toEqual([{ startMin: 30, endMin: 8 * 60 + 30 }]);
+    // 只设其中一个时，另一个用旧默认值
+    expect(loadConfig({ ...baseEnv, QQ_OFFPEAK_START: '01:00' }).offpeak.windows).toEqual([
+      { startMin: 60, endMin: 8 * 60 + 30 },
+    ]);
+    // 新变量存在时忽略旧变量
+    expect(
+      loadConfig({
+        ...baseEnv,
+        QQ_OFFPEAK_WINDOWS: '00:00-09:00',
+        QQ_OFFPEAK_START: '00:30',
+        QQ_OFFPEAK_END: '08:30',
+      }).offpeak.windows,
+    ).toEqual([{ startMin: 0, endMin: 9 * 60 }]);
   });
 
   it('QQ_OFFPEAK_TZ 必须是有效 IANA 时区', () => {
@@ -192,6 +229,8 @@ describe('describeConfig', () => {
     expect(summary).not.toContain('sk-test');
     expect(summary).toContain('deepseek-flash');
     expect(summary).toContain('"c2c"');
+    // 谷时段窗口要能在启动日志里看到（多窗口拼成可读串）
+    expect(summary).toContain('00:00–09:00、12:00–14:00、18:00–24:00');
   });
 });
 

@@ -18,7 +18,20 @@
 import { Intent, DEFAULT_INTENTS, describeIntents } from './adapters/qq-official/types.js';
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
-import { isValidDateString, isValidTimeZone, parseTimeHHMM, OffpeakConfigError } from './offpeak.js';
+import {
+  formatWindows,
+  isValidDateString,
+  isValidTimeZone,
+  OffpeakConfigError,
+  parseWindowsSpec,
+  type OffpeakWindow,
+} from './offpeak.js';
+
+/**
+ * 内置的默认谷时段窗口：北京时间 00:00-09:00、12:00-14:00、18:00-24:00。
+ * 窗口之外（09:00-12:00、14:00-18:00）是正价时段。
+ */
+export const DEFAULT_OFFPEAK_WINDOWS = '00:00-09:00,12:00-14:00,18:00-24:00';
 
 export type ConnectorName = typeof QQ_OFFICIAL_PLATFORM | typeof ONEBOT_PLATFORM;
 
@@ -114,10 +127,11 @@ export interface Config {
   offpeak: {
     /** 总开关（QQ_OFFPEAK_ENABLED，默认 false） */
     enabled: boolean;
-    /** 窗口起，HH:MM（QQ_OFFPEAK_START，默认 00:30） */
-    start: string;
-    /** 窗口止，HH:MM（QQ_OFFPEAK_END，默认 08:30），区间为 [start, end) */
-    end: string;
+    /**
+     * 一天内的谷时段窗口列表（QQ_OFFPEAK_WINDOWS）。
+     * 默认北京时间 00:00-09:00、12:00-14:00、18:00-24:00；解析与重叠校验在启动期完成。
+     */
+    windows: OffpeakWindow[];
     /** 窗口所在时区（QQ_OFFPEAK_TZ，默认 Asia/Shanghai） */
     timeZone: string;
     /** 命中判定：`<provider>/<model>` 包含该子串（QQ_OFFPEAK_MODEL_PATTERN，默认 deepseek） */
@@ -316,19 +330,31 @@ export function loadConfig(env: Env = process.env): Config {
   }
 
   // --- 谷时段闸：格式错误在启动期爆出来，不等到拦截时才发觉配错 -------------
-  const offpeakStart = optionalString(env, 'QQ_OFFPEAK_START', '00:30');
-  const offpeakEnd = optionalString(env, 'QQ_OFFPEAK_END', '08:30');
+  // 一天内可以有多个谷时段窗口：
+  //   QQ_OFFPEAK_WINDOWS（当前写法）：逗号分隔的 HH:MM-HH:MM 列表；
+  //   兼容旧配置：只设了 QQ_OFFPEAK_START / QQ_OFFPEAK_END 时，按单窗口处理。
+  const legacyStartRaw = env['QQ_OFFPEAK_START'];
+  const legacyEndRaw = env['QQ_OFFPEAK_END'];
+  const hasLegacyWindow =
+    (legacyStartRaw !== undefined && legacyStartRaw.trim() !== '') ||
+    (legacyEndRaw !== undefined && legacyEndRaw.trim() !== '');
+  const offpeakWindowsSpec = optionalString(
+    env,
+    'QQ_OFFPEAK_WINDOWS',
+    hasLegacyWindow
+      ? `${optionalString(env, 'QQ_OFFPEAK_START', '00:30')}-${optionalString(env, 'QQ_OFFPEAK_END', '08:30')}`
+      : DEFAULT_OFFPEAK_WINDOWS,
+  );
   const offpeakTimeZone = optionalString(env, 'QQ_OFFPEAK_TZ', 'Asia/Shanghai');
+  let offpeakWindows: OffpeakWindow[];
   try {
-    const startMin = parseTimeHHMM(offpeakStart);
-    const endMin = parseTimeHHMM(offpeakEnd);
-    if (startMin === endMin) {
-      throw new OffpeakConfigError('QQ_OFFPEAK_START 与 QQ_OFFPEAK_END 不能相同（那会是一个空窗口）');
-    }
+    offpeakWindows = parseWindowsSpec(offpeakWindowsSpec);
   } catch (error) {
     if (error instanceof OffpeakConfigError) {
       throw new ConfigError(`谷时段窗口配置无效：${error.message}`, [
-        '格式为 HH:MM，例如 QQ_OFFPEAK_START=00:30 / QQ_OFFPEAK_END=08:30',
+        `格式为逗号分隔的 HH:MM-HH:MM，例如 QQ_OFFPEAK_WINDOWS=${DEFAULT_OFFPEAK_WINDOWS}`,
+        '结束时间可写 24:00 表示当天结束；也支持跨零点（如 22:00-06:00）；窗口之间不能重叠',
+        '旧写法 QQ_OFFPEAK_START / QQ_OFFPEAK_END 仍可用，但它只能表达单个窗口',
       ]);
     }
     throw error;
@@ -410,8 +436,7 @@ export function loadConfig(env: Env = process.env): Config {
     },
     offpeak: {
       enabled: optionalBool(env, 'QQ_OFFPEAK_ENABLED', false),
-      start: offpeakStart,
-      end: offpeakEnd,
+      windows: offpeakWindows,
       timeZone: offpeakTimeZone,
       modelPattern: optionalString(env, 'QQ_OFFPEAK_MODEL_PATTERN', 'deepseek'),
       weekendsAllDay: optionalBool(env, 'QQ_OFFPEAK_WEEKENDS', true),
@@ -467,7 +492,7 @@ export function describeConfig(config: Config): Record<string, unknown> {
     adminCount: config.admins.length,
     offpeak: {
       enabled: config.offpeak.enabled,
-      window: `${config.offpeak.start}–${config.offpeak.end}`,
+      windows: formatWindows(config.offpeak.windows),
       timeZone: config.offpeak.timeZone,
       modelPattern: config.offpeak.modelPattern,
       weekendsAllDay: config.offpeak.weekendsAllDay,

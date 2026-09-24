@@ -41,12 +41,12 @@ import {
   CN_HOLIDAYS_2026,
   commandNeedsAdmin,
   evaluateGate,
-  formatMinutes,
+  formatWindows,
   OffpeakConfigError,
   OffpeakGate,
   OFFPEAK_COMMAND_USAGE,
   parseOffpeakCommand,
-  parseTimeHHMM,
+  parseWindowsSpec,
   renderGateNotice,
   type OffpeakCommand,
   type OffpeakSnapshot,
@@ -133,10 +133,7 @@ export class Dispatcher {
     this.offpeak = new OffpeakGate({
       defaults: {
         enabled: deps.config.offpeak.enabled,
-        window: {
-          startMin: parseTimeHHMM(deps.config.offpeak.start),
-          endMin: parseTimeHHMM(deps.config.offpeak.end),
-        },
+        windows: deps.config.offpeak.windows,
         timeZone: deps.config.offpeak.timeZone,
         modelPattern: deps.config.offpeak.modelPattern,
         weekendsAllDay: deps.config.offpeak.weekendsAllDay,
@@ -556,23 +553,23 @@ export class Dispatcher {
         await this.replySimple(
           message,
           `谷时段闸已${command.enabled ? '开启' : '关闭'}（运行期覆盖，重启后保留）。` +
-            `当前窗口：${formatMinutes(effective.window.startMin)}–${formatMinutes(effective.window.endMin)}（${effective.timeZone}）。`,
+            `当前窗口：${formatWindows(effective.windows)}（${effective.timeZone}）。`,
           'error',
         ).catch(() => {});
         return;
       }
-      case 'set-window': {
+      case 'set-windows': {
         try {
-          const effective = this.offpeak.setWindow(command.start, command.end, message.senderId);
+          const windows = parseWindowsSpec(command.spec);
+          const effective = this.offpeak.setWindows(windows, message.senderId);
           logger.warn('谷时段窗口已被管理员热切换', {
             senderId: message.senderId,
             platform: message.target.platform,
-            start: command.start,
-            end: command.end,
+            windows: command.spec,
           });
           await this.replySimple(
             message,
-            `谷时段窗口已更新为 ${formatMinutes(effective.window.startMin)}–${formatMinutes(effective.window.endMin)}（${effective.timeZone}，运行期覆盖）。`,
+            `谷时段窗口已更新为 ${formatWindows(effective.windows)}（${effective.timeZone}，运行期覆盖）。`,
             'error',
           ).catch(() => {});
         } catch (error) {
@@ -660,7 +657,7 @@ export class Dispatcher {
     };
     const lines = [
       `谷时段闸：${snapshot.enabled ? '开启' : '关闭'}${snapshot.overridden ? '（管理员覆盖）' : '（env 默认）'}`,
-      `工作日窗口：${snapshot.window}（${snapshot.timeZone}）`,
+      `工作日窗口：${snapshot.windows.join('、')}（${snapshot.timeZone}）`,
       `周末全天谷价：${snapshot.weekendsAllDay ? '是' : '否'}；` +
         `节假日表 ${snapshot.holidaysCount} 天` +
         (snapshot.holidaysCoverageUntil !== undefined

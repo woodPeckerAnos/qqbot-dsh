@@ -2,7 +2,8 @@
  * 谷时段闸：DeepSeek 错峰优惠时段之外，在编排层直接拒答，不调用模型 API。
  *
  * DeepSeek 官方计费规则（2026-09-19《API 峰谷时间说明》）：
- *   - 工作日：仅谷时段窗口（默认 00:30–08:30）按谷价；
+ *   - 工作日：仅谷时段窗口内按谷价。**一天内有多个谷时段窗口**，默认
+ *     北京时间 00:00–09:00、12:00–14:00、18:00–24:00（三个窗口之外是正价）；
  *   - 周六、周日：全天谷价（2026-08-23 起，含调休上班的周末——它们仍是周六/日）；
  *   - 中国法定节假日（放假调休期间）：全天谷价——需要日历表，
  *     内置国务院办公厅《关于 2026 年部分节假日安排的通知》（国办发明电〔2025〕7 号），
@@ -32,11 +33,19 @@ import type { Logger } from './logger.js';
 // 时间窗口
 // ---------------------------------------------------------------------------
 
-/** 一天中的分钟数窗口，支持跨零点（如 22:00–06:00）。区间为 [start, end)。 */
+/**
+ * 一天中的分钟数窗口，区间为 `[startMin, endMin)`。
+ *
+ * - 支持跨零点（如 `22:00–06:00`，此时 `startMin > endMin`）；
+ * - `endMin` 允许取 {@link DAY_MINUTES}，表示 `24:00`（当天结束）。
+ */
 export interface OffpeakWindow {
   startMin: number;
   endMin: number;
 }
+
+/** 一天的总分钟数。`endMin` 取该值等价于写 `24:00`。 */
+export const DAY_MINUTES = 24 * 60;
 
 export class OffpeakConfigError extends Error {
   constructor(message: string) {
@@ -49,7 +58,18 @@ const HH_MM = /^(\d{1,2}):(\d{2})$/;
 
 /** 解析 "HH:MM" 为一天中的分钟数；非法输入抛 OffpeakConfigError。 */
 export function parseTimeHHMM(text: string): number {
-  const match = HH_MM.exec(text.trim());
+  return parseMinute(text, false);
+}
+
+/**
+ * `parseTimeHHMM` 的内部实现。
+ * @param allowEndOfDay 是否接受 `24:00`（= {@link DAY_MINUTES}）。仅窗口的**结束**时间允许，
+ *   开始时间写 24:00 是无意义的（那等于空窗口），一律拒绝。
+ */
+function parseMinute(text: string, allowEndOfDay: boolean): number {
+  const trimmed = text.trim();
+  if (allowEndOfDay && trimmed === '24:00') return DAY_MINUTES;
+  const match = HH_MM.exec(trimmed);
   if (match === null) {
     throw new OffpeakConfigError(`时间格式必须是 HH:MM（如 00:30），收到 ${JSON.stringify(text)}`);
   }
@@ -65,6 +85,116 @@ export function formatMinutes(totalMin: number): string {
   const hour = Math.floor(totalMin / 60);
   const minute = totalMin % 60;
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+/** 窗口的显示串，如 `00:00–09:00`（连接符用 en dash）。 */
+export function formatWindow(window: OffpeakWindow): string {
+  return `${formatMinutes(window.startMin)}–${formatMinutes(window.endMin)}`;
+}
+
+/** 窗口列表的显示串，如 `00:00–09:00、12:00–14:00、18:00–24:00`。 */
+export function formatWindows(windows: readonly OffpeakWindow[]): string {
+  return windows.map(formatWindow).join('、');
+}
+
+/** 单个窗口的书写形式：`HH:MM-HH:MM`，连接符接受 - ~ – — 四种，两侧空白随意。 */
+const WINDOW_RANGE_RE = /^(\S+?)\s*[-~–—]\s*(\S+)$/;
+
+/**
+ * 把窗口列表串切成单个窗口的书写形式。
+ *
+ * 先按逗号（中英文）切；若某段本身不是合法窗口（说明它是用空白分隔的多个窗口，
+ * 如 `00:00-09:00 12:00-14:00`），再按空白切开。这样下面三种写法都认：
+ *   `00:00-09:00,12:00-14:00`
+ *   `23:00 – 07:00`（连接符两侧带空格）
+ *   `00:00-09:00 12:00-14:00`（空白分隔）
+ */
+function splitWindowSpec(text: string): string[] {
+  const parts: string[] = [];
+  for (const chunk of text.split(/[,，]/)) {
+    const trimmed = chunk.trim();
+    if (trimmed === '') continue;
+    if (WINDOW_RANGE_RE.test(trimmed)) {
+      parts.push(trimmed);
+      continue;
+    }
+    for (const piece of trimmed.split(/\s+/)) {
+      if (piece !== '') parts.push(piece);
+    }
+  }
+  return parts;
+}
+
+/**
+ * 解析单个窗口书写形式（如 `00:00-09:00`、`22:00~06:00`、`18:00-24:00`）。
+ * 非法输入抛 OffpeakConfigError。
+ */
+export function parseWindowRange(text: string): OffpeakWindow {
+  const match = WINDOW_RANGE_RE.exec(text.trim());
+  if (match === null) {
+    throw new OffpeakConfigError(
+      `窗口格式必须是 HH:MM-HH:MM（如 00:00-09:00），收到 ${JSON.stringify(text)}`,
+    );
+  }
+  const startMin = parseMinute(match[1] as string, false);
+  const endMin = parseMinute(match[2] as string, true);
+  if (startMin === endMin) {
+    throw new OffpeakConfigError(`窗口起止时间不能相同（那会是一个空窗口）：${JSON.stringify(text)}`);
+  }
+  return { startMin, endMin };
+}
+
+/**
+ * 枚举一个窗口覆盖到的所有分钟槽（`[start, end)`，跨零点拆成两段）。
+ *
+ * `startMin === endMin` 视为空窗口、不覆盖任何分钟——与 {@link isInOffpeakWindow}
+ * 的防御语义一致（配置层已禁止这种写法）。
+ */
+function forEachCoveredMinute(window: OffpeakWindow, visit: (minute: number) => void): void {
+  if (window.startMin === window.endMin) return;
+  if (window.startMin < window.endMin) {
+    for (let minute = window.startMin; minute < window.endMin; minute += 1) visit(minute);
+    return;
+  }
+  // 跨零点：[startMin, 24:00) ∪ [00:00, endMin)
+  for (let minute = window.startMin; minute < DAY_MINUTES; minute += 1) visit(minute);
+  for (let minute = 0; minute < window.endMin; minute += 1) visit(minute);
+}
+
+/**
+ * 用 1440 个分钟槽画覆盖计数来检测重叠——跨零点与 `24:00` 都能正确处理，
+ * 手写区间比较很容易在这里出错。
+ */
+function assertNoOverlap(windows: readonly OffpeakWindow[]): void {
+  const cover = new Array<number>(DAY_MINUTES).fill(0);
+  for (const window of windows) {
+    forEachCoveredMinute(window, (minute) => {
+      cover[minute] = (cover[minute] ?? 0) + 1;
+    });
+  }
+  const duplicated = cover.findIndex((count) => count > 1);
+  if (duplicated !== -1) {
+    throw new OffpeakConfigError(
+      `谷时段窗口有重叠，${formatMinutes(duplicated)} 被多个窗口覆盖：${formatWindows(windows)}`,
+    );
+  }
+}
+
+/**
+ * 解析窗口列表书写形式，如 `00:00-09:00,12:00-14:00,18:00-24:00`。
+ *
+ * 空项（多余逗号/空白）会被忽略；结果按开始时间排序；重叠会在启动期直接报错。
+ * 至少要有一个窗口，否则抛 OffpeakConfigError。
+ */
+export function parseWindowsSpec(text: string): OffpeakWindow[] {
+  const parts = splitWindowSpec(text);
+  if (parts.length === 0) {
+    throw new OffpeakConfigError('谷时段窗口不能为空，至少需要一个 HH:MM-HH:MM');
+  }
+  const windows = parts.map((part) => parseWindowRange(part));
+  windows.sort((a, b) => a.startMin - b.startMin);
+  assertNoOverlap(windows);
+  return windows;
 }
 
 /** 校验时区名是否被当前 ICU 认识（配置错误要在启动期爆出来）。 */
@@ -173,7 +303,7 @@ export function isWeekendInTimeZone(ts: number, timeZone: string): boolean {
   return weekday === 0 || weekday === 6;
 }
 
-/** 窗口判定：[start, end)，支持跨零点窗口。 */
+/** 单个窗口判定：`[start, end)`，支持跨零点窗口。 */
 export function isInOffpeakWindow(minute: number, window: OffpeakWindow): boolean {
   if (window.startMin === window.endMin) return false; // 空窗口 = 永不命中（配置层已禁止，这里防御）
   if (window.startMin < window.endMin) {
@@ -182,13 +312,19 @@ export function isInOffpeakWindow(minute: number, window: OffpeakWindow): boolea
   return minute >= window.startMin || minute < window.endMin;
 }
 
+/** 多个窗口的判定：命中**任意一个**即为谷时段。 */
+export function isInOffpeakWindows(minute: number, windows: readonly OffpeakWindow[]): boolean {
+  return windows.some((window) => isInOffpeakWindow(minute, window));
+}
+
 // ---------------------------------------------------------------------------
 // 闸判定
 // ---------------------------------------------------------------------------
 
 export interface OffpeakGateConfig {
   enabled: boolean;
-  window: OffpeakWindow;
+  /** 一天内的谷时段窗口列表（工作日生效；节假日/周末按配置全天谷价） */
+  windows: readonly OffpeakWindow[];
   timeZone: string;
   /** 命中判定：`<provider>/<model>` 包含该子串（大小写不敏感）时视为 DeepSeek 计费模型 */
   modelPattern: string;
@@ -233,7 +369,7 @@ export function evaluateGate(args: {
     return { gated: false, reason: 'weekend' };
   }
   const minute = minutesInTimeZone(args.now, config.timeZone);
-  if (isInOffpeakWindow(minute, config.window)) return { gated: false, reason: 'in-window' };
+  if (isInOffpeakWindows(minute, config.windows)) return { gated: false, reason: 'in-window' };
   return { gated: true, reason: 'peak-hours' };
 }
 
@@ -243,7 +379,7 @@ export function evaluateGate(args: {
 
 export interface OffpeakOverride {
   enabled?: boolean;
-  window?: OffpeakWindow;
+  windows?: readonly OffpeakWindow[];
   /** 在默认节假日表上追加的日期（YYYY-MM-DD） */
   holidaysAdd?: string[];
   /** 从默认节假日表里移除的日期（YYYY-MM-DD） */
@@ -255,7 +391,8 @@ export interface OffpeakOverride {
 /** /metrics 里暴露的闸状态快照。 */
 export interface OffpeakSnapshot {
   enabled: boolean;
-  window: string;
+  /** 生效的窗口列表，已格式化为显示串（如 `00:00–09:00`） */
+  windows: string[];
   timeZone: string;
   modelPattern: string;
   weekendsAllDay: boolean;
@@ -267,9 +404,16 @@ export interface OffpeakSnapshot {
   updatedAt?: number;
 }
 
-/** 覆盖文件的磁盘格式（窗口存可读的 HH:MM，便于人工排查）。 */
+/**
+ * 覆盖文件的磁盘格式（窗口存可读的 HH:MM，便于人工排查）。
+ *
+ * `windows` 是当前格式；`window` 是早期只支持单窗口时的写法，只为读旧文件保留
+ * （读到就当成单元素列表），不再写出。
+ */
 interface OverrideFile {
   enabled?: boolean;
+  windows?: Array<{ start: string; end: string }>;
+  /** @deprecated 旧格式，仅用于兼容读取 */
   window?: { start: string; end: string };
   holidaysAdd?: string[];
   holidaysDel?: string[];
@@ -305,7 +449,7 @@ export class OffpeakGate {
     }
     return {
       enabled: override.enabled ?? base.enabled,
-      window: override.window ?? base.window,
+      windows: override.windows ?? base.windows,
       timeZone: base.timeZone,
       modelPattern: base.modelPattern,
       weekendsAllDay: base.weekendsAllDay,
@@ -319,7 +463,7 @@ export class OffpeakGate {
     const sorted = [...effective.holidays].sort();
     return {
       enabled: effective.enabled,
-      window: `${formatMinutes(effective.window.startMin)}–${formatMinutes(effective.window.endMin)}`,
+      windows: effective.windows.map(formatWindow),
       timeZone: effective.timeZone,
       modelPattern: effective.modelPattern,
       weekendsAllDay: effective.weekendsAllDay,
@@ -376,16 +520,23 @@ export class OffpeakGate {
     return this.effective();
   }
 
-  /** startText/endText 非法时抛 OffpeakConfigError，由调用方转成用户可见的回复。 */
-  setWindow(startText: string, endText: string, actor: string): OffpeakGateConfig {
-    const window: OffpeakWindow = {
-      startMin: parseTimeHHMM(startText),
-      endMin: parseTimeHHMM(endText),
-    };
-    if (window.startMin === window.endMin) {
-      throw new OffpeakConfigError('窗口起止时间不能相同（那会是一个空窗口）');
+  /**
+   * 整组替换谷时段窗口（多窗口）。
+   *
+   * 窗口的解析与校验由 {@link parseWindowsSpec} 负责（它在那里抛 OffpeakConfigError），
+   * 这里只接收已解析的结果，避免两处各写一套校验。
+   */
+  setWindows(windows: readonly OffpeakWindow[], actor: string): OffpeakGateConfig {
+    if (windows.length === 0) {
+      throw new OffpeakConfigError('谷时段窗口不能为空，至少需要一个 HH:MM-HH:MM');
     }
-    this.override = { ...this.override, window, updatedBy: actor, updatedAt: this.now() };
+    assertNoOverlap(windows);
+    this.override = {
+      ...this.override,
+      windows: [...windows],
+      updatedBy: actor,
+      updatedAt: this.now(),
+    };
     this.persist();
     return this.effective();
   }
@@ -415,11 +566,16 @@ export class OffpeakGate {
         updatedAt: parsed.updatedAt ?? 0,
       };
       if (typeof parsed.enabled === 'boolean') override.enabled = parsed.enabled;
-      if (parsed.window !== undefined) {
-        override.window = {
-          startMin: parseTimeHHMM(parsed.window.start),
-          endMin: parseTimeHHMM(parsed.window.end),
-        };
+      // windows 是当前格式；window 是旧的单窗口格式，读到就当成单元素列表
+      const rawWindows: Array<{ start: string; end: string }> | undefined = Array.isArray(
+        parsed.windows,
+      )
+        ? parsed.windows
+        : parsed.window !== undefined
+          ? [parsed.window]
+          : undefined;
+      if (rawWindows !== undefined && rawWindows.length > 0) {
+        override.windows = rawWindows.map((item) => parseWindowRange(`${item.start}-${item.end}`));
       }
       if (Array.isArray(parsed.holidaysAdd)) {
         override.holidaysAdd = parsed.holidaysAdd.filter(
@@ -455,12 +611,12 @@ export class OffpeakGate {
             updatedBy: override.updatedBy,
             updatedAt: override.updatedAt,
             ...(override.enabled !== undefined ? { enabled: override.enabled } : {}),
-            ...(override.window !== undefined
+            ...((override.windows?.length ?? 0) > 0
               ? {
-                  window: {
-                    start: formatMinutes(override.window.startMin),
-                    end: formatMinutes(override.window.endMin),
-                  },
+                  windows: (override.windows ?? []).map((window) => ({
+                    start: formatMinutes(window.startMin),
+                    end: formatMinutes(window.endMin),
+                  })),
                 }
               : {}),
             ...((override.holidaysAdd?.length ?? 0) > 0 ? { holidaysAdd: override.holidaysAdd } : {}),
@@ -489,7 +645,7 @@ export type OffpeakCommand =
   | { action: 'status' }
   | { action: 'whoami' }
   | { action: 'set-enabled'; enabled: boolean }
-  | { action: 'set-window'; start: string; end: string }
+  | { action: 'set-windows'; spec: string }
   | { action: 'holiday-add'; date: string }
   | { action: 'holiday-del'; date: string }
   | { action: 'holiday-list' }
@@ -497,7 +653,7 @@ export type OffpeakCommand =
   | { action: 'invalid'; detail: string };
 
 export const OFFPEAK_COMMAND_USAGE =
-  '用法：/offpeak status | whoami | on | off | window 00:30-08:30 | holiday list | holiday add 2027-01-01 | holiday del 2027-01-01 | reset（仅管理员可变更）';
+  '用法：/offpeak status | whoami | on | off | window 00:00-09:00,12:00-14:00,18:00-24:00 | holiday list | holiday add 2027-01-01 | holiday del 2027-01-01 | reset（仅管理员可变更）';
 
 /**
  * 解析 /offpeak 命令。返回 undefined 表示这不是命令（按普通消息处理）。
@@ -537,13 +693,17 @@ export function parseOffpeakCommand(content: string): OffpeakCommand | undefined
       };
     }
     case 'window': {
-      const joined = rest.join(' ');
-      const range = /^(\S+?)\s*[-~–—]\s*(\S+)$/.exec(joined);
-      const [, start, end] = range ?? [];
-      if (start === undefined || end === undefined) {
-        return { action: 'invalid', detail: `window 需要形如 "00:30-08:30" 的参数，收到 ${JSON.stringify(joined)}` };
+      // 多窗口：逗号或空白分隔（如 `00:00-09:00,12:00-14:00,18:00-24:00`）。
+      // 这里只把原始串透传，真正的解析与校验在 parseWindowsSpec 里做，
+      // 失败由调用方转成"设置失败：<原因>"的用户可见回复。
+      const spec = rest.join(' ').trim();
+      if (spec === '') {
+        return {
+          action: 'invalid',
+          detail: 'window 需要形如 "00:00-09:00,12:00-14:00,18:00-24:00" 的参数（多个窗口用逗号分隔）',
+        };
       }
-      return { action: 'set-window', start, end };
+      return { action: 'set-windows', spec };
     }
     default:
       return { action: 'invalid', detail: `未知子命令 ${JSON.stringify(sub)}` };
@@ -554,7 +714,7 @@ export function parseOffpeakCommand(content: string): OffpeakCommand | undefined
 export function commandNeedsAdmin(command: OffpeakCommand): boolean {
   return (
     command.action === 'set-enabled' ||
-    command.action === 'set-window' ||
+    command.action === 'set-windows' ||
     command.action === 'holiday-add' ||
     command.action === 'holiday-del' ||
     command.action === 'reset'
@@ -563,10 +723,10 @@ export function commandNeedsAdmin(command: OffpeakCommand): boolean {
 
 /** 拦截时给用户的提示文案（窗口从生效配置渲染，不写死）。 */
 export function renderGateNotice(config: OffpeakGateConfig): string {
-  const window = `${formatMinutes(config.window.startMin)}–${formatMinutes(config.window.endMin)}`;
+  const windows = formatWindows(config.windows);
   const extra = config.weekendsAllDay ? '；周六、周日与法定节假日全天为谷时段' : '';
   return (
     `当前为 DeepSeek 正价时段，为控制消耗暂不处理请求。` +
-    `工作日谷时段为 ${window}（${config.timeZone}）${extra}，请稍后再发一次。`
+    `工作日谷时段为 ${windows}（${config.timeZone}）${extra}。`
   );
 }

@@ -672,8 +672,8 @@ const SHANGHAI_2AM = Date.UTC(2026, 0, 14, 18, 0);
 
 const OFFPEAK_ON = {
   QQ_OFFPEAK_ENABLED: 'true',
-  QQ_OFFPEAK_START: '00:30',
-  QQ_OFFPEAK_END: '08:30',
+  // 单窗口 00:30–08:30：这样 12:00 就是正价时段，用例可以拿同一个时间戳验证"拦/放"两侧
+  QQ_OFFPEAK_WINDOWS: '00:30-08:30',
   QQ_OFFPEAK_TZ: 'Asia/Shanghai',
 };
 
@@ -881,11 +881,47 @@ describe('/offpeak 命令', () => {
     await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak window 25:00-26:00' }));
     expect(ctx.sent.at(-1)!.body.content).toContain('设置失败');
 
+    // 重叠窗口同样被拒
+    await ctx.dispatcher.handleEvent(
+      makeMessage({
+        eventId: 'EVENT-OVERLAP',
+        msgId: 'MSG-OVERLAP',
+        content: '/offpeak window 00:00-09:00,08:00-12:00',
+      }),
+    );
+    expect(ctx.sent.at(-1)!.body.content).toContain('重叠');
+
     // 配置未被破坏：峰时段仍按原窗口拦截
     await ctx.dispatcher.handleEvent(
       makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY' }),
     );
     expect(ctx.sent.at(-1)!.body.content).toContain('00:30–08:30');
+  });
+
+  it('管理员 /offpeak window 可整组换成多窗口，下一条消息按新窗口判定', async () => {
+    ctx = setup({
+      configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
+      // 12:00 北京：旧窗口（00:30–08:30）下是正价，换到 12:00-14:00 后应变谷时段
+      now: () => SHANGHAI_NOON,
+    });
+    await ctx.dispatcher.handleEvent(
+      makeMessage({ content: '/offpeak window 00:00-09:00,12:00-14:00,18:00-24:00' }),
+    );
+    const reply = ctx.sent.at(-1)!.body.content ?? '';
+    expect(reply).toContain('已更新为');
+    expect(reply).toContain('00:00–09:00');
+    expect(reply).toContain('12:00–14:00');
+    expect(reply).toContain('18:00–24:00');
+
+    // 同一个时间戳（12:00）现在应当放行并真的派发给 runtime
+    const pending = ctx.dispatcher.handleEvent(
+      makeMessage({ eventId: 'EVENT-3', msgId: 'MSG-3', senderId: 'SOMEBODY' }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await pending;
+    expect(ctx.sent.at(-1)!.body.content).toBe('好');
   });
 
   it('群聊里带 mention 前缀的命令也能识别', async () => {
