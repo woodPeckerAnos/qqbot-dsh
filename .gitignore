@@ -6,6 +6,9 @@ dist/
 .env
 .env.local
 
+# 本地行为配置（由 qqbot.example.yml 复制而来，按机器不同）
+qqbot.yml
+
 # 本地调试产物（不由程序创建，仅为隔离工作区外的写入）
 .npm-cache/
 .npm-lock-staging/

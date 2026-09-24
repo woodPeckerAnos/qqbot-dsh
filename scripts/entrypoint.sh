@@ -82,9 +82,12 @@ case "$SANDBOX_VERDICT" in
 esac
 
 # --- 4. 关键环境变量自检 -----------------------------------------------------
+# 只查"无论启用哪个接入都必须有"的那个。**不要**在这里重复业务规则：
+# QQ_APP_ID / QQ_APP_SECRET 只在启用官方接入时才需要，ONEBOT_ACCESS_TOKEN 只在
+# 启用 onebot 时才需要，而"启用了哪些接入"可能来自 qqbot.yml——在 shell 里解析
+# YAML 是维护陷阱。这类判断交给应用层的配置校验，它的报错更准确（会指出是哪个
+# 配置项、YAML 路径还是环境变量，并给修复提示）。
 missing=()
-[ -n "${QQ_APP_ID:-}" ] || missing+=("QQ_APP_ID")
-[ -n "${QQ_APP_SECRET:-}" ] || missing+=("QQ_APP_SECRET")
 [ -n "${DEEPSEEK_API_KEY:-}" ] || missing+=("DEEPSEEK_API_KEY")
 if [ ${#missing[@]} -gt 0 ]; then
   log "[entrypoint] 错误：缺少必需环境变量：${missing[*]}"

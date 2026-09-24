@@ -1,7 +1,8 @@
 # ============================================================================
 # QQ 机器人 × DSH —— 目标部署入口
 #
-#   cp .env.example .env   # 填 QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY
+#   cp .env.example .env                   # 只填密钥
+#   cp qqbot.example.yml qqbot.yml         # 行为参数（端口/配额/谷时段/管理员…）
 #   docker compose up -d --build
 #   docker compose logs -f
 #
@@ -26,6 +27,8 @@ services:
       QQ_WORKSPACES_ROOT: /data/workspaces
       QQ_STATE_DIR: /data/bot
       QQ_DSH_PROFILE_PATCH: /app/dsh-profile/cordis.patch.yml
+      # 行为配置从挂进来的 qqbot.yml 读（密钥仍来自 .env）。见 qqbot.example.yml。
+      QQ_CONFIG_FILE: /app/qqbot.yml
       # A 方案：保持 workspace-write。审批由 profile 里的 auto-approve 桩兜住。
       # 注意 DSH_PERMISSION_MODE 只能设成 danger-full-access 或留空；
       # profile patch 已显式钉死 sandbox 模式，这里不用动。
@@ -53,6 +56,11 @@ services:
       - dsh-home:/data/dsh            # DSH 会话日志、settings、凭证
       - workspaces:/data/workspaces   # 每个 QQ 群一个工作区目录
       - bot-state:/data/bot           # 机器人自身的对话记录 / 去重 / 会话映射
+      # 行为配置（只读）。⚠ 这个文件必须**先存在**再 up：
+      #   cp qqbot.example.yml qqbot.yml && chmod 644 qqbot.yml
+      # 否则 Docker 会在宿主上自动建一个同名**目录**，容器里读到目录会拒绝启动
+      # （报错里会给出提示）。
+      - ./qqbot.yml:/app/qqbot.yml:ro
 
     # --- 容器加固 -----------------------------------------------------------
     read_only: true

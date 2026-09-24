@@ -5,9 +5,11 @@
  * 所以每一项硬约束都要有测试守着。
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { ConfigError, describeConfig, loadConfig } from '../src/config.js';
+import { parseConfigFileText } from '../src/config-file.js';
 import { DEFAULT_INTENTS, Intent, describeIntents } from '../src/adapters/qq-official/types.js';
 
 const baseEnv = {
@@ -243,5 +245,106 @@ describe('describeIntents', () => {
 
   it('空掩码返回空数组', () => {
     expect(describeIntents(0)).toEqual([]);
+  });
+});
+
+describe('loadConfig 的分层合并（env > qqbot.yml > 内置默认）', () => {
+  const secrets = { DEEPSEEK_API_KEY: 'sk-test' };
+
+  it('行为参数可以全部来自配置文件，密钥只认 env', () => {
+    const file = parseConfigFileText(`
+connectors: [onebot]
+onebot:
+  host: 127.0.0.1
+  port: 7777
+  turnTimeoutMs: 300000
+  autoAcceptGroupInvite: true
+pool:
+  maxRuntimes: 3
+offpeak:
+  enabled: true
+  windows: ["23:00-07:00"]
+  holidays: ["2027-01-01"]
+logLevel: warn
+`);
+    const config = loadConfig({ ...secrets, ONEBOT_ACCESS_TOKEN: 'tok' }, file);
+    expect(config.connectors).toEqual(['onebot']);
+    expect(config.onebot.host).toBe('127.0.0.1');
+    expect(config.onebot.port).toBe(7777);
+    expect(config.onebot.turnTimeoutMs).toBe(300_000);
+    expect(config.onebot.autoAcceptGroupInvite).toBe(true);
+    expect(config.pool.maxRuntimes).toBe(3);
+    expect(config.offpeak.enabled).toBe(true);
+    expect(config.offpeak.windows).toEqual([{ startMin: 23 * 60, endMin: 7 * 60 }]);
+    expect(config.offpeak.holidays).toEqual(['2027-01-01']);
+    expect(config.logLevel).toBe('warn');
+  });
+
+  it('env 优先于配置文件（临时覆盖不用改文件）', () => {
+    const file = parseConfigFileText(`
+connectors: [onebot]
+onebot:
+  port: 7777
+dsh:
+  model: from-file
+admins: [onebot:999]
+offpeak:
+  enabled: true
+`);
+    const config = loadConfig(
+      {
+        ...secrets,
+        ONEBOT_ACCESS_TOKEN: 'tok',
+        ONEBOT_WS_PORT: '8888',
+        DSH_MODEL: 'from-env',
+        BOT_ADMINS: 'onebot:111',
+        QQ_OFFPEAK_ENABLED: 'false',
+      },
+      file,
+    );
+    expect(config.onebot.port).toBe(8888);
+    expect(config.dsh.model).toBe('from-env');
+    expect(config.admins).toEqual(['onebot:111']);
+    expect(config.offpeak.enabled).toBe(false);
+  });
+
+  it('配置文件里的取值越界时，报错信息带上 YAML 路径', () => {
+    const file = parseConfigFileText('onebot:\n  port: 99999\n');
+    try {
+      loadConfig({ ...secrets, ONEBOT_ACCESS_TOKEN: 'tok', BOT_CONNECTORS: 'onebot' }, file);
+      throw new Error('应当抛错');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).message).toContain('onebot.port');
+      expect((error as ConfigError).message).toContain('65535');
+    }
+  });
+
+  it('密钥不能来自配置文件：只给文件、不给 env 密钥时按缺失报错', () => {
+    const file = parseConfigFileText('connectors: [qq-official]\n');
+    expect(() => loadConfig({}, file)).toThrow(/QQ_APP_ID/);
+    expect(() => loadConfig({ QQ_APP_ID: 'a' }, file)).toThrow(/QQ_APP_SECRET/);
+    expect(() => loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's' }, file)).toThrow(
+      /DEEPSEEK_API_KEY/,
+    );
+    // onebot 的 access token 同理
+    const onebotFile = parseConfigFileText('connectors: [onebot]\n');
+    expect(() => loadConfig(secrets, onebotFile)).toThrow(/ONEBOT_ACCESS_TOKEN/);
+  });
+
+  it('仓库里的 qqbot.example.yml 能直接加载起来（示例与代码同步的守门测试）', () => {
+    const text = readFileSync(new URL('../qqbot.example.yml', import.meta.url), 'utf8');
+    const file = parseConfigFileText(text, 'qqbot.example.yml');
+    const config = loadConfig(
+      { QQ_APP_ID: 'app-1', QQ_APP_SECRET: 'secret-1', DEEPSEEK_API_KEY: 'sk-test' },
+      file,
+    );
+    expect(config.connectors).toEqual(['qq-official']);
+    expect(config.qq.intents).toBe(DEFAULT_INTENTS);
+    expect(config.qq.turnTimeoutMs).toBe(240_000);
+    expect(config.onebot.port).toBe(6700);
+    expect(config.offpeak.enabled).toBe(true);
+    expect(config.offpeak.windows).toHaveLength(3);
+    expect(config.logLevel).toBe('info');
   });
 });

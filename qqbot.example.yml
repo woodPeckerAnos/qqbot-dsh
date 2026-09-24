@@ -1,0 +1,167 @@
+# ============================================================================
+# qqbot-dsh 行为配置
+#
+#   cp qqbot.example.yml qqbot.yml      # 然后按需修改
+#   docker compose up -d
+#
+# 密钥**不在这里**——它们只从 .env 读：
+#   QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY / ONEBOT_ACCESS_TOKEN
+#
+# 取值优先级：环境变量 > 本文件 > 代码内置默认。
+# 也就是说本文件里每一项都可以用对应的环境变量临时覆盖（变量名见每节注释），
+# 但正常改配置只需要动这里。
+#
+# 键名拼错会在启动期直接报错并列出可用项（不会静默用默认值），
+# 所以放心改。
+# ============================================================================
+
+# --- 接入平台 ----------------------------------------------------------------
+# 可并存，共享同一个 DSH 池与编排层。
+#   qq-official  官方开放平台（api.bot.qq.com）
+#   onebot       社区框架（LLBot / NapCat 等 OneBot v11 实现，反向 WS 接入）
+# 环境变量：BOT_CONNECTORS
+connectors:
+  - qq-official
+
+# --- 官方开放平台（connectors 含 qq-official 时生效）-------------------------
+# 环境变量前缀：QQ_*
+qq-official:
+  # OpenAPI 基址；2026-08-10 起统一为 api.bot.qq.com
+  apiBase: https://api.bot.qq.com
+  # 订阅的 intents 位掩码。
+  # 默认 = GROUP_AND_C2C_EVENT(1<<25) + GROUP_MEMBER_EVENT(1<<24) = 50331648
+  # 注意：1<<25 同时承载群聊 @消息与单聊消息，intent 层无法只订其中一种。
+  # 如果连接被 4014（intent 无权限）拒绝，把这里改成 33554432 再试。
+  intents: 50331648
+  # 发消息用 0(纯文本) 还是 2(markdown)。markdown 的渲染效果依客户端版本而异，
+  # 所以默认走纯文本。
+  msgType: 0
+  # 单条消息最大字符数。官方未公布数值上限，只在超限时报 40054007，保守取 1500。
+  maxChars: 1500
+  # 群聊一次提问允许的最大回复条数（官方硬上限 5，留 1 条余量给错误提示）
+  maxRepliesPerMsg: 4
+  # 进度回执：turn 超过多少毫秒后发第一条「仍在处理中」
+  progressAfterMs: 90000
+  progressIntervalMs: 90000
+  # 进度回执条数上限，必须小于 maxRepliesPerMsg（给最终答案留配额）
+  progressMax: 3
+  # 单轮任务超时（毫秒），到点取消该轮。
+  # 硬约束：必须 < 300000 —— 群聊被动回复窗口只有 5 分钟，超时提示也要在窗口内发出。
+  turnTimeoutMs: 240000
+  # 单聊（C2C）。单聊与群聊共用 1<<25 这一个 intent，无法在订阅层屏蔽，
+  # 所以要"只服务群聊"必须靠这个开关。
+  c2c:
+    enabled: true
+    # 单聊每条消息最大回复条数。官方上限 4（群聊是 5，两个值不能共用）。
+    maxRepliesPerMsg: 4
+    # 单聊进度回执上限，必须小于上面的 maxRepliesPerMsg
+    progressMax: 2
+
+# --- OneBot v11 社区框架（connectors 含 onebot 时生效）-----------------------
+# 环境变量前缀：ONEBOT_*
+# 接入方式：本服务起 WS server，LLBot/NapCat 作为客户端连入（反向 WS）。
+# 框架侧要填：ws://127.0.0.1:6700/onebot/v11/ws，token 与 ONEBOT_ACCESS_TOKEN 一致。
+onebot:
+  # ⚠⚠ 必须保持 0.0.0.0，不要改成 127.0.0.1。
+  #   框架跑在宿主、本服务在 Docker 时，宿主看到的 127.0.0.1:6700 是 Docker 的
+  #   端口转发，它落到**容器网卡**上；容器里若只绑 loopback，转发就够不到，
+  #   症状是"端口映射看着正常但框架死活连不上"。
+  host: 0.0.0.0
+  # ⚠ 不要改这个端口：docker-compose.yml 里的端口映射写死了 127.0.0.1:6700:6700，
+  #   改这里会让映射指空。要改就得两处一起改。
+  port: 6700
+  # 是否响应私聊消息
+  c2cEnabled: true
+  # 收到加好友请求时自动同意（否则私聊路径永远打不开）
+  autoAcceptFriend: true
+  # 收到拉群邀请时自动同意。默认关闭：被拉进陌生群 = 把 agent 暴露给陌生人。
+  autoAcceptGroupInvite: false
+  maxChars: 1500
+  # OneBot 没有平台级回复配额，这里只是防失控的安全阀
+  maxRepliesPerMsg: 10
+  progressMax: 3
+  progressAfterMs: 90000
+  progressIntervalMs: 90000
+  # OneBot 没有被动回复窗口，单轮超时可以放宽到任务真正需要的时长
+  turnTimeoutMs: 600000
+
+# --- DSH runtime -------------------------------------------------------------
+dsh:
+  provider: deepseek-official
+  model: deepseek-flash
+  # profile patch 的绝对路径（容器内由 compose 指定，一般不用改）
+  profilePatch: /app/dsh-profile/cordis.patch.yml
+  # dsh 可执行文件；默认从 PATH 解析
+  bin: dsh
+  startTimeoutMs: 60000
+  shutdownTimeoutMs: 15000
+
+# --- 运行时池 ----------------------------------------------------------------
+pool:
+  # 全局并发 turn 上限（= 同时干活的会话数上限）
+  maxConcurrentTurns: 4
+  # 并发 runtime 进程上限（LRU 回收）
+  maxRuntimes: 8
+  # 空闲 runtime 回收时间（毫秒），回收后该会话下次提问会重建会话并回放历史
+  runtimeIdleMs: 1800000
+  # 冷启动回放的历史轮数
+  replayTurns: 12
+
+# --- 存储路径 ----------------------------------------------------------------
+# 容器内由 docker-compose 的 environment 指定；这两处要保持一致。
+paths:
+  dshHome: /data/dsh
+  workspacesRoot: /data/workspaces
+  stateDir: /data/bot
+
+# --- 管理员白名单 ------------------------------------------------------------
+# 条目格式 `平台:发送者id`：
+#   - qq-official:<openid>   群聊里是 member_openid，单聊里是 user_openid，
+#                            同一个人两个值不同，都要管就都加进来
+#   - onebot:<QQ号>
+# 管理员两个特权：永不被谷时段闸拦截；可用 /offpeak 变更类命令热切换闸配置。
+# 发现自己身份键：直接给机器人发 `/offpeak whoami`（对所有人开放）。
+# 留空 = 没有管理员，变更类命令对所有人关闭（fail-closed）。
+# 环境变量：BOT_ADMINS（旧变量 QQ_ADMIN_OPENIDS 仍兼容，裸 openid 自动补 qq-official: 前缀）
+admins: []
+# admins:
+#   - qq-official:ABCDEF123456
+#   - onebot:123456
+
+# --- DeepSeek 谷时段闸 -------------------------------------------------------
+# 开启后：当 <dsh.provider>/<dsh.model> 命中 modelPattern，且当前不是谷时段时，
+# 直接回复提示、不调用 API（不写对话记录、不占并发名额）。
+# 环境变量前缀：QQ_OFFPEAK_*
+offpeak:
+  enabled: true
+  # 工作日谷时段窗口，一天可以有多个，逗号分隔；每个窗口是 HH:MM-HH:MM，
+  # 区间为 [start, end)。默认北京时间 00:00-09:00、12:00-14:00、18:00-24:00
+  # （窗口之外 09:00-12:00、14:00-18:00 是正价时段）。
+  #   - 结束时间可写 24:00 表示当天结束；也支持跨零点（如 22:00-06:00）
+  #   - 窗口之间不能重叠（重叠会在启动期报错）
+  #   - 也可以写成 YAML 数组：["00:00-09:00", "12:00-14:00", "18:00-24:00"]
+  windows: 00:00-09:00,12:00-14:00,18:00-24:00
+  # 窗口所在时区（IANA 名称；容器内默认 UTC，不要依赖宿主时区）
+  timeZone: Asia/Shanghai
+  # 命中判定：provider/model 组合串包含该子串（大小写不敏感）
+  modelPattern: deepseek
+  # 周六、周日全天按谷价（2026-08-23 起官方规则；调休上班的周末仍是周六/日，
+  # 由本规则自动覆盖，无需额外配置）
+  weekendsAllDay: true
+  # 法定节假日全天谷价：已内置 2026 年官方节假日（国办发明电〔2025〕7 号）。
+  # 跨年或临时日期在这里追加，或让管理员在 QQ 里用 /offpeak holiday add 热维护
+  # （覆盖持久化，重启不丢）。
+  holidays: []
+  # holidays:
+  #   - 2027-01-01
+  #   - 2027-01-02
+
+# --- 健康检查 ----------------------------------------------------------------
+# /healthz + /metrics；容器 HEALTHCHECK 探这个端口（compose 里未映射到宿主）
+health:
+  port: 8080
+
+# --- 日志级别 ----------------------------------------------------------------
+# debug | info | warn | error
+# 环境变量：QQ_LOG_LEVEL
+logLevel: info

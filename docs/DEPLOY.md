@@ -58,8 +58,9 @@ git clone <你的仓库地址> qqbot-dsh
 cd qqbot-dsh
 
 # 2) 写配置
-cp .env.example .env
-$EDITOR .env          # 至少填 QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY
+cp .env.example .env                  # 只放密钥
+cp qqbot.example.yml qqbot.yml         # 行为参数（端口/配额/谷时段/管理员…）
+$EDITOR .env                           # 至少填 QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY
 
 # 3) 构建并启动
 docker compose up -d --build
@@ -146,12 +147,20 @@ xattr -dr com.apple.quarantine .   # macOS 会拦未签名二进制，第一次�
 
 #### 3.1.2 配 bot 侧
 
-`.env`：
+`.env`（密钥）：
 
 ```sh
-BOT_CONNECTORS=onebot                  # 或 qq-official,onebot 与官方通道并存
 ONEBOT_ACCESS_TOKEN=$(openssl rand -hex 32)
 DEEPSEEK_API_KEY=...
+```
+
+`qqbot.yml`（行为参数，见 qqbot.example.yml）：
+
+```yaml
+connectors: [onebot]        # 或 [qq-official, onebot] 与官方通道并存
+onebot:
+  host: 0.0.0.0             # ⚠ 别改成 127.0.0.1，原因见下面
+  port: 6700                # ⚠ 别改：compose 的端口映射写死了 6700
 ```
 
 `docker-compose.yml` 里的 6700 端口映射**默认已经打开**（只绑 `127.0.0.1`，
@@ -170,7 +179,7 @@ LLBot（宿主原生）──ws://127.0.0.1:6700/...──▶ 宿主 127.0.0.1:6
                                               容器内 0.0.0.0:6700
 ```
 
-> ⚠ **不要**把 `.env` 里的 `ONEBOT_WS_HOST` 改成 `127.0.0.1`。宿主看到的
+> ⚠ **不要**把 `qqbot.yml` 里的 `onebot.host` 改成 `127.0.0.1`。宿主看到的
 > `127.0.0.1:6700` 是 Docker 的端口转发，它落到**容器网卡**上；容器里若只绑
 > loopback，转发就够不到，症状是"端口映射看着正常但框架死活连不上"。保持
 > 默认的 `0.0.0.0`，安全性由宿主侧那个 `127.0.0.1:` 前缀保证。
@@ -334,7 +343,12 @@ docker stats qqbot-dsh
 
 ## 7. 调参建议
 
-编辑 `.env` 后 `docker compose up -d` 生效（无需重建）。
+编辑 `qqbot.yml` 后 `docker compose restart qqbot` 生效；改 `.env`（密钥）用
+`docker compose up -d`。两者都不需要重建镜像。
+
+下表给的是**环境变量名**（它们优先于 `qqbot.yml`，所以临时覆盖最方便），
+但日常改配置请改 `qqbot.yml` 里对应的项——对应关系见每节的注释，例如
+`QQ_MAX_RUNTIMES` ↔ `pool.maxRuntimes`、`QQ_MAX_CHARS` ↔ `qq-official.maxChars`。
 
 | 场景 | 调整 |
 |---|---|
@@ -360,7 +374,8 @@ docker stats qqbot-dsh
 |---|---|---|---|
 | 后端代码（`src/**`） | `docker compose up -d --build` | **是** | 否 |
 | `package.json` 依赖 | `docker compose up -d --build` | **是**（要重跑 `npm install`） | 否 |
-| `.env` 里任何变量 | `docker compose up -d` | 否（重建容器即可） | 否 |
+| `.env`（密钥） | `docker compose up -d` | 否（重建容器即可） | 否 |
+| `qqbot.yml`（行为参数） | `docker compose restart qqbot` | 否 | 否 |
 | `dsh-profile/cordis.patch.yml`（人设、权限模式） | `docker compose restart qqbot` | 否 | 否 |
 | 某个会话的行为规矩（`AGENTS.md`） | 直接改文件 | **都不用** | 否 |
 | `docker-compose.yml` 本身 | `docker compose up -d` | 否 | 否 |

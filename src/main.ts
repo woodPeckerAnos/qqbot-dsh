@@ -21,6 +21,7 @@
  */
 
 import { loadConfig, describeConfig, ConfigError, type Config } from './config.js';
+import { loadConfigFile } from './config-file.js';
 import { QqOfficialConnector } from './adapters/qq-official/connector.js';
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { TokenError } from './adapters/qq-official/token.js';
@@ -94,8 +95,13 @@ function buildConnector(
 
 async function main(): Promise<void> {
   let config: Config;
+  let configFile: string | undefined;
   try {
-    config = loadConfig();
+    // 配置文件（qqbot.yml）先读：缺文件、YAML 语法错、键名拼错都在这里爆出来。
+    // 密钥不走配置文件，只从 env 读（loadConfig 内部处理）。
+    const loaded = loadConfigFile(process.env);
+    configFile = loaded.path;
+    config = loadConfig(process.env, loaded.config);
   } catch (error) {
     if (error instanceof ConfigError) {
       process.stderr.write(`\n配置错误：${error.message}\n`);
@@ -112,6 +118,8 @@ async function main(): Promise<void> {
   logger.info('启动 qqbot-dsh', {
     node: process.version,
     platform: process.platform,
+    // 配置文件路径要显式打出来：排障第一个问题永远是"你到底读的哪个配置"
+    configFile: configFile ?? '(未使用配置文件，全部走 env/默认)',
     config: describeConfig(config),
   });
 

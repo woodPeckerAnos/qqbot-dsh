@@ -35,10 +35,14 @@ docker compose logs --tail=80 qqbot
 ### 1.1 报"缺少必需环境变量"
 
 ```
-[entrypoint] 错误：缺少必需环境变量：QQ_APP_ID QQ_APP_SECRET
+[entrypoint] 错误：缺少必需环境变量：DEEPSEEK_API_KEY
 ```
 
-`.env` 没填或没被 compose 读到。检查：
+入口脚本**只**检查这一个（无论启用哪个接入都必须有）。`QQ_APP_ID`/`QQ_APP_SECRET`
+只在启用官方接入时需要、`ONEBOT_ACCESS_TOKEN` 只在启用 onebot 时需要，这两个判断
+交给应用层——它的报错会指出是环境变量还是 `qqbot.yml` 的哪一项。
+
+没填或没被 compose 读到。检查：
 
 ```sh
 docker compose config | grep -A3 environment     # 确认变量已注入
@@ -52,12 +56,22 @@ cat .env | grep -c '='                           # 确认文件有内容
 
 启动期的配置校验会明确告诉你是哪一项、为什么、怎么改。常见的：
 
+> 报错里出现的名字就是**该改的地方**：`QQ_XXX` 是环境变量（`.env` 或 compose 的
+> `environment`），`onebot.port` 这种带点的路径是 `qqbot.yml` 里的项。两者指向同一
+> 个配置——环境变量优先级更高，所以"改了 `qqbot.yml` 没生效"通常是环境里还有个
+> 同名变量压着。启动日志里会打印实际读到的配置文件路径（搜 `configFile`）。
+
 | 报错 | 原因 | 修复 |
 |---|---|---|
+| `配置文件不存在：...` | `QQ_CONFIG_FILE` 显式指定了却没有这个文件 | 建好文件，或删掉该变量（默认 `./qqbot.yml`，不存在就只用 env/默认） |
+| `<路径> 是一个目录，不是文件` | compose 的 bind mount 在宿主上文件不存在时，Docker 自动建了同名目录 | 删掉那个同名目录，再 `cp qqbot.example.yml qqbot.yml && chmod 644 qqbot.yml` |
+| `未知配置项 "xxx"` / `不是可识别的配置项` | `qqbot.yml` 里键名拼错 | 照报错里列的可用项改（拼错不会静默用默认值，这是故意的） |
+| `不是合法 YAML` | 缩进用了 Tab，或冒号后缺空格 | 用空格缩进；写 `port: 6700` 而不是 `port:6700` |
+| `必须是整数，收到 "6700"` | YAML 里给数字加了引号 | 去掉引号：`port: 6700` |
 | `QQ_INTENTS=... 未包含 GROUP_AND_C2C_EVENT` | intents 配错 | 用默认值 `50331648`（群聊与单聊都靠它） |
 | `QQ_TURN_TIMEOUT_MS(...) 必须小于群被动回复窗口 300000ms` | 超时设得比窗口还长，超时提示也发不出去 | 设 `240000` |
-| `QQ_PROGRESS_MAX(...) 必须小于 QQ_MAX_REPLIES_PER_MSG(...)` | 群聊进度回执会把配额吃光 | 保持 `QQ_PROGRESS_MAX=3`、`QQ_MAX_REPLIES_PER_MSG=4` |
-| `QQ_C2C_PROGRESS_MAX(...) 必须小于 QQ_C2C_MAX_REPLIES_PER_MSG(...)` | 单聊进度回执会把配额吃光 | 保持 `QQ_C2C_PROGRESS_MAX=2`、`QQ_C2C_MAX_REPLIES_PER_MSG=4` |
+| `QQ_PROGRESS_MAX(...) 必须小于 QQ_MAX_REPLIES_PER_MSG(...)` | 群聊进度回执会把配额吃光 | 保持 `3` 与 `4` |
+| `QQ_C2C_PROGRESS_MAX(...) 必须小于 QQ_C2C_MAX_REPLIES_PER_MSG(...)` | 单聊进度回执会把配额吃光 | 保持 `2` 与 `4` |
 | `QQ_C2C_MAX_REPLIES_PER_MSG 必须在 [1, 4] 之间` | 单聊官方上限就是 4（群聊才是 5） | 设 `4` 或更小 |
 | `QQ_C2C_ENABLED 只能是 true/false` | 布尔值写法不对 | 用 `true`/`false`（也接受 `1`/`0`） |
 

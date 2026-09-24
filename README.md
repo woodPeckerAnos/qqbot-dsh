@@ -28,7 +28,8 @@
 ## 快速开始
 
 ```sh
-cp .env.example .env      # 官方：填 QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY
+cp .env.example .env                  # 只填 4 个密钥
+cp qqbot.example.yml qqbot.yml         # 行为参数都在这里（带注释）
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -44,10 +45,12 @@ docker compose logs -f
 （拉起真实 QQ 客户端，官方称比纯协议模式更稳）的唯一形态：
 
 ```sh
-# .env 里：
-BOT_CONNECTORS=onebot            # 或 qq-official,onebot 并存
-ONEBOT_ACCESS_TOKEN=<足够长的随机串>
+# .env 里（密钥）：
+ONEBOT_ACCESS_TOKEN=<足够长的随机串>   # openssl rand -hex 32
 DEEPSEEK_API_KEY=...
+
+# qqbot.yml 里（行为参数）：
+connectors: [onebot]                    # 或 [qq-official, onebot] 并存
 ```
 
 然后在 LLBot 里加一条**反向 WebSocket** 指向
@@ -123,7 +126,8 @@ npm test                 # 离线单测：不触网、不启动 DSH 子进程
 | 改动 | 命令 | 重建镜像 |
 |---|---|---|
 | `src/**` 后端代码 | `docker compose up -d --build` | 是 |
-| `.env` 变量 | `docker compose up -d` | 否 |
+| `.env`（密钥） | `docker compose up -d` | 否 |
+| `qqbot.yml`（行为参数） | `docker compose restart qqbot` | 否 |
 | `dsh-profile/cordis.patch.yml`（人设/权限） | `docker compose restart qqbot` | 否 |
 | 某个会话的规矩（`AGENTS.md`） | 直接写文件，连重启都不用 | 否 |
 
@@ -157,6 +161,10 @@ docker compose run --rm --entrypoint node qqbot scripts/probe-dsh.mjs      # 诊
 ```
 docker-compose.yml       生产部署入口
 docker-compose.dev.yml   开发覆盖文件（挂载本地 dist，跳过镜像重建）
+.env.example             密钥样例（只放 4 个凭证）
+qqbot.example.yml        行为参数样例（端口/配额/谷时段/管理员…，带注释）
+src/config.ts            env + qqbot.yml 三层合并 + 语义校验 + 启动期快速失败
+src/config-file.ts       qqbot.yml 读取与形状校验（未知键名直接报错）
 src/core/       接入层契约：BotConnector / 归一化事件 / 回复策略（编排层只依赖这里）
 src/adapters/   接入平台：qq-official（官方开放平台）/ onebot（NapCat 等社区框架）
 src/dsh/        DSH 桥接：NDJSON JSON-RPC 客户端 / 子进程监督 / 进程池 / turn 归并

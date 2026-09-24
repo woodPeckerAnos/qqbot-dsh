@@ -1,23 +1,30 @@
 /**
- * 配置层：从环境变量解析 + 启动期快速失败。
+ * 配置层：env（密钥）+ qqbot.yml（行为参数）+ 代码内置默认，三层合并 + 启动期快速失败。
+ *
+ * 为什么要分层（而不是全塞 .env）：
+ *   `.env` 里 39 个变量中真正敏感的只有 4 个（QQ_APP_ID / QQ_APP_SECRET /
+ *   DEEPSEEK_API_KEY / ONEBOT_ACCESS_TOKEN），其余都是行为参数。混在一起的结果是
+ *   重要信息被稀释——想改个端口要在一堆参数里翻。所以：
+ *
+ *     .env        只放密钥（以及 docker-compose 传递的少数几个）
+ *     qqbot.yml   其余全部行为参数（见 qqbot.example.yml，带注释）
+ *
+ * 取值优先级：**env > qqbot.yml > 内置默认**。
+ * 让 env 仍然优先有两个理由：既有部署的 .env 零破坏；临时覆盖不用改文件。
+ * 密钥类（appId/appSecret/apiKey/accessToken）**只能**来自 env——它们绝不写进配置文件。
  *
  * 设计原则：
- *   - 所有可调参数集中在这里，其余模块不直接读 process.env；
- *   - 必填项缺失立刻抛错并说清怎么修，不等到运行中途才发现；
- *   - 数值项做范围校验，避免"配错了但看起来在跑"。
- *
- * 多接入模型：
- *   - `BOT_CONNECTORS` 决定启用哪些接入平台（qq-official / onebot，可并存）；
- *   - 每个平台有自己的配置块（config.qq / config.onebot），只在启用时才校验必填项；
- *   - 回复行为的差异（配额、分段、单轮超时）经各平台的 ReplyPolicy 表达，
- *     编排层不再引用本文件里的平台字段。
- *
- * 不使用任何 schema 库：纯 TS 实现更容易单测，也少一个依赖。
+ *   - 所有可调参数集中在这里，其余模块不直接读 process.env 或读配置文件；
+ *   - 必填项缺失/范围越界立刻抛错并说清怎么修，不等到运行中途才发现；
+ *   - 配置文件只做形状与类型校验（见 config-file.ts），语义校验（取值范围、
+ *     配额不变量、窗口重叠…）在这里做，因为要等 env 合并完才能判。
  */
 
 import { Intent, DEFAULT_INTENTS, describeIntents } from './adapters/qq-official/types.js';
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
+import { ConfigError } from './config-error.js';
+import type { FileConfig } from './config-file.js';
 import {
   formatWindows,
   isValidDateString,
@@ -27,19 +34,21 @@ import {
   type OffpeakWindow,
 } from './offpeak.js';
 
+export { ConfigError } from './config-error.js';
+
+export type ConnectorName = typeof QQ_OFFICIAL_PLATFORM | typeof ONEBOT_PLATFORM;
+
 /**
  * 内置的默认谷时段窗口：北京时间 00:00-09:00、12:00-14:00、18:00-24:00。
  * 窗口之外（09:00-12:00、14:00-18:00）是正价时段。
  */
 export const DEFAULT_OFFPEAK_WINDOWS = '00:00-09:00,12:00-14:00,18:00-24:00';
 
-export type ConnectorName = typeof QQ_OFFICIAL_PLATFORM | typeof ONEBOT_PLATFORM;
-
 export interface Config {
-  /** 启用的接入平台（BOT_CONNECTORS，逗号分隔） */
+  /** 启用的接入平台（BOT_CONNECTORS / connectors，逗号分隔） */
   connectors: ConnectorName[];
   /**
-   * 管理员白名单（BOT_ADMINS，逗号分隔），条目格式为 `platform:senderId`，
+   * 管理员白名单（BOT_ADMINS / admins），条目格式为 `platform:senderId`，
    * 例如 `qq-official:ABCDEF...` 或 `onebot:123456`。
    * 兼容项：QQ_ADMIN_OPENIDS 里的裸 openid 会自动加上 `qq-official:` 前缀。
    * 留空 = 没有管理员，/offpeak 的变更类子命令对所有人关闭（fail-closed）。
@@ -47,7 +56,9 @@ export interface Config {
   admins: string[];
   /** 官方开放平台接入（仅 connectors 含 qq-official 时有意义） */
   qq: {
+    /** 密钥，只能来自 env（QQ_APP_ID） */
     appId: string;
+    /** 密钥，只能来自 env（QQ_APP_SECRET） */
     appSecret: string;
     /** OpenAPI 基址；2026-08-10 起统一为 api.bot.qq.com */
     apiBase: string;
@@ -78,10 +89,10 @@ export interface Config {
   };
   /** OneBot v11 社区框架接入（仅 connectors 含 onebot 时有意义） */
   onebot: {
-    /** 反向 WS 监听地址（本服务起 server，NapCat 等作为客户端连入） */
+    /** 反向 WS 监听地址（本服务起 server，LLBot/NapCat 等作为客户端连入） */
     host: string;
     port: number;
-    /** 连接鉴权 token（OneBot 的 access_token；启用 onebot 时必填） */
+    /** 密钥，只能来自 env（ONEBOT_ACCESS_TOKEN；启用 onebot 时必填） */
     accessToken: string;
     /** 是否响应私聊消息 */
     c2cEnabled: boolean;
@@ -122,23 +133,20 @@ export interface Config {
   };
   /**
    * 谷时段闸：命中 modelPattern 的模型在谷时段窗口之外不调用 API，直接回复提示。
-   * 运行期可被管理员 /offpeak 命令覆盖（见 offpeak.ts），这里只是 env 默认层。
+   * 运行期可被管理员 /offpeak 命令覆盖（见 offpeak.ts），这里只是 env/文件默认层。
    */
   offpeak: {
-    /** 总开关（QQ_OFFPEAK_ENABLED，默认 false） */
+    /** 总开关（QQ_OFFPEAK_ENABLED / offpeak.enabled，默认 false） */
     enabled: boolean;
-    /**
-     * 一天内的谷时段窗口列表（QQ_OFFPEAK_WINDOWS）。
-     * 默认北京时间 00:00-09:00、12:00-14:00、18:00-24:00；解析与重叠校验在启动期完成。
-     */
+    /** 一天内的谷时段窗口列表（QQ_OFFPEAK_WINDOWS / offpeak.windows） */
     windows: OffpeakWindow[];
-    /** 窗口所在时区（QQ_OFFPEAK_TZ，默认 Asia/Shanghai） */
+    /** 窗口所在时区（QQ_OFFPEAK_TZ / offpeak.timeZone，默认 Asia/Shanghai） */
     timeZone: string;
-    /** 命中判定：`<provider>/<model>` 包含该子串（QQ_OFFPEAK_MODEL_PATTERN，默认 deepseek） */
+    /** 命中判定：`<provider>/<model>` 包含该子串（默认 deepseek） */
     modelPattern: string;
-    /** 周六、周日全天谷价（QQ_OFFPEAK_WEEKENDS，默认 true，DeepSeek 2026-08-23 起规则） */
+    /** 周六、周日全天谷价（默认 true，DeepSeek 2026-08-23 起规则） */
     weekendsAllDay: boolean;
-    /** 追加的全天谷价日期（QQ_OFFPEAK_HOLIDAYS，逗号分隔 YYYY-MM-DD），与内置官方节假日表合并 */
+    /** 追加的全天谷价日期（YYYY-MM-DD），与内置官方节假日表合并 */
     holidays: string[];
   };
   health: {
@@ -147,99 +155,145 @@ export interface Config {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
-export class ConfigError extends Error {
-  constructor(
-    message: string,
-    readonly hints: string[] = [],
-  ) {
-    super(message);
-    this.name = 'ConfigError';
-  }
-}
-
 type Env = Record<string, string | undefined>;
 
-function requiredString(env: Env, key: string, hints: string[] = []): string {
+// ---------------------------------------------------------------------------
+// 三层取值：env > 配置文件 > 内置默认
+//
+// 错误信息刻意区分两种来源：env 分支沿用原来的变量名（既有排障习惯与测试不变），
+// 文件分支带上 YAML 路径（如 onebot.port），这样"到底该改哪儿"一眼可见。
+// ---------------------------------------------------------------------------
+
+function envRaw(env: Env, key: string): string | undefined {
   const raw = env[key];
-  if (raw === undefined || raw.trim() === '') {
-    throw new ConfigError(`缺少必需环境变量 ${key}`, hints);
-  }
-  return raw.trim();
+  return raw === undefined || raw.trim() === '' ? undefined : raw.trim();
 }
 
-function optionalString(env: Env, key: string, fallback: string): string {
-  const raw = env[key];
-  return raw === undefined || raw.trim() === '' ? fallback : raw.trim();
+function pickString(env: Env, envKey: string, fileValue: string | undefined, fallback: string): string {
+  return envRaw(env, envKey) ?? fileValue ?? fallback;
 }
 
-function optionalInt(
+function pickInt(
   env: Env,
-  key: string,
+  envKey: string,
+  fileValue: number | undefined,
   fallback: number,
   range: { min: number; max: number },
+  filePath: string,
 ): number {
-  const raw = env[key];
-  if (raw === undefined || raw.trim() === '') return fallback;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || !Number.isInteger(value)) {
-    throw new ConfigError(`${key} 必须是整数，收到 ${JSON.stringify(raw)}`);
+  const raw = envRaw(env, envKey);
+  let value: number;
+  if (raw !== undefined) {
+    value = Number(raw);
+    if (!Number.isFinite(value) || !Number.isInteger(value)) {
+      throw new ConfigError(`${envKey} 必须是整数，收到 ${JSON.stringify(raw)}`);
+    }
+    if (value < range.min || value > range.max) {
+      throw new ConfigError(`${envKey} 必须在 [${range.min}, ${range.max}] 之间，收到 ${value}`);
+    }
+    return value;
   }
-  if (value < range.min || value > range.max) {
-    throw new ConfigError(`${key} 必须在 [${range.min}, ${range.max}] 之间，收到 ${value}`);
+  if (fileValue !== undefined) {
+    if (fileValue < range.min || fileValue > range.max) {
+      throw new ConfigError(
+        `配置文件里的 ${filePath} 必须在 [${range.min}, ${range.max}] 之间，收到 ${fileValue}`,
+      );
+    }
+    return fileValue;
   }
-  return value;
+  return fallback;
 }
 
-function optionalEnum<T extends string>(env: Env, key: string, allowed: readonly T[], fallback: T): T {
-  const raw = env[key];
-  if (raw === undefined || raw.trim() === '') return fallback;
-  const value = raw.trim() as T;
-  if (!allowed.includes(value)) {
-    throw new ConfigError(`${key} 只能是 ${allowed.join(' | ')}，收到 ${JSON.stringify(raw)}`);
-  }
-  return value;
-}
-
-/** 布尔解析：接受 true/false/1/0/yes/no（大小写不敏感），其余视为配置错误。 */
-function optionalBool(env: Env, key: string, fallback: boolean): boolean {
-  const raw = env[key];
-  if (raw === undefined || raw.trim() === '') return fallback;
-  const value = raw.trim().toLowerCase();
+function pickBool(
+  env: Env,
+  envKey: string,
+  fileValue: boolean | undefined,
+  fallback: boolean,
+): boolean {
+  const raw = envRaw(env, envKey);
+  if (raw === undefined) return fileValue ?? fallback;
+  const value = raw.toLowerCase();
   if (['true', '1', 'yes', 'on'].includes(value)) return true;
   if (['false', '0', 'no', 'off'].includes(value)) return false;
-  throw new ConfigError(`${key} 只能是 true/false（也接受 1/0），收到 ${JSON.stringify(raw)}`);
+  throw new ConfigError(`${envKey} 只能是 true/false（也接受 1/0），收到 ${JSON.stringify(raw)}`);
 }
 
-function optionalList(env: Env, key: string): string[] {
-  return optionalString(env, key, '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter((item) => item !== '');
+function pickEnum<T extends string>(
+  env: Env,
+  envKey: string,
+  fileValue: string | undefined,
+  allowed: readonly T[],
+  fallback: T,
+  filePath: string,
+): T {
+  const raw = envRaw(env, envKey);
+  if (raw !== undefined) {
+    if (!allowed.includes(raw as T)) {
+      throw new ConfigError(`${envKey} 只能是 ${allowed.join(' | ')}，收到 ${JSON.stringify(raw)}`);
+    }
+    return raw as T;
+  }
+  if (fileValue !== undefined) {
+    if (!allowed.includes(fileValue as T)) {
+      throw new ConfigError(
+        `配置文件里的 ${filePath} 只能是 ${allowed.join(' | ')}，收到 ${JSON.stringify(fileValue)}`,
+      );
+    }
+    return fileValue as T;
+  }
+  return fallback;
+}
+
+/** 列表：env 用逗号分隔，配置文件用 YAML 数组；env 非空时以 env 为准。 */
+function pickList(env: Env, envKey: string, fileValue: string[] | undefined): string[] {
+  const raw = envRaw(env, envKey);
+  if (raw !== undefined) {
+    return raw
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item !== '');
+  }
+  return fileValue ?? [];
+}
+
+/** 密钥类必填项：只认 env，绝不从配置文件取。 */
+function requiredSecret(env: Env, key: string, hints: string[] = []): string {
+  const raw = envRaw(env, key);
+  if (raw === undefined) {
+    throw new ConfigError(`缺少必需环境变量 ${key}`, hints);
+  }
+  return raw;
 }
 
 /** 校验"进度回执必须给最终答案留配额"的不变量。 */
-function assertProgressQuota(envKeyProgress: string, progressMax: number, envKeyTotal: string, total: number): void {
+function assertProgressQuota(
+  progressLabel: string,
+  progressMax: number,
+  totalLabel: string,
+  total: number,
+): void {
   if (progressMax >= total) {
     throw new ConfigError(
-      `${envKeyProgress}(${progressMax}) 必须小于 ${envKeyTotal}(${total})，` +
+      `${progressLabel}(${progressMax}) 必须小于 ${totalLabel}(${total})，` +
         '否则进度回执会把配额用光，最终答案发不出去',
     );
   }
 }
 
-export function loadConfig(env: Env = process.env): Config {
+export function loadConfig(env: Env = process.env, file: FileConfig = {}): Config {
   const hints = ['请复制 .env.example 为 .env 并填写后重试'];
 
   // --- 接入平台选择 ---------------------------------------------------------
-  const connectorsRaw = optionalList(env, 'BOT_CONNECTORS');
+  const connectorsRaw = pickList(env, 'BOT_CONNECTORS', file.connectors);
   const connectors: ConnectorName[] =
     connectorsRaw.length === 0
       ? [QQ_OFFICIAL_PLATFORM]
       : connectorsRaw.map((name) => {
           if (name !== QQ_OFFICIAL_PLATFORM && name !== ONEBOT_PLATFORM) {
-            throw new ConfigError(`BOT_CONNECTORS 含未知平台：${JSON.stringify(name)}`, [
-              `可选值：${QQ_OFFICIAL_PLATFORM} | ${ONEBOT_PLATFORM}（逗号分隔可并存）`,
-            ]);
+            throw new ConfigError(
+              `接入平台（BOT_CONNECTORS / connectors）含未知平台：${JSON.stringify(name)}`,
+              [`可选值：${QQ_OFFICIAL_PLATFORM} | ${ONEBOT_PLATFORM}（逗号分隔可并存）`],
+            );
           }
           return name;
         });
@@ -249,14 +303,18 @@ export function loadConfig(env: Env = process.env): Config {
   const onebotEnabled = enabledConnectors.includes(ONEBOT_PLATFORM);
 
   // --- 官方开放平台（仅启用时校验必填项与配额不变量） ------------------------
-  const appId = officialEnabled ? requiredString(env, 'QQ_APP_ID', hints) : optionalString(env, 'QQ_APP_ID', '');
+  // appId/appSecret 是密钥，只能来自 env：仅启用官方接入时必填。
+  const appId = officialEnabled ? requiredSecret(env, 'QQ_APP_ID', hints) : (envRaw(env, 'QQ_APP_ID') ?? '');
   const appSecret = officialEnabled
-    ? requiredString(env, 'QQ_APP_SECRET', hints)
-    : optionalString(env, 'QQ_APP_SECRET', '');
+    ? requiredSecret(env, 'QQ_APP_SECRET', hints)
+    : (envRaw(env, 'QQ_APP_SECRET') ?? '');
 
-  requiredString(env, 'DEEPSEEK_API_KEY', hints);
+  // DEEPSEEK_API_KEY 不只是本进程要用：dsh 子进程继承环境（src/dsh/process.ts），
+  // 所以它必须在环境里，不能只放进配置文件。
+  requiredSecret(env, 'DEEPSEEK_API_KEY', hints);
 
-  const intents = optionalInt(env, 'QQ_INTENTS', DEFAULT_INTENTS, { min: 1, max: 0x7fffffff });
+  const qqFile = file.qqOfficial ?? {};
+  const intents = pickInt(env, 'QQ_INTENTS', qqFile.intents, DEFAULT_INTENTS, { min: 1, max: 0x7fffffff }, 'qq-official.intents');
   if (officialEnabled && (intents & Intent.GROUP_AND_C2C_EVENT) === 0) {
     // GROUP_AND_C2C_EVENT(1<<25) 是收群聊/单聊消息的最低要求。缺了它机器人会连着但收不到
     // 消息，属于"看起来正常其实废掉"的配置错误，直接快速失败。
@@ -266,17 +324,18 @@ export function loadConfig(env: Env = process.env): Config {
     );
   }
 
-  const maxRepliesPerMsg = optionalInt(env, 'QQ_MAX_REPLIES_PER_MSG', 4, { min: 1, max: 5 });
-  const progressMax = optionalInt(env, 'QQ_PROGRESS_MAX', 3, { min: 0, max: 5 });
+  const maxRepliesPerMsg = pickInt(env, 'QQ_MAX_REPLIES_PER_MSG', qqFile.maxRepliesPerMsg, 4, { min: 1, max: 5 }, 'qq-official.maxRepliesPerMsg');
+  const progressMax = pickInt(env, 'QQ_PROGRESS_MAX', qqFile.progressMax, 3, { min: 0, max: 5 }, 'qq-official.progressMax');
   // 硬性不变量：必须给最终答案留至少 1 条回复配额
   assertProgressQuota('QQ_PROGRESS_MAX', progressMax, 'QQ_MAX_REPLIES_PER_MSG', maxRepliesPerMsg);
 
   // 单聊：官方上限是 4 次（群聊是 5），所以单独校验，不能共用群聊的上限。
-  const c2cMaxReplies = optionalInt(env, 'QQ_C2C_MAX_REPLIES_PER_MSG', 4, { min: 1, max: 4 });
-  const c2cProgressMax = optionalInt(env, 'QQ_C2C_PROGRESS_MAX', 2, { min: 0, max: 4 });
+  const qqC2cFile = qqFile.c2c ?? {};
+  const c2cMaxReplies = pickInt(env, 'QQ_C2C_MAX_REPLIES_PER_MSG', qqC2cFile.maxRepliesPerMsg, 4, { min: 1, max: 4 }, 'qq-official.c2c.maxRepliesPerMsg');
+  const c2cProgressMax = pickInt(env, 'QQ_C2C_PROGRESS_MAX', qqC2cFile.progressMax, 2, { min: 0, max: 4 }, 'qq-official.c2c.progressMax');
   assertProgressQuota('QQ_C2C_PROGRESS_MAX', c2cProgressMax, 'QQ_C2C_MAX_REPLIES_PER_MSG', c2cMaxReplies);
 
-  const msgTypeRaw = optionalInt(env, 'QQ_MSG_TYPE', 0, { min: 0, max: 7 });
+  const msgTypeRaw = pickInt(env, 'QQ_MSG_TYPE', qqFile.msgType, 0, { min: 0, max: 7 }, 'qq-official.msgType');
   if (msgTypeRaw !== 0 && msgTypeRaw !== 2) {
     throw new ConfigError(
       `QQ_MSG_TYPE 本 MVP 只支持 0(纯文本) 或 2(markdown)，收到 ${msgTypeRaw}`,
@@ -290,9 +349,9 @@ export function loadConfig(env: Env = process.env): Config {
   //
   // 单聊的被动窗口更宽（官方文档为 60 分钟），这里**故意共用**同一个更保守的
   // 上限：更容易配错也更难排查的是"超时提示发不出去"，而不是任务跑得不够久。
-  const turnTimeoutMs = optionalInt(env, 'QQ_TURN_TIMEOUT_MS', 240_000, { min: 5_000, max: 295_000 });
+  const turnTimeoutMs = pickInt(env, 'QQ_TURN_TIMEOUT_MS', qqFile.turnTimeoutMs, 240_000, { min: 5_000, max: 295_000 }, 'qq-official.turnTimeoutMs');
 
-  const progressAfterMs = optionalInt(env, 'QQ_PROGRESS_AFTER_MS', 90_000, { min: 1_000, max: 280_000 });
+  const progressAfterMs = pickInt(env, 'QQ_PROGRESS_AFTER_MS', qqFile.progressAfterMs, 90_000, { min: 1_000, max: 280_000 }, 'qq-official.progressAfterMs');
   if (officialEnabled && progressAfterMs >= turnTimeoutMs) {
     throw new ConfigError(
       `QQ_PROGRESS_AFTER_MS(${progressAfterMs}) 必须小于 QQ_TURN_TIMEOUT_MS(${turnTimeoutMs})，否则永远不会发进度回执`,
@@ -300,22 +359,18 @@ export function loadConfig(env: Env = process.env): Config {
   }
 
   // --- OneBot（社区框架；无被动窗口，配额只是防失控的安全阀） ----------------
+  // access token 是密钥：只认 env，启用 onebot 时必填。
   const onebotAccessToken = onebotEnabled
-    ? requiredString(env, 'ONEBOT_ACCESS_TOKEN', [
+    ? requiredSecret(env, 'ONEBOT_ACCESS_TOKEN', [
         'onebot 接入以 WS server 形式暴露端口，没有 token 等于把 agent 控制权交给能连上端口的任何人',
       ])
-    : optionalString(env, 'ONEBOT_ACCESS_TOKEN', '');
-  const onebotMaxReplies = optionalInt(env, 'ONEBOT_MAX_REPLIES_PER_MSG', 10, { min: 1, max: 50 });
-  const onebotProgressMax = optionalInt(env, 'ONEBOT_PROGRESS_MAX', 3, { min: 0, max: 49 });
+    : (envRaw(env, 'ONEBOT_ACCESS_TOKEN') ?? '');
+  const obFile = file.onebot ?? {};
+  const onebotMaxReplies = pickInt(env, 'ONEBOT_MAX_REPLIES_PER_MSG', obFile.maxRepliesPerMsg, 10, { min: 1, max: 50 }, 'onebot.maxRepliesPerMsg');
+  const onebotProgressMax = pickInt(env, 'ONEBOT_PROGRESS_MAX', obFile.progressMax, 3, { min: 0, max: 49 }, 'onebot.progressMax');
   assertProgressQuota('ONEBOT_PROGRESS_MAX', onebotProgressMax, 'ONEBOT_MAX_REPLIES_PER_MSG', onebotMaxReplies);
-  const onebotTurnTimeoutMs = optionalInt(env, 'ONEBOT_TURN_TIMEOUT_MS', 600_000, {
-    min: 5_000,
-    max: 3_600_000,
-  });
-  const onebotProgressAfterMs = optionalInt(env, 'ONEBOT_PROGRESS_AFTER_MS', 90_000, {
-    min: 1_000,
-    max: 600_000,
-  });
+  const onebotTurnTimeoutMs = pickInt(env, 'ONEBOT_TURN_TIMEOUT_MS', obFile.turnTimeoutMs, 600_000, { min: 5_000, max: 3_600_000 }, 'onebot.turnTimeoutMs');
+  const onebotProgressAfterMs = pickInt(env, 'ONEBOT_PROGRESS_AFTER_MS', obFile.progressAfterMs, 90_000, { min: 1_000, max: 600_000 }, 'onebot.progressAfterMs');
   if (onebotEnabled && onebotProgressAfterMs >= onebotTurnTimeoutMs) {
     throw new ConfigError(
       `ONEBOT_PROGRESS_AFTER_MS(${onebotProgressAfterMs}) 必须小于 ONEBOT_TURN_TIMEOUT_MS(${onebotTurnTimeoutMs})，否则永远不会发进度回执`,
@@ -323,29 +378,25 @@ export function loadConfig(env: Env = process.env): Config {
   }
 
   // --- 管理员白名单：platform:senderId；兼容裸 openid 的旧变量 ----------------
-  const admins = [...optionalList(env, 'BOT_ADMINS')];
-  for (const legacy of optionalList(env, 'QQ_ADMIN_OPENIDS')) {
+  const admins = [...pickList(env, 'BOT_ADMINS', file.admins)];
+  for (const legacy of pickList(env, 'QQ_ADMIN_OPENIDS', undefined)) {
     // 裸 openid 一律按官方平台解释（该变量本来的语义）
     admins.push(legacy.includes(':') ? legacy : `${QQ_OFFICIAL_PLATFORM}:${legacy}`);
   }
 
   // --- 谷时段闸：格式错误在启动期爆出来，不等到拦截时才发觉配错 -------------
-  // 一天内可以有多个谷时段窗口：
-  //   QQ_OFFPEAK_WINDOWS（当前写法）：逗号分隔的 HH:MM-HH:MM 列表；
+  // 一天内可以有多个谷时段窗口，三层来源：
+  //   QQ_OFFPEAK_WINDOWS（env）> offpeak.windows（文件）> 内置默认
   //   兼容旧配置：只设了 QQ_OFFPEAK_START / QQ_OFFPEAK_END 时，按单窗口处理。
-  const legacyStartRaw = env['QQ_OFFPEAK_START'];
-  const legacyEndRaw = env['QQ_OFFPEAK_END'];
-  const hasLegacyWindow =
-    (legacyStartRaw !== undefined && legacyStartRaw.trim() !== '') ||
-    (legacyEndRaw !== undefined && legacyEndRaw.trim() !== '');
-  const offpeakWindowsSpec = optionalString(
-    env,
-    'QQ_OFFPEAK_WINDOWS',
-    hasLegacyWindow
-      ? `${optionalString(env, 'QQ_OFFPEAK_START', '00:30')}-${optionalString(env, 'QQ_OFFPEAK_END', '08:30')}`
-      : DEFAULT_OFFPEAK_WINDOWS,
-  );
-  const offpeakTimeZone = optionalString(env, 'QQ_OFFPEAK_TZ', 'Asia/Shanghai');
+  const legacyStartRaw = envRaw(env, 'QQ_OFFPEAK_START');
+  const legacyEndRaw = envRaw(env, 'QQ_OFFPEAK_END');
+  const hasLegacyWindow = legacyStartRaw !== undefined || legacyEndRaw !== undefined;
+  const offpeakWindowsSpec =
+    envRaw(env, 'QQ_OFFPEAK_WINDOWS') ??
+    (hasLegacyWindow
+      ? `${legacyStartRaw ?? '00:30'}-${legacyEndRaw ?? '08:30'}`
+      : (file.offpeak?.windows ?? DEFAULT_OFFPEAK_WINDOWS));
+  const offpeakTimeZone = pickString(env, 'QQ_OFFPEAK_TZ', file.offpeak?.timeZone, 'Asia/Shanghai');
   let offpeakWindows: OffpeakWindow[];
   try {
     offpeakWindows = parseWindowsSpec(offpeakWindowsSpec);
@@ -360,19 +411,23 @@ export function loadConfig(env: Env = process.env): Config {
     throw error;
   }
   if (!isValidTimeZone(offpeakTimeZone)) {
-    throw new ConfigError(`QQ_OFFPEAK_TZ 不是有效时区：${JSON.stringify(offpeakTimeZone)}`, [
+    throw new ConfigError(`谷时段时区不是有效时区：${JSON.stringify(offpeakTimeZone)}`, [
       '使用 IANA 时区名，例如 Asia/Shanghai、UTC',
     ]);
   }
-  const offpeakHolidays = optionalList(env, 'QQ_OFFPEAK_HOLIDAYS');
+  const offpeakHolidays = pickList(env, 'QQ_OFFPEAK_HOLIDAYS', file.offpeak?.holidays);
   for (const date of offpeakHolidays) {
     if (!isValidDateString(date)) {
-      throw new ConfigError(`QQ_OFFPEAK_HOLIDAYS 含无效日期：${JSON.stringify(date)}`, [
-        '格式为逗号分隔的 YYYY-MM-DD，例如 QQ_OFFPEAK_HOLIDAYS=2027-01-01,2027-01-02',
+      throw new ConfigError(`谷时段节假日含无效日期：${JSON.stringify(date)}`, [
+        '格式为 YYYY-MM-DD，例如 offpeak.holidays: ["2027-01-01"]',
         '内置已含 2026 年官方节假日（国办发明电〔2025〕7 号），这里只需追加跨年或临时日期',
       ]);
     }
   }
+
+  const dshFile = file.dsh ?? {};
+  const poolFile = file.pool ?? {};
+  const pathsFile = file.paths ?? {};
 
   return {
     connectors: enabledConnectors,
@@ -380,72 +435,66 @@ export function loadConfig(env: Env = process.env): Config {
     qq: {
       appId,
       appSecret,
-      apiBase: optionalString(env, 'QQ_API_BASE', 'https://api.bot.qq.com'),
+      apiBase: pickString(env, 'QQ_API_BASE', qqFile.apiBase, 'https://api.bot.qq.com'),
       intents,
       msgType: msgTypeRaw as 0 | 2,
-      maxChars: optionalInt(env, 'QQ_MAX_CHARS', 1500, { min: 100, max: 4000 }),
+      maxChars: pickInt(env, 'QQ_MAX_CHARS', qqFile.maxChars, 1500, { min: 100, max: 4000 }, 'qq-official.maxChars'),
       maxRepliesPerMsg,
       progressAfterMs,
-      progressIntervalMs: optionalInt(env, 'QQ_PROGRESS_INTERVAL_MS', 90_000, { min: 1_000, max: 280_000 }),
+      progressIntervalMs: pickInt(env, 'QQ_PROGRESS_INTERVAL_MS', qqFile.progressIntervalMs, 90_000, { min: 1_000, max: 280_000 }, 'qq-official.progressIntervalMs'),
       progressMax,
       turnTimeoutMs,
       c2c: {
-        enabled: optionalBool(env, 'QQ_C2C_ENABLED', true),
+        enabled: pickBool(env, 'QQ_C2C_ENABLED', qqC2cFile.enabled, true),
         maxRepliesPerMsg: c2cMaxReplies,
         progressMax: c2cProgressMax,
       },
     },
     onebot: {
-      host: optionalString(env, 'ONEBOT_WS_HOST', '0.0.0.0'),
-      port: optionalInt(env, 'ONEBOT_WS_PORT', 6700, { min: 0, max: 65_535 }),
+      host: pickString(env, 'ONEBOT_WS_HOST', obFile.host, '0.0.0.0'),
+      port: pickInt(env, 'ONEBOT_WS_PORT', obFile.port, 6700, { min: 0, max: 65_535 }, 'onebot.port'),
       accessToken: onebotAccessToken,
-      c2cEnabled: optionalBool(env, 'ONEBOT_C2C_ENABLED', true),
-      maxChars: optionalInt(env, 'ONEBOT_MAX_CHARS', 1500, { min: 100, max: 4500 }),
+      c2cEnabled: pickBool(env, 'ONEBOT_C2C_ENABLED', obFile.c2cEnabled, true),
+      maxChars: pickInt(env, 'ONEBOT_MAX_CHARS', obFile.maxChars, 1500, { min: 100, max: 4500 }, 'onebot.maxChars'),
       maxRepliesPerMsg: onebotMaxReplies,
       progressMax: onebotProgressMax,
       progressAfterMs: onebotProgressAfterMs,
-      progressIntervalMs: optionalInt(env, 'ONEBOT_PROGRESS_INTERVAL_MS', 90_000, {
-        min: 1_000,
-        max: 600_000,
-      }),
+      progressIntervalMs: pickInt(env, 'ONEBOT_PROGRESS_INTERVAL_MS', obFile.progressIntervalMs, 90_000, { min: 1_000, max: 600_000 }, 'onebot.progressIntervalMs'),
       turnTimeoutMs: onebotTurnTimeoutMs,
-      autoAcceptFriend: optionalBool(env, 'ONEBOT_AUTO_ACCEPT_FRIEND', true),
-      autoAcceptGroupInvite: optionalBool(env, 'ONEBOT_AUTO_ACCEPT_GROUP_INVITE', false),
+      autoAcceptFriend: pickBool(env, 'ONEBOT_AUTO_ACCEPT_FRIEND', obFile.autoAcceptFriend, true),
+      autoAcceptGroupInvite: pickBool(env, 'ONEBOT_AUTO_ACCEPT_GROUP_INVITE', obFile.autoAcceptGroupInvite, false),
     },
     dsh: {
-      provider: optionalString(env, 'DSH_PROVIDER', 'deepseek-official'),
-      model: optionalString(env, 'DSH_MODEL', 'deepseek-flash'),
-      profilePatch: optionalString(env, 'QQ_DSH_PROFILE_PATCH', '/app/dsh-profile/cordis.patch.yml'),
-      bin: optionalString(env, 'QQ_DSH_BIN', 'dsh'),
-      runtimeStartTimeoutMs: optionalInt(env, 'QQ_DSH_START_TIMEOUT_MS', 60_000, { min: 5_000, max: 300_000 }),
-      runtimeShutdownTimeoutMs: optionalInt(env, 'QQ_DSH_SHUTDOWN_TIMEOUT_MS', 15_000, {
-        min: 2_000,
-        max: 120_000,
-      }),
+      provider: pickString(env, 'DSH_PROVIDER', dshFile.provider, 'deepseek-official'),
+      model: pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash'),
+      profilePatch: pickString(env, 'QQ_DSH_PROFILE_PATCH', dshFile.profilePatch, '/app/dsh-profile/cordis.patch.yml'),
+      bin: pickString(env, 'QQ_DSH_BIN', dshFile.bin, 'dsh'),
+      runtimeStartTimeoutMs: pickInt(env, 'QQ_DSH_START_TIMEOUT_MS', dshFile.startTimeoutMs, 60_000, { min: 5_000, max: 300_000 }, 'dsh.startTimeoutMs'),
+      runtimeShutdownTimeoutMs: pickInt(env, 'QQ_DSH_SHUTDOWN_TIMEOUT_MS', dshFile.shutdownTimeoutMs, 15_000, { min: 2_000, max: 120_000 }, 'dsh.shutdownTimeoutMs'),
     },
     pool: {
-      maxConcurrentTurns: optionalInt(env, 'QQ_MAX_CONCURRENT_TURNS', 4, { min: 1, max: 64 }),
-      maxRuntimes: optionalInt(env, 'QQ_MAX_RUNTIMES', 8, { min: 1, max: 128 }),
-      runtimeIdleMs: optionalInt(env, 'QQ_RUNTIME_IDLE_MS', 1_800_000, { min: 0, max: 86_400_000 }),
-      replayTurns: optionalInt(env, 'QQ_REPLAY_TURNS', 12, { min: 0, max: 200 }),
+      maxConcurrentTurns: pickInt(env, 'QQ_MAX_CONCURRENT_TURNS', poolFile.maxConcurrentTurns, 4, { min: 1, max: 64 }, 'pool.maxConcurrentTurns'),
+      maxRuntimes: pickInt(env, 'QQ_MAX_RUNTIMES', poolFile.maxRuntimes, 8, { min: 1, max: 128 }, 'pool.maxRuntimes'),
+      runtimeIdleMs: pickInt(env, 'QQ_RUNTIME_IDLE_MS', poolFile.runtimeIdleMs, 1_800_000, { min: 0, max: 86_400_000 }, 'pool.runtimeIdleMs'),
+      replayTurns: pickInt(env, 'QQ_REPLAY_TURNS', poolFile.replayTurns, 12, { min: 0, max: 200 }, 'pool.replayTurns'),
     },
     paths: {
-      dshHome: optionalString(env, 'DSH_HOME', '/data/dsh'),
-      workspacesRoot: optionalString(env, 'QQ_WORKSPACES_ROOT', '/data/workspaces'),
-      stateDir: optionalString(env, 'QQ_STATE_DIR', '/data/bot'),
+      dshHome: pickString(env, 'DSH_HOME', pathsFile.dshHome, '/data/dsh'),
+      workspacesRoot: pickString(env, 'QQ_WORKSPACES_ROOT', pathsFile.workspacesRoot, '/data/workspaces'),
+      stateDir: pickString(env, 'QQ_STATE_DIR', pathsFile.stateDir, '/data/bot'),
     },
     offpeak: {
-      enabled: optionalBool(env, 'QQ_OFFPEAK_ENABLED', false),
+      enabled: pickBool(env, 'QQ_OFFPEAK_ENABLED', file.offpeak?.enabled, false),
       windows: offpeakWindows,
       timeZone: offpeakTimeZone,
-      modelPattern: optionalString(env, 'QQ_OFFPEAK_MODEL_PATTERN', 'deepseek'),
-      weekendsAllDay: optionalBool(env, 'QQ_OFFPEAK_WEEKENDS', true),
+      modelPattern: pickString(env, 'QQ_OFFPEAK_MODEL_PATTERN', file.offpeak?.modelPattern, 'deepseek'),
+      weekendsAllDay: pickBool(env, 'QQ_OFFPEAK_WEEKENDS', file.offpeak?.weekendsAllDay, true),
       holidays: offpeakHolidays,
     },
     health: {
-      port: optionalInt(env, 'QQ_HEALTH_PORT', 8080, { min: 0, max: 65_535 }),
+      port: pickInt(env, 'QQ_HEALTH_PORT', file.health?.port, 8080, { min: 0, max: 65_535 }, 'health.port'),
     },
-    logLevel: optionalEnum(env, 'QQ_LOG_LEVEL', ['debug', 'info', 'warn', 'error'] as const, 'info'),
+    logLevel: pickEnum(env, 'QQ_LOG_LEVEL', file.logLevel, ['debug', 'info', 'warn', 'error'] as const, 'info', 'logLevel'),
   };
 }
 

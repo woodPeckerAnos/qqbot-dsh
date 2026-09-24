@@ -155,6 +155,44 @@ LRU + 空闲回收控制（第 5.4 节）。
 每个会话已经隔到自己的工作区了，为什么还留一道沙箱？因为工作区的隔离靠的是
 "我们传对了 cwd"，而沙箱靠的是内核强制。前者是约定，后者是边界。详见第 6 节。
 
+### 3.3 配置分层：`.env` 只放密钥
+
+最初的版本把所有配置都塞进 `.env`，结果是 **39 个变量里真正敏感的只有 4 个**
+（`QQ_APP_ID` / `QQ_APP_SECRET` / `DEEPSEEK_API_KEY` / `ONEBOT_ACCESS_TOKEN`），
+其余 35 个是端口、配额、超时、谷时段这类行为参数。混在一起的实际后果是
+**重要信息被稀释**——想确认密钥填没填，要在一堆调参项里翻。
+
+拆分后的三层：
+
+| 层 | 位置 | 放什么 | 谁读 |
+|---|---|---|---|
+| 密钥 | `.env` | 4 个凭证 | `env_file: .env` → 进程环境 |
+| 行为参数 | `qqbot.yml` | 端口/配额/超时/谷时段/管理员/日志级别… | `QQ_CONFIG_FILE`（默认 `./qqbot.yml`） |
+| 容器参数 | `docker-compose.yml` 的 `environment` | 路径、`TZ`、代理 | 容器环境 |
+
+**取值优先级：env > `qqbot.yml` > 代码内置默认。**
+让 env 仍然优先是有意的：既有部署的 `.env` 零破坏（老变量照旧生效），
+临时覆盖也不用改文件。密钥类**只能**来自 env，配置文件里根本没有这些键
+（写了会被"未知配置项"拒绝），这是刻意的边界。
+
+实现上分三个文件，各有单一职责：
+
+- `src/config-file.ts` —— 找文件、读 YAML、**形状与类型校验**，产出带类型的
+  `FileConfig`。顺手防了两个坑：
+  1. **未知键名直接报错并列出可用项**。静默忽略拼错的键会变成"改了没生效"的
+     玄学问题，比报错难查得多。
+  2. **bind mount 把文件挂成目录**。宿主上文件不存在时 Docker 会自动建同名
+     目录，于是容器里读到目录。这种情况给出可照做的提示（删目录 + `cp` 示例），
+     而不是含糊的 `EISDIR`。
+- `src/config-error.ts` —— `ConfigError` 单独成文件，断开 config.ts ↔
+  config-file.ts 的循环依赖；仍从 `config.ts` 重新导出，调用方无感。
+- `src/config.ts` —— 三层合并 + **语义校验**（取值范围、配额不变量、窗口重叠）。
+  语义校验放在合并之后，因为要等 env 覆盖完才能判；错误信息里同时带上 env 变量名
+  与 YAML 路径，指向"到底该改哪儿"。
+
+> `DEEPSEEK_API_KEY` 有个额外约束：`dsh` 子进程是 `env: {...process.env}`
+> （见 `src/dsh/process.ts`），所以它**必须**在环境里，不能只写进配置文件。
+
 ---
 
 ## 4. DSH profile 设计
@@ -508,14 +546,17 @@ DeepSeek 有错峰优惠时段，正价时段跑 agent 的成本可能高一个�
 qqbot-dsh/
 ├── docker-compose.yml            部署入口
 ├── Dockerfile                    多阶段构建；runtime 层装 bubblewrap
-├── .env.example                  配置样例
+├── .env.example                  密钥样例（只放 4 个凭证）
+├── qqbot.example.yml             行为参数样例（端口/配额/谷时段/管理员…，带注释）
 ├── package.json / tsconfig.json / vitest.config.ts
 ├── dsh-profile/
 │   ├── cordis.patch.yml          DSH profile 补丁（第 4 节）
 │   └── plugins/auto-approve.js   自动审批桩
 ├── src/
 │   ├── main.ts                   组装装配（唯一的 new 汇聚点）
-│   ├── config.ts                 环境变量解析 + 启动期快速失败
+│   ├── config.ts                 env + qqbot.yml 三层合并 + 语义校验 + 启动期快速失败
+│   ├── config-file.ts            qqbot.yml 读取与形状校验（未知键名直接报错）
+│   ├── config-error.ts           ConfigError（单独成文件以断开循环依赖）
 │   ├── logger.ts                 结构化 JSON 日志 → stderr
 │   ├── health.ts                 /healthz + /metrics
 │   ├── health-probe.js           容器 HEALTHCHECK 用的轻量探针
