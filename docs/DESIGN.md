@@ -547,7 +547,7 @@ qqbot-dsh/
 ├── docker-compose.yml            部署入口
 ├── Dockerfile                    多阶段构建；runtime 层装 bubblewrap
 ├── .env.example                  密钥样例（只放 4 个凭证）
-├── qqbot.example.yml             行为参数样例（端口/配额/谷时段/管理员…，带注释）
+├── qqbot.yml                     行为配置（随仓库提供 = 默认配置；无密钥，可安全提交）
 ├── package.json / tsconfig.json / vitest.config.ts
 ├── dsh-profile/
 │   ├── cordis.patch.yml          DSH profile 补丁（第 4 节）

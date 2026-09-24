@@ -59,8 +59,8 @@ cd qqbot-dsh
 
 # 2) 写配置
 cp .env.example .env                  # 只放密钥
-cp qqbot.example.yml qqbot.yml         # 行为参数（端口/配额/谷时段/管理员…）
 $EDITOR .env                           # 至少填 QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY
+# qqbot.yml（行为参数）已在仓库里，就是默认配置；要改直接改，不用复制
 
 # 3) 构建并启动
 docker compose up -d --build
@@ -154,7 +154,7 @@ ONEBOT_ACCESS_TOKEN=$(openssl rand -hex 32)
 DEEPSEEK_API_KEY=...
 ```
 
-`qqbot.yml`（行为参数，见 qqbot.example.yml）：
+`qqbot.yml`（行为参数，仓库自带）：
 
 ```yaml
 connectors: [onebot]        # 或 [qq-official, onebot] 与官方通道并存

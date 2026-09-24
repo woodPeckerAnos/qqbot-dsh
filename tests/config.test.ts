@@ -332,19 +332,26 @@ offpeak:
     expect(() => loadConfig(secrets, onebotFile)).toThrow(/ONEBOT_ACCESS_TOKEN/);
   });
 
-  it('仓库里的 qqbot.example.yml 能直接加载起来（示例与代码同步的守门测试）', () => {
-    const text = readFileSync(new URL('../qqbot.example.yml', import.meta.url), 'utf8');
-    const file = parseConfigFileText(text, 'qqbot.example.yml');
+  it('仓库里的 qqbot.yml 能完整加载（默认配置的守门测试）', () => {
+    // 四个密钥都给上，这样无论默认配置启用哪些接入都能通过加载；
+    // 只断言"对任何合法取值都成立"的结构性事实——qqbot.yml 是给人改的，
+    // 断言具体取值会让用户改完配置后测试反而失败。
+    const text = readFileSync(new URL('../qqbot.yml', import.meta.url), 'utf8');
+    const file = parseConfigFileText(text, 'qqbot.yml');
     const config = loadConfig(
-      { QQ_APP_ID: 'app-1', QQ_APP_SECRET: 'secret-1', DEEPSEEK_API_KEY: 'sk-test' },
+      {
+        QQ_APP_ID: 'app-1',
+        QQ_APP_SECRET: 'secret-1',
+        DEEPSEEK_API_KEY: 'sk-test',
+        ONEBOT_ACCESS_TOKEN: 'token-1',
+      },
       file,
     );
-    expect(config.connectors).toEqual(['qq-official']);
-    expect(config.qq.intents).toBe(DEFAULT_INTENTS);
-    expect(config.qq.turnTimeoutMs).toBe(240_000);
-    expect(config.onebot.port).toBe(6700);
-    expect(config.offpeak.enabled).toBe(true);
-    expect(config.offpeak.windows).toHaveLength(3);
-    expect(config.logLevel).toBe('info');
+    expect(config.connectors.length).toBeGreaterThan(0);
+    // 范围校验保证恒成立：turnTimeout 上限 295000
+    expect(config.qq.turnTimeoutMs).toBeLessThan(300_000);
+    // 空窗口列表会在启动期被拒，所以这里恒非空
+    expect(config.offpeak.windows.length).toBeGreaterThan(0);
+    expect(config.health.port).toBeGreaterThanOrEqual(0);
   });
 });

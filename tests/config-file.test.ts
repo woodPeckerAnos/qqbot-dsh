@@ -5,7 +5,7 @@
  * 都必须给出能直接照做的报错，而不是静默用默认值跑起来。
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -190,22 +190,32 @@ describe('loadConfigFile', () => {
       expect((error as ConfigError).message).toMatch(/是一个目录/);
       const hints = (error as ConfigError).hints.join(' ');
       expect(hints).toMatch(/Docker/);
-      expect(hints).toMatch(/qqbot\.example\.yml/);
+      expect(hints).toMatch(/git checkout -- qqbot\.yml/);
     }
   });
 
-  it('仓库里的 qqbot.example.yml 能通过校验（防止示例与 schema 漂移）', () => {
-    const text = readFileSync(new URL('../qqbot.example.yml', import.meta.url), 'utf8');
-    const config = parseConfigFileText(text, 'qqbot.example.yml');
-    // 示例文件应当覆盖到每一个 section，否则说明有段落漏写了
-    expect(config.connectors).toEqual(['qq-official']);
-    expect(config.qqOfficial).toBeDefined();
-    expect(config.onebot).toBeDefined();
-    expect(config.dsh).toBeDefined();
-    expect(config.pool).toBeDefined();
-    expect(config.paths).toBeDefined();
-    expect(config.offpeak).toBeDefined();
-    expect(config.health).toBeDefined();
-    expect(config.logLevel).toBe('info');
+  it('文件不可读时提示 chmod（容器以非 root 运行，宿主文件必须可被其他用户读）', () => {
+    // root 无视权限位，若以 root 跑测试就跳过（Docker CI 里可能是 root）
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+    const target = join(tempDir(), 'qqbot.yml');
+    writeFileSync(target, 'logLevel: warn\n', { encoding: 'utf8', mode: 0o000 });
+    try {
+      loadConfigFile({ QQ_CONFIG_FILE: target });
+      throw new Error('应当抛错');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).message).toMatch(/没有权限读取配置文件/);
+      expect((error as ConfigError).hints.join(' ')).toMatch(/chmod 644/);
+    } finally {
+      chmodSync(target, 0o644); // 让 afterEach 的 rmSync 删得掉
+    }
+  });
+
+  it('仓库里的 qqbot.yml 能通过形状校验（默认配置与 schema 不许漂移）', () => {
+    // qqbot.yml 是随仓库提供的默认配置，也是用户会按机器改的文件，
+    // 所以这里只校验"形状合法"（键名、类型），不校验具体取值——
+    // 否则用户把 connectors 改成 onebot 之后，测试反而会失败。
+    const text = readFileSync(new URL('../qqbot.yml', import.meta.url), 'utf8');
+    expect(() => parseConfigFileText(text, 'qqbot.yml')).not.toThrow();
   });
 });

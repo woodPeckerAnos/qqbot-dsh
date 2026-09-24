@@ -364,9 +364,9 @@ export function loadConfigFile(
     const stat = statSync(path);
     if (stat.isDirectory()) {
       throw new ConfigError(`${path} 是一个目录，不是文件`, [
-        '最常见原因：docker-compose 里 bind mount 的宿主文件不存在，Docker 自动建了同名目录',
-        '先在宿主机删掉那个同名目录（它是 Docker 建的，不是你的文件），再执行：',
-        '  cp qqbot.example.yml qqbot.yml && chmod 644 qqbot.yml',
+        '最常见原因：bind mount 的宿主文件不存在时，Docker 会自动建一个同名目录',
+        'qqbot.yml 是随仓库提供的文件，正常不会缺；先在宿主机删掉那个同名目录，再执行：',
+        '  git checkout -- qqbot.yml',
       ]);
     }
     raw = readFileSync(path, 'utf8');
@@ -377,6 +377,14 @@ export function loadConfigFile(
       if (!explicit) return { config: {} };
       throw new ConfigError(`配置文件不存在：${path}`, [
         'QQ_CONFIG_FILE 指向的文件必须存在；不想用配置文件就别设这个变量',
+      ]);
+    }
+    if (code === 'EACCES' || code === 'EPERM') {
+      // 容器以非 root（uid 10001）运行，bind mount 进来的宿主文件必须对其他用户可读。
+      // git 只记录可执行位、不保证 644，所以这条会随宿主 umask 出现。
+      throw new ConfigError(`没有权限读取配置文件：${path}`, [
+        '容器以非 root 用户（uid 10001）运行，挂进来的文件必须对其他用户可读',
+        `在宿主机执行：chmod 644 ${path}`,
       ]);
     }
     throw new ConfigError(
