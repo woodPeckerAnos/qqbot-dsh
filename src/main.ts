@@ -26,11 +26,10 @@ import { QqOfficialConnector } from './adapters/qq-official/connector.js';
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { TokenError } from './adapters/qq-official/token.js';
 import { OnebotConnector, ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
-import type { BotConnector, NormalizedEvent } from './core/connector.js';
-import { isUserMessage } from './core/connector.js';
+import type { BotConnector } from './core/connector.js';
 import { createLogger } from './logger.js';
 import { RuntimePool } from './dsh/pool.js';
-import { Dispatcher } from './pipeline/dispatcher.js';
+import { Orchestrator } from './pipeline/orchestrator.js';
 import { ConversationStore } from './store/conversations.js';
 import { SeenStore } from './store/seen.js';
 import { SessionStore } from './store/sessions.js';
@@ -158,9 +157,12 @@ async function main(): Promise<void> {
   });
 
   // --- 编排 -----------------------------------------------------------------
-  const dispatcher = new Dispatcher({
+  // Orchestrator 是编排层的门面：内部组装 Ingress 管线（去重 → 命令 → 谷时段闸
+  // → 记录 → 准入）+ TurnRunner + Responder。每会话串行在准入 stage 里，
+  // 本文件不再有自己的事件串行链。
+  const orchestrator = new Orchestrator({
     config,
-    logger: logger.child({ component: 'dispatcher' }),
+    logger: logger.child({ component: 'orchestrator' }),
     pool,
     connectors,
     conversations,
@@ -171,38 +173,24 @@ async function main(): Promise<void> {
 
   // runtime 事件 → 编排器（按会话路由）
   pool.on('session.event', (conversationKey, notification) => {
-    dispatcher.routeSessionEvent(conversationKey, notification.event);
+    orchestrator.routeSessionEvent(conversationKey, notification.event);
   });
   pool.on('session.status', (conversationKey, notification) => {
-    dispatcher.routeSessionStatus(conversationKey, notification);
+    orchestrator.routeSessionStatus(conversationKey, notification);
   });
 
   // --- 连接器事件 → 编排器 ----------------------------------------------------
-  // 各平台的 handler 都是同步回调，我们在内部按会话串行链式调用，避免同一会话并发进入。
-  const eventChains = new Map<string, Promise<void>>();
-  const onConnectorEvent = (event: NormalizedEvent): void => {
-    // 消息与进群/加好友事件都按各自会话串行；其余系统事件共用一条链。
-    const key =
-      isUserMessage(event) || event.kind === 'group-add-robot' || event.kind === 'c2c-friend-add'
-        ? (event.target?.key ?? '__system__')
-        : '__system__';
-    const previous = eventChains.get(key) ?? Promise.resolve();
-    const next = previous
-      .catch(() => {})
-      .then(() => dispatcher.handleEvent(event))
-      .catch((error: unknown) => {
-        logger.error('处理事件链时出错', {
+  // 同步回调里直接派发：Ingress 管线的准入 stage 保证同一会话串行进入 turn，
+  // 这里只留一层 .catch 作为组装级保险（Orchestrator 自身永不抛错）。
+  for (const connector of connectors.values()) {
+    connector.on((event) => {
+      void orchestrator.handleEvent(event).catch((error: unknown) => {
+        logger.error('处理事件时出错', {
           kind: event.kind,
           error: error instanceof Error ? error.message : String(error),
         });
-      })
-      .finally(() => {
-        if (eventChains.get(key) === next) eventChains.delete(key);
       });
-    eventChains.set(key, next);
-  };
-  for (const connector of connectors.values()) {
-    connector.on(onConnectorEvent);
+    });
   }
 
   // --- 健康检查 -------------------------------------------------------------
@@ -216,7 +204,7 @@ async function main(): Promise<void> {
           [...connectors.entries()].map(([name, connector]) => [name, connector.health()]),
         ),
         runtime: { size: pool.size, activeConversationKeys: pool.activeConversationKeys() },
-        dispatcher: dispatcher.snapshotStats(),
+        dispatcher: orchestrator.snapshotStats(),
       }),
   });
   await health.start();
@@ -240,10 +228,10 @@ async function main(): Promise<void> {
 
     // 2. 等处理中的 turn 结束（有上限，避免卡死）
     const drainDeadline = Date.now() + DRAIN_TIMEOUT_MS;
-    while (dispatcher.snapshotStats().inFlight > 0 && Date.now() < drainDeadline) {
+    while (orchestrator.snapshotStats().inFlight > 0 && Date.now() < drainDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    const stats = dispatcher.snapshotStats();
+    const stats = orchestrator.snapshotStats();
     if (stats.inFlight > 0) {
       logger.warn('仍有 turn 未结束，强制继续关闭', { inFlight: stats.inFlight });
     }

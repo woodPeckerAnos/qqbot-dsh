@@ -16,8 +16,7 @@ import { createServer, type Server } from 'node:http';
 
 import type { ConnectorHealth } from './core/connector.js';
 import type { Logger } from './logger.js';
-import type { OffpeakSnapshot } from './offpeak.js';
-import type { DispatcherStats } from './pipeline/dispatcher.js';
+import type { PipelineStatsSnapshot } from './pipeline/stats.js';
 
 export interface HealthSnapshot {
   ok: boolean;
@@ -25,7 +24,8 @@ export interface HealthSnapshot {
   /** 平台标识 → 该连接器的健康状态 */
   connectors: Record<string, ConnectorHealth & { staleMs?: number }>;
   runtime: { size: number; activeConversationKeys: string[] };
-  dispatcher: DispatcherStats & { inFlight: number; queued: number; offpeak: OffpeakSnapshot };
+  /** 编排层统计（字段名 dispatcher 是 /metrics 的对外契约，RUNBOOK 在用） */
+  dispatcher: PipelineStatsSnapshot;
   /** 最近一次收到任何连接器事件的时间距今毫秒；undefined 表示还没收到过 */
   lastEventAgeMs?: number;
   warnings: string[];
@@ -128,7 +128,7 @@ export function buildHealthSnapshot(input: {
   startedAt: number;
   connectors: Record<string, ConnectorHealth>;
   runtime: { size: number; activeConversationKeys: string[] };
-  dispatcher: DispatcherStats & { inFlight: number; queued: number; offpeak: OffpeakSnapshot };
+  dispatcher: PipelineStatsSnapshot;
   now?: number;
 }): HealthSnapshot {
   const now = input.now ?? Date.now();

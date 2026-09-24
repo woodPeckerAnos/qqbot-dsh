@@ -115,8 +115,9 @@ const rec = { handle: await this.ctx.agents.create({
 │         │ NormalizedEvent（target 带 platform 与平台命名的 key）│
 │         ▼                                                     │
 │  ②编排层 src/pipeline/ + src/store/（平台无关）                 │
-│    会话表 · 每会话串行 · 全局并发闸门 · 进度回执 · 分段发送       │
-│    事件去重 · 对话记录（JSONL 追加）· 按 connector.policy 取配额 │
+│    Ingress 串行管线：去重 → /offpeak 命令 → 谷时段闸 → 记录 → 准入│
+│    TurnRunner（turn 生命周期）· Responder（配额/分段/进度/发送）  │
+│    对话记录（JSONL 追加）· 按 connector.policy 取配额             │
 │         │ JSON-RPC over stdio                                 │
 │         ▼                                                     │
 │  ③DSH runtime 子进程池 src/dsh/                                │
@@ -576,7 +577,7 @@ qqbot-dsh/
 │   ├── logger.ts                 结构化 JSON 日志 → stderr
 │   ├── health.ts                 /healthz + /metrics
 │   ├── health-probe.js           容器 HEALTHCHECK 用的轻量探针
-│   ├── offpeak.ts                谷时段闸：判定 + 运行期覆盖持久化 + /offpeak 命令
+│   ├── offpeak.ts                谷时段闸：判定 + 运行期覆盖持久化（纯服务）
 │   ├── core/
 │   │   └── connector.ts          接入层契约：BotConnector / NormalizedEvent / ReplyPolicy
 │   ├── adapters/
@@ -597,7 +598,11 @@ qqbot-dsh/
 │   │   ├── pool.ts               每会话一个 runtime + LRU
 │   │   └── turns.ts              turn/start→assistant/message→idle 归并
 │   ├── pipeline/
-│   │   ├── dispatcher.ts         每会话串行 + 全局并发 + 去重（群聊/单聊共用）
+│   │   ├── orchestrator.ts       编排门面：组装 Ingress 管线 + TurnRunner
+│   │   ├── ingress/              串行 stage：去重 → 命令 → 谷时段闸 → 记录 → 准入
+│   │   ├── turn-runner.ts        turn 生命周期（runtime 池 · 超时 · 事件路由）
+│   │   ├── responder.ts          Egress 收口：配额账本 · 分段 · 进度回执 · 发送
+│   │   ├── stats.ts              管线统计（各 stage 自报，Orchestrator 聚合）
 │   │   ├── progress.ts           进度回执调度
 │   │   ├── chunk.ts              分段
 │   │   └── markdown.ts           文本/markdown 渲染

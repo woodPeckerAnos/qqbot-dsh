@@ -1,5 +1,6 @@
 /**
- * 编排器集成单测（假 runtime + 假 QQ API，全离线）。
+ * 编排层集成单测（假 runtime + 假 QQ API，全离线）。
+ * 被测对象是 Orchestrator（Ingress 管线 + TurnRunner + Responder 的组装门面）。
  *
  * 这是最接近真实行为的一层，验证的是**用户最终看到的东西**：
  *   - 一轮问答结束后回复了正确的最终答案（而不是中间那句"我来看看"）；
@@ -19,7 +20,7 @@ import { loadConfig, type Config } from '../src/config.js';
 import { createNullLogger } from '../src/logger.js';
 import type { RuntimeEntry, RuntimePool } from '../src/dsh/pool.js';
 import type { SessionEventNotification } from '../src/dsh/protocol.js';
-import { Dispatcher } from '../src/pipeline/dispatcher.js';
+import { Orchestrator } from '../src/pipeline/orchestrator.js';
 import { ConversationStore } from '../src/store/conversations.js';
 import { ensureStoreDirs, resolveStorePaths } from '../src/store/paths.js';
 import { SeenStore } from '../src/store/seen.js';
@@ -207,7 +208,7 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
   const seen = new SeenStore({ paths, logger });
   const sessions = new SessionStore({ paths, logger });
 
-  const dispatcher = new Dispatcher({
+  const orchestrator = new Orchestrator({
     config,
     logger,
     pool,
@@ -219,22 +220,22 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
     ...(options.now !== undefined ? { now: options.now } : {}),
   });
 
-  // 接线：真实实现里 main.ts 把 pool 的事件转给 dispatcher。
+  // 接线：真实实现里 main.ts 把 pool 的事件转给 orchestrator。
   // 这里的假池 on() 只是 spy，所以直接订阅假 runtime 的事件。
   runtime.on('session.event', (n: SessionEventNotification) => {
     const conversationKey = conversationKeyOf(n.sessionId, sessions);
-    dispatcher.routeSessionEvent(conversationKey, n.event);
+    orchestrator.routeSessionEvent(conversationKey, n.event);
   });
   runtime.on('session.status', (n: { sessionId: string; status: 'idle' | 'running' }) => {
     const conversationKey = conversationKeyOf(n.sessionId, sessions);
-    dispatcher.routeSessionStatus(conversationKey, n);
+    orchestrator.routeSessionStatus(conversationKey, n);
   });
 
   return {
     root,
     paths,
     config,
-    dispatcher,
+    orchestrator,
     runtime,
     pool,
     connector,
@@ -304,14 +305,14 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
 let ctx: ReturnType<typeof setup>;
 afterEach(() => ctx?.cleanup());
 
-describe('Dispatcher 正常一轮', () => {
+describe('编排 正常一轮', () => {
   beforeEach(() => {
     ctx = setup();
   });
 
   it('回复的是最后一条非空 assistant 文本，而不是中间那句', async () => {
     const message = makeMessage();
-    const pending = ctx.dispatcher.handleEvent(message);
+    const pending = ctx.orchestrator.handleEvent(message);
     await waitFor(() => ctx.runtime.prompts.length === 1);
 
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
@@ -326,7 +327,7 @@ describe('Dispatcher 正常一轮', () => {
   });
 
   it('把用户消息与助手回复都写进对话记录', async () => {
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['答案']);
@@ -340,7 +341,7 @@ describe('Dispatcher 正常一轮', () => {
   });
 
   it('prompt 里带上提问者与内容', async () => {
-    const pending = ctx.dispatcher.handleEvent(makeMessage({ username: '张三', content: '写个脚本' }));
+    const pending = ctx.orchestrator.handleEvent(makeMessage({ username: '张三', content: '写个脚本' }));
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['好']);
@@ -351,7 +352,7 @@ describe('Dispatcher 正常一轮', () => {
   });
 
   it('turn 结束后池被 release', async () => {
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['ok']);
@@ -361,42 +362,42 @@ describe('Dispatcher 正常一轮', () => {
   });
 });
 
-describe('Dispatcher 去重与并发', () => {
+describe('编排 去重与并发', () => {
   beforeEach(() => {
     ctx = setup();
   });
 
   it('相同 eventId 重复投递只处理一次', async () => {
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['答案']);
     await pending;
 
     // 重放同一个事件
-    await ctx.dispatcher.handleEvent(makeMessage());
+    await ctx.orchestrator.handleEvent(makeMessage());
 
     expect(ctx.runtime.prompts).toHaveLength(1);
     expect(ctx.sent).toHaveLength(1);
-    expect(ctx.dispatcher.snapshotStats().deduplicated).toBe(1);
+    expect(ctx.orchestrator.snapshotStats().deduplicated).toBe(1);
   });
 
   it('eventId 为空时回退用 msgId 去重', async () => {
-    const pending = ctx.dispatcher.handleEvent(makeMessage({ eventId: '' }));
+    const pending = ctx.orchestrator.handleEvent(makeMessage({ eventId: '' }));
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['答案']);
     await pending;
 
-    await ctx.dispatcher.handleEvent(makeMessage({ eventId: '' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ eventId: '' }));
     expect(ctx.runtime.prompts).toHaveLength(1);
   });
 });
 
-describe('Dispatcher 超时与错误', () => {
+describe('编排 超时与错误', () => {
   it('超时后给出交代，并回收 runtime 以终止任务', async () => {
     ctx = setup({ configOverrides: { QQ_TURN_TIMEOUT_MS: '8000', QQ_PROGRESS_AFTER_MS: '3000' } });
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
 
     // 只发一部分内容，然后不再有任何事件 → 触发超时
@@ -416,12 +417,12 @@ describe('Dispatcher 超时与错误', () => {
     expect(finalMessage).toBeDefined();
     expect(finalMessage!.body.content).toContain('做到一半');
     expect(ctx.pool.drop).toHaveBeenCalledWith('GROUP-1');
-    expect(ctx.dispatcher.snapshotStats().timedOut).toBe(1);
+    expect(ctx.orchestrator.snapshotStats().timedOut).toBe(1);
   });
 
   it('turn/end 为 error 时把错误信息告知用户', async () => {
     ctx = setup();
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
 
@@ -440,7 +441,7 @@ describe('Dispatcher 超时与错误', () => {
 
   it('max-tokens 时提示内容被截断', async () => {
     ctx = setup();
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['很长的回答'], { kind: 'max-tokens' });
@@ -450,10 +451,10 @@ describe('Dispatcher 超时与错误', () => {
   });
 });
 
-describe('Dispatcher 分段与配额', () => {
+describe('编排 分段与配额', () => {
   it('长回答按配额分段，msg_seq 单调递增且不超过总额配', async () => {
     ctx = setup({ configOverrides: { QQ_MAX_CHARS: '100', QQ_MAX_REPLIES_PER_MSG: '3', QQ_PROGRESS_MAX: '1' } });
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
 
@@ -476,7 +477,7 @@ describe('Dispatcher 分段与配额', () => {
 
   it('内容超过配额时最后一段带截断提示，且回复总数不超过总额配', async () => {
     ctx = setup({ configOverrides: { QQ_MAX_CHARS: '100', QQ_MAX_REPLIES_PER_MSG: '2', QQ_PROGRESS_MAX: '1' } });
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
 
@@ -490,14 +491,14 @@ describe('Dispatcher 分段与配额', () => {
   });
 });
 
-describe('Dispatcher 冷启动回放', () => {
+describe('编排 冷启动回放', () => {
   it('首次为某群建会话时把历史并入 prompt', async () => {
     ctx = setup();
     // 预置历史记录
     ctx.conversations.append('GROUP-1', { role: 'user', speaker: '老王', text: '之前我们聊过部署', ts: 1 });
     ctx.conversations.append('GROUP-1', { role: 'assistant', speaker: 'bot', text: '是的，用 docker compose', ts: 2 });
 
-    const pending = ctx.dispatcher.handleEvent(makeMessage({ content: '继续上次那个话题' }));
+    const pending = ctx.orchestrator.handleEvent(makeMessage({ content: '继续上次那个话题' }));
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['好']);
@@ -515,7 +516,7 @@ describe('Dispatcher 冷启动回放', () => {
     ctx = setup({ configOverrides: { QQ_REPLAY_TURNS: '0' } });
     ctx.conversations.append('GROUP-1', { role: 'user', speaker: '老王', text: '很久以前的话', ts: 1 });
 
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['ok']);
@@ -525,10 +526,10 @@ describe('Dispatcher 冷启动回放', () => {
   });
 });
 
-describe('Dispatcher 进群/加好友欢迎', () => {
+describe('编排 进群/加好友欢迎', () => {
   it('群进群事件用 event_id 而非 msg_id 回复（平台要求二者互斥）', async () => {
     ctx = setup();
-    await ctx.dispatcher.handleEvent({
+    await ctx.orchestrator.handleEvent({
       kind: 'group-add-robot',
       at: 1,
       target: groupTarget('GROUP-1'),
@@ -545,7 +546,7 @@ describe('Dispatcher 进群/加好友欢迎', () => {
 
   it('单聊加好友走 sendUserMessage，并用 event_id 回复', async () => {
     ctx = setup();
-    await ctx.dispatcher.handleEvent({
+    await ctx.orchestrator.handleEvent({
       kind: 'c2c-friend-add',
       at: 1,
       target: c2cTarget('USER-1'),
@@ -561,7 +562,7 @@ describe('Dispatcher 进群/加好友欢迎', () => {
 
   it('缺少 eventId 时不崩（只记日志）', async () => {
     ctx = setup();
-    await ctx.dispatcher.handleEvent({
+    await ctx.orchestrator.handleEvent({
       kind: 'group-add-robot',
       at: 1,
       target: groupTarget('GROUP-1'),
@@ -573,7 +574,7 @@ describe('Dispatcher 进群/加好友欢迎', () => {
 
   it('单聊被禁用时不发欢迎语', async () => {
     ctx = setup({ configOverrides: { QQ_C2C_ENABLED: 'false' } });
-    await ctx.dispatcher.handleEvent({
+    await ctx.orchestrator.handleEvent({
       kind: 'c2c-friend-add',
       at: 1,
       target: c2cTarget('USER-1'),
@@ -584,10 +585,10 @@ describe('Dispatcher 进群/加好友欢迎', () => {
   });
 });
 
-describe('Dispatcher 单聊', () => {
+describe('编排 单聊', () => {
   it('单聊消息走 sendUserMessage，并落到 c2c: 会话键下', async () => {
     ctx = setup();
-    const pending = ctx.dispatcher.handleEvent(makeC2CMessage());
+    const pending = ctx.orchestrator.handleEvent(makeC2CMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
 
     const sessionId = ctx.sessions.peek('c2c:USER-1')!.currentSessionId;
@@ -614,7 +615,7 @@ describe('Dispatcher 单聊', () => {
         QQ_MAX_CHARS: '100',
       },
     });
-    const pending = ctx.dispatcher.handleEvent(makeC2CMessage());
+    const pending = ctx.orchestrator.handleEvent(makeC2CMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('c2c:USER-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['X'.repeat(1000)]);
@@ -627,12 +628,12 @@ describe('Dispatcher 单聊', () => {
 
   it('QQ_C2C_ENABLED=false 时单聊消息被忽略（不回复、不进 runtime）', async () => {
     ctx = setup({ configOverrides: { QQ_C2C_ENABLED: 'false' } });
-    await ctx.dispatcher.handleEvent(makeC2CMessage());
+    await ctx.orchestrator.handleEvent(makeC2CMessage());
 
     expect(ctx.sent).toHaveLength(0);
     expect(ctx.runtime.prompts).toHaveLength(0);
     expect(ctx.connector.reply).not.toHaveBeenCalled();
-    expect(ctx.dispatcher.snapshotStats().skippedC2C).toBe(1);
+    expect(ctx.orchestrator.snapshotStats().skippedC2C).toBe(1);
   });
 
   it('群聊与单聊的 openid 即使字面相同也不会串成一个会话', () => {
@@ -642,19 +643,19 @@ describe('Dispatcher 单聊', () => {
   });
 });
 
-describe('Dispatcher 统计', () => {
+describe('编排 统计', () => {
   beforeEach(() => {
     ctx = setup();
   });
 
   it('统计各计数并暴露 inFlight', async () => {
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['ok']);
     await pending;
 
-    const stats = ctx.dispatcher.snapshotStats();
+    const stats = ctx.orchestrator.snapshotStats();
     expect(stats.received).toBe(1);
     expect(stats.completed).toBe(1);
     expect(stats.repliesSent).toBe(1);
@@ -680,7 +681,7 @@ const OFFPEAK_ON = {
 describe('谷时段闸', () => {
   it('峰时段拦截：直接回复提示，不派发给 runtime、不写对话记录', async () => {
     ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_NOON });
-    await ctx.dispatcher.handleEvent(makeMessage());
+    await ctx.orchestrator.handleEvent(makeMessage());
 
     expect(ctx.runtime.prompts).toHaveLength(0);
     expect(ctx.sent).toHaveLength(1);
@@ -688,24 +689,24 @@ describe('谷时段闸', () => {
     expect(body.content).toContain('正价时段');
     expect(body.content).toContain('00:30–08:30');
     expect(ctx.conversations.readTail('GROUP-1', 10)).toHaveLength(0);
-    expect(ctx.dispatcher.snapshotStats().gatedOffpeak).toBe(1);
+    expect(ctx.orchestrator.snapshotStats().gatedOffpeak).toBe(1);
   });
 
   it('谷时段内正常处理', async () => {
     ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_2AM });
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['好']);
     await pending;
 
     expect(ctx.sent.at(-1)!.body.content).toBe('好');
-    expect(ctx.dispatcher.snapshotStats().gatedOffpeak).toBe(0);
+    expect(ctx.orchestrator.snapshotStats().gatedOffpeak).toBe(0);
   });
 
   it('默认关闭：不配 QQ_OFFPEAK_ENABLED 时峰时段也正常处理（不影响既有部署）', async () => {
     ctx = setup({ now: () => SHANGHAI_NOON });
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['好']);
@@ -719,7 +720,7 @@ describe('谷时段闸', () => {
       configOverrides: { ...OFFPEAK_ON, DSH_PROVIDER: 'other-provider', DSH_MODEL: 'some-other-model' },
       now: () => SHANGHAI_NOON,
     });
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['好']);
@@ -733,14 +734,14 @@ describe('谷时段闸', () => {
       configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
       now: () => SHANGHAI_NOON,
     });
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['好']);
     await pending;
 
     expect(ctx.runtime.prompts).toHaveLength(1);
-    expect(ctx.dispatcher.snapshotStats().gatedOffpeak).toBe(0);
+    expect(ctx.orchestrator.snapshotStats().gatedOffpeak).toBe(0);
   });
 });
 
@@ -748,26 +749,26 @@ describe('谷时段闸（周末与法定节假日）', () => {
   it('周六全天谷价：周末中午正常处理（DeepSeek 2026-08-23 起规则）', async () => {
     // 2026-01-17 是周六
     ctx = setup({ configOverrides: OFFPEAK_ON, now: () => Date.UTC(2026, 0, 17, 4, 0) });
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['好']);
     await pending;
 
     expect(ctx.runtime.prompts).toHaveLength(1);
-    expect(ctx.dispatcher.snapshotStats().gatedOffpeak).toBe(0);
+    expect(ctx.orchestrator.snapshotStats().gatedOffpeak).toBe(0);
   });
 
   it('法定节假日全天谷价：国庆中午正常处理（内置官方日历，2026-10-01 周四）', async () => {
     ctx = setup({ configOverrides: OFFPEAK_ON, now: () => Date.UTC(2026, 9, 1, 4, 0) });
-    const pending = ctx.dispatcher.handleEvent(makeMessage());
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
     await waitFor(() => ctx.runtime.prompts.length === 1);
     const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
     ctx.runtime.completeTurn(sessionId, ['好']);
     await pending;
 
     expect(ctx.runtime.prompts).toHaveLength(1);
-    expect(ctx.dispatcher.snapshotStats().gatedOffpeak).toBe(0);
+    expect(ctx.orchestrator.snapshotStats().gatedOffpeak).toBe(0);
   });
 
   it('管理员 /offpeak holiday add 追加日期后，该日中午立即放行（跨年数据维护路径）', async () => {
@@ -776,10 +777,10 @@ describe('谷时段闸（周末与法定节假日）', () => {
       configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
       now: () => SHANGHAI_NOON,
     });
-    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak holiday add 2026-01-15' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '/offpeak holiday add 2026-01-15' }));
     expect(ctx.sent.at(-1)!.body.content).toContain('已追加');
 
-    const pending = ctx.dispatcher.handleEvent(
+    const pending = ctx.orchestrator.handleEvent(
       makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY' }),
     );
     await waitFor(() => ctx.runtime.prompts.length === 1);
@@ -792,7 +793,7 @@ describe('谷时段闸（周末与法定节假日）', () => {
 
   it('/offpeak holiday list 对所有人开放，列出官方节假日', async () => {
     ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_NOON });
-    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak holiday list' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '/offpeak holiday list' }));
     const text = ctx.sent.map((item) => item.body.content ?? '').join('\n');
     expect(text).toContain('2026-10-01');
     expect(ctx.runtime.prompts).toHaveLength(0);
@@ -805,12 +806,12 @@ describe('/offpeak 命令', () => {
       configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'SOMEONE-ELSE' },
       now: () => SHANGHAI_NOON,
     });
-    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak off' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '/offpeak off' }));
     expect(ctx.sent.at(-1)!.body.content).toContain('无权限');
     expect(ctx.runtime.prompts).toHaveLength(0);
 
     // 闸仍然生效
-    await ctx.dispatcher.handleEvent(makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2' }));
     expect(ctx.sent.at(-1)!.body.content).toContain('正价时段');
     expect(ctx.runtime.prompts).toHaveLength(0);
   });
@@ -820,12 +821,12 @@ describe('/offpeak 命令', () => {
       configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
       now: () => SHANGHAI_NOON,
     });
-    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak off' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '/offpeak off' }));
     expect(ctx.sent.at(-1)!.body.content).toContain('已关闭');
     expect(ctx.runtime.prompts).toHaveLength(0);
 
     // 下一条普通消息立即放行（热切换，无需重启）
-    const pending = ctx.dispatcher.handleEvent(
+    const pending = ctx.orchestrator.handleEvent(
       makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY' }),
     );
     await waitFor(() => ctx.runtime.prompts.length === 1);
@@ -846,10 +847,10 @@ describe('/offpeak 命令', () => {
       configOverrides: { ...OFFPEAK_ON, QQ_OFFPEAK_ENABLED: 'false', QQ_ADMIN_OPENIDS: 'MEMBER-1' },
       now: () => SHANGHAI_NOON,
     });
-    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak on' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '/offpeak on' }));
     expect(ctx.sent.at(-1)!.body.content).toContain('已开启');
 
-    await ctx.dispatcher.handleEvent(
+    await ctx.orchestrator.handleEvent(
       makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY' }),
     );
     expect(ctx.sent.at(-1)!.body.content).toContain('正价时段');
@@ -858,7 +859,7 @@ describe('/offpeak 命令', () => {
 
   it('/offpeak status 对非管理员开放，不进 runtime、不写对话记录', async () => {
     ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_NOON });
-    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak status' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '/offpeak status' }));
 
     const text = ctx.sent.map((item) => item.body.content ?? '').join('\n');
     expect(text).toContain('谷时段闸：开启');
@@ -869,7 +870,7 @@ describe('/offpeak 命令', () => {
 
   it('/offpeak whoami 回senderId（管理员自助发现 openid 的入口）', async () => {
     ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_NOON });
-    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak whoami' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '/offpeak whoami' }));
     expect(ctx.sent.at(-1)!.body.content).toContain('MEMBER-1');
   });
 
@@ -878,11 +879,11 @@ describe('/offpeak 命令', () => {
       configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
       now: () => SHANGHAI_NOON,
     });
-    await ctx.dispatcher.handleEvent(makeMessage({ content: '/offpeak window 25:00-26:00' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '/offpeak window 25:00-26:00' }));
     expect(ctx.sent.at(-1)!.body.content).toContain('设置失败');
 
     // 重叠窗口同样被拒
-    await ctx.dispatcher.handleEvent(
+    await ctx.orchestrator.handleEvent(
       makeMessage({
         eventId: 'EVENT-OVERLAP',
         msgId: 'MSG-OVERLAP',
@@ -892,7 +893,7 @@ describe('/offpeak 命令', () => {
     expect(ctx.sent.at(-1)!.body.content).toContain('重叠');
 
     // 配置未被破坏：峰时段仍按原窗口拦截
-    await ctx.dispatcher.handleEvent(
+    await ctx.orchestrator.handleEvent(
       makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY' }),
     );
     expect(ctx.sent.at(-1)!.body.content).toContain('00:30–08:30');
@@ -904,7 +905,7 @@ describe('/offpeak 命令', () => {
       // 12:00 北京：旧窗口（00:30–08:30）下是正价，换到 12:00-14:00 后应变谷时段
       now: () => SHANGHAI_NOON,
     });
-    await ctx.dispatcher.handleEvent(
+    await ctx.orchestrator.handleEvent(
       makeMessage({ content: '/offpeak window 00:00-09:00,12:00-14:00,18:00-24:00' }),
     );
     const reply = ctx.sent.at(-1)!.body.content ?? '';
@@ -914,7 +915,7 @@ describe('/offpeak 命令', () => {
     expect(reply).toContain('18:00–24:00');
 
     // 同一个时间戳（12:00）现在应当放行并真的派发给 runtime
-    const pending = ctx.dispatcher.handleEvent(
+    const pending = ctx.orchestrator.handleEvent(
       makeMessage({ eventId: 'EVENT-3', msgId: 'MSG-3', senderId: 'SOMEBODY' }),
     );
     await waitFor(() => ctx.runtime.prompts.length === 1);
@@ -929,15 +930,15 @@ describe('/offpeak 命令', () => {
       configOverrides: { ...OFFPEAK_ON, QQ_ADMIN_OPENIDS: 'MEMBER-1' },
       now: () => SHANGHAI_NOON,
     });
-    await ctx.dispatcher.handleEvent(makeMessage({ content: '<@!99999> /offpeak status' }));
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '<@!99999> /offpeak status' }));
     const text = ctx.sent.map((item) => item.body.content ?? '').join('\n');
     expect(text).toContain('谷时段闸');
   });
 
   it('统计与 /metrics 快照里能看到闸状态', async () => {
     ctx = setup({ configOverrides: OFFPEAK_ON, now: () => SHANGHAI_NOON });
-    await ctx.dispatcher.handleEvent(makeMessage());
-    const stats = ctx.dispatcher.snapshotStats();
+    await ctx.orchestrator.handleEvent(makeMessage());
+    const stats = ctx.orchestrator.snapshotStats();
     expect(stats.gatedOffpeak).toBe(1);
     expect(stats.offpeak).toMatchObject({ enabled: true, overridden: false });
   });
