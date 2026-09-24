@@ -19,26 +19,16 @@ services:
     container_name: qqbot-dsh
     restart: unless-stopped
 
-    # --- 密钥：只显式传这几个，不用 env_file ---------------------------------
-    # 为什么不用 `env_file: .env`：
-    #   1. env_file 会把**整份文件**当成容器环境变量塞进去，于是文件里任何一行
-    #      格式不对都会在创建容器时炸掉。最典型的是"一行全是 ="（比如从 Markdown
-    #      预览里复制配置时，`# =====` 被渲染成标题、`#` 被吃掉），Compose 会把它
-    #      解析成**变量名为空**的条目，daemon 报
-    #      `invalid environment variable: =====...`。这种报错完全看不出该改哪一行。
-    #   2. 只传需要的变量，容器内也少了一堆无关的键。
-    # 下面这些仍然从项目根的 .env 取值（Compose 自动加载该文件用于插值）；
-    # 值里有 `$` 的要写成 `$$`，这是 Compose 插值的规则。
-    # ⚠ 行为参数**不在这里**，在挂进来的 qqbot.yml。
+    # 密钥与个人标识来自 .env（整份注入）。
+    # 用 env_file 而不是逐个写 environment: "${VAR}"：以后往 .env 加字段不用同时改
+    # compose，少一处要同步的地方。
+    # 代价是 .env 里任何一行格式不对都会让**容器创建**失败。最典型的是"一行全是 ="，
+    # 报 `invalid environment variable: =====...`；成因与一行命令自查见
+    # docs/RUNBOOK.md 1.2（.env.example 的横幅已改用短横线，就是为了不在复制时
+    # 产生这种行）。
+    env_file:
+      - .env
     environment:
-      QQ_APP_ID: "${QQ_APP_ID:-}"
-      QQ_APP_SECRET: "${QQ_APP_SECRET:-}"
-      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
-      ONEBOT_ACCESS_TOKEN: "${ONEBOT_ACCESS_TOKEN:-}"
-      BOT_ADMINS: "${BOT_ADMINS:-}"
-      # 旧变量：仍在用 QQ_ADMIN_OPENIDS 的部署不用改，代码会自动补平台前缀
-      QQ_ADMIN_OPENIDS: "${QQ_ADMIN_OPENIDS:-}"
-
       DSH_HOME: /data/dsh
       QQ_WORKSPACES_ROOT: /data/workspaces
       QQ_STATE_DIR: /data/bot

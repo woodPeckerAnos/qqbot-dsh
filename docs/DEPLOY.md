@@ -349,18 +349,17 @@ docker stats qqbot-dsh
 下表给的是**环境变量名**（它们优先于 `qqbot.yml`，所以临时覆盖最方便），
 但日常改配置请改 `qqbot.yml` 里对应的项——对应关系见每节的注释，例如
 `QQ_MAX_RUNTIMES` ↔ `pool.maxRuntimes`、`QQ_MAX_CHARS` ↔ `qq-official.maxChars`。
-要用环境变量覆盖，请加到 `docker-compose.yml` 的 `environment` 段——
-**写在 `.env` 里不会生效**（见下面的说明）。
+要用环境变量覆盖，写进 `.env` 即可（它会被整份注入容器），或加到
+`docker-compose.yml` 的 `environment` 段。
 
-> **`.env` 的职责只有一个**：给 5 个密钥提供值
-> （`QQ_APP_ID` / `QQ_APP_SECRET` / `DEEPSEEK_API_KEY` / `ONEBOT_ACCESS_TOKEN` /
-> `BOT_ADMINS`）。compose 用插值把它们逐个传给容器，而不是用 `env_file` 把整份
-> 文件塞进去。后者有个很难查的坑：文件里任何一行格式不对（最典型是"一行全是 `=`"，
-> 常见于从 Markdown 预览里复制配置——`# =====` 被当成标题、`#` 被吃掉）都会让
-> 容器创建失败，报 `invalid environment variable: =====...`，完全看不出该改哪一行。
+> **`.env` 是整份注入的**，好处是以后新增字段不用同时改 compose；代价是文件里
+> 任何一行格式不对都会让**容器创建**失败。最典型的是"一行全是 `="——从 Markdown
+> 预览里复制配置时，`# =====` 会被当成标题、`#` 被吃掉，然后 Compose 按第一个 `=`
+> 切开得到"变量名为空"的条目，报 `invalid environment variable: =====...`，
+> 完全看不出该改哪一行。
 >
-> ⚠ **旧部署迁移时注意**：你以前放在 `.env` 里的行为参数（如 `BOT_CONNECTORS`）
-> 现在不再进容器了，请把它们搬进 `qqbot.yml`（或 compose 的 `environment` 段）。
+> 自查与修复见 [RUNBOOK 1.2](RUNBOOK.md)；仓库里的 `.env.example` 分隔线已改用
+> 短横线（裸的 `----` 行会被 Compose 忽略），从它复制不会再踩这个坑。
 
 | 场景 | 调整 |
 |---|---|

@@ -155,7 +155,7 @@ LRU + 空闲回收控制（第 5.4 节）。
 每个会话已经隔到自己的工作区了，为什么还留一道沙箱？因为工作区的隔离靠的是
 "我们传对了 cwd"，而沙箱靠的是内核强制。前者是约定，后者是边界。详见第 6 节。
 
-### 3.3 配置分层：`.env` 只放密钥
+### 3.3 配置分层：`.env` 装密钥，`qqbot.yml` 装行为参数
 
 最初的版本把所有配置都塞进 `.env`，结果是 **39 个变量里真正敏感的只有 4 个**
 （`QQ_APP_ID` / `QQ_APP_SECRET` / `DEEPSEEK_API_KEY` / `ONEBOT_ACCESS_TOKEN`），
@@ -166,21 +166,23 @@ LRU + 空闲回收控制（第 5.4 节）。
 
 | 层 | 位置 | 放什么 | 谁读 |
 |---|---|---|---|
-| 密钥值 | `.env` | 5 个凭证 / 个人标识（4 个密钥 + 管理员白名单） | **只被 compose 插值引用**，不是容器 env 文件 |
-| 行为参数 | `qqbot.yml` | 端口/配额/超时/谷时段/日志级别…（**不含**密钥与个人标识） | `QQ_CONFIG_FILE`（默认 `./qqbot.yml`） |
-| 容器参数 | `docker-compose.yml` 的 `environment` | 上面 5 个 `${VAR}` 插值 + 路径、`TZ`、代理 | 容器环境 |
+| 值 | `.env` | 主放 5 个凭证 / 个人标识（4 个密钥 + 管理员白名单）；行为参数也可在此临时覆盖 | compose 的 `env_file` **整份注入**容器 |
+| 行为参数（默认值） | `qqbot.yml` | 端口/配额/超时/谷时段/日志级别…（**不含**密钥与个人标识） | `QQ_CONFIG_FILE`（默认 `./qqbot.yml`） |
+| 容器参数 | `docker-compose.yml` 的 `environment` | 路径、`TZ`、代理这类与宿主机绑定的项 | 容器环境 |
 
-为什么不是 `env_file: .env`：它会把**整份文件**当成容器环境塞进去，于是文件里任何
-一行格式不对都会在创建容器时失败。实测最典型的一种是"一行全是 `=`"——从 Markdown
-预览里复制配置时 `# =====` 会被渲染成标题、`#` 被吃掉，Compose 按第一个 `=` 切开
-得到**变量名为空**的条目，daemon 报 `invalid environment variable: =====...`，
-完全看不出该改哪一行。改成显式插值后这类内容根本到不了 daemon，同时容器也不再收到
-一堆无关的键。代价是 `.env` 里的行为参数不再生效（要覆盖得写进 compose 的
-`environment`），这条已在 `.env.example` 与文档里写明。
+`qqbot.yml` 是**随仓库提交**的默认配置：拷下来就能跑，不需要 `cp` 一份模板再改，
+改动也走 code review。密钥与个人标识不进这个文件，所以公开它没有风险。
+
+`env_file: .env` 是刻意的选择：整份注入意味着**以后新增字段不用同时改 compose**，
+老部署拉新版本就能用上新变量。代价是文件里任何一行格式不对都会让**容器创建**失败。
+实测最典型的一种是"一行全是 `=`"——从 Markdown 预览里复制配置时 `# =====` 会被渲染
+成标题、`#` 被吃掉，Compose 按第一个 `=` 切开得到**变量名为空**的条目，daemon 报
+`invalid environment variable: =====...`，完全看不出该改哪一行。这是输入格式问题，
+不该靠砍掉机制来规避：仓库里的 `.env.example` 分隔线改用短横线（裸的 `----` 行
+会被 Compose 直接忽略），并把自查命令写进了 [RUNBOOK 1.2](RUNBOOK.md)。
 
 **取值优先级：env > `qqbot.yml` > 代码内置默认。**
-让 env 仍然优先是有意的：临时覆盖不用改文件、既有部署的老变量也照旧生效
-（前提是它确实进了容器——即写进 compose 的 `environment`，而不是 `.env`）。
+让 env 仍然优先是有意的：临时覆盖不用改文件、既有部署的老变量也照旧生效。
 **密钥与个人标识只能来自 env**，配置文件里根本没有这些键，这是刻意的边界：
 
 - 密钥（`QQ_APP_ID` / `QQ_APP_SECRET` / `ONEBOT_ACCESS_TOKEN`）——写了会被
@@ -560,7 +562,7 @@ DeepSeek 有错峰优惠时段，正价时段跑 agent 的成本可能高一个�
 qqbot-dsh/
 ├── docker-compose.yml            部署入口
 ├── Dockerfile                    多阶段构建；runtime 层装 bubblewrap
-├── .env.example                  密钥样例（只放 4 个凭证）
+├── .env.example                  密钥样例（5 个凭证 / 个人标识）
 ├── qqbot.yml                     行为配置（随仓库提供 = 默认配置；无密钥，可安全提交）
 ├── package.json / tsconfig.json / vitest.config.ts
 ├── dsh-profile/

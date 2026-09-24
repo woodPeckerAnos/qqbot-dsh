@@ -28,7 +28,7 @@
 ## 快速开始
 
 ```sh
-cp .env.example .env                  # 只填 4 个密钥
+cp .env.example .env                  # 只填密钥（4 个凭证 + 可选管理员白名单）
 docker compose up -d --build          # qqbot.yml 随仓库提供，就是默认配置，直接用
 docker compose logs -f
 ```
@@ -160,7 +160,7 @@ docker compose run --rm --entrypoint node qqbot scripts/probe-dsh.mjs      # 诊
 ```
 docker-compose.yml       生产部署入口
 docker-compose.dev.yml   开发覆盖文件（挂载本地 dist，跳过镜像重建）
-.env.example             密钥样例（只放 4 个凭证）
+.env.example             密钥样例（5 个凭证 / 个人标识）
 qqbot.yml                行为配置（随仓库提供 = 默认配置；不含密钥与个人标识）
 src/config.ts            env + qqbot.yml 三层合并 + 语义校验 + 启动期快速失败
 src/config-file.ts       qqbot.yml 读取与形状校验（未知键名直接报错）
