@@ -11,8 +11,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createNullLogger } from '../src/logger.js';
-import { QqGateway, parseTimestamp, type WebSocketLike } from '../src/qq/gateway.js';
-import { OpCode } from '../src/qq/types.js';
+import { QqGateway, parseTimestamp, type WebSocketLike } from '../src/adapters/qq-official/gateway.js';
+import { OpCode } from '../src/adapters/qq-official/types.js';
 
 const logger = createNullLogger();
 
@@ -333,7 +333,7 @@ describe('QqGateway 事件归一化', () => {
     expect(message.eventId).toBe('EVENT-1');
     expect(message.msgId).toBe('MSG-1');
     // 群聊沿用原始 group_openid 作为会话键（不迁移既有目录）
-    expect(message.target).toEqual({ kind: 'group', id: 'GROUP-A', key: 'GROUP-A' });
+    expect(message.target).toEqual({ platform: 'qq-official', kind: 'group', id: 'GROUP-A', key: 'GROUP-A' });
     expect(message.senderId).toBe('MEMBER-1');
     expect(message.username).toBe('小明');
     expect(message.content).toBe('帮我算个数');
@@ -365,7 +365,7 @@ describe('QqGateway 事件归一化', () => {
     expect(message).toBeDefined();
     expect(message.eventId).toBe('EVENT-C2C');
     expect(message.msgId).toBe('MSG-C2C');
-    expect(message.target).toEqual({ kind: 'c2c', id: 'USER-1', key: 'c2c:USER-1' });
+    expect(message.target).toEqual({ platform: 'qq-official', kind: 'c2c', id: 'USER-1', key: 'c2c:USER-1' });
     expect(message.senderId).toBe('USER-1');
     expect(message.content).toBe('你好');
     await gateway.stop();
@@ -410,7 +410,7 @@ describe('QqGateway 事件归一化', () => {
       target: { kind: string; id: string; key: string };
       eventId: string;
     };
-    expect(event.target).toEqual({ kind: 'group', id: 'GROUP-B', key: 'GROUP-B' });
+    expect(event.target).toEqual({ platform: 'qq-official', kind: 'group', id: 'GROUP-B', key: 'GROUP-B' });
     expect(event.eventId).toBe('EVENT-ADD');
     await gateway.stop();
   });
@@ -429,7 +429,7 @@ describe('QqGateway 事件归一化', () => {
       eventId: string;
     };
     expect(event).toBeDefined();
-    expect(event.target).toEqual({ kind: 'c2c', id: 'USER-F', key: 'c2c:USER-F' });
+    expect(event.target).toEqual({ platform: 'qq-official', kind: 'c2c', id: 'USER-F', key: 'c2c:USER-F' });
     expect(event.eventId).toBe('EVENT-FRIEND');
     await gateway.stop();
   });

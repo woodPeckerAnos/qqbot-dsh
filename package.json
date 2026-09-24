@@ -18,10 +18,12 @@
     "verify:sandbox": "node scripts/verify-sandbox.mjs"
   },
   "dependencies": {
-    "@deepseek-ai/dsh": "0.1.5-rc.2"
+    "@deepseek-ai/dsh": "0.1.5-rc.2",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

@@ -97,6 +97,34 @@ docker compose logs -f qqbot
 [entrypoint]        DSH 将请求提权到 danger-full-access，实际权限=完全访问。
 ```
 
+### 3.1 社区框架接入（OneBot，免审核）
+
+官方不对个人开发者开放审核时，用 NapCat / LLOneBot / Lagrange 等
+OneBot v11 实现接入（设计细节见 DESIGN.md 第 10 节）：
+
+1. `.env` 里启用 onebot 接入（可与官方并存）：
+
+   ```sh
+   BOT_CONNECTORS=onebot              # 或 qq-official,onebot
+   ONEBOT_ACCESS_TOKEN=<足够长的随机串>
+   DEEPSEEK_API_KEY=...
+   ```
+
+2. 放开 `docker-compose.yml` 里注释掉的 6700 端口映射（只在可信网络内暴露，
+   不要映射到公网），然后 `docker compose up -d --build`。
+
+3. 在 NapCat 里添加**反向 WebSocket**（网络配置 → WebSocket 客户端）：
+   - URL：`ws://<宿主机 IP>:6700/onebot/v11/ws`（NapCat 与本服务同机部署时用
+     宿主 IP；同 compose 网络则用服务名 `qqbot`）
+   - Token：与 `ONEBOT_ACCESS_TOKEN` 一致
+
+4. 验证：日志出现 `OneBot 客户端已连入` 与 `OneBot 框架已就绪`；
+   `curl localhost:8080/healthz` 里 `connectors.onebot.state` 为 `connected`。
+
+> ⚠ 社区框架基于 NTQQ 客户端 hook，有账号风控风险，请用专门小号。
+> 拉群邀请默认不自动同意（`ONEBOT_AUTO_ACCEPT_GROUP_INVITE=false`），
+> 需要机器人进新群时先把它打开，进完再关回去。
+
 ---
 
 ## 4. 验证

@@ -10,12 +10,11 @@ import { describe, expect, it } from 'vitest';
 import { segmentText } from '../src/pipeline/chunk.js';
 import {
   defuseMentions,
-  messageTextLength,
   normalizeWhitespace,
-  renderMessage,
   stripControlChars,
   toPlainText,
 } from '../src/pipeline/markdown.js';
+import { messageTextLength, renderMessage } from '../src/adapters/qq-official/render.js';
 
 describe('segmentText', () => {
   it('短文本不切分', () => {

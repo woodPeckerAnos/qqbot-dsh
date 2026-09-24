@@ -102,22 +102,21 @@ const rec = { handle: await this.ctx.agents.create({
 ## 3. 总体架构
 
 ```
-                    QQ 云 (api.bot.qq.com)
-                          │
-        ┌─────────────────┴─────────────────┐
-        │ wss:// 主动出网（无需公网入口）      │
-        │ https:// 取 token / 发消息          │
+   官方 QQ 云 (api.bot.qq.com)          社区框架（NapCat / LLOneBot / Lagrange）
+        │ wss 连出 + https 发消息            │ 反向 wss 连入（框架是 WS 客户端）
         ▼                                   ▼
 ┌───────────────────────────────────────────────────────────────┐
 │  容器 qqbot-dsh（唯一部署单元）                                 │
 │                                                               │
-│  ①QQ 接入层 src/qq/                                            │
-│    token 缓存 · WS 生命周期 · 心跳/Resume · 事件归一化          │
-│         │ NormalizedEvent                                     │
+│  ①接入层 src/adapters/（每平台一个连接器，可并存）              │
+│    qq-official：token 缓存 · WS 生命周期 · 心跳/Resume          │
+│    onebot：WS server · token 鉴权 · 动作 echo 对回              │
+│    共同对外形状：core/connector.ts 的 NormalizedEvent / reply() │
+│         │ NormalizedEvent（target 带 platform 与平台命名的 key）│
 │         ▼                                                     │
-│  ②编排层 src/pipeline/ + src/store/                            │
+│  ②编排层 src/pipeline/ + src/store/（平台无关）                 │
 │    会话表 · 每会话串行 · 全局并发闸门 · 进度回执 · 分段发送       │
-│    事件去重 · 对话记录（JSONL 追加）                            │
+│    事件去重 · 对话记录（JSONL 追加）· 按 connector.policy 取配额 │
 │         │ JSON-RPC over stdio                                 │
 │         ▼                                                     │
 │  ③DSH runtime 子进程池 src/dsh/                                │
@@ -127,6 +126,8 @@ const rec = { handle: await this.ctx.agents.create({
 │  ④持久层 /data：dsh-home · workspaces · bot                   │
 └───────────────────────────────────────────────────────────────┘
 ```
+
+接入层的抽象边界见第 10 节。
 
 ### 3.1 为什么一个会话一个 DSH 进程
 
@@ -138,7 +139,7 @@ const rec = { handle: await this.ctx.agents.create({
 一个独立 `DSH_HOME` 下的会话目录树。代价是进程数与内存随活跃会话数增长，用
 LRU + 空闲回收控制（第 5.4 节）。
 
-会话键的构造（见 `src/qq/gateway.ts` 的 `ConversationTarget`）：
+会话键的构造（官方平台见 `src/adapters/qq-official/gateway.ts`；跨平台规则见第 10 节）：
 
 | 会话 | 调用 OpenAPI 用的 id | 编排层会话键 `key` |
 |---|---|---|
@@ -398,8 +399,9 @@ DeepSeek 有错峰优惠时段，正价时段跑 agent 的成本可能高一个�
 重启后保留；文件损坏则告警并回落到 env 默认。每条消息进来现算一次生效配置，
 所以改完下一条消息即生效，不动网关连接和 runtime 池。
 
-**管理员模型**：`QQ_ADMIN_OPENIDS` 白名单（注意群聊 member_openid 与单聊
-user_openid 是两套值）。管理员永不被拦，且独占变更类子命令
+**管理员模型**：`BOT_ADMINS` 白名单，条目为 `platform:senderId`（官方平台里
+群聊 member_openid 与单聊 user_openid 是两套值；旧变量 `QQ_ADMIN_OPENIDS`
+的裸 openid 自动按官方平台并入，见第 10.5 节）。管理员永不被拦，且独占变更类子命令
 （on/off/window/reset）；status/whoami 对所有人开放——whoami 是管理员发现
 自己 openid 的入口。白名单留空 = 变更类命令对所有人关闭（fail-closed）。
 命令处理优先于闸判定，管理员在峰时段也能关闸。
@@ -506,11 +508,20 @@ qqbot-dsh/
 │   ├── health.ts                 /healthz + /metrics
 │   ├── health-probe.js           容器 HEALTHCHECK 用的轻量探针
 │   ├── offpeak.ts                谷时段闸：判定 + 运行期覆盖持久化 + /offpeak 命令
-│   ├── qq/
-│   │   ├── token.ts              access_token 缓存与刷新
-│   │   ├── gateway.ts            WS 生命周期状态机 + 事件归一化（群聊/单聊）
-│   │   ├── api.ts                发群消息 / 发单聊消息 / getGateway
-│   │   └── types.ts              QQ 协议 wire 类型
+│   ├── core/
+│   │   └── connector.ts          接入层契约：BotConnector / NormalizedEvent / ReplyPolicy
+│   ├── adapters/
+│   │   ├── qq-official/          官方开放平台
+│   │   │   ├── connector.ts      BotConnector 包装（msg_seq / 请求体渲染收在这里）
+│   │   │   ├── token.ts          access_token 缓存与刷新
+│   │   │   ├── gateway.ts        WS 生命周期状态机 + 事件归一化（群聊/单聊）
+│   │   │   ├── api.ts            发群消息 / 发单聊消息 / getGateway
+│   │   │   ├── render.ts         文本 → 官方消息请求体
+│   │   │   └── types.ts          QQ 协议 wire 类型
+│   │   └── onebot/               OneBot v11（NapCat / LLOneBot / Lagrange）
+│   │       ├── connector.ts      反向 WS server + token 鉴权 + 动作调用
+│   │       ├── normalize.ts      OneBot 事件 → NormalizedEvent（纯函数）
+│   │       └── types.ts          OneBot v11 wire 类型子集
 │   ├── dsh/
 │   │   ├── protocol.ts           NDJSON JSON-RPC 客户端（零依赖）
 │   │   ├── process.ts            子进程监督
@@ -594,3 +605,91 @@ qqbot-dsh/
 
 - <https://github.com/tencent-connect/bot-docs> —— 最后提交 2025-04-21，
   域名、主动推送状态、Identify token 格式均与实况不符。
+
+---
+
+## 10. 多接入模型（官方 + 社区框架并存）
+
+### 10.1 为什么要抽象
+
+官方开放平台目前不对个人开发者开放机器人审核——有 AppID 也无法过审上线。
+社区框架（NapCat / LLOneBot / Lagrange）走 NTQQ 客户端 hook，不需要审核，
+而且没有被动回复窗口与回复次数限制，自由度更高。它们共同遵守
+**OneBot v11** 协议，所以对接一个协议就覆盖整个生态（go-cqhttp 已停止
+维护，不作为目标）。
+
+### 10.2 接缝：`src/core/connector.ts`
+
+编排层与平台之间的唯一接缝是 `BotConnector` 接口：
+
+```
+适配器 ──NormalizedEvent──▶ 编排层 ──reply(ReplyContext, OutgoingMessage)──▶ 适配器
+```
+
+- **NormalizedEvent**：群聊/单聊消息归一化成同一形状（`group-at-message` /
+  `c2c-message`），进群/加好友归一化为 `group-add-robot` / `c2c-friend-add`。
+  各平台专有字段留在 `raw` 里，编排层不解读。
+- **ConversationTarget.platform**：回复路由键。编排层按它找到正确的连接器。
+- **ConversationTarget.key**：会话命名空间键。官方保持裸 openid 与 `c2c:` 前缀
+  （既有部署目录不迁移）；OneBot 用 `ob11:g<群号>` / `ob11:u<QQ号>`——
+  数字 QQ 号与 openid 是两套命名空间，无前缀必碰撞。
+- **ReplyPolicy**：把"自由度差异"显式声明出来（见 10.3）。
+- **ReplyContext**：编排层把配额账本分配的序号（seq）与回复锚点
+  （msgId/eventId）交给适配器；官方适配器映射为 msg_seq 与 msg_id/event_id
+  互斥规则，OneBot 适配器直接忽略。
+
+编排层不允许 import 任何 `adapters/*` 内部实现——这条纪律由代码评审保证。
+
+### 10.3 自由度差异落在 ReplyPolicy
+
+| 维度 | 官方 QQ | OneBot |
+|---|---|---|
+| 被动回复窗口 | 群 5 分钟 / 单聊 60 分钟 | 无（随时可发，含主动消息） |
+| 每条消息回复上限 | 群 5 / 单聊 4（平台硬约束） | 无（`ONEBOT_MAX_REPLIES_PER_MSG` 只是防失控安全阀，默认 10） |
+| 单轮超时 | 必须 < 295s（否则超时提示发不出去） | 默认 600s，可到 1 小时 |
+| 回复去重 | (msg_id, msg_seq) 组合，seq 由账本分配 | 无 seq 概念 |
+| 触发方式 | 群 @ / 单聊 | 群 @（识别 at 消息段或 CQ 码）/ 单聊 |
+
+配额账本（ReplyLedger）、进度调度、分段逻辑全部平台无关地留在编排层，
+只是取值来源从写死的 `config.qq.*` 变成 `connector.policy(kind)`。
+
+### 10.4 OneBot 适配器要点
+
+- **反向 WS**：本服务起 WS server（`ONEBOT_WS_PORT`，默认 6700），框架作为
+  客户端连入。`connected` 语义是"监听中"而非"有客户端"——客户端连不上是
+  框架侧问题，重启本服务帮不上忙，不该触发容器重启循环；无客户端只告警。
+- **鉴权**：`ONEBOT_ACCESS_TOKEN` 必填，支持 `Authorization: Bearer` 头与
+  `?access_token=` query 两种形式；鉴权失败在 upgrade 阶段 401 拒绝。
+- **动作调用**：`send_group_msg` / `send_private_msg` 用 `echo`（uuid）对回
+  响应，15 秒超时；连接断开时在途动作全部失败，避免调用方悬挂。
+- **回复路由**：按"最近投递过该会话事件的连接"回发（多账号多连接时不串）。
+- **入请求审批**：加好友请求默认自动同意（`ONEBOT_AUTO_ACCEPT_FRIEND=true`，
+  否则私聊路径永远打不开）；拉群邀请默认**不**自动同意
+  （`ONEBOT_AUTO_ACCEPT_GROUP_INVITE=false`，被拉进陌生群 = 暴露给陌生人）。
+- **防自触发**：`user_id === self_id` 的消息直接忽略。
+- **正文提取**：群消息只响应 @ 机器人；数组形式剥掉 at 段、拼接 text 段，
+  CQ 码字符串形式剥掉所有 `[CQ:...]` 码。图片等富媒体不进正文（留 raw）。
+
+### 10.5 身份与配置的跨平台变化
+
+- **管理员白名单**：`BOT_ADMINS` 的条目是 `platform:senderId`
+  （如 `qq-official:ABC...`、`onebot:123456`）。旧变量 `QQ_ADMIN_OPENIDS`
+  的裸 openid 自动按 `qq-official:` 前缀并入，既有配置不需要改。
+  `/offpeak whoami` 回复里的身份键直接可拷进 `BOT_ADMINS`。
+- **事件去重**：去重表全平台共用，OneBot 的 eventId 自带 `ob11:` 前缀，
+  与官方事件 id 不会碰撞。
+- **健康检查**：`ok = 至少一个连接器通道可用`；单个连接器断开降级为
+  warning（多接入时一个平台挂掉不该拖死另一个）。
+- **部分启动**：某个连接器启动失败只记错误并继续；全部失败才退出。
+
+### 10.6 社区框架的残余风险（在第 6.4 节之上追加）
+
+1. **账号风控**：社区框架基于 NTQQ 客户端 hook，违反 QQ 用户协议，存在
+   封号风险。建议用专门小号，不要上大号。
+2. **入站端口**：OneBot 反向 WS 需要暴露一个端口（虽然有 token 鉴权），
+   只在可信网络内监听/映射，不要对公网开放。
+3. **成员身份更不可信**：社区框架能拿到真实 QQ 号，也意味着任何人都能
+   加好友/拉群尝试触发 agent——`ONEBOT_C2C_ENABLED` 与
+   `ONEBOT_AUTO_ACCEPT_GROUP_INVITE` 是两条暴露面的总开关。
+
+---

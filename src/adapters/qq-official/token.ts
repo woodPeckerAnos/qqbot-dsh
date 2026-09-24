@@ -14,7 +14,7 @@
  *      注意不是 `Bot <appid>.<token>`——那是旧文档里的写法，会 401。
  */
 
-import type { Logger } from '../logger.js';
+import type { Logger } from '../../logger.js';
 import type { AppAccessTokenResponse } from './types.js';
 
 export interface TokenManagerOptions {

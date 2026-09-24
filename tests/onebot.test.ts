@@ -1,0 +1,402 @@
+/**
+ * OneBot 适配器测试：归一化纯函数 + 反向 WS 全回路（真实 socket，全离线）。
+ *
+ * 全回路用真实 WS 服务器与客户端（localhost），验证的是协议层最容易错的部分：
+ *   - token 鉴权（header 与 query 两种形式）；
+ *   - 事件进来 → 归一化 → 吐给编排层；
+ *   - reply() → action 帧出去 → echo 对回响应；
+ *   - 鉴权失败直接 401，不进入 WS 层。
+ */
+
+import { describe, expect, it, afterEach } from 'vitest';
+import WebSocket from 'ws';
+
+import {
+  OnebotConnector,
+  ONEBOT_PLATFORM,
+  type OnebotConnectorOptions,
+} from '../src/adapters/onebot/connector.js';
+import {
+  extractGroupContent,
+  normalizeOneBotEvent,
+  onebotC2cTarget,
+  onebotGroupTarget,
+} from '../src/adapters/onebot/normalize.js';
+import type { NormalizedEvent } from '../src/core/connector.js';
+import { createNullLogger } from '../src/logger.js';
+
+// ---------------------------------------------------------------------------
+// 归一化（纯函数）
+// ---------------------------------------------------------------------------
+
+describe('OneBot 归一化', () => {
+  it('群消息：@ 机器人时归一化为 group-at-message，正文剥掉 at 段', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 42,
+      group_id: 8888,
+      user_id: 12345,
+      time: 1_700_000_000,
+      message: [
+        { type: 'at', data: { qq: '10000' } },
+        { type: 'text', data: { text: ' 帮我写个脚本' } },
+      ],
+      sender: { user_id: 12345, nickname: '小明', card: '群名片' },
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    const event = result.event;
+    expect(event.kind).toBe('group-at-message');
+    if (event.kind !== 'group-at-message') return;
+    expect(event.target).toEqual({
+      platform: ONEBOT_PLATFORM,
+      kind: 'group',
+      id: '8888',
+      key: 'ob11:g8888',
+    });
+    expect(event.content).toBe('帮我写个脚本');
+    expect(event.senderId).toBe('12345');
+    // 群名片优先于昵称
+    expect(event.username).toBe('群名片');
+    expect(event.eventId).toBe('ob11:10000:42');
+    expect(event.ts).toBe(1_700_000_000_000);
+  });
+
+  it('群消息：没 @ 机器人时忽略', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 1,
+      group_id: 8888,
+      user_id: 12345,
+      message: [{ type: 'text', data: { text: '大家好' } }],
+    });
+    expect(result.type).toBe('ignored');
+  });
+
+  it('群消息：机器人自己发的消息忽略（防自触发循环）', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      self_id: 10000,
+      message_id: 1,
+      group_id: 8888,
+      user_id: 10000,
+      message: '[CQ:at,qq=10000] 自问自答',
+    });
+    expect(result.type).toBe('ignored');
+  });
+
+  it('CQ 码字符串形式也能识别 at 与正文', () => {
+    const { content, atSelf } = extractGroupContent('[CQ:at,qq=10000] 统计一下 [CQ:face,id=178]', 10000);
+    expect(atSelf).toBe(true);
+    expect(content).toBe('统计一下');
+  });
+
+  it('私聊（好友）归一化为 c2c-message，会话键带 ob11:u 前缀', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'private',
+      sub_type: 'friend',
+      self_id: 10000,
+      message_id: 7,
+      user_id: 12345,
+      time: 1_700_000_000,
+      message: '在吗',
+      sender: { user_id: 12345, nickname: '张三' },
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    expect(result.event.kind).toBe('c2c-message');
+    if (result.event.kind !== 'c2c-message') return;
+    expect(result.event.target).toEqual({
+      platform: ONEBOT_PLATFORM,
+      kind: 'c2c',
+      id: '12345',
+      key: 'ob11:u12345',
+    });
+    expect(result.event.content).toBe('在吗');
+  });
+
+  it('群临时会话私聊（sub_type=group）不接', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'private',
+      sub_type: 'group',
+      self_id: 10000,
+      message_id: 7,
+      user_id: 12345,
+      message: '临时消息',
+    });
+    expect(result.type).toBe('ignored');
+  });
+
+  it('notice.group_increase 且 user_id 是自己 → 进群欢迎事件', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'notice',
+      notice_type: 'group_increase',
+      self_id: 10000,
+      user_id: 10000,
+      group_id: 8888,
+      operator_id: 12345,
+      time: 1_700_000_000,
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    expect(result.event.kind).toBe('group-add-robot');
+    expect(result.event.target?.key).toBe('ob11:g8888');
+  });
+
+  it('notice.friend_add → 加好友欢迎事件', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'notice',
+      notice_type: 'friend_add',
+      self_id: 10000,
+      user_id: 12345,
+      time: 1_700_000_000,
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    expect(result.event.kind).toBe('c2c-friend-add');
+    expect(result.event.target?.key).toBe('ob11:u12345');
+  });
+
+  it('request.friend / request.group(invite) 归一化为审批描述', () => {
+    const friend = normalizeOneBotEvent({
+      post_type: 'request',
+      request_type: 'friend',
+      self_id: 10000,
+      user_id: 12345,
+      flag: 'FLAG-1',
+    });
+    expect(friend).toEqual({ type: 'friend-request', flag: 'FLAG-1', userId: 12345 });
+
+    const invite = normalizeOneBotEvent({
+      post_type: 'request',
+      request_type: 'group',
+      sub_type: 'invite',
+      self_id: 10000,
+      user_id: 12345,
+      group_id: 8888,
+      flag: 'FLAG-2',
+    });
+    expect(invite).toEqual({ type: 'group-invite', flag: 'FLAG-2', groupId: 8888, userId: 12345 });
+  });
+
+  it('target 工厂：数字与字符串入参等价，命名空间不会与官方碰撞', () => {
+    expect(onebotGroupTarget(8888)).toEqual(onebotGroupTarget('8888'));
+    expect(onebotC2cTarget(12345).key).toBe('ob11:u12345');
+    expect(onebotGroupTarget(8888).key.startsWith('ob11:')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 反向 WS 全回路
+// ---------------------------------------------------------------------------
+
+function makeConnector(port: number, overrides: Partial<OnebotConnectorOptions> = {}) {
+  const events: NormalizedEvent[] = [];
+  const connector = new OnebotConnector({
+    host: '127.0.0.1',
+    port,
+    accessToken: 'test-token',
+    acceptsC2C: true,
+    autoAcceptFriend: true,
+    autoAcceptGroupInvite: false,
+    replyPolicy: {
+      maxChars: 1500,
+      maxRepliesPerMsg: 10,
+      progressMax: 3,
+      progressAfterMs: 90_000,
+      progressIntervalMs: 90_000,
+      turnTimeoutMs: 600_000,
+    },
+    logger: createNullLogger(),
+    ...overrides,
+  });
+  connector.on((event) => events.push(event));
+  return { connector, events };
+}
+
+/** 连上并发送一条 lifecycle connect，完成"框架就绪" */
+async function connectClient(
+  port: number,
+  headers: Record<string, string> = { Authorization: 'Bearer test-token' },
+): Promise<WebSocket> {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/onebot/v11/ws`, { headers });
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+  });
+  ws.send(JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10000, time: 0 }));
+  return ws;
+}
+
+describe('OneBot 反向 WS 回路', () => {
+  let connector: OnebotConnector | undefined;
+  const clients: WebSocket[] = [];
+  afterEach(async () => {
+    for (const ws of clients.splice(0)) ws.close();
+    await connector?.stop();
+    connector = undefined;
+  });
+
+  it('事件归一化进来，reply 以 action 帧发回同一条连接', async () => {
+    const { connector: c, events } = makeConnector(0);
+    connector = c;
+    // port 0 = 随机端口，从 health 里拿不到，直接从 server 读
+    await connector.start();
+    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const ws = await connectClient(address.port);
+    clients.push(ws);
+
+    // 框架 → 服务：一条 @ 机器人的群消息
+    ws.send(
+      JSON.stringify({
+        post_type: 'message',
+        message_type: 'group',
+        sub_type: 'normal',
+        self_id: 10000,
+        message_id: 42,
+        group_id: 8888,
+        user_id: 12345,
+        time: 1_700_000_000,
+        message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 你好' } }],
+        sender: { user_id: 12345, nickname: '小明' },
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const message = events.find((e) => e.kind === 'group-at-message');
+    expect(message).toBeDefined();
+
+    // 服务 → 框架：reply 变成 send_group_msg 动作
+    const actionPromise = new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    const replyPromise = connector.reply(
+      { target: onebotGroupTarget(8888), seq: 1, kind: 'final', msgId: '42' },
+      { text: '**你好**，世界' },
+    );
+    const action = await actionPromise;
+    expect(action['action']).toBe('send_group_msg');
+    const params = action['params'] as { group_id: number; message: Array<{ type: string; data: { text: string } }> };
+    expect(params.group_id).toBe(8888);
+    // markdown 被剥成纯文本
+    expect(params.message[0]!.data.text).toBe('你好，世界');
+
+    // 框架回响应（echo 对回）→ reply promise 落定
+    ws.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 100 }, echo: action['echo'] }));
+    await replyPromise;
+  });
+
+  it('错误 retcode 让 reply 抛错（编排层据此走失败路径）', async () => {
+    const { connector: c } = makeConnector(0);
+    connector = c;
+    await connector.start();
+    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const ws = await connectClient(address.port);
+    clients.push(ws);
+
+    const actionPromise = new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    const replyPromise = connector.reply(
+      { target: onebotC2cTarget(12345), seq: 1, kind: 'final' },
+      { text: 'hi' },
+    );
+    const action = await actionPromise;
+    expect(action['action']).toBe('send_private_msg');
+    ws.send(JSON.stringify({ status: 'failed', retcode: 1404, wording: '消息发送失败', echo: action['echo'] }));
+    await expect(replyPromise).rejects.toThrow(/1404/);
+  });
+
+  it('鉴权失败的连接被 401 拒绝', async () => {
+    const { connector: c } = makeConnector(0);
+    connector = c;
+    await connector.start();
+    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/v11/ws`, {
+          headers: { Authorization: 'Bearer wrong-token' },
+        });
+        ws.once('open', () => resolve());
+        ws.once('error', (error) => reject(error));
+        ws.once('unexpected-response', () => reject(new Error('unexpected-response')));
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('加好友请求自动同意：服务主动发 set_friend_add_request', async () => {
+    const { connector: c } = makeConnector(0);
+    connector = c;
+    await connector.start();
+    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const ws = await connectClient(address.port);
+    clients.push(ws);
+
+    const actionPromise = new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    ws.send(
+      JSON.stringify({
+        post_type: 'request',
+        request_type: 'friend',
+        self_id: 10000,
+        user_id: 12345,
+        flag: 'FLAG-1',
+        time: 0,
+      }),
+    );
+    const action = await actionPromise;
+    expect(action['action']).toBe('set_friend_add_request');
+    expect((action['params'] as { approve: boolean }).approve).toBe(true);
+  });
+
+  it('拉群邀请默认不自动同意（fail-closed）', async () => {
+    const { connector: c, events } = makeConnector(0);
+    connector = c;
+    await connector.start();
+    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const ws = await connectClient(address.port);
+    clients.push(ws);
+
+    let gotAction = false;
+    ws.on('message', () => {
+      gotAction = true;
+    });
+    ws.send(
+      JSON.stringify({
+        post_type: 'request',
+        request_type: 'group',
+        sub_type: 'invite',
+        self_id: 10000,
+        user_id: 12345,
+        group_id: 8888,
+        flag: 'FLAG-2',
+        time: 0,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(gotAction).toBe(false);
+    // 不产生任何归一化事件（邀请不是欢迎事件）
+    expect(events.filter((e) => e.kind === 'group-add-robot')).toHaveLength(0);
+  });
+
+  it('health：监听中但无客户端时 connected=true 且带告警', async () => {
+    const { connector: c } = makeConnector(0);
+    connector = c;
+    await connector.start();
+    const health = connector.health();
+    expect(health.connected).toBe(true);
+    expect(health.state).toBe('listening');
+    expect(health.warnings?.join('')).toContain('尚无框架客户端');
+    await connector.stop();
+    expect(connector.health().connected).toBe(false);
+  });
+});

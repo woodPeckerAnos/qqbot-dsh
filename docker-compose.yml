@@ -92,13 +92,20 @@ services:
         max-size: "20m"
         max-file: "5"
 
-    # 出网：容器需要访问 api.bot.qq.com（QQ 网关）、api.deepseek.com（模型）
+    # 出网：容器需要访问 api.bot.qq.com（QQ 官方网关）、api.deepseek.com（模型）
     # 以及上面 HTTPS_PROXY 指向的宿主代理。默认 bridge 网络即可。
     #
     # extra_hosts 是代理方案的一部分：让 host.docker.internal 在所有平台上都
     # 指向宿主（Docker Desktop 自带该名称，Linux 原生 Docker 没有，靠这行补上）。
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+    # OneBot 反向 WS 监听端口（BOT_CONNECTORS 含 onebot 时才需要）。
+    # NapCat/LLOneBot 跑在宿主或另一个容器里，作为客户端连到容器的 6700。
+    # ⚠ 该端口有 ONEBOT_ACCESS_TOKEN 鉴权，但只在可信网络内暴露，不要映射到公网。
+    # ports:
+    #   - "127.0.0.1:6700:6700"
+
     networks:
       - qqbot-net
 

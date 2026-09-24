@@ -24,13 +24,16 @@ import { ConversationStore } from '../src/store/conversations.js';
 import { ensureStoreDirs, resolveStorePaths } from '../src/store/paths.js';
 import { SeenStore } from '../src/store/seen.js';
 import { SessionStore } from '../src/store/sessions.js';
-import type { SendMessageRequest } from '../src/qq/types.js';
-import {
-  c2cTarget,
-  groupTarget,
-  type ConversationTarget,
-  type NormalizedMessage,
-} from '../src/qq/gateway.js';
+import type { SendMessageRequest } from '../src/adapters/qq-official/types.js';
+import { c2cTarget, groupTarget } from '../src/adapters/qq-official/gateway.js';
+import { renderMessage } from '../src/adapters/qq-official/render.js';
+import type {
+  BotConnector,
+  ConversationTarget,
+  NormalizedMessage,
+  ReplyContext,
+  ReplyPolicy,
+} from '../src/core/connector.js';
 
 // ---------------------------------------------------------------------------
 // 测试替身
@@ -124,9 +127,53 @@ function createFakePool(runtime: FakeRuntime) {
 }
 
 interface SentMessage {
-  /** 发往哪个会话（群 openid 或用户 openid） */
+  /** 发往哪个会话 */
   target: ConversationTarget;
   body: SendMessageRequest;
+}
+
+/**
+ * 假连接器：reply 走真实的 renderMessage（保证 msg_seq/msg_id 互斥等行为
+ * 与线上一致），但不发网络请求，只记录到 sent。
+ * policy 与 main.ts 的映射保持一致，让 QQ_* 配置项在测试里照常生效。
+ */
+function createFakeConnector(config: Config, sent: SentMessage[]): BotConnector & {
+  reply: ReturnType<typeof vi.fn>;
+} {
+  const groupPolicy: ReplyPolicy = {
+    maxChars: config.qq.maxChars,
+    maxRepliesPerMsg: config.qq.maxRepliesPerMsg,
+    progressMax: config.qq.progressMax,
+    progressAfterMs: config.qq.progressAfterMs,
+    progressIntervalMs: config.qq.progressIntervalMs,
+    turnTimeoutMs: config.qq.turnTimeoutMs,
+  };
+  const c2cPolicy: ReplyPolicy = {
+    maxChars: config.qq.maxChars,
+    maxRepliesPerMsg: config.qq.c2c.maxRepliesPerMsg,
+    progressMax: config.qq.c2c.progressMax,
+    progressAfterMs: config.qq.progressAfterMs,
+    progressIntervalMs: config.qq.progressIntervalMs,
+    turnTimeoutMs: config.qq.turnTimeoutMs,
+  };
+  return {
+    platform: 'qq-official',
+    acceptsC2C: config.qq.c2c.enabled,
+    on: vi.fn(() => () => {}),
+    start: vi.fn(async () => {}),
+    stop: vi.fn(async () => {}),
+    health: vi.fn(() => ({ connected: true, state: 'ready' })),
+    policy: vi.fn((kind: 'group' | 'c2c') => (kind === 'c2c' ? c2cPolicy : groupPolicy)),
+    reply: vi.fn(async (ctx: ReplyContext, out: { text: string }) => {
+      const body = renderMessage(out.text, {
+        msgType: config.qq.msgType,
+        msgSeq: ctx.seq,
+        msgId: ctx.msgId,
+        eventId: ctx.eventId,
+      });
+      sent.push({ target: ctx.target, body });
+    }),
+  };
 }
 
 function setup(options: { configOverrides?: Record<string, string>; now?: () => number } = {}) {
@@ -153,16 +200,8 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
   const runtime = new FakeRuntime({ cwd: paths.workspacesRoot });
   const pool = createFakePool(runtime);
   const sent: SentMessage[] = [];
-  const api = {
-    sendGroupMessage: vi.fn(async (groupOpenid: string, body: SendMessageRequest) => {
-      sent.push({ target: groupTarget(groupOpenid), body });
-      return { id: `resp-${sent.length}` };
-    }),
-    sendUserMessage: vi.fn(async (userOpenid: string, body: SendMessageRequest) => {
-      sent.push({ target: c2cTarget(userOpenid), body });
-      return { id: `resp-${sent.length}` };
-    }),
-  };
+  const connector = createFakeConnector(config, sent);
+  const connectors = new Map<string, BotConnector>([[connector.platform, connector]]);
 
   const conversations = new ConversationStore(paths, logger);
   const seen = new SeenStore({ paths, logger });
@@ -172,7 +211,7 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
     config,
     logger,
     pool,
-    api: api as never,
+    connectors,
     conversations,
     seen,
     sessions,
@@ -198,7 +237,7 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
     dispatcher,
     runtime,
     pool,
-    api,
+    connector,
     sent,
     conversations,
     sessions,
@@ -514,7 +553,6 @@ describe('Dispatcher 进群/加好友欢迎', () => {
       raw: {},
     });
 
-    expect(ctx.api.sendUserMessage).toHaveBeenCalledTimes(1);
     expect(ctx.sent).toHaveLength(1);
     expect(ctx.sent[0]!.target).toEqual(c2cTarget('USER-1'));
     expect(ctx.sent[0]!.body.event_id).toBe('EVENT-FRIEND');
@@ -556,8 +594,6 @@ describe('Dispatcher 单聊', () => {
     ctx.runtime.completeTurn(sessionId, ['在的']);
     await pending;
 
-    expect(ctx.api.sendUserMessage).toHaveBeenCalledTimes(1);
-    expect(ctx.api.sendGroupMessage).not.toHaveBeenCalled();
     expect(ctx.sent).toHaveLength(1);
     expect(ctx.sent[0]!.target).toEqual(c2cTarget('USER-1'));
     expect(ctx.sent[0]!.body.content).toBe('在的');
@@ -595,7 +631,7 @@ describe('Dispatcher 单聊', () => {
 
     expect(ctx.sent).toHaveLength(0);
     expect(ctx.runtime.prompts).toHaveLength(0);
-    expect(ctx.api.sendUserMessage).not.toHaveBeenCalled();
+    expect(ctx.connector.reply).not.toHaveBeenCalled();
     expect(ctx.dispatcher.snapshotStats().skippedC2C).toBe(1);
   });
 

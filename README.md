@@ -1,16 +1,23 @@
 # qqbot-dsh
 
-把 **DeepSeek Harness (DSH)** 作为 agent 内核接入 **QQ 官方开放平台**的群聊 / 单聊机器人。
+把 **DeepSeek Harness (DSH)** 作为 agent 内核的 QQ 群聊 / 单聊机器人。
+接入层是可插拔的多平台结构，同一个服务可以同时挂：
+
+- **官方开放平台**（`qq-official`）：api.bot.qq.com，需审核；
+- **社区框架**（`onebot`）：NapCat / LLOneBot / Lagrange 等 OneBot v11 实现，
+  反向 WebSocket 接入，**无需审核**（官方目前不对个人开发者开放审核时走这条路）。
+
 只支持 Docker 部署，`docker compose up -d --build` 即可运行。
 
 ```
-QQ 群 @机器人  /  单聊私信
-   │
-   ▼  wss://api.bot.qq.com（主动出网，无需公网入口）
+官方：QQ 群 @机器人 / 单聊私信 ──wss 连出──▶ api.bot.qq.com
+社区：NapCat/LLOneBot ──反向 wss 连入──▶ 本服务 :6700
+                    │（两路可同时启用）
+                    ▼
 ┌──────────────────────────────────────────────┐
 │ 容器 qqbot-dsh                                │
-│  QQ 接入层  →  编排层  →  DSH runtime 子进程   │
-│  零依赖 WS     配额/进度    每会话一个进程      │
+│  接入层（每平台一个连接器）→ 编排层 → DSH 池    │
+│  core/connector.ts 契约   配额/进度  每会话一进程│
 │                     │                         │
 │                 /data：会话日志·工作区·对话记录 │
 └──────────────────────────────────────────────┘
@@ -21,18 +28,38 @@ QQ 群 @机器人  /  单聊私信
 ## 快速开始
 
 ```sh
-cp .env.example .env      # 填 QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY
+cp .env.example .env      # 官方：填 QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY
 docker compose up -d --build
 docker compose logs -f
 ```
 
 然后在群里 @机器人、或直接私聊机器人，说一句需求。详细步骤见 **[docs/DEPLOY.md](docs/DEPLOY.md)**。
 
+### 用社区框架接入（免审核）
+
+```sh
+# .env 里：
+BOT_CONNECTORS=onebot            # 或 qq-official,onebot 并存
+ONEBOT_ACCESS_TOKEN=<足够长的随机串>
+DEEPSEEK_API_KEY=...
+```
+
+容器启动后，在 NapCat / LLOneBot 里加一条**反向 WebSocket**（WebSocket 客户端）
+连接：`ws://<本服务地址>:6700/onebot/v11/ws`，token 与 `ONEBOT_ACCESS_TOKEN` 一致。
+注意放开 `docker-compose.yml` 里注释掉的 6700 端口映射。
+
+社区框架没有官方那种"5 分钟被动窗口 + 每条消息最多 5 次回复"的限制，
+所以 OneBot 通道的单轮超时默认放宽到 10 分钟（`ONEBOT_TURN_TIMEOUT_MS`），
+回复配额只是防失控的安全阀。
+
+> ⚠ 社区框架基于 NTQQ 客户端 hook，存在账号风控/封禁风险，建议用专门的小号。
+> 这是平台风险，与本项目代码无关。
+
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| [docs/DESIGN.md](docs/DESIGN.md) | 方案设计：架构、协议契约、硬约束落地、权限与安全、实测结论 |
+| [docs/DESIGN.md](docs/DESIGN.md) | 方案设计：架构、多接入模型、协议契约、硬约束落地、权限与安全、实测结论 |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | 部署手册：从零到跑通，含沙箱后端验证与调参建议 |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | 排障手册：按症状组织的排查流程 + 未实测项清单 |
 
@@ -77,7 +104,7 @@ API Key 在容器内可见）详见 [DESIGN.md 6.4](docs/DESIGN.md)。
 ```sh
 npm install
 npm run typecheck
-npm test                 # 156 项单测，全离线：不触网、不启动 DSH 子进程
+npm test                 # 离线单测：不触网、不启动 DSH 子进程
 ```
 
 ### 改了东西要怎么生效
@@ -121,13 +148,14 @@ docker compose run --rm --entrypoint node qqbot scripts/probe-dsh.mjs      # 诊
 ```
 docker-compose.yml       生产部署入口
 docker-compose.dev.yml   开发覆盖文件（挂载本地 dist，跳过镜像重建）
-src/qq/         QQ 接入层：token / WS 生命周期 / 群聊·单聊事件归一化 / OpenAPI / wire 类型
+src/core/       接入层契约：BotConnector / 归一化事件 / 回复策略（编排层只依赖这里）
+src/adapters/   接入平台：qq-official（官方开放平台）/ onebot（NapCat 等社区框架）
 src/dsh/        DSH 桥接：NDJSON JSON-RPC 客户端 / 子进程监督 / 进程池 / turn 归并
-src/pipeline/   编排：调度 / 配额与进度 / 分段 / 渲染 / 并发原语（群聊单聊共用一条链路）
+src/pipeline/   编排：调度 / 配额与进度 / 分段 / 文本清洗 / 并发原语（全平台共用一条链路）
 src/store/      持久化：对话记录（JSONL）/ 事件去重 / 会话映射 / 路径布局
 dsh-profile/    DSH profile 补丁 + 自动审批桩
 scripts/        容器入口 + 五个验证脚本
-tests/          156 项离线单测
+tests/          离线单测
 docs/           方案设计 / 部署手册 / 排障手册
 ```
 

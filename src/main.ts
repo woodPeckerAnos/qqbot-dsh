@@ -5,22 +5,30 @@
  *   1. 解析配置（失败立刻退出，并打印修复提示）
  *   2. 准备存储目录
  *   3. 建健康检查服务（先起来，这样启动失败也能被探针看到）
- *   4. 建 QQ 接入层与 DSH 池
- *   5. 建编排器，把两侧接起来
- *   6. 启动网关
+ *   4. 按 BOT_CONNECTORS 建接入层连接器（官方 / OneBot 可并存）
+ *   5. 建 DSH 池与编排器，把两侧接起来
+ *   6. 启动全部连接器
  *   7. 挂信号处理，优雅退出
  *
- * 退出路径必须是**优雅**的：先停网关（不再接新消息），再等在处理中的 turn 结束，
- * 最后关掉所有 DSH runtime（shutdown → SIGTERM → SIGKILL）。
+ * 多接入模型：
+ *   每个连接器一条事件通道，共享同一个编排器、runtime 池与存储。
+ *   会话隔离靠 ConversationTarget.key（各平台 key 带自己的命名空间），
+ *   回复路由靠 ConversationTarget.platform → 连接器。
+ *
+ * 退出路径必须是**优雅**的：先停全部连接器（不再接新消息），再等在处理中的
+ * turn 结束，最后关掉所有 DSH runtime（shutdown → SIGTERM → SIGKILL）。
  * 粗暴退出会让 DSH 的会话日志留半条记录，而那正是我们排障的依据。
  */
 
 import { loadConfig, describeConfig, ConfigError, type Config } from './config.js';
-import { createLogger, type Logger } from './logger.js';
+import { QqOfficialConnector } from './adapters/qq-official/connector.js';
+import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
+import { TokenError } from './adapters/qq-official/token.js';
+import { OnebotConnector, ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
+import type { BotConnector, NormalizedEvent } from './core/connector.js';
+import { isUserMessage } from './core/connector.js';
+import { createLogger } from './logger.js';
 import { RuntimePool } from './dsh/pool.js';
-import { QqApi } from './qq/api.js';
-import { QqGateway, isUserMessage, type NormalizedEvent } from './qq/gateway.js';
-import { TokenManager, TokenError } from './qq/token.js';
 import { Dispatcher } from './pipeline/dispatcher.js';
 import { ConversationStore } from './store/conversations.js';
 import { SeenStore } from './store/seen.js';
@@ -30,6 +38,59 @@ import { buildHealthSnapshot, createHealthServer, type HealthServer } from './he
 
 /** 处理中的 turn 结束前最多等多久（毫秒） */
 const DRAIN_TIMEOUT_MS = 30_000;
+
+/** 按配置建一个连接器（不启动）。 */
+function buildConnector(
+  name: string,
+  config: Config,
+  logger: ReturnType<typeof createLogger>,
+): BotConnector {
+  if (name === QQ_OFFICIAL_PLATFORM) {
+    return new QqOfficialConnector({
+      appId: config.qq.appId,
+      appSecret: config.qq.appSecret,
+      apiBase: config.qq.apiBase,
+      intents: config.qq.intents,
+      msgType: config.qq.msgType,
+      acceptsC2C: config.qq.c2c.enabled,
+      groupPolicy: {
+        maxChars: config.qq.maxChars,
+        maxRepliesPerMsg: config.qq.maxRepliesPerMsg,
+        progressMax: config.qq.progressMax,
+        progressAfterMs: config.qq.progressAfterMs,
+        progressIntervalMs: config.qq.progressIntervalMs,
+        turnTimeoutMs: config.qq.turnTimeoutMs,
+      },
+      c2cPolicy: {
+        maxChars: config.qq.maxChars,
+        maxRepliesPerMsg: config.qq.c2c.maxRepliesPerMsg,
+        progressMax: config.qq.c2c.progressMax,
+        progressAfterMs: config.qq.progressAfterMs,
+        progressIntervalMs: config.qq.progressIntervalMs,
+        turnTimeoutMs: config.qq.turnTimeoutMs,
+      },
+      logger: logger.child({ component: `connector:${name}` }),
+    });
+  }
+  // ONEBOT_PLATFORM
+  return new OnebotConnector({
+    host: config.onebot.host,
+    port: config.onebot.port,
+    accessToken: config.onebot.accessToken,
+    acceptsC2C: config.onebot.c2cEnabled,
+    autoAcceptFriend: config.onebot.autoAcceptFriend,
+    autoAcceptGroupInvite: config.onebot.autoAcceptGroupInvite,
+    replyPolicy: {
+      maxChars: config.onebot.maxChars,
+      maxRepliesPerMsg: config.onebot.maxRepliesPerMsg,
+      progressMax: config.onebot.progressMax,
+      progressAfterMs: config.onebot.progressAfterMs,
+      progressIntervalMs: config.onebot.progressIntervalMs,
+      turnTimeoutMs: config.onebot.turnTimeoutMs,
+    },
+    logger: logger.child({ component: `connector:${name}` }),
+  });
+}
 
 async function main(): Promise<void> {
   let config: Config;
@@ -66,21 +127,11 @@ async function main(): Promise<void> {
   const seen = new SeenStore({ paths, logger });
   const sessions = new SessionStore({ paths, logger });
 
-  // --- QQ 接入层 -------------------------------------------------------------
-  const tokenManager = new TokenManager({
-    appId: config.qq.appId,
-    appSecret: config.qq.appSecret,
-    apiBase: config.qq.apiBase,
-    logger,
-  });
-  const api = new QqApi({ apiBase: config.qq.apiBase, tokenManager, logger });
-
-  const gateway = new QqGateway({
-    api,
-    tokenManager,
-    intents: config.qq.intents,
-    logger: logger.child({ component: 'gateway' }),
-  });
+  // --- 接入层（按配置建连接器，可多个并存） ----------------------------------
+  const connectors = new Map<string, BotConnector>();
+  for (const name of config.connectors) {
+    connectors.set(name, buildConnector(name, config, logger));
+  }
 
   // --- DSH runtime 池 --------------------------------------------------------
   const pool = new RuntimePool({
@@ -103,14 +154,14 @@ async function main(): Promise<void> {
     config,
     logger: logger.child({ component: 'dispatcher' }),
     pool,
-    api,
+    connectors,
     conversations,
     seen,
     sessions,
     paths,
   });
 
-  // runtime 事件 → 编排器（按会话路由：群聊用 group_openid，单聊用 c2c:<user_openid>）
+  // runtime 事件 → 编排器（按会话路由）
   pool.on('session.event', (conversationKey, notification) => {
     dispatcher.routeSessionEvent(conversationKey, notification.event);
   });
@@ -118,10 +169,10 @@ async function main(): Promise<void> {
     dispatcher.routeSessionStatus(conversationKey, notification);
   });
 
-  // --- QQ 事件 → 编排器 ------------------------------------------------------
-  // QQ 的 handler 是同步回调，我们在内部按会话串行链式调用，避免同一会话并发进入。
+  // --- 连接器事件 → 编排器 ----------------------------------------------------
+  // 各平台的 handler 都是同步回调，我们在内部按会话串行链式调用，避免同一会话并发进入。
   const eventChains = new Map<string, Promise<void>>();
-  gateway.on((event: NormalizedEvent) => {
+  const onConnectorEvent = (event: NormalizedEvent): void => {
     // 消息与进群/加好友事件都按各自会话串行；其余系统事件共用一条链。
     const key =
       isUserMessage(event) || event.kind === 'group-add-robot' || event.kind === 'c2c-friend-add'
@@ -141,7 +192,10 @@ async function main(): Promise<void> {
         if (eventChains.get(key) === next) eventChains.delete(key);
       });
     eventChains.set(key, next);
-  });
+  };
+  for (const connector of connectors.values()) {
+    connector.on(onConnectorEvent);
+  }
 
   // --- 健康检查 -------------------------------------------------------------
   const health: HealthServer = createHealthServer({
@@ -150,10 +204,11 @@ async function main(): Promise<void> {
     snapshot: () =>
       buildHealthSnapshot({
         startedAt,
-        gateway: gateway.health(),
+        connectors: Object.fromEntries(
+          [...connectors.entries()].map(([name, connector]) => [name, connector.health()]),
+        ),
         runtime: { size: pool.size, activeConversationKeys: pool.activeConversationKeys() },
         dispatcher: dispatcher.snapshotStats(),
-        token: tokenManager.snapshot(),
       }),
   });
   await health.start();
@@ -165,12 +220,15 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info('收到退出信号，开始优雅关闭', { signal });
 
-    // 1. 先停网关：不再接受新消息
-    await gateway.stop().catch((error: unknown) => {
-      logger.warn('停止网关时出错', {
-        error: error instanceof Error ? error.message : String(error),
+    // 1. 先停全部连接器：不再接受新消息
+    for (const [name, connector] of connectors) {
+      await connector.stop().catch((error: unknown) => {
+        logger.warn('停止连接器时出错', {
+          connector: name,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-    });
+    }
 
     // 2. 等处理中的 turn 结束（有上限，避免卡死）
     const drainDeadline = Date.now() + DRAIN_TIMEOUT_MS;
@@ -205,23 +263,40 @@ async function main(): Promise<void> {
     void shutdown('uncaughtException', 1);
   });
 
-  // --- 启动网关 -------------------------------------------------------------
-  try {
-    // 先验证一次鉴权，把配置错误挡在"连着但没权限"之前
-    await tokenManager.get();
-    await gateway.start();
-    logger.info('qqbot-dsh 已就绪，等待群聊/单聊消息');
-  } catch (error) {
-    if (error instanceof TokenError) {
-      logger.error('鉴权失败，无法启动', { error: error.message, code: error.code });
-    } else {
-      logger.error('启动网关失败', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+  // --- 启动全部连接器 ---------------------------------------------------------
+  // 单个连接器启动失败不再直接杀死进程：多接入场景下，一个平台挂掉不该拖死
+  // 另一个。但**全部**失败 = 服务完全没有事件来源，等于废了，必须退出。
+  let started = 0;
+  for (const [name, connector] of connectors) {
+    try {
+      await connector.start();
+      started += 1;
+      logger.info('连接器已启动', { connector: name });
+    } catch (error) {
+      if (error instanceof TokenError) {
+        logger.error('连接器鉴权失败', { connector: name, error: error.message, code: error.code });
+      } else {
+        logger.error('连接器启动失败', {
+          connector: name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
+  }
+
+  if (started === 0) {
+    logger.error('所有连接器都启动失败，服务没有事件来源，退出');
     process.exitCode = 1;
     await shutdown('startup-failure', 1);
+    return;
   }
+  if (started < connectors.size) {
+    logger.warn('部分连接器启动失败，服务降级运行（健康检查会持续报告）', {
+      started,
+      total: connectors.size,
+    });
+  }
+  logger.info('qqbot-dsh 已就绪，等待群聊/单聊消息', { connectors: [...connectors.keys()] });
 }
 
 void main();

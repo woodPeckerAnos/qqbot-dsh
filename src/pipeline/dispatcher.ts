@@ -1,5 +1,6 @@
 /**
- * 编排器：把一条用户消息（群聊或单聊）变成一次 DSH turn，再把结果变成 QQ 回复。
+ * 编排器：把一条用户消息（群聊或单聊，任意接入平台）变成一次 DSH turn，
+ * 再把结果变成该平台的回复。
  *
  * 一次完整流程：
  *
@@ -8,25 +9,33 @@
  *   3. 取全局并发名额（有界，满了就礼貌拒绝而不是无限排队）
  *   4. 每会话串行（同一群/同一人同时只跑一条，避免事件流交错）
  *   5. 取该会话的 DSH runtime（必要时新建进程 + 冷启动回放）
- *   6. 起进度回执调度器（守被动回复窗口）
+ *   6. 起进度回执调度器（策略来自该平台该会话类型的 ReplyPolicy）
  *   7. session/prompt 派发
  *   8. 消费事件：累积 assistant 文本、记 turn/end
  *   9. status 回 idle 且本轮已 turn/end → 结束
- *  10. 分段 + 按配额发回复（群聊走 sendGroupMessage，单聊走 sendUserMessage）
+ *  10. 分段 + 按配额发回复（经 BotConnector.reply，平台专有行为在适配器内）
  *  11. 记录助手消息
  *
- * 关键不变量：`ReplyLedger` 是**唯一**分配 msg_seq 的地方，且进度回执永远不能
+ * 关键不变量：`ReplyLedger` 是**唯一**分配回复序号的地方，且进度回执永远不能
  * 吃掉最终答案的配额。
  *
- * 群聊与单聊共用同一条代码路径，区别只有两处：
- *   - 会话键/工作区/锁用 `message.target.key`（单聊带 `c2c:` 前缀）；
- *   - 回复配额取各自的配置（官方单聊上限 4 条 < 群聊 5 条），发送端点按
- *     `message.target.kind` 选择。
+ * 平台差异只通过两个接缝进入本文件：
+ *   - `target.platform` → 路由到对应 BotConnector；
+ *   - `connector.policy(kind)` → 配额/分段/进度/超时的全部取值。
+ * 本文件不允许 import 任何 adapters/* 内部实现。
  */
 
 import { join } from 'node:path';
 
 import type { Config } from '../config.js';
+import type {
+  BotConnector,
+  ConversationTarget,
+  NormalizedEvent,
+  NormalizedMessage,
+  ReplyPolicy,
+} from '../core/connector.js';
+import { isUserMessage } from '../core/connector.js';
 import type { Logger } from '../logger.js';
 import {
   CN_HOLIDAYS_2026,
@@ -45,15 +54,6 @@ import {
 import type { RuntimeEntry, RuntimePool } from '../dsh/pool.js';
 import type { SessionStatusNotification } from '../dsh/protocol.js';
 import { TurnAccumulator, type TurnOutcome } from '../dsh/turns.js';
-import type { QqApi } from '../qq/api.js';
-import {
-  isUserMessage,
-  type ConversationKind,
-  type ConversationTarget,
-  type NormalizedEvent,
-  type NormalizedMessage,
-} from '../qq/gateway.js';
-import type { SendMessageRequest } from '../qq/types.js';
 import type { ConversationStore } from '../store/conversations.js';
 import { renderReplay } from '../store/conversations.js';
 import type { SeenStore } from '../store/seen.js';
@@ -61,7 +61,6 @@ import type { SessionStore } from '../store/sessions.js';
 import { ensureWorkspace, type StorePaths } from '../store/paths.js';
 import { KeyedMutex, Semaphore, waitUntil } from './concurrency.js';
 import { segmentText } from './chunk.js';
-import { renderMessage } from './markdown.js';
 import {
   defaultProgressText,
   ProgressScheduler,
@@ -74,7 +73,8 @@ export interface DispatcherDeps {
   config: Config;
   logger: Logger;
   pool: RuntimePool;
-  api: Pick<QqApi, 'sendGroupMessage' | 'sendUserMessage'>;
+  /** 平台标识 → 连接器。回复按 target.platform 路由。 */
+  connectors: ReadonlyMap<string, BotConnector>;
   conversations: ConversationStore;
   seen: SeenStore;
   sessions: SessionStore;
@@ -196,15 +196,19 @@ export class Dispatcher {
   }
 
   // -------------------------------------------------------------------------
-  // 用户消息（群聊 / 单聊）
+  // 用户消息（群聊 / 单聊，任意平台）
   // -------------------------------------------------------------------------
 
   private async handleMessage(message: NormalizedMessage): Promise<void> {
     const { logger, seen } = this.deps;
     this.stats.received += 1;
 
-    // 单聊开关：intent 层无法只订群聊（1<<25 两者共用），所以在业务层拦。
-    if (message.target.kind === 'c2c' && !this.deps.config.qq.c2c.enabled) {
+    const connector = this.connectorFor(message.target);
+    if (connector === undefined) return;
+    const policy = connector.policy(message.target.kind);
+
+    // 单聊开关：订阅层往往无法只收群聊，所以在业务层拦。
+    if (message.target.kind === 'c2c' && !connector.acceptsC2C) {
       this.stats.skippedC2C += 1;
       logger.debug('单聊已禁用，忽略私聊消息', { conversation: message.target.key });
       return;
@@ -220,13 +224,14 @@ export class Dispatcher {
     const conversationKey = message.target.key;
     const messageLogger = logger.child({
       conversation: conversationKey,
+      platform: message.target.platform,
       kind: message.target.kind,
       msgId: message.msgId,
     });
 
     // --- 谷时段闸：命令与拦截都发生在「记录对话 / 占名额」之前 -------------
     // 被拦截的消息不写对话记录、不占并发名额、不碰 DSH 进程，就像它没来过。
-    const isAdmin = this.deps.config.qq.adminOpenids.includes(message.senderId);
+    const isAdmin = this.isAdmin(message);
 
     // /offpeak 命令优先于闸：管理员必须能在峰时段发命令关闸。
     const command = parseOffpeakCommand(message.content);
@@ -298,13 +303,17 @@ export class Dispatcher {
   }
 
   private async runTurn(message: NormalizedMessage, logger: Logger): Promise<void> {
-    const { config, pool, sessions, paths } = this.deps;
+    const { pool, sessions, paths } = this.deps;
     const conversationKey = message.target.key;
+    const connector = this.connectorFor(message.target);
+    if (connector === undefined) return;
+    const policy = connector.policy(message.target.kind);
 
     const workspacePath = ensureWorkspace(paths, conversationKey);
     const ledger = new ReplyLedger({
       msgId: message.msgId,
-      ...this.replyLimits(message.target.kind),
+      totalQuota: policy.maxRepliesPerMsg,
+      progressQuota: policy.progressMax,
     });
 
     // 先声明，再构造依赖它们的 ProgressScheduler：
@@ -313,12 +322,12 @@ export class Dispatcher {
     let accumulator = new TurnAccumulator('pending');
 
     const progress = new ProgressScheduler({
-      afterMs: config.qq.progressAfterMs,
-      intervalMs: config.qq.progressIntervalMs,
+      afterMs: policy.progressAfterMs,
+      intervalMs: policy.progressIntervalMs,
       renderText: () => defaultProgressText(this.elapsedSince(startedAt), accumulator.toolsInvoked),
       send: async (text) => {
         const ticket = ledger.allocate('progress');
-        await this.sendSegment(message, text, ticket, undefined, logger);
+        await this.sendSegment(message, text, ticket, logger);
         this.stats.progressSent += 1;
       },
       allocateTicket: () => {
@@ -354,7 +363,7 @@ export class Dispatcher {
       progress.start();
 
       // 结束条件：status 回 idle 且本轮已 turn/end（由 routeSessionStatus 触发 finish）
-      const settled = await waitUntil(() => accumulator.isSettled, config.qq.turnTimeoutMs, 120);
+      const settled = await waitUntil(() => accumulator.isSettled, policy.turnTimeoutMs, 120);
 
       let outcome: TurnOutcome;
       if (settled) {
@@ -364,7 +373,7 @@ export class Dispatcher {
         this.stats.timedOut += 1;
         outcome = accumulator.timeoutResult();
         logger.warn('本轮超时，将回收 runtime 以终止任务', {
-          timeoutMs: config.qq.turnTimeoutMs,
+          timeoutMs: policy.turnTimeoutMs,
           toolsInvoked: accumulator.toolsInvoked,
         });
         // 没有取消 API，唯一可靠的终止方式是回收整个 runtime 进程
@@ -379,12 +388,21 @@ export class Dispatcher {
     }
   }
 
-  /** 按会话类型取回复配额（官方单聊上限低于群聊，必须分开）。 */
-  private replyLimits(kind: ConversationKind): { totalQuota: number; progressQuota: number } {
-    const { qq } = this.deps.config;
-    return kind === 'c2c'
-      ? { totalQuota: qq.c2c.maxRepliesPerMsg, progressQuota: qq.c2c.progressMax }
-      : { totalQuota: qq.maxRepliesPerMsg, progressQuota: qq.progressMax };
+  /** 按 target 取连接器；未知平台说明适配器注册与事件来源不一致（属于 bug）。 */
+  private connectorFor(target: ConversationTarget): BotConnector | undefined {
+    const connector = this.deps.connectors.get(target.platform);
+    if (connector === undefined) {
+      this.deps.logger.warn('收到未知平台的事件，已丢弃', {
+        platform: target.platform,
+        conversation: target.key,
+      });
+    }
+    return connector;
+  }
+
+  /** 管理员判定：白名单条目是 `platform:senderId` 组合（见 BOT_ADMINS）。 */
+  private isAdmin(message: NormalizedMessage): boolean {
+    return this.deps.config.admins.includes(`${message.target.platform}:${message.senderId}`);
   }
 
   private buildPrompt(
@@ -395,8 +413,8 @@ export class Dispatcher {
   ): string {
     const { conversations, config } = this.deps;
     const speaker = message.username ?? message.senderId;
-    // 明确标注渠道：同一个人在群里的 member_openid 与单聊的 user_openid 不同，
-    // 标清楚能避免模型把两个会话的身份混起来。
+    // 明确标注渠道：同一个人在不同平台/不同会话类型下的 id 不同，
+    // 标清楚能避免模型把多个会话的身份混起来。
     const role = message.target.kind === 'c2c' ? '私聊用户' : '群成员';
     const current = `[${role} ${speaker}] ${message.content}`;
 
@@ -487,7 +505,7 @@ export class Dispatcher {
    * 处理 /offpeak 命令。整个流程不触碰对话记录、并发名额与 DSH runtime。
    *
    * 权限模型：status / whoami 对所有人开放（不消耗 API，且 whoami 是管理员
-   * 发现自己 openid 的唯一入口）；变更类操作（on/off/window/reset）仅管理员。
+   * 发现自己平台身份的唯一入口）；变更类操作（on/off/window/reset）仅管理员。
    * 白名单为空时变更类命令对所有人关闭——fail-closed。
    */
   private async handleOffpeakCommand(
@@ -499,11 +517,12 @@ export class Dispatcher {
     if (commandNeedsAdmin(command) && !isAdmin) {
       logger.warn('非管理员尝试变更谷时段闸，已拒绝', {
         senderId: message.senderId,
+        platform: message.target.platform,
         action: command.action,
       });
       await this.replySimple(
         message,
-        '无权限：/offpeak 的变更操作仅限管理员（QQ_ADMIN_OPENIDS 白名单）。',
+        '无权限：/offpeak 的变更操作仅限管理员（BOT_ADMINS 白名单）。',
         'error',
       ).catch(() => {});
       return;
@@ -513,11 +532,12 @@ export class Dispatcher {
 
     switch (command.action) {
       case 'whoami': {
-        const idKind = message.target.kind === 'c2c' ? '单聊 user_openid' : '群聊 member_openid';
+        const idKind = message.target.kind === 'c2c' ? '单聊' : '群聊';
         await this.replySimple(
           message,
-          `你的 senderId：${message.senderId}（${idKind}）。` +
-            '把它加进环境变量 QQ_ADMIN_OPENIDS（逗号分隔）即可成为管理员。',
+          `你的管理员身份键：${message.target.platform}:${message.senderId}` +
+            `（${idKind}，平台 ${message.target.platform}）。` +
+            '把它加进环境变量 BOT_ADMINS（逗号分隔）即可成为管理员。',
           'error',
         ).catch(() => {});
         return;
@@ -530,6 +550,7 @@ export class Dispatcher {
         const effective = this.offpeak.setEnabled(command.enabled, message.senderId);
         logger.warn('谷时段闸已被管理员热切换', {
           senderId: message.senderId,
+          platform: message.target.platform,
           enabled: command.enabled,
         });
         await this.replySimple(
@@ -545,6 +566,7 @@ export class Dispatcher {
           const effective = this.offpeak.setWindow(command.start, command.end, message.senderId);
           logger.warn('谷时段窗口已被管理员热切换', {
             senderId: message.senderId,
+            platform: message.target.platform,
             start: command.start,
             end: command.end,
           });
@@ -572,6 +594,7 @@ export class Dispatcher {
           const snapshot = this.offpeak.snapshot();
           logger.warn('谷时段节假日表已被管理员热更新', {
             senderId: message.senderId,
+            platform: message.target.platform,
             action: command.action,
             date: command.date,
           });
@@ -598,7 +621,10 @@ export class Dispatcher {
       }
       case 'reset': {
         this.offpeak.clearOverride(message.senderId);
-        logger.warn('谷时段闸覆盖已被管理员清除，恢复 env 默认', { senderId: message.senderId });
+        logger.warn('谷时段闸覆盖已被管理员清除，恢复 env 默认', {
+          senderId: message.senderId,
+          platform: message.target.platform,
+        });
         await this.replySimple(message, this.renderOffpeakStatus(), 'error').catch(() => {});
         return;
       }
@@ -653,11 +679,18 @@ export class Dispatcher {
     text: string,
     kind: 'error',
   ): Promise<void> {
+    const policy = this.policyFor(message.target);
+    if (policy === undefined) return;
     const ledger = new ReplyLedger({
       msgId: message.msgId,
-      ...this.replyLimits(message.target.kind),
+      totalQuota: policy.maxRepliesPerMsg,
+      progressQuota: policy.progressMax,
     });
     await this.sendLong(message, text, ledger, this.deps.logger, kind);
+  }
+
+  private policyFor(target: ConversationTarget): ReplyPolicy | undefined {
+    return this.connectorFor(target)?.policy(target.kind);
   }
 
   /**
@@ -671,11 +704,12 @@ export class Dispatcher {
     logger: Logger,
     kind: 'final' | 'error',
   ): Promise<boolean> {
-    const { config } = this.deps;
+    const policy = this.policyFor(message.target);
+    if (policy === undefined) return false;
     // 剩余配额决定最多能分几段
-    const maxSegments = Math.min(ledger.remaining, this.replyLimits(message.target.kind).totalQuota);
+    const maxSegments = Math.min(ledger.remaining, policy.maxRepliesPerMsg);
 
-    const result = segmentText(text, { maxChars: config.qq.maxChars, maxSegments });
+    const result = segmentText(text, { maxChars: policy.maxChars, maxSegments });
     if (result.truncated) {
       logger.warn('内容超出回复配额，已截断', {
         originalLength: result.originalLength,
@@ -696,11 +730,11 @@ export class Dispatcher {
         throw error;
       }
       try {
-        await this.sendSegment(message, segment, ticket, undefined, logger);
+        await this.sendSegment(message, segment, ticket, logger);
         sent += 1;
       } catch (error) {
         logger.error('发送回复失败', {
-          msgSeq: ticket.msgSeq,
+          seq: ticket.msgSeq,
           error: error instanceof Error ? error.message : String(error),
         });
         // 一条失败不阻塞后续分段：继续尝试，尽可能把内容送达
@@ -709,37 +743,30 @@ export class Dispatcher {
     return sent > 0;
   }
 
-  /** 实际发送一条消息（按会话类型选端点，含 event_id / msg_id 互斥处理）。 */
+  /** 实际发送一条消息：平台专有的渲染与端点选择都在连接器内部。 */
   private async sendSegment(
     message: NormalizedMessage,
     text: string,
     ticket: ReplyTicket,
-    quoteMessageId: string | undefined,
     logger: Logger,
   ): Promise<void> {
-    const { config } = this.deps;
-    const body = renderMessage(text, {
-      msgType: config.qq.msgType,
-      msgId: message.msgId,
-      msgSeq: ticket.msgSeq,
-      ...(quoteMessageId !== undefined ? { quoteMessageId } : {}),
-    });
-    await this.sendTo(message.target, body);
+    const connector = this.connectorFor(message.target);
+    if (connector === undefined) return;
+    await connector.reply(
+      {
+        target: message.target,
+        seq: ticket.msgSeq,
+        kind: ticket.kind,
+        ...(message.msgId !== '' ? { msgId: message.msgId } : {}),
+      },
+      { text },
+    );
     this.stats.repliesSent += 1;
     logger.debug('已发送回复', {
-      msgSeq: ticket.msgSeq,
+      seq: ticket.msgSeq,
       kind: ticket.kind,
-      length: body.content?.length ?? body.markdown?.content.length ?? 0,
+      length: text.length,
     });
-  }
-
-  /** 按会话类型选择发送端点（群聊 /v2/groups，单聊 /v2/users）。 */
-  private async sendTo(target: ConversationTarget, body: SendMessageRequest): Promise<void> {
-    if (target.kind === 'c2c') {
-      await this.deps.api.sendUserMessage(target.id, body);
-      return;
-    }
-    await this.deps.api.sendGroupMessage(target.id, body);
   }
 
   // -------------------------------------------------------------------------
@@ -750,24 +777,31 @@ export class Dispatcher {
     if (event.kind !== 'group-add-robot' && event.kind !== 'c2c-friend-add') return;
     const target = event.target;
     if (target === undefined) return;
-    if (target.kind === 'c2c' && !this.deps.config.qq.c2c.enabled) return;
+    const connector = this.connectorFor(target);
+    if (connector === undefined) return;
+    if (target.kind === 'c2c' && !connector.acceptsC2C) return;
 
-    const { logger, config } = this.deps;
+    const { logger } = this.deps;
     const text =
       target.kind === 'c2c'
         ? '我是运行在 Docker 里的 DSH 助手。直接给我发消息说明需求即可。'
         : '我是运行在 Docker 里的 DSH 助手。在群里 @我 并说明需求即可。';
     logger.info(target.kind === 'c2c' ? '用户添加好友，发送欢迎语' : '机器人进群，发送欢迎语', {
       conversation: target.key,
+      platform: target.platform,
     });
     try {
-      // 进群/加好友事件必须用 event_id 回复（与 msg_id 互斥）
-      const body = renderMessage(text, {
-        msgType: config.qq.msgType,
-        ...(event.eventId !== undefined && event.eventId !== '' ? { eventId: event.eventId } : {}),
-        msgSeq: 1,
-      });
-      await this.sendTo(target, body);
+      // 官方平台回复进群/加好友事件必须用 event_id（与 msg_id 互斥）；
+      // 无此概念的平台会忽略 eventId，直接当作普通消息发出。
+      await connector.reply(
+        {
+          target,
+          seq: 1,
+          kind: 'final',
+          ...(event.eventId !== undefined && event.eventId !== '' ? { eventId: event.eventId } : {}),
+        },
+        { text },
+      );
       this.stats.repliesSent += 1;
     } catch (error) {
       logger.warn('发送欢迎语失败（不影响主要功能）', {

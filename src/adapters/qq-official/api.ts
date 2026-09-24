@@ -14,7 +14,7 @@
  *   - 被动回复窗口：群聊 5 分钟 / 单聊 60 分钟；每条消息最多回复 群聊 5 次 / 单聊 4 次。
  */
 
-import type { Logger } from '../logger.js';
+import type { Logger } from '../../logger.js';
 import { TokenManager } from './token.js';
 import {
   SendErrorCode,

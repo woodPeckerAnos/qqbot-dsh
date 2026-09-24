@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ConfigError, describeConfig, loadConfig } from '../src/config.js';
-import { DEFAULT_INTENTS, Intent, describeIntents } from '../src/qq/types.js';
+import { DEFAULT_INTENTS, Intent, describeIntents } from '../src/adapters/qq-official/types.js';
 
 const baseEnv = {
   QQ_APP_ID: 'app-1',
@@ -152,11 +152,36 @@ describe('loadConfig', () => {
     );
   });
 
-  it('QQ_ADMIN_OPENIDS 按逗号拆分并去空白，默认无管理员（fail-closed）', () => {
-    expect(loadConfig(baseEnv).qq.adminOpenids).toEqual([]);
+  it('管理员白名单：QQ_ADMIN_OPENIDS 裸 openid 自动补官方平台前缀，默认无管理员（fail-closed）', () => {
+    expect(loadConfig(baseEnv).admins).toEqual([]);
+    expect(loadConfig({ ...baseEnv, QQ_ADMIN_OPENIDS: ' alice , bob ,, ' }).admins).toEqual([
+      'qq-official:alice',
+      'qq-official:bob',
+    ]);
     expect(
-      loadConfig({ ...baseEnv, QQ_ADMIN_OPENIDS: ' alice , bob ,, ' }).qq.adminOpenids,
-    ).toEqual(['alice', 'bob']);
+      loadConfig({ ...baseEnv, BOT_ADMINS: 'onebot:123456, qq-official:alice' }).admins,
+    ).toEqual(['onebot:123456', 'qq-official:alice']);
+  });
+
+  it('BOT_CONNECTORS 默认只启用官方，可并存 OneBot；OneBot 启用时必须有 token', () => {
+    expect(loadConfig(baseEnv).connectors).toEqual(['qq-official']);
+    // 启用 onebot 后官方必填项可以留空
+    const onebotOnly = loadConfig({
+      DEEPSEEK_API_KEY: 'sk-test',
+      BOT_CONNECTORS: 'onebot',
+      ONEBOT_ACCESS_TOKEN: 'tok',
+    });
+    expect(onebotOnly.connectors).toEqual(['onebot']);
+    expect(onebotOnly.qq.appId).toBe('');
+    // 并存
+    expect(
+      loadConfig({ ...baseEnv, BOT_CONNECTORS: 'qq-official,onebot', ONEBOT_ACCESS_TOKEN: 'tok' })
+        .connectors,
+    ).toEqual(['qq-official', 'onebot']);
+    // 缺 token 快速失败
+    expect(() => loadConfig({ ...baseEnv, BOT_CONNECTORS: 'onebot' })).toThrow(/ONEBOT_ACCESS_TOKEN/);
+    // 未知平台快速失败
+    expect(() => loadConfig({ ...baseEnv, BOT_CONNECTORS: 'mirai' })).toThrow(/未知平台/);
   });
 });
 

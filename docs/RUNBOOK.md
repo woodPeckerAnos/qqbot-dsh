@@ -22,8 +22,9 @@ docker compose logs --tail=80 qqbot
 
 | 字段 | 正常 | 异常含义 |
 |---|---|---|
-| `gateway.connected` | `true` | `false` = 没连上 QQ，机器人收不到任何消息 |
-| `gateway.state` | `ready` | `reconnecting`/`connecting` 反复出现 = 鉴权或网络问题 |
+| `connectors["qq-official"].connected` | `true` | `false` = 没连上 QQ，官方通道收不到任何消息 |
+| `connectors["qq-official"].state` | `ready` | `reconnecting`/`connecting` 反复出现 = 鉴权或网络问题 |
+| `connectors["onebot"].state` | `connected` | `listening` = 服务在监听但 NapCat 没连上：查框架侧反向 WS 配置与 token |
 | `lastEventAgeMs` | 通常很小 | 持续很大（>150s）= 连接僵死（心跳机制应已触发重连） |
 | `warnings` | `[]` | 非空时逐条看，都是可操作的提示 |
 

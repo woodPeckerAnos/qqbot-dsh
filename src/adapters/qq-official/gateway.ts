@@ -24,7 +24,8 @@
 
 import { EventEmitter } from 'node:events';
 
-import type { Logger } from '../logger.js';
+import type { ConversationTarget, NormalizedEvent } from '../../core/connector.js';
+import type { Logger } from '../../logger.js';
 import type { QqApi } from './api.js';
 import { TokenManager } from './token.js';
 import {
@@ -39,91 +40,36 @@ import {
 } from './types.js';
 
 // ---------------------------------------------------------------------------
-// 会话目标（群聊 / 单聊共用一套编排逻辑）
+// 会话目标（官方平台专有的 key 构造规则）
 // ---------------------------------------------------------------------------
 
-export type ConversationKind = 'group' | 'c2c';
+/** 官方平台的 connector.platform 值 */
+export const QQ_OFFICIAL_PLATFORM = 'qq-official';
 
-/**
- * 一次对话的寻址信息。
- *
- * `id` 是调用 OpenAPI 时用的原始 openid；`key` 是编排层的**会话命名空间键**，
- * 同时用作工作区目录、对话记录、会话映射、串行锁与 runtime 池的键。
- *
- * 为什么 key 与 id 不总是相同：
- *   - 群聊沿用原始 `group_openid` 作为 key——保持既有部署的目录/记录不迁移；
- *   - 单聊用 `c2c:<user_openid>`——用户的 openid 与群 openid 是两套命名空间，
- *     加前缀才能保证"字面相同的字符串"不会把群和单聊混成一个会话。
- * （QQ openid 的字符集里不含 `:`，所以该前缀不会与任何真实群 openid 冲突。）
- */
-export interface ConversationTarget {
-  kind: ConversationKind;
-  /** 群 openid / 用户 openid，用于调用 OpenAPI */
-  id: string;
-  /** 会话命名空间键，用于工作区/存储/锁/池 */
-  key: string;
-}
-
-/** 单聊会话键前缀 */
+/** 单聊会话键前缀（官方 openid 字符集不含 `:`，前缀不会与真实群 openid 冲突） */
 export const C2C_KEY_PREFIX = 'c2c:';
 
+/**
+ * 群聊会话：key 沿用原始 `group_openid`。
+ * 保持裸 openid 是有意的——既有部署的工作区目录/对话记录都以此命名，不做迁移。
+ * 跨平台碰撞由平台侧保证：其他平台的适配器必须给自己的 key 加前缀。
+ */
 export function groupTarget(groupOpenid: string): ConversationTarget {
-  return { kind: 'group', id: groupOpenid, key: groupOpenid };
+  return { platform: QQ_OFFICIAL_PLATFORM, kind: 'group', id: groupOpenid, key: groupOpenid };
 }
-
-export function c2cTarget(userOpenid: string): ConversationTarget {
-  return { kind: 'c2c', id: userOpenid, key: `${C2C_KEY_PREFIX}${userOpenid}` };
-}
-
-// ---------------------------------------------------------------------------
-// 归一化事件（接入层对外只吐这一种形状）
-// ---------------------------------------------------------------------------
 
 /**
- * 归一化后的用户消息。
- *
- * 群聊（GROUP_AT_MESSAGE_CREATE / GROUP_MESSAGE_CREATE）与单聊
- * （C2C_MESSAGE_CREATE）除 `target` 外字段语义一致，这样编排层只有一条代码路径。
+ * 单聊会话：key 用 `c2c:<user_openid>`。
+ * 用户 openid 与群 openid 是两套命名空间，"字面相同"完全可能，不加前缀就会把
+ * 两个无关的人/群混进同一个工作区与同一份记忆。
  */
-export interface NormalizedMessage {
-  kind: 'group-at-message' | 'c2c-message';
-  target: ConversationTarget;
-  /** 信封 id，用于 event_id 回复 */
-  eventId: string;
-  /** 消息 id，用于 msg_id 被动回复 */
-  msgId: string;
-  /** 发送者 openid：群里是 member_openid，单聊是 user_openid */
-  senderId: string;
-  username?: string;
-  content: string;
-  /** 毫秒时间戳 */
-  ts: number;
-  /** 原始事件，便于排障与将来扩展 */
-  raw: Record<string, unknown>;
-}
-
-export interface NormalizedSystemEvent {
-  kind:
-    | 'ready'
-    | 'resumed'
-    | 'connected'
-    | 'disconnected'
-    | 'group-add-robot'
-    | 'c2c-friend-add';
-  at: number;
-  reason?: string;
-  /** 需要主动回一条问候语时的目标（进群 / 加好友事件） */
-  target?: ConversationTarget;
-  /** 事件信封 id（进群/加好友类事件用它做 event_id 回复） */
-  eventId?: string;
-  raw?: Record<string, unknown>;
-}
-
-export type NormalizedEvent = NormalizedMessage | NormalizedSystemEvent;
-
-/** 是否为用户消息（群聊或单聊），用于把消息事件与系统事件分开。 */
-export function isUserMessage(event: NormalizedEvent): event is NormalizedMessage {
-  return event.kind === 'group-at-message' || event.kind === 'c2c-message';
+export function c2cTarget(userOpenid: string): ConversationTarget {
+  return {
+    platform: QQ_OFFICIAL_PLATFORM,
+    kind: 'c2c',
+    id: userOpenid,
+    key: `${C2C_KEY_PREFIX}${userOpenid}`,
+  };
 }
 
 // ---------------------------------------------------------------------------

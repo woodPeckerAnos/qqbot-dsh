@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { describeTokenError, TokenError, TokenManager } from '../src/qq/token.js';
+import { describeTokenError, TokenError, TokenManager } from '../src/adapters/qq-official/token.js';
 import { createNullLogger } from '../src/logger.js';
 
 function jsonResponse(body: unknown, status = 200): Response {
