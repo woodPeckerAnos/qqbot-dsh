@@ -19,10 +19,10 @@
  * （startProgress → deliver），不会两条都走。
  */
 
-import type { BotConnector, NormalizedMessage, ReplyPolicy } from '../core/connector.js';
-import type { TurnOutcome } from '../dsh/turns.js';
-import type { Logger } from '../logger.js';
-import type { ConversationStore } from '../store/conversations.js';
+import type { BotConnector, NormalizedMessage, ReplyPolicy } from '../../core/connector.js';
+import type { TurnOutcome } from '../../dsh/turns.js';
+import type { Logger } from '../../logger.js';
+import type { ConversationStore } from '../../store/conversations.js';
 import { segmentText } from './chunk.js';
 import {
   ProgressScheduler,
@@ -30,7 +30,7 @@ import {
   ReplyQuotaExhaustedError,
   type ReplyTicket,
 } from './progress.js';
-import type { PipelineStats } from './stats.js';
+import type { PipelineStats } from '../stats.js';
 
 export interface ResponderOptions {
   /** 触发本次回复的用户消息（target / msgId 都从这里取） */

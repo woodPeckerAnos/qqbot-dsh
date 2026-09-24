@@ -598,14 +598,13 @@ qqbot-dsh/
 │   │   ├── pool.ts               每会话一个 runtime + LRU
 │   │   └── turns.ts              turn/start→assistant/message→idle 归并
 │   ├── pipeline/
-│   │   ├── orchestrator.ts       编排门面：组装 Ingress 管线 + TurnRunner
+│   │   ├── orchestrator.ts       运行机制：事件分流 + 驱动 stage 链（不组装业务）
 │   │   ├── ingress/              串行 stage：去重 → 命令 → 谷时段闸 → 记录 → 准入
+│   │   │                         （stage 链由 main.ts 显式组装成有序 list 注入）
+│   │   ├── egress/               响应处理：responder（配额收口）· 进度回执 · 分段
 │   │   ├── turn-runner.ts        turn 生命周期（runtime 池 · 超时 · 事件路由）
-│   │   ├── responder.ts          Egress 收口：配额账本 · 分段 · 进度回执 · 发送
 │   │   ├── stats.ts              管线统计（各 stage 自报，Orchestrator 聚合）
-│   │   ├── progress.ts           进度回执调度
-│   │   ├── chunk.ts              分段
-│   │   └── markdown.ts           文本/markdown 渲染
+│   │   └── markdown.ts           通用文本清洗（适配器共用）
 │   └── store/
 │       ├── paths.ts              工作区/状态目录布局
 │       ├── conversations.ts      对话记录（JSONL 追加）

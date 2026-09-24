@@ -20,6 +20,8 @@
  * 粗暴退出会让 DSH 的会话日志留半条记录，而那正是我们排障的依据。
  */
 
+import { join } from 'node:path';
+
 import { loadConfig, describeConfig, ConfigError, type Config } from './config.js';
 import { loadConfigFile } from './config-file.js';
 import { QqOfficialConnector } from './adapters/qq-official/connector.js';
@@ -28,8 +30,18 @@ import { TokenError } from './adapters/qq-official/token.js';
 import { OnebotConnector, ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import type { BotConnector } from './core/connector.js';
 import { createLogger } from './logger.js';
+import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak.js';
 import { RuntimePool } from './dsh/pool.js';
+import { Responder } from './pipeline/egress/responder.js';
+import { AdmissionGate } from './pipeline/ingress/admission.js';
+import { createDedupeStage } from './pipeline/ingress/dedupe.js';
+import { OffpeakCommandRouter } from './pipeline/ingress/offpeak-command.js';
+import { createOffpeakGateStage } from './pipeline/ingress/offpeak-gate.js';
+import { createRecordStage } from './pipeline/ingress/record.js';
+import type { IngressStage } from './pipeline/ingress/types.js';
 import { Orchestrator } from './pipeline/orchestrator.js';
+import { PipelineStats } from './pipeline/stats.js';
+import { TurnRunner } from './pipeline/turn-runner.js';
 import { ConversationStore } from './store/conversations.js';
 import { SeenStore } from './store/seen.js';
 import { SessionStore } from './store/sessions.js';
@@ -157,18 +169,72 @@ async function main(): Promise<void> {
   });
 
   // --- 编排 -----------------------------------------------------------------
-  // Orchestrator 是编排层的门面：内部组装 Ingress 管线（去重 → 命令 → 谷时段闸
-  // → 记录 → 准入）+ TurnRunner + Responder。每会话串行在准入 stage 里，
-  // 本文件不再有自己的事件串行链。
-  const orchestrator = new Orchestrator({
+  // 业务逻辑在这里显式组装：每个 stage / 闸门 / 服务都在本文件 new 出来并按序
+  // 排布，Orchestrator 只是运行机制（事件分流 + 驱动 stage 链），不决定有哪些
+  // 拦截、也不决定顺序。
+  //
+  // Ingress 顺序即架构约束：去重 → /offpeak 命令 → 谷时段闸 → 记录 → 准入
+  // （命令先于闸：管理员要能在峰时段关闸；闸先于记录与名额：被拦消息不写
+  // 对话记录、不占并发。详见 src/pipeline/ingress/types.ts）。
+  const stats = new PipelineStats();
+
+  // 谷时段闸服务：生效配置 = env 默认 + 运行期覆盖（持久化在 stateDir，
+  // 由管理员 /offpeak 命令热切换，下一条消息即生效）。
+  // 命令路由与闸拦截两个 stage 共享同一个实例。
+  const offpeak = new OffpeakGate({
+    defaults: {
+      enabled: config.offpeak.enabled,
+      windows: config.offpeak.windows,
+      timeZone: config.offpeak.timeZone,
+      modelPattern: config.offpeak.modelPattern,
+      weekendsAllDay: config.offpeak.weekendsAllDay,
+      holidays: new Set([...CN_HOLIDAYS_2026, ...config.offpeak.holidays]),
+    },
+    filePath: join(paths.stateDir, 'offpeak-override.json'),
+    logger: logger.child({ component: 'offpeak' }),
+  });
+
+  // 准入闸门：全局并发名额 + 每会话串行锁（全系统唯一一处每会话串行）
+  const admission = new AdmissionGate({
+    maxConcurrentTurns: config.pool.maxConcurrentTurns,
+    stats,
+  });
+
+  const turnRunner = new TurnRunner({
     config,
-    logger: logger.child({ component: 'orchestrator' }),
+    logger: logger.child({ component: 'turn-runner' }),
     pool,
-    connectors,
     conversations,
-    seen,
     sessions,
     paths,
+    stats,
+  });
+
+  const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
+
+  const stages: IngressStage[] = [
+    createDedupeStage({ seen, stats }),
+    offpeakCommands.stage(),
+    createOffpeakGateStage({ gate: offpeak, config, stats }),
+    createRecordStage({ conversations }),
+    admission.stage(),
+  ];
+
+  const orchestrator = new Orchestrator({
+    logger: logger.child({ component: 'orchestrator' }),
+    connectors,
+    admins: config.admins,
+    stats,
+    stages,
+    terminal: (ctx) => turnRunner.runTurn(ctx),
+    createResponder: (message, connector, policy, messageLogger) =>
+      new Responder({ message, connector, policy, conversations, stats, logger: messageLogger }),
+    turns: turnRunner,
+    status: () => ({
+      inFlight: admission.inUse,
+      queued: admission.queued,
+      offpeak: offpeak.snapshot(),
+    }),
   });
 
   // runtime 事件 → 编排器（按会话路由）

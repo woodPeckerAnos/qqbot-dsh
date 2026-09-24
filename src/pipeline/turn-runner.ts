@@ -27,7 +27,7 @@ import type { SessionStore } from '../store/sessions.js';
 import { ensureWorkspace, type StorePaths } from '../store/paths.js';
 import { waitUntil } from './concurrency.js';
 import type { MessageContext } from './ingress/types.js';
-import { defaultProgressText } from './progress.js';
+import { defaultProgressText } from './egress/progress.js';
 import type { PipelineStats } from './stats.js';
 
 export interface TurnRunnerDeps {

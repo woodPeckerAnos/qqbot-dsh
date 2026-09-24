@@ -1,131 +1,78 @@
 /**
- * Orchestrator：编排层的对外门面，也是 Ingress 管线的组装点。
+ * Orchestrator：编排层的运行机制，**不组装任何业务逻辑**。
  *
- * 事件流：
+ * 所有业务组件——stage 链、准入闸门、谷时段闸服务、TurnRunner、Responder
+ * 工厂——都由业务层（main.ts）显式构造并按序注入。这里只做四件事：
  *
- *   connector.on(event)
- *     ├─ 用户消息 → handleMessage
- *     │     入口（received 计数、平台路由、c2c 开关、Responder 构建）
- *     │       → Ingress 管线（去重 → 命令 → 谷时段闸 → 记录 → 准入）
- *     │       → 终态：TurnRunner.runTurn
- *     ├─ 进群/加好友 → 欢迎语（ingress/welcome.ts）
- *     └─ 其余系统事件 → 仅记日志
- *
- * runtime 事件流（方向相反，与 Ingress 无关）：
- *   pool.on('session.event' / 'session.status') → TurnRunner 路由到在途 turn
+ *   1. 事件分流：用户消息 → Ingress 管线；进群/加好友 → 欢迎语；其余仅记日志；
+ *   2. 为每条消息构建 MessageContext（含 Egress 收口 Responder），
+ *      并按业务层给定的顺序串行驱动 stage 链；
+ *   3. runtime 事件委托给 TurnRunner 路由（方向相反，与 Ingress 无关）；
+ *   4. 聚合统计快照：计数来自各 stage 自报的 PipelineStats，
+ *      状态（inFlight / queued / offpeak）来自业务层注入的 status 探针。
  *
  * 永不抛错契约：stage 链内部各自兜底（准入 stage 包住终态的未预期错误），
  * 入口不向外抛——main.ts 仍保留一层 .catch 作为组装级保险。
  */
 
-import { join } from 'node:path';
-
-import type { Config } from '../config.js';
-import type { BotConnector, NormalizedEvent, NormalizedMessage } from '../core/connector.js';
+import type {
+  BotConnector,
+  NormalizedEvent,
+  NormalizedMessage,
+  ReplyPolicy,
+} from '../core/connector.js';
 import { isUserMessage } from '../core/connector.js';
-import type { RuntimePool } from '../dsh/pool.js';
 import type { SessionStatusNotification } from '../dsh/protocol.js';
 import type { Logger } from '../logger.js';
-import { CN_HOLIDAYS_2026, OffpeakGate } from '../offpeak.js';
-import type { ConversationStore } from '../store/conversations.js';
-import type { SeenStore } from '../store/seen.js';
-import type { SessionStore } from '../store/sessions.js';
-import type { StorePaths } from '../store/paths.js';
-import { AdmissionGate } from './ingress/admission.js';
-import { createDedupeStage } from './ingress/dedupe.js';
-import { OffpeakCommandRouter } from './ingress/offpeak-command.js';
-import { createOffpeakGateStage } from './ingress/offpeak-gate.js';
-import { createRecordStage } from './ingress/record.js';
+import type { OffpeakSnapshot } from '../offpeak.js';
+import type { Responder } from './egress/responder.js';
 import { handleWelcomeEvent } from './ingress/welcome.js';
 import { runStages, type IngressStage, type MessageContext } from './ingress/types.js';
-import { Responder } from './responder.js';
-import { PipelineStats, type PipelineStatsSnapshot } from './stats.js';
-import { TurnRunner } from './turn-runner.js';
+import type { PipelineStats, PipelineStatsSnapshot } from './stats.js';
+
+/** runtime 事件路由的委托面（由 TurnRunner 实现）。 */
+export interface SessionEventRouter {
+  routeSessionEvent(
+    conversationKey: string,
+    event: { type: string; seq: number; data: Record<string, unknown> },
+  ): void;
+  routeSessionStatus(conversationKey: string, status: SessionStatusNotification): void;
+}
 
 export interface OrchestratorDeps {
-  config: Config;
   logger: Logger;
-  pool: RuntimePool;
   /** 平台标识 → 连接器。回复按 target.platform 路由。 */
   connectors: ReadonlyMap<string, BotConnector>;
-  conversations: ConversationStore;
-  seen: SeenStore;
-  sessions: SessionStore;
-  paths: StorePaths;
-  /** 统计用（health 展示） */
-  now?: () => number;
+  /** 管理员白名单，条目为 `platform:senderId` 组合（见 BOT_ADMINS） */
+  admins: readonly string[];
+  /** 各 stage 自报的计数器（业务层创建，注入给所有 stage 与 Responder） */
+  stats: PipelineStats;
+  /**
+   * Ingress stage 链。**顺序即架构约束**（去重 → 命令 → 闸 → 记录 → 准入，
+   * 理由见 ingress/types.ts），由业务层显式排布后整体传入——编排层不决定
+   * 有哪些拦截、也不决定它们的顺序。
+   */
+  stages: readonly IngressStage[];
+  /** 终态 handler（TurnRunner.runTurn），在准入 stage 的名额与串行锁内运行 */
+  terminal: (ctx: MessageContext) => Promise<void>;
+  /** Egress 收口工厂：每条消息一个 Responder（持有唯一配额账本） */
+  createResponder: (
+    message: NormalizedMessage,
+    connector: BotConnector,
+    policy: ReplyPolicy,
+    logger: Logger,
+  ) => Responder;
+  /** runtime 事件路由（TurnRunner 的委托面） */
+  turns: SessionEventRouter;
+  /** health 快照的状态探针：准入闸门与谷时段闸的实时状态（对象归业务层持有） */
+  status: () => { inFlight: number; queued: number; offpeak: OffpeakSnapshot };
 }
 
 export class Orchestrator {
-  private readonly stats = new PipelineStats();
-
-  /**
-   * 谷时段闸服务。生效配置 = env 默认 + 运行期覆盖（持久化在 stateDir，
-   * 由管理员 /offpeak 命令热切换，下一条消息即生效）。
-   * 命令路由与闸拦截两个 stage 共享同一个服务实例。
-   */
-  private readonly offpeak: OffpeakGate;
-  private readonly admission: AdmissionGate;
-  private readonly turnRunner: TurnRunner;
-  private readonly stages: readonly IngressStage[];
-
-  constructor(private readonly deps: OrchestratorDeps) {
-    this.offpeak = new OffpeakGate({
-      defaults: {
-        enabled: deps.config.offpeak.enabled,
-        windows: deps.config.offpeak.windows,
-        timeZone: deps.config.offpeak.timeZone,
-        modelPattern: deps.config.offpeak.modelPattern,
-        weekendsAllDay: deps.config.offpeak.weekendsAllDay,
-        holidays: new Set([...CN_HOLIDAYS_2026, ...deps.config.offpeak.holidays]),
-      },
-      filePath: join(deps.paths.stateDir, 'offpeak-override.json'),
-      logger: deps.logger.child({ component: 'offpeak' }),
-      now: deps.now,
-    });
-    this.admission = new AdmissionGate({
-      maxConcurrentTurns: deps.config.pool.maxConcurrentTurns,
-      stats: this.stats,
-    });
-    this.turnRunner = new TurnRunner({
-      config: deps.config,
-      logger: deps.logger.child({ component: 'turn-runner' }),
-      pool: deps.pool,
-      conversations: deps.conversations,
-      sessions: deps.sessions,
-      paths: deps.paths,
-      stats: this.stats,
-      ...(deps.now !== undefined ? { now: deps.now } : {}),
-    });
-
-    // 顺序即架构约束，改动前先读 src/pipeline/ingress/types.ts 的顺序说明
-    const commandRouter = new OffpeakCommandRouter({
-      gate: this.offpeak,
-      config: deps.config,
-      stats: this.stats,
-      ...(deps.now !== undefined ? { now: deps.now } : {}),
-    });
-    this.stages = [
-      createDedupeStage({ seen: deps.seen, stats: this.stats }),
-      commandRouter.stage(),
-      createOffpeakGateStage({
-        gate: this.offpeak,
-        config: deps.config,
-        stats: this.stats,
-        ...(deps.now !== undefined ? { now: deps.now } : {}),
-      }),
-      createRecordStage({ conversations: deps.conversations }),
-      this.admission.stage(),
-    ];
-  }
+  constructor(private readonly deps: OrchestratorDeps) {}
 
   snapshotStats(): PipelineStatsSnapshot {
-    return {
-      ...this.stats,
-      inFlight: this.admission.inUse,
-      queued: this.admission.queued,
-      offpeak: this.offpeak.snapshot(),
-    };
+    return { ...this.deps.stats, ...this.deps.status() };
   }
 
   /** 入口：处理一个归一化事件。永不抛错（所有失败都转成回复或日志）。 */
@@ -137,7 +84,7 @@ export class Orchestrator {
     if (event.kind === 'group-add-robot' || event.kind === 'c2c-friend-add') {
       await handleWelcomeEvent(event, {
         connectors: this.deps.connectors,
-        stats: this.stats,
+        stats: this.deps.stats,
         logger: this.deps.logger,
       });
       return;
@@ -150,11 +97,11 @@ export class Orchestrator {
     conversationKey: string,
     event: { type: string; seq: number; data: Record<string, unknown> },
   ): void {
-    this.turnRunner.routeSessionEvent(conversationKey, event);
+    this.deps.turns.routeSessionEvent(conversationKey, event);
   }
 
   routeSessionStatus(conversationKey: string, status: SessionStatusNotification): void {
-    this.turnRunner.routeSessionStatus(conversationKey, status);
+    this.deps.turns.routeSessionStatus(conversationKey, status);
   }
 
   // -------------------------------------------------------------------------
@@ -163,7 +110,7 @@ export class Orchestrator {
 
   private async handleMessage(message: NormalizedMessage): Promise<void> {
     const { logger } = this.deps;
-    this.stats.received += 1;
+    this.deps.stats.received += 1;
 
     const connector = this.deps.connectors.get(message.target.platform);
     if (connector === undefined) {
@@ -179,7 +126,7 @@ export class Orchestrator {
     // 单聊开关：订阅层往往无法只收群聊，所以在业务层拦。
     // 位置在去重之前——被禁的消息连去重表都不该占。
     if (message.target.kind === 'c2c' && !connector.acceptsC2C) {
-      this.stats.skippedC2C += 1;
+      this.deps.stats.skippedC2C += 1;
       logger.debug('单聊已禁用，忽略私聊消息', { conversation: message.target.key });
       return;
     }
@@ -196,21 +143,11 @@ export class Orchestrator {
       connector,
       policy,
       // 管理员判定：白名单条目是 `platform:senderId` 组合（见 BOT_ADMINS）
-      isAdmin: this.deps.config.admins.includes(
-        `${message.target.platform}:${message.senderId}`,
-      ),
+      isAdmin: this.deps.admins.includes(`${message.target.platform}:${message.senderId}`),
       logger: messageLogger,
-      responder: new Responder({
-        message,
-        connector,
-        policy,
-        conversations: this.deps.conversations,
-        stats: this.stats,
-        logger: messageLogger,
-        ...(this.deps.now !== undefined ? { now: this.deps.now } : {}),
-      }),
+      responder: this.deps.createResponder(message, connector, policy, messageLogger),
     };
 
-    await runStages(this.stages, ctx, () => this.turnRunner.runTurn(ctx));
+    await runStages(this.deps.stages, ctx, () => this.deps.terminal(ctx));
   }
 }

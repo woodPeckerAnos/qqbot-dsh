@@ -20,7 +20,17 @@ import { loadConfig, type Config } from '../src/config.js';
 import { createNullLogger } from '../src/logger.js';
 import type { RuntimeEntry, RuntimePool } from '../src/dsh/pool.js';
 import type { SessionEventNotification } from '../src/dsh/protocol.js';
+import { CN_HOLIDAYS_2026, OffpeakGate } from '../src/offpeak.js';
+import { Responder } from '../src/pipeline/egress/responder.js';
+import { AdmissionGate } from '../src/pipeline/ingress/admission.js';
+import { createDedupeStage } from '../src/pipeline/ingress/dedupe.js';
+import { OffpeakCommandRouter } from '../src/pipeline/ingress/offpeak-command.js';
+import { createOffpeakGateStage } from '../src/pipeline/ingress/offpeak-gate.js';
+import { createRecordStage } from '../src/pipeline/ingress/record.js';
+import type { IngressStage } from '../src/pipeline/ingress/types.js';
 import { Orchestrator } from '../src/pipeline/orchestrator.js';
+import { PipelineStats } from '../src/pipeline/stats.js';
+import { TurnRunner } from '../src/pipeline/turn-runner.js';
 import { ConversationStore } from '../src/store/conversations.js';
 import { ensureStoreDirs, resolveStorePaths } from '../src/store/paths.js';
 import { SeenStore } from '../src/store/seen.js';
@@ -208,16 +218,67 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
   const seen = new SeenStore({ paths, logger });
   const sessions = new SessionStore({ paths, logger });
 
-  const orchestrator = new Orchestrator({
+  // 组装方式与 main.ts 保持一致（显式构造每个 stage / 闸门 / 服务）。
+  // 这里故意不抽公共工厂：组装就是业务逻辑，测试要验证的正是这套真实接线。
+  const stats = new PipelineStats();
+  const offpeak = new OffpeakGate({
+    defaults: {
+      enabled: config.offpeak.enabled,
+      windows: config.offpeak.windows,
+      timeZone: config.offpeak.timeZone,
+      modelPattern: config.offpeak.modelPattern,
+      weekendsAllDay: config.offpeak.weekendsAllDay,
+      holidays: new Set([...CN_HOLIDAYS_2026, ...config.offpeak.holidays]),
+    },
+    filePath: join(paths.stateDir, 'offpeak-override.json'),
+    logger,
+    now: options.now,
+  });
+  const admission = new AdmissionGate({
+    maxConcurrentTurns: config.pool.maxConcurrentTurns,
+    stats,
+  });
+  const turnRunner = new TurnRunner({
     config,
     logger,
     pool,
-    connectors,
     conversations,
-    seen,
     sessions,
     paths,
-    ...(options.now !== undefined ? { now: options.now } : {}),
+    stats,
+    now: options.now,
+  });
+  const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats, now: options.now });
+  const stages: IngressStage[] = [
+    createDedupeStage({ seen, stats }),
+    offpeakCommands.stage(),
+    createOffpeakGateStage({ gate: offpeak, config, stats, now: options.now }),
+    createRecordStage({ conversations }),
+    admission.stage(),
+  ];
+  const orchestrator = new Orchestrator({
+    logger,
+    connectors,
+    admins: config.admins,
+    stats,
+    stages,
+    terminal: (ctx) => turnRunner.runTurn(ctx),
+    createResponder: (message, conn, policy, messageLogger) =>
+      new Responder({
+        message,
+        connector: conn,
+        policy,
+        conversations,
+        stats,
+        logger: messageLogger,
+        now: options.now,
+      }),
+    turns: turnRunner,
+    status: () => ({
+      inFlight: admission.inUse,
+      queued: admission.queued,
+      offpeak: offpeak.snapshot(),
+    }),
   });
 
   // 接线：真实实现里 main.ts 把 pool 的事件转给 orchestrator。

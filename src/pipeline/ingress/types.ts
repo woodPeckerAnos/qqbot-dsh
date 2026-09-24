@@ -21,7 +21,7 @@
 
 import type { BotConnector, NormalizedMessage, ReplyPolicy } from '../../core/connector.js';
 import type { Logger } from '../../logger.js';
-import type { Responder } from '../responder.js';
+import type { Responder } from '../egress/responder.js';
 
 /**
  * 一条用户消息在 Ingress 管线中的上下文。
