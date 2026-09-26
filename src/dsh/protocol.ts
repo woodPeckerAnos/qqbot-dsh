@@ -35,8 +35,24 @@ export interface InitializeResult {
   serverInfo: { name: string; version: string };
 }
 
-/** 提示内容块。本 MVP 只用 text；image 需要附件存储，未启用。 */
-export type PromptContentBlock = { type: 'text'; text: string };
+/**
+ * 内联图片允许的 MIME 集合。
+ *
+ * 这就是 runtime 准入时接受的四种（见 @deepseek-ai/dsh-sdk-protocol 的
+ * SdkEncodedImageBlock）：超出这个集合（例如 bmp/heic）不能内联，只能降级成文字说明。
+ */
+export type PromptImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+
+/**
+ * 提示内容块。
+ *
+ * image 块携带**原始栅格字节的 base64**，由 runtime 在准入时写入它自己的附件存储
+ * （不需要我们先落盘）。这就是"多模态输入"的通道：文本块给出上下文与图片说明，
+ * 图片块给出像素本身。
+ */
+export type PromptContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: PromptImageMimeType };
 
 export interface SessionPromptParams {
   sessionId: string;

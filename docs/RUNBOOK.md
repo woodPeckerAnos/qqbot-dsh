@@ -312,6 +312,34 @@ fetch('https://api.deepseek.com',{signal:AbortSignal.timeout(8000)})
 
 ---
 
+### 4.5 机器人说"看不到图片" / 引用的内容没生效
+
+先看两个计数器：
+
+```sh
+docker compose exec qqbot node -e "
+fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.dispatcher))"
+```
+
+| 现象 | 字段 | 原因 | 处置 |
+|---|---|---|---|
+| 图片完全没进 prompt | `imagesSkipped` 增长、日志有"部分图片未能读入" | 下载失败 / 超限 / 格式不支持 | 见下表逐项排除 |
+| `imagesInlined` 一直是 0 | — | `attachments.enabled=false`，或模型侧不支持图片 | 打开 `BOT_ATTACHMENT_ENABLED`；prompt 里会明说"已关闭图片读取" |
+| 引用内容为空 | 日志 `回查引用消息失败` | OneBot 侧 `get_msg` 失败（框架不支持/超时） | 该条按未引用继续处理；检查框架是否支持 `get_msg` |
+
+按平台排除：
+
+| 平台 | 常见原因 | 验证方式 |
+|---|---|---|
+| 官方 | 附件 CDN 需要鉴权，但 token 取不到 | 日志 `取 access_token 失败`；先修 2.1 |
+| 官方 | 图片格式不在 png/jpeg/webp/gif 内（如 bmp/heic） | 日志"格式不支持内联"，属预期降级 |
+| 官方 | 图片太大 | 提高 `BOT_ATTACHMENT_MAX_BYTES`（默认 8MB） |
+| OneBot | 图片只有本地路径 / `base64://`，容器里取不到 | 日志或消息里出现 `[图片]` 占位；让框架开启"图片以 URL 上报" |
+| OneBot | 框架上报的图片 URL 指向宿主 `127.0.0.1:<port>`，容器访问不到 | 容器内 `curl` 那个 URL 测试；需要让框架用可被容器访问的地址 |
+| 两者 | 就想要纯文本 | 设 `BOT_ATTACHMENT_ENABLED=false`，行为回到只有 `[图片]` 占位 |
+
+---
+
 ## 5. 重启后"失忆"
 
 预期行为是：**DSH 会话是新建的，上下文由对话记录回放恢复。**
@@ -433,6 +461,9 @@ docker system df
 | 8 | 单聊用户 openid 的字段路径 | 代码按 `author.user_openid` 解析，并对 `d.user_openid` / `author.id` / `author.union_openid` 回退；字段名与实况不符时表现为"私聊没反应"，用 debug 日志确认原始 payload |
 | 9 | `FRIEND_ADD` 的 payload 与 `event_id` 回复 | 按 `d.openid` 取用户，用信封 id 回欢迎语；失败只记 warn，不影响正常问答。可观测证据：日志 `用户添加机器人为好友` 与 `发送欢迎语失败` |
 | 10 | 单聊 `msg_type=2`(markdown) 渲染效果 | 与群聊共用 `QQ_MSG_TYPE`；同样默认纯文本 |
+| 11 | 官方多媒体 CDN 是否强制 `Authorization: QQBot <token>` | 实况文档未写死。程序先带 token，仅在 401/403 时裸请求一次兜底，两种形态都能过 |
+| 12 | DS 模型对 image block 的真实支持面 | SDK 协议支持内联图片（`SdkEncodedImageBlock`），但具体模型是否都吃图未逐一实测。看不到图先看 `/metrics` 的 `imagesInlined`/`imagesSkipped`；不支持就设 `BOT_ATTACHMENT_ENABLED=false` |
+| 13 | OneBot 上报的图片 URL 容器可达性 | 框架在宿主时可能上报 `http://127.0.0.1:<port>/...`，容器内不可达。表现为消息里只有 `[图片]` 占位；见 4.5 |
 
 ---
 

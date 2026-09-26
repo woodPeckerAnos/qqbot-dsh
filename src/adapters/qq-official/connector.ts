@@ -13,8 +13,11 @@ import type {
   BotConnector,
   ConnectorHealth,
   ConversationKind,
+  MediaBytes,
+  MediaFetchOptions,
   NormalizedEvent,
   OutgoingMessage,
+  RemoteMedia,
   ReplyContext,
   ReplyPolicy,
 } from '../../core/connector.js';
@@ -121,6 +124,77 @@ export class QqOfficialConnector implements BotConnector {
       return;
     }
     await this.api.sendGroupMessage(ctx.target.id, body);
+  }
+
+  /**
+   * 取官方多媒体 CDN 的字节（图片内联进多模态 prompt 用）。
+   *
+   * 鉴权策略：先带 `Authorization: QQBot <access_token>` 请求；只有在收到
+   * 401/403 时才裸请求一次兜底。这样"需要鉴权"的形态能过，"公开 CDN"的形态
+   * 也不会因为多带一个头而被拒。网络错误不重试，避免把一次超时变成两次。
+   */
+  async fetchMedia(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined> {
+    const fetchImpl = this.options.fetchImpl ?? fetch;
+    const first = await this.tryFetchMedia(fetchImpl, media.url, options, true);
+    if (first.bytes !== undefined) return first.bytes;
+    if (!first.unauthorized) return undefined;
+    const second = await this.tryFetchMedia(fetchImpl, media.url, options, false);
+    return second.bytes;
+  }
+
+  private async tryFetchMedia(
+    fetchImpl: typeof fetch,
+    url: string,
+    options: MediaFetchOptions,
+    withAuth: boolean,
+  ): Promise<{ bytes?: MediaBytes; unauthorized: boolean }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    timer.unref?.();
+    try {
+      const headers: Record<string, string> = {};
+      if (withAuth) {
+        try {
+          headers['Authorization'] = `QQBot ${await this.tokenManager.get()}`;
+        } catch (error) {
+          this.options.logger.warn('取 access_token 失败，放弃下载附件', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return { unauthorized: false };
+        }
+      }
+      const response = await fetchImpl(url, { headers, signal: controller.signal });
+      if (!response.ok) {
+        return { unauthorized: response.status === 401 || response.status === 403 };
+      }
+      const declaredLength = Number(response.headers.get('content-length') ?? '');
+      if (Number.isFinite(declaredLength) && declaredLength > options.maxBytes) {
+        this.options.logger.warn('附件超过大小上限，跳过', { url, declaredLength });
+        return { unauthorized: false };
+      }
+      const data = new Uint8Array(await response.arrayBuffer());
+      if (data.byteLength > options.maxBytes) {
+        this.options.logger.warn('附件超过大小上限，跳过', { url, size: data.byteLength });
+        return { unauthorized: false };
+      }
+      const contentType = response.headers.get('content-type');
+      return {
+        bytes: {
+          data,
+          ...(contentType !== null ? { mimeType: contentType.split(';')[0]?.trim() } : {}),
+        },
+        unauthorized: false,
+      };
+    } catch (error) {
+      this.options.logger.debug('下载附件失败', {
+        url,
+        withAuth,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { unauthorized: false };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   health(): ConnectorHealth {

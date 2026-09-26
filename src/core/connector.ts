@@ -46,6 +46,99 @@ export interface ConversationTarget {
 // ---------------------------------------------------------------------------
 
 /**
+ * 一条用户消息里的内容片段（平台无关）。
+ *
+ * 为什么需要这一层：官方开放平台与 OneBot 对"图片 / 语音 / 引用 / 卡片"的表达
+ * 完全不同（官方是 attachments + msg_elements，OneBot 是消息段数组），但编排层
+ * 需要的是同一种东西——"这条消息有哪些可读内容、要送几张图给模型"。适配器负责
+ * 把平台专有结构翻译成这里的片段，编排层（TurnRunner）再把它翻译成 DSH 的
+ * prompt content blocks。
+ *
+ * 关键设计：
+ *   - 片段里**只放引用信息**（url / 文本），不放字节。下载字节是 IO，放在 turn 期
+ *     做（见 dsh/media.ts），这样被闸拦掉的消息不会白白下载图片；
+ *   - `quote` 是递归结构：引用消息自己也可能带图片（官方 msg_elements 支持嵌套）。
+ */
+export interface MessageTextPart {
+  type: 'text';
+  text: string;
+}
+
+/** 图片：url 指向平台侧可下载地址，真正取字节由 BotConnector.fetchMedia 完成 */
+export interface MessageImagePart {
+  type: 'image';
+  url: string;
+  /** 平台声明的 MIME（可能不准，实际以响应头与字节嗅探为准） */
+  mimeType?: string;
+  filename?: string;
+  /**
+   * 平台声明的像素尺寸（官方 attachments 会给；OneBot 通常没有）。
+   *
+   * 只用来在下载**之前**挡掉明显超过 runtime 准入上限的图（长截图很常见），
+   * 省一次下载；真实像素仍以 runtime 准入为准，被拒时走纯文本回退。
+   */
+  width?: number;
+  height?: number;
+}
+
+/** 语音：官方会直接给 ASR 文本（asr_refer_text），有文本就不必再下载音频 */
+export interface MessageVoicePart {
+  type: 'voice';
+  url?: string;
+  /** 平台侧语音识别结果，存在时直接作为可读内容 */
+  text?: string;
+  filename?: string;
+}
+
+/** 其他附件：视频 / 文件等。模型不吃这些，渲染成一行文字说明。 */
+export interface MessageMediaPart {
+  type: 'media';
+  mediaKind: 'video' | 'file' | 'unknown';
+  url?: string;
+  filename?: string;
+  sizeBytes?: number;
+}
+
+/**
+ * 引用（回复）消息。
+ *
+ * 官方 `message_type=103` 时把被引用的内容放在 `msg_elements` 里；OneBot 的
+ * `reply` 段只有消息 id，需要额外回查（见 adapters/onebot/connector.ts）。
+ */
+export interface MessageQuotePart {
+  type: 'quote';
+  /** 被引用消息的发送者显示名（平台给出时才有） */
+  author?: string;
+  parts: MessagePart[];
+}
+
+export type MessagePart =
+  | MessageTextPart
+  | MessageImagePart
+  | MessageVoicePart
+  | MessageMediaPart
+  | MessageQuotePart;
+
+/** 需要平台侧取字节的远端媒体（fetchMedia 的入参） */
+export interface RemoteMedia {
+  url: string;
+  mimeType?: string;
+  filename?: string;
+}
+
+export interface MediaFetchOptions {
+  /** 允许的最大字节数；超过时实现应放弃并返回 undefined */
+  maxBytes: number;
+  timeoutMs: number;
+}
+
+export interface MediaBytes {
+  data: Uint8Array;
+  /** 响应头给出的 MIME（可信度高于平台事件里的声明） */
+  mimeType?: string;
+}
+
+/**
  * 归一化后的用户消息。
  *
  * 各平台的群聊/单聊消息都归一化成这个形状，编排层只有一条代码路径。
@@ -64,7 +157,19 @@ export interface NormalizedMessage {
   /** 发送者 id：官方是 member/user openid，OneBot 是 QQ 号字符串 */
   senderId: string;
   username?: string;
+  /**
+   * 可读的纯文本形态（由 parts 扁平化而来，见 core/content.ts）。
+   *
+   * 它同时是：对话记录 / 冷启动回放的正文、管理员命令的匹配对象、日志内容。
+   * 注意"只有图片、没有文字"的消息 content 也不为空（至少是 `[图片]`），
+   * 否则记录与回放会丢掉这条消息发生过的事实。
+   */
   content: string;
+  /**
+   * 结构化内容片段。缺省表示"适配器只归一化出了文本"（兼容既有部署与测试），
+   * 此时编排层按 `content` 处理。
+   */
+  parts?: MessagePart[];
   /** 毫秒时间戳 */
   ts: number;
   /** 原始事件，便于排障与将来扩展 */
@@ -135,6 +240,17 @@ export interface BotConnector {
   policy(kind: ConversationKind): ReplyPolicy;
   /** 发送一条回复。平台专有的请求体构造在适配器内部完成。 */
   reply(ctx: ReplyContext, out: OutgoingMessage): Promise<void>;
+  /**
+   * 取平台侧附件的字节（图片/语音等）。
+   *
+   * 存在的理由是"鉴权差异"：官方 QQ 的多媒体 CDN 需要 `Authorization: QQBot <token>`，
+   * 而 OneBot 的图片地址通常是框架自带的 HTTP 服务、无需鉴权。把这件事留在适配器里，
+   * 编排层就不必知道任何平台的取字节方式。
+   *
+   * 缺省（未实现）时编排层直接用 url 发一次普通 GET。实现必须遵守 maxBytes 与
+   * timeoutMs，失败时返回 undefined（由调用方降级成文字说明），不要抛错打断整轮。
+   */
+  fetchMedia?(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined>;
 }
 
 // ---------------------------------------------------------------------------

@@ -153,10 +153,29 @@ export interface Config {
     /** 追加的全天谷价日期（YYYY-MM-DD），与内置官方节假日表合并 */
     holidays: string[];
   };
+  /**
+   * 富媒体输入（图片 / 语音 / 引用 / 卡片）送进模型的总开关与配额。
+   *
+   * 与平台无关：官方与 OneBot 都走这一套。关闭后所有消息都退回"纯文本 +
+   * `[图片]` 之类占位标记"的行为，适合模型不支持多模态时使用。
+   */
+  attachments: AttachmentsConfig;
   health: {
     port: number;
   };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
+}
+
+/** 富媒体输入配额（见 Config.attachments）。 */
+export interface AttachmentsConfig {
+  /** 是否把图片内联送进模型（BOT_ATTACHMENT_ENABLED / attachments.enabled） */
+  enabled: boolean;
+  /** 单条消息最多内联几张图（含引用消息里的图片） */
+  maxImages: number;
+  /** 单张图片最大字节数，超过则只留文字说明 */
+  maxImageBytes: number;
+  /** 单张图片下载超时（毫秒） */
+  downloadTimeoutMs: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -434,6 +453,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   const dshFile = file.dsh ?? {};
   const poolFile = file.pool ?? {};
   const pathsFile = file.paths ?? {};
+  const attachmentsFile = file.attachments ?? {};
 
   return {
     connectors: enabledConnectors,
@@ -497,6 +517,14 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       weekendsAllDay: pickBool(env, 'QQ_OFFPEAK_WEEKENDS', file.offpeak?.weekendsAllDay, true),
       holidays: offpeakHolidays,
     },
+    attachments: {
+      enabled: pickBool(env, 'BOT_ATTACHMENT_ENABLED', attachmentsFile.enabled, true),
+      // 上限都刻意保守：一条消息塞十几张图既烧 token 又压不住延迟，
+      // 而 QQ 单图硬上限是 200MB，绝不能照抄。
+      maxImages: pickInt(env, 'BOT_ATTACHMENT_MAX_IMAGES', attachmentsFile.maxImages, 4, { min: 0, max: 20 }, 'attachments.maxImages'),
+      maxImageBytes: pickInt(env, 'BOT_ATTACHMENT_MAX_BYTES', attachmentsFile.maxImageBytes, 8 * 1024 * 1024, { min: 1024, max: 200 * 1024 * 1024 }, 'attachments.maxImageBytes'),
+      downloadTimeoutMs: pickInt(env, 'BOT_ATTACHMENT_TIMEOUT_MS', attachmentsFile.downloadTimeoutMs, 15_000, { min: 1_000, max: 120_000 }, 'attachments.downloadTimeoutMs'),
+    },
     health: {
       port: pickInt(env, 'QQ_HEALTH_PORT', file.health?.port, 8080, { min: 0, max: 65_535 }, 'health.port'),
     },
@@ -545,6 +573,7 @@ export function describeConfig(config: Config): Record<string, unknown> {
     pool: config.pool,
     paths: config.paths,
     adminCount: config.admins.length,
+    attachments: config.attachments,
     offpeak: {
       enabled: config.offpeak.enabled,
       windows: formatWindows(config.offpeak.windows),

@@ -25,8 +25,10 @@
 import { EventEmitter } from 'node:events';
 
 import type { ConversationTarget, NormalizedEvent } from '../../core/connector.js';
+import { flattenParts } from '../../core/content.js';
 import type { Logger } from '../../logger.js';
 import type { QqApi } from './api.js';
+import { buildMessageParts, type MessageBodyLike } from './content.js';
 import { TokenManager } from './token.js';
 import {
   OpCode,
@@ -369,6 +371,9 @@ export class QqGateway implements QqEventSource {
         return;
       }
       const author = (d['author'] ?? {}) as Record<string, unknown>;
+      // 富媒体/引用/卡片统一翻译成片段：content 是它的可读扁平形态（进对话记录、
+      // 进日志、也是命令匹配对象），parts 供 TurnRunner 组装多模态 prompt。
+      const parts = buildMessageParts(d as MessageBodyLike);
       this.emit({
         kind: 'group-at-message',
         target: groupTarget(groupOpenid),
@@ -378,7 +383,8 @@ export class QqGateway implements QqEventSource {
         ...(asString(author['username']) !== undefined
           ? { username: asString(author['username']) as string }
           : {}),
-        content: asString(d['content']) ?? '',
+        content: flattenParts(parts),
+        parts,
         ts: parseTimestamp(d['timestamp']) ?? this.now(),
         raw: d,
       });
@@ -399,13 +405,15 @@ export class QqGateway implements QqEventSource {
         this.options.logger.warn('单聊消息事件缺少 user_openid 或 id，已忽略', { type });
         return;
       }
+      const parts = buildMessageParts(d as MessageBodyLike);
       this.emit({
         kind: 'c2c-message',
         target: c2cTarget(userOpenid),
         eventId: payload.id ?? '',
         msgId,
         senderId: userOpenid,
-        content: asString(d['content']) ?? '',
+        content: flattenParts(parts),
+        parts,
         ts: parseTimestamp(d['timestamp']) ?? this.now(),
         raw: d,
       });

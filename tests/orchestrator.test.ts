@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type Config } from '../src/config.js';
 import { createNullLogger } from '../src/logger.js';
 import type { RuntimeEntry, RuntimePool } from '../src/dsh/pool.js';
-import type { SessionEventNotification } from '../src/dsh/protocol.js';
+import type { SessionEventNotification, PromptContentBlock } from '../src/dsh/protocol.js';
 import { CN_HOLIDAYS_2026, OffpeakGate } from '../src/offpeak.js';
 import { Responder } from '../src/pipeline/egress/responder.js';
 import { AdmissionGate } from '../src/pipeline/ingress/admission.js';
@@ -50,9 +50,14 @@ import type {
 // 测试替身
 // ---------------------------------------------------------------------------
 
-/** 假的 runtime：记录 prompt，允许测试手动注入事件与状态。 */
+/** 8 字节 PNG 魔数：体积无关紧要，只要能被嗅探成 image/png。 */
+const FAKE_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** 假的 runtime：记录 prompt（content blocks），允许测试手动注入事件与状态。 */
 class FakeRuntime {
-  readonly prompts: Array<{ sessionId: string; text: string }> = [];
+  readonly prompts: Array<{ sessionId: string; text: string; blocks: PromptContentBlock[] }> = [];
+  /** 模拟 runtime 附件准入拒绝（像素/字节超限）——用于验证纯文本回退 */
+  rejectImagePrompts = false;
   ready = true;
   private readonly eventHandlers: Array<(n: SessionEventNotification) => void> = [];
   private readonly statusHandlers: Array<(n: { sessionId: string; status: 'idle' | 'running' }) => void> = [];
@@ -76,8 +81,17 @@ class FakeRuntime {
     return { serverInfo: { name: 'deepseek-harness-sdk-runtime', version: '0.0.1' } };
   }
 
-  async prompt(sessionId: string, text: string): Promise<{ messageId: string }> {
-    this.prompts.push({ sessionId, text });
+  async prompt(sessionId: string, blocks: PromptContentBlock[]): Promise<{ messageId: string }> {
+    // text 只取文本块（图片块的 base64 不参与断言）；blocks 原样保留供多模态断言
+    const text = blocks
+      .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n');
+    // 先记录再判拒绝：被拒绝的那次尝试也要留在 prompts 里，测试才能断言"重试过"
+    this.prompts.push({ sessionId, text, blocks });
+    if (this.rejectImagePrompts && blocks.some((block) => block.type === 'image')) {
+      throw new Error('Image exceeds the configured decoded-pixel limit.');
+    }
     return { messageId: `m-${this.prompts.length}` };
   }
 
@@ -184,6 +198,8 @@ function createFakeConnector(config: Config, sent: SentMessage[]): BotConnector 
       });
       sent.push({ target: ctx.target, body });
     }),
+    // 多模态：替身取字节，避免测试触网
+    fetchMedia: vi.fn(async () => ({ data: FAKE_PNG, mimeType: 'image/png' })),
   };
 }
 
@@ -1002,5 +1018,137 @@ describe('/offpeak 命令', () => {
     const stats = ctx.orchestrator.snapshotStats();
     expect(stats.gatedOffpeak).toBe(1);
     expect(stats.offpeak).toMatchObject({ enabled: true, overridden: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 多模态输入：图片进 prompt content blocks
+// ---------------------------------------------------------------------------
+
+describe('多模态输入', () => {
+  beforeEach(() => {
+    ctx = setup();
+  });
+
+  it('消息里的图片被内联成 image block，文字说明留在文本块里', async () => {
+    const pending = ctx.orchestrator.handleEvent(
+      makeMessage({
+        content: '看看这张\n[图片: a.png]',
+        parts: [
+          { type: 'text', text: '看看这张' },
+          { type: 'image', url: 'https://cdn.example.com/a.png', mimeType: 'image/png' },
+        ],
+      }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+
+    const blocks = ctx.runtime.prompts[0]!.blocks;
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toMatchObject({ type: 'text' });
+    expect((blocks[0] as { text: string }).text).toContain('看看这张');
+    expect(blocks[1]).toMatchObject({ type: 'image', mimeType: 'image/png' });
+    expect(ctx.orchestrator.snapshotStats().imagesInlined).toBe(1);
+
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['这是张风景照']);
+    await pending;
+    // 对话记录里留的是可读文本形态，冷启动回放不会丢"这条消息里有图"的事实
+    const recorded = ctx.conversations.readAll('GROUP-1');
+    expect(recorded[0]!.text).toBe('看看这张\n[图片: a.png]');
+  });
+
+  it('引用消息被引用方的内容与图片一并送进模型', async () => {
+    const pending = ctx.orchestrator.handleEvent(
+      makeMessage({
+        content: '[引用 小红] 看这个 [图片]\n这张图什么意思',
+        parts: [
+          {
+            type: 'quote',
+            author: '小红',
+            parts: [
+              { type: 'text', text: '看这个' },
+              { type: 'image', url: 'https://cdn.example.com/quoted.png' },
+            ],
+          },
+          { type: 'text', text: '这张图什么意思' },
+        ],
+      }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+
+    const blocks = ctx.runtime.prompts[0]!.blocks;
+    expect(blocks).toHaveLength(2);
+    expect((blocks[0] as { text: string }).text).toContain('[引用 小红] 看这个 [图片]');
+    expect(blocks[1]).toMatchObject({ type: 'image' });
+
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好的']);
+    await pending;
+  });
+
+  it('关掉富媒体时退回纯文本，并在 prompt 里说明有图未读入', async () => {
+    ctx = setup({ configOverrides: { BOT_ATTACHMENT_ENABLED: 'false' } });
+    const pending = ctx.orchestrator.handleEvent(
+      makeMessage({
+        content: '看看这张\n[图片]',
+        parts: [
+          { type: 'text', text: '看看这张' },
+          { type: 'image', url: 'https://cdn.example.com/a.png' },
+        ],
+      }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+
+    const blocks = ctx.runtime.prompts[0]!.blocks;
+    expect(blocks).toHaveLength(1);
+    expect((blocks[0] as { text: string }).text).toContain('已关闭图片读取');
+    expect(ctx.orchestrator.snapshotStats().imagesSkipped).toBe(1);
+
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好的']);
+    await pending;
+  });
+
+  it('runtime 拒绝图片时退回纯文本重试，文字回答照常送达', async () => {
+    ctx.runtime.rejectImagePrompts = true;
+    const pending = ctx.orchestrator.handleEvent(
+      makeMessage({
+        content: '看看这张\n[图片]',
+        parts: [
+          { type: 'text', text: '看看这张' },
+          { type: 'image', url: 'https://cdn.example.com/huge.png' },
+        ],
+      }),
+    );
+    // 第一次带图被 runtime 拒绝 → 自动重试为纯文本
+    await waitFor(() => ctx.runtime.prompts.length === 2);
+    expect(ctx.runtime.prompts[0]!.blocks).toHaveLength(2);
+    expect(ctx.runtime.prompts[1]!.blocks).toHaveLength(1);
+    expect(ctx.runtime.prompts[1]!.text).toContain('未能被模型接收');
+
+    const stats = ctx.orchestrator.snapshotStats();
+    expect(stats.imagesInlined).toBe(0);
+    expect(stats.imagesSkipped).toBe(1);
+
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['图片没读进来，但文字我看到了']);
+    await pending;
+    expect(ctx.sent.at(-1)!.body.content).toBe('图片没读进来，但文字我看到了');
+  });
+
+  it('只有图片、没有文字的消息也能触发一轮', async () => {
+    const pending = ctx.orchestrator.handleEvent(
+      makeMessage({
+        content: '[图片]',
+        parts: [{ type: 'image', url: 'https://cdn.example.com/only.png' }],
+      }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    expect(ctx.runtime.prompts[0]!.blocks).toHaveLength(2);
+
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['我看到一张图片']);
+    await pending;
+    expect(ctx.sent.at(-1)!.body.content).toBe('我看到一张图片');
   });
 });

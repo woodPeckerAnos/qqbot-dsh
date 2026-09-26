@@ -21,8 +21,10 @@ import {
   normalizeOneBotEvent,
   onebotC2cTarget,
   onebotGroupTarget,
+  quotedAuthorFromGetMsg,
+  quotedPartsFromGetMsg,
 } from '../src/adapters/onebot/normalize.js';
-import type { NormalizedEvent } from '../src/core/connector.js';
+import type { NormalizedEvent, NormalizedMessage } from '../src/core/connector.js';
 import { createNullLogger } from '../src/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -95,7 +97,112 @@ describe('OneBot 归一化', () => {
   it('CQ 码字符串形式也能识别 at 与正文', () => {
     const { content, atSelf } = extractGroupContent('[CQ:at,qq=10000] 统计一下 [CQ:face,id=178]', 10000);
     expect(atSelf).toBe(true);
-    expect(content).toBe('统计一下');
+    // 表情段现在保留为可读标记（旧行为是整段丢弃）
+    expect(content).toBe('统计一下\n[表情]');
+  });
+
+  it('图片段归一化为 image 片段（可下载的 http 地址）', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 43,
+      group_id: 8888,
+      user_id: 12345,
+      time: 1_700_000_000,
+      message: [
+        { type: 'at', data: { qq: '10000' } },
+        { type: 'text', data: { text: '看看这张' } },
+        { type: 'image', data: { file: 'a.jpg', url: 'https://cdn.example.com/a.jpg' } },
+      ],
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    const event = result.event;
+    if (event.kind !== 'group-at-message') return;
+    expect(event.parts).toEqual([
+      { type: 'text', text: '看看这张' },
+      { type: 'image', url: 'https://cdn.example.com/a.jpg', filename: 'a.jpg' },
+    ]);
+    expect(event.content).toBe('看看这张\n[图片: a.jpg]');
+  });
+
+  it('只有图片、没有文字时也算有正文（不再被"@ 之后没有正文"丢掉）', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 44,
+      group_id: 8888,
+      user_id: 12345,
+      time: 1_700_000_000,
+      message: [
+        { type: 'at', data: { qq: '10000' } },
+        { type: 'image', data: { url: 'https://cdn.example.com/b.png' } },
+      ],
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    expect(result.event.content).toBe('[图片]');
+  });
+
+  it('图片只有本地路径（容器里取不到）时降级成文字标记', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 45,
+      group_id: 8888,
+      user_id: 12345,
+      message: [
+        { type: 'at', data: { qq: '10000' } },
+        { type: 'image', data: { file: 'file:///home/qq/a.jpg' } },
+      ],
+    });
+    if (result.type !== 'event') throw new Error('应归一化为事件');
+    expect(result.event.content).toBe('[图片]');
+  });
+
+  it('reply 段透出被引用消息 id，由连接器回查补全', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 46,
+      group_id: 8888,
+      user_id: 12345,
+      message: [
+        { type: 'at', data: { qq: '10000' } },
+        { type: 'reply', data: { id: '9001' } },
+        { type: 'text', data: { text: '这个怎么说' } },
+      ],
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    expect(result.quotedMessageId).toBe('9001');
+    expect(result.event.content).toBe('这个怎么说');
+  });
+
+  it('get_msg 回查结果解析成被引用片段（含被引用图片）', () => {
+    const parts = quotedPartsFromGetMsg(
+      {
+        sender: { nickname: '小红' },
+        message: [
+          { type: 'text', data: { text: '原来那条' } },
+          { type: 'image', data: { url: 'https://cdn.example.com/q.jpg' } },
+        ],
+      },
+      10000,
+    );
+    expect(parts).toEqual([
+      { type: 'text', text: '原来那条' },
+      { type: 'image', url: 'https://cdn.example.com/q.jpg' },
+    ]);
+    expect(quotedAuthorFromGetMsg({ sender: { nickname: '小红' } })).toBe('小红');
   });
 
   it('私聊（好友）归一化为 c2c-message，会话键带 ob11:u 前缀', () => {
@@ -292,6 +399,60 @@ describe('OneBot 反向 WS 回路', () => {
     // 框架回响应（echo 对回）→ reply promise 落定
     ws.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 100 }, echo: action['echo'] }));
     await replyPromise;
+  });
+
+  it('引用消息：reply 段触发 get_msg 回查，被引用内容拼进 quote 片段', async () => {
+    const { connector: c, events } = makeConnector(0);
+    connector = c;
+    await connector.start();
+    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const ws = await connectClient(address.port);
+    clients.push(ws);
+
+    ws.send(
+      JSON.stringify({
+        post_type: 'message',
+        message_type: 'group',
+        sub_type: 'normal',
+        self_id: 10000,
+        message_id: 50,
+        group_id: 8888,
+        user_id: 12345,
+        time: 1_700_000_000,
+        message: [
+          { type: 'at', data: { qq: '10000' } },
+          { type: 'reply', data: { id: '9001' } },
+          { type: 'text', data: { text: '这个怎么说' } },
+        ],
+        sender: { user_id: 12345, nickname: '小明' },
+      }),
+    );
+
+    // 服务 → 框架：先回查被引用的消息
+    const action = await new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    expect(action['action']).toBe('get_msg');
+    expect((action['params'] as { message_id: number }).message_id).toBe(9001);
+
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        data: {
+          sender: { nickname: '小红' },
+          message: [{ type: 'text', data: { text: '原来那条' } }],
+        },
+        echo: action['echo'],
+      }),
+    );
+
+    for (let i = 0; i < 100 && !events.some((e) => e.kind === 'group-at-message'); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const message = events.find((e): e is NormalizedMessage => e.kind === 'group-at-message');
+    expect(message?.content).toBe('[引用 小红] 原来那条\n这个怎么说');
+    expect(message?.parts?.[0]).toMatchObject({ type: 'quote', author: '小红' });
   });
 
   it('错误 retcode 让 reply 抛错（编排层据此走失败路径）', async () => {

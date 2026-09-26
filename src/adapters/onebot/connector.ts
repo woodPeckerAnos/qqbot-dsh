@@ -25,14 +25,23 @@ import type {
   BotConnector,
   ConnectorHealth,
   ConversationKind,
+  MessageQuotePart,
   NormalizedEvent,
+  NormalizedMessage,
   OutgoingMessage,
   ReplyContext,
   ReplyPolicy,
 } from '../../core/connector.js';
+import { flattenParts } from '../../core/content.js';
 import type { Logger } from '../../logger.js';
 import { normalizeWhitespace, stripControlChars, toPlainText } from '../../pipeline/markdown.js';
-import { normalizeOneBotEvent, ONEBOT_PLATFORM, type NormalizeResult } from './normalize.js';
+import {
+  normalizeOneBotEvent,
+  ONEBOT_PLATFORM,
+  quotedAuthorFromGetMsg,
+  quotedPartsFromGetMsg,
+  type NormalizeResult,
+} from './normalize.js';
 import type { OneBotActionResponse, OneBotEvent } from './types.js';
 
 export { ONEBOT_PLATFORM };
@@ -84,6 +93,11 @@ export class OnebotConnector implements BotConnector {
     { session: Session; resolve: (data: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
   >();
   private readonly emitterHandlers = new Set<(event: NormalizedEvent) => void>();
+  /**
+   * 每条连接上的异步补全队列（当前只有"回查引用消息"）。
+   * 保证补全后的事件顺序与到达顺序一致——否则一条被引用消息可能插到后一条消息之后。
+   */
+  private readonly sessionQueues = new WeakMap<Session, Promise<void>>();
   private startedAt = 0;
   private stopping = false;
 
@@ -299,6 +313,18 @@ export class OnebotConnector implements BotConnector {
         if (typeof rawSelfId === 'number') session.selfId = rawSelfId;
         const target = result.event.target;
         if (target !== undefined) this.conversationSessions.set(target.key, session);
+
+        // 引用消息（reply 段）只带消息 id，内容要回查 get_msg 才能拿到。
+        // 回查是异步的，而 emit 的顺序会影响"同一会话里哪条消息先进入 turn"，
+        // 所以按会话排队，保证补全前后的事件顺序与到达顺序一致。
+        if (result.quotedMessageId !== undefined && isMessage(result.event)) {
+          const event = result.event;
+          const quotedMessageId = result.quotedMessageId;
+          this.enqueue(session, async () => {
+            this.emit(await this.withQuotedContent(session, event, quotedMessageId));
+          });
+          return;
+        }
         this.emit(result.event);
         return;
       }
@@ -353,6 +379,57 @@ export class OnebotConnector implements BotConnector {
       case 'ignored':
         this.options.logger.debug('忽略 OneBot 事件', { reason: result.reason });
         return;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 引用消息补全（reply 段 → get_msg 回查）
+  // -------------------------------------------------------------------------
+
+  /** 按会话串行执行异步补全，保持事件顺序。 */
+  private enqueue(session: Session, task: () => Promise<void>): void {
+    const previous = this.sessionQueues.get(session) ?? Promise.resolve();
+    const next = previous.then(task, task).catch((error: unknown) => {
+      this.options.logger.warn('OneBot 事件补全失败（该条消息按原文继续处理）', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    this.sessionQueues.set(session, next);
+  }
+
+  /**
+   * 用 get_msg 回查被引用的消息，把内容并成 `quote` 片段。
+   *
+   * 失败一律降级：拿不到引用内容就按原消息处理（并记 warn），
+   * 绝不因为"引用查不到"把用户这条消息丢掉。
+   */
+  private async withQuotedContent(
+    session: Session,
+    event: NormalizedMessage,
+    quotedMessageId: string,
+  ): Promise<NormalizedMessage> {
+    const numericId = Number(quotedMessageId);
+    try {
+      const data = await this.callAction(session, 'get_msg', {
+        message_id: Number.isFinite(numericId) ? numericId : quotedMessageId,
+      });
+      const parts = quotedPartsFromGetMsg(data, session.selfId ?? 0);
+      if (parts.length === 0) return event;
+      const author = quotedAuthorFromGetMsg(data);
+      const quote: MessageQuotePart = {
+        type: 'quote',
+        ...(author !== undefined ? { author } : {}),
+        parts,
+      };
+      const merged = [quote, ...(event.parts ?? [])];
+      return { ...event, parts: merged, content: flattenParts(merged) };
+    } catch (error) {
+      this.options.logger.warn('回查引用消息失败（按未引用处理）', {
+        quotedMessageId,
+        conversation: event.target.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return event;
     }
   }
 
@@ -427,4 +504,9 @@ export class OnebotConnector implements BotConnector {
   private now(): number {
     return this.options.now?.() ?? Date.now();
   }
+}
+
+/** 只有用户消息带 parts/引用；系统事件（进群/加好友）走另一条路径。 */
+function isMessage(event: NormalizedEvent): event is NormalizedMessage {
+  return event.kind === 'group-at-message' || event.kind === 'c2c-message';
 }

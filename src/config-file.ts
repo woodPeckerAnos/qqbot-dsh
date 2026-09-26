@@ -89,6 +89,14 @@ export interface HealthFileConfig {
   port?: number;
 }
 
+/** 富媒体输入配额（与平台无关，官方/OneBot 共用）。 */
+export interface AttachmentsFileConfig {
+  enabled?: boolean;
+  maxImages?: number;
+  maxImageBytes?: number;
+  downloadTimeoutMs?: number;
+}
+
 /** 配置文件里允许出现的全部内容（每项都可选）。 */
 export interface FileConfig {
   connectors?: string[];
@@ -98,6 +106,7 @@ export interface FileConfig {
   pool?: PoolFileConfig;
   paths?: PathsFileConfig;
   offpeak?: OffpeakFileConfig;
+  attachments?: AttachmentsFileConfig;
   health?: HealthFileConfig;
   logLevel?: string;
 }
@@ -182,6 +191,12 @@ const OFFPEAK_SPEC: SectionSpec = {
   holidays: 'stringList',
 };
 const HEALTH_SPEC: SectionSpec = { port: 'int' };
+const ATTACHMENTS_SPEC: SectionSpec = {
+  enabled: 'bool',
+  maxImages: 'int',
+  maxImageBytes: 'int',
+  downloadTimeoutMs: 'int',
+};
 
 const TOP_SCALARS: SectionSpec = {
   connectors: 'stringList',
@@ -196,6 +211,7 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'pool', field: 'pool', spec: POOL_SPEC },
   { yamlKey: 'paths', field: 'paths', spec: PATHS_SPEC },
   { yamlKey: 'offpeak', field: 'offpeak', spec: OFFPEAK_SPEC },
+  { yamlKey: 'attachments', field: 'attachments', spec: ATTACHMENTS_SPEC },
   { yamlKey: 'health', field: 'health', spec: HEALTH_SPEC },
 ];
 

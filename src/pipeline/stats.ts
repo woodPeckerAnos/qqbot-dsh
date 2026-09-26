@@ -29,6 +29,10 @@ export class PipelineStats {
   failed = 0;
   /** turn 超时数（TurnRunner） */
   timedOut = 0;
+  /** 成功内联进 prompt 的图片数（TurnRunner） */
+  imagesInlined = 0;
+  /** 读取失败/超限/格式不支持而跳过的图片数（TurnRunner） */
+  imagesSkipped = 0;
   /** 成功发出的回复段数（Responder / 欢迎语） */
   repliesSent = 0;
   /** 成功发出的进度回执数（Responder） */

@@ -28,6 +28,31 @@ describe('loadConfig', () => {
     expect(config.dsh.provider).toBe('deepseek-official');
     expect(config.dsh.model).toBe('deepseek-flash');
     expect(config.pool.replayTurns).toBe(12);
+    // 富媒体默认开：DS 模型支持多模态，默认就该用上
+    expect(config.attachments).toEqual({
+      enabled: true,
+      maxImages: 4,
+      maxImageBytes: 8 * 1024 * 1024,
+      downloadTimeoutMs: 15_000,
+    });
+  });
+
+  it('富媒体参数可被 env 与配置文件覆盖，越界值在启动期被拒', () => {
+    const config = loadConfig({ ...baseEnv, BOT_ATTACHMENT_ENABLED: 'false' });
+    expect(config.attachments.enabled).toBe(false);
+    expect(config.attachments.maxImages).toBe(4);
+
+    const fromFile = loadConfig(baseEnv, {
+      attachments: { maxImages: 2, maxImageBytes: 1024 * 1024, downloadTimeoutMs: 3_000 },
+    });
+    expect(fromFile.attachments).toMatchObject({
+      maxImages: 2,
+      maxImageBytes: 1024 * 1024,
+      downloadTimeoutMs: 3_000,
+    });
+
+    expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_IMAGES: '99' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_BYTES: '10' })).toThrow(ConfigError);
   });
 
   it('缺少必填项时报错并给出修复提示', () => {

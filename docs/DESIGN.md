@@ -551,6 +551,11 @@ DeepSeek 有错峰优惠时段，正价时段跑 agent 的成本可能高一个�
    就把 `QQ_C2C_ENABLED=false`。
 6. **`tool-jobs` 被关掉，但 bash 仍可 `&` 起后台进程**。长期驻留进程只能靠
    `pids_limit` 和容器重启兜底。
+7. **图片下载是一处受控的 SSRF 面**（第 11 节）。附件地址由平台事件给出，
+   本服务会从容器内发起 GET。OneBot 侧的可信前提是 `ONEBOT_ACCESS_TOKEN` 没泄露；
+   官方侧地址来自腾讯。缓解是内建的三道：只在字节嗅探为 png/jpeg/webp/gif 时
+   才把内容交出去、单张字节数与张数有上限、下载有超时；不做的是"拒绝内网地址"
+   （OneBot 常见部署里框架就在宿主，全拒会让功能直接不可用）。
 
 **建议**：只把机器人放进你能信任成员的群；不需要私聊就关掉 `QQ_C2C_ENABLED`；
 给 `DEEPSEEK_API_KEY` 设置消费上限；定期看 `auto-approved` / `sandbox escalation` 日志。
@@ -740,8 +745,9 @@ qqbot-dsh/
   否则私聊路径永远打不开）；拉群邀请默认**不**自动同意
   （`ONEBOT_AUTO_ACCEPT_GROUP_INVITE=false`，被拉进陌生群 = 暴露给陌生人）。
 - **防自触发**：`user_id === self_id` 的消息直接忽略。
-- **正文提取**：群消息只响应 @ 机器人；数组形式剥掉 at 段、拼接 text 段，
-  CQ 码字符串形式剥掉所有 `[CQ:...]` 码。图片等富媒体不进正文（留 raw）。
+- **正文提取**：群消息只响应 @ 机器人；数组段与 CQ 码字符串统一走
+  `extractMessageContent`，产出 `MessagePart[]`（文本 / 图片 / 语音 / 视频 /
+  文件 / 表情 / 引用）。**富媒体与引用的完整处理见第 11 节。**
 
 ### 10.5 身份与配置的跨平台变化
 
@@ -764,5 +770,99 @@ qqbot-dsh/
 3. **成员身份更不可信**：社区框架能拿到真实 QQ 号，也意味着任何人都能
    加好友/拉群尝试触发 agent——`ONEBOT_C2C_ENABLED` 与
    `ONEBOT_AUTO_ACCEPT_GROUP_INVITE` 是两条暴露面的总开关。
+
+---
+
+## 11. 富媒体与引用消息（多模态输入）
+
+### 11.1 问题
+
+早期实现只把事件里的 `content` 当作正文：群里发图、发文件、引用某条消息再说话，
+进入模型的都只有那一小段文字（纯图片消息甚至因为"正文为空"被直接丢掉）。
+而官方文档明确给出：这些内容各有各的字段，必须分别处理。
+
+依据 [群消息（全量模式）](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/group_message_create.html)
+与 [消息类型](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/overview.html)：
+
+| 内容 | 官方字段 | 说明 |
+|---|---|---|
+| 文本 | `content` | `message_type=0` |
+| 图片/视频/语音/文件 | `attachments[]` | 用 `content_type` 区分（`image/*`、`video/mp4`、`voice`、`file`），图片另带 `width/height` |
+| 语音识别 | `attachments[].asr_refer_text` | 官方自带 ASR 参考结果 |
+| 引用消息 | `msg_elements[]` | `message_type=103` 时携带被引用内容，且**可递归嵌套** |
+| 结构化卡片 | `ark_data` | `message_type=3`，卡片正文模型读不到，只能给标题等 |
+| @ 列表 | `mentions[]` | `content` 里已去掉 @ 前缀 |
+
+### 11.2 接缝：平台无关的 *内容片段*
+
+适配器的产出从"一个字符串"升级为 **`MessagePart[]`**（`src/core/connector.ts`）：
+
+```
+text | image(url,mimeType,filename) | voice(text,url) | media(kind,url,filename) | quote(author, parts[])
+```
+
+三条硬性约束：
+
+1. **片段只放引用信息，不放字节**。下载是 IO，放在 turn 期（图片进 prompt 之前）
+   做——被去重、被谷时段闸、被并发闸拦掉的消息不该产生任何网络请求。
+2. **`content` 仍然存在**，它是 `parts` 的扁平化结果（`core/content.ts` 的
+   `flattenParts`），继续承担：对话记录 / 冷启动回放正文、管理员命令匹配、
+   日志。纯图片消息的 `content` 是 `[图片]`，不再为空，因此不会被丢掉。
+3. **引用是递归结构**。官方 `msg_elements` 里可能还有 `msg_elements`；OneBot 侧
+   引用消息只有 id，需要额外回查（见 11.4）。
+
+### 11.3 图片怎么进模型
+
+DSH 的 SDK 协议支持内联图片块：`{ type:'image', data:<base64>, mimeType }`
+（runtime 在准入时写入它自己的附件存储，不需要我们先落盘）。
+profile 侧不需要改动：`dsh-base` 已经挂了 `@deepseek-ai/dsh-attachment-local`，
+我们的 `cordis.patch.yml` 也没有关掉它。链路是：
+
+```
+adapters/*  事件 → parts（含 image.url）
+TurnRunner  下载 + 校验 + base64 → prompt content blocks
+DshRuntime  session/prompt（text 块 + image 块）
+```
+
+`src/dsh/media.ts` 负责下载与校验，三条务实规则：
+
+- **MIME 以字节嗅探为准**，不信平台声明也不信响应头。只接受 png/jpeg/webp/gif
+  ——runtime 准入只认这四种，提前挡住比让整条 prompt 被拒好；
+- 单张字节数、单条消息张数、下载超时都有上限（`attachments.*`）；
+- 任何一张图失败都**只降级成一行文字说明**（"有 1 张图片读取失败，未读入"），
+  文字部分照常回答。群里发张 HEIC 就整轮失败，比看不到图更糟；
+- 图片最终能不能被收下由 **runtime 准入**决定（逐图字节、解码像素、单边像素、
+  base64 规范性）。我们侧用平台**声明**的尺寸做一次预筛（单边 > 8192 直接跳过，
+  与 `dsh-attachment-local` 的默认上限对齐，长截图是最常见的触发场景）；声明不可信
+  也没关系——`TurnRunner.dispatchPrompt` 在 runtime 拒绝带图 prompt 时会**退回纯文本
+  重试一次**，用户至少能拿到文字回答，并在 prompt 里看到"图片未能被模型接收"。
+
+一个刻意的边界：**冷启动回放是纯文本的**。对话记录里只留 `[图片]` 标记，
+不会把历史图片重新下载再送一遍——那会让每次 runtime 重建都按历史轮数放大
+带宽与 token。所以"上一次那张图"只能靠当时的文字结论延续，这是有意的取舍。
+
+### 11.4 平台差异（各适配器怎么落地）
+
+- **官方**（`adapters/qq-official/content.ts`）：`attachments` 按 `content_type`
+  分流；`message_type=103` 的 `msg_elements` 渲染成 `[引用 谁] …`（引用在前、
+  本条正文在后）；`ark_data` 渲染成 `[卡片消息 …]`；语音优先用
+  `asr_refer_text`。附件下载走 `fetchMedia`：先带
+  `Authorization: QQBot <access_token>`，仅在 401/403 时裸请求一次兜底
+  （公开 CDN 与需鉴权两种形态都能过）。
+- **OneBot**（`adapters/onebot/normalize.ts`）：`image/record/video/file/face/
+  json/forward` 段各自映射；`file` 只在是 http(s) 地址时才用（本地路径与
+  `base64://` 在容器里取不到，降级成 `[图片]`）。`reply` 段只有消息 id，
+  由连接器调 `get_msg` 回查后拼 `quote` 片段，并**按连接排队**以保证事件顺序
+  与到达顺序一致；回查失败按未引用处理，不丢这条消息。
+- **收敛点**：`TurnRunner.buildPromptBlocks` 是唯一把片段翻译成 prompt blocks
+  的地方，两个平台共用同一条路径。
+
+### 11.5 开关与可观测性
+
+- `attachments.enabled`（env `BOT_ATTACHMENT_ENABLED`，默认 true）：关掉后
+  仍能收到富媒体消息，但只显示 `[图片]` 等占位，适合纯文本模型；
+  关闭时 prompt 里会显式说明"有 N 张图片未读入"，避免模型以为用户什么都没发。
+- `/metrics` 的 `imagesInlined` / `imagesSkipped` 给出内联与跳过的图片数——
+  "机器人说看不到图"时先看这两个数。
 
 ---
