@@ -24,7 +24,7 @@
  * `msg_seq` 一律由本账本分配，调用方不得自己拼——这是保证去重不误伤的唯一办法。
  */
 
-import type { Logger } from '../logger.js';
+import type { Logger } from '../../logger.js';
 
 export interface ReplyLedgerOptions {
   msgId: string;

@@ -11,7 +11,7 @@ import {
   ReplyLedger,
   ReplyQuotaExhaustedError,
   defaultProgressText,
-} from '../src/pipeline/progress.js';
+} from '../src/pipeline/egress/progress.js';
 
 describe('ReplyLedger', () => {
   it('构造时拒绝 progressQuota >= totalQuota（否则最终答案没配额）', () => {

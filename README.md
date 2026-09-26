@@ -35,6 +35,9 @@ docker compose logs -f
 
 然后在群里 @机器人、或直接私聊机器人，说一句需求。详细步骤见 **[docs/DEPLOY.md](docs/DEPLOY.md)**。
 
+也可以直接发**图片**、**引用**某条消息再提问、或发**语音**（用官方 ASR 文本）——
+这些都会作为多模态内容送进模型；开关与配额见 [DESIGN.md 第 11 节](docs/DESIGN.md)。
+
 ### 用社区框架接入（免审核）
 
 官方开放平台目前不对个人开发者开放审核。社区框架（LLBot / NapCat 等 OneBot v11
@@ -86,6 +89,7 @@ QQ 机器人的约束比看起来紧得多，下面每一条都有对应机制�
 | 单聊与群聊共用 `1<<25`，intent 层无法只订一种 | 业务层开关 `QQ_C2C_ENABLED=false` 可只服务群聊，且单聊用 `c2c:` 前缀的工作区/记录，不会与群串味 |
 | 鉴权失败时 **HTTP 状态码仍是 200** | 按响应体 `code` 判断；`expires_in` 按字符串解析 |
 | 心跳持续发出但收不到 ACK（连接僵死） | ACK 超时计时器跨心跳周期存活——**这个 bug 是被单测抓出来的** |
+| 消息内容不只有文本：**引用、图片、语音、卡片** 各有各的字段 | 统一归一化成平台无关的 *内容片段*（`core/content.ts`），图片内联成多模态 prompt block、语音用官方 ASR 文本、卡片渲染成一行说明；详见 [DESIGN.md 第 11 节](docs/DESIGN.md) |
 | 无法从文档确认的项（消息长度上限等） | 保守默认 + 遇错降级，且全部列进 [RUNBOOK 第 7 节](docs/RUNBOOK.md) |
 
 ## 权限模型（请务必了解）
@@ -164,9 +168,9 @@ docker-compose.dev.yml   开发覆盖文件（挂载本地 dist，跳过镜像�
 qqbot.yml                行为配置（随仓库提供 = 默认配置；不含密钥与个人标识）
 src/config.ts            env + qqbot.yml 三层合并 + 语义校验 + 启动期快速失败
 src/config-file.ts       qqbot.yml 读取与形状校验（未知键名直接报错）
-src/core/       接入层契约：BotConnector / 归一化事件 / 回复策略（编排层只依赖这里）
+src/core/       接入层契约：BotConnector / 归一化事件 / 内容片段与扁平化（编排层只依赖这里）
 src/adapters/   接入平台：qq-official（官方开放平台）/ onebot（NapCat 等社区框架）
-src/dsh/        DSH 桥接：NDJSON JSON-RPC 客户端 / 子进程监督 / 进程池 / turn 归并
+src/dsh/        DSH 桥接：NDJSON JSON-RPC 客户端 / 子进程监督 / 进程池 / turn 归并 / 图片内联
 src/pipeline/   编排：调度 / 配额与进度 / 分段 / 文本清洗 / 并发原语（全平台共用一条链路）
 src/store/      持久化：对话记录（JSONL）/ 事件去重 / 会话映射 / 路径布局
 dsh-profile/    DSH profile 补丁 + 自动审批桩

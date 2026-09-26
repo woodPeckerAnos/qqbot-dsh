@@ -20,21 +20,32 @@
  * 粗暴退出会让 DSH 的会话日志留半条记录，而那正是我们排障的依据。
  */
 
+import { join } from 'node:path';
+
 import { loadConfig, describeConfig, ConfigError, type Config } from './config.js';
 import { loadConfigFile } from './config-file.js';
 import { QqOfficialConnector } from './adapters/qq-official/connector.js';
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { TokenError } from './adapters/qq-official/token.js';
 import { OnebotConnector, ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
-import type { BotConnector, NormalizedEvent } from './core/connector.js';
-import { isUserMessage } from './core/connector.js';
+import type { BotConnector } from './core/connector.js';
 import { createLogger } from './logger.js';
+import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
 import { RuntimePool } from './dsh/pool.js';
-import { Dispatcher } from './pipeline/dispatcher.js';
+import { Responder } from './pipeline/egress/responder.js';
+import { AdmissionGate } from './pipeline/ingress/admission.js';
+import { createDedupeStage } from './pipeline/ingress/dedupe.js';
+import { OffpeakCommandRouter } from './pipeline/ingress/offpeak-command.js';
+import { createOffpeakGateStage } from './pipeline/ingress/offpeak-gate.js';
+import { createRecordStage } from './pipeline/ingress/record.js';
+import type { IngressStage } from './pipeline/ingress/types.js';
+import { Orchestrator } from './pipeline/orchestrator.js';
+import { PipelineStats } from './pipeline/stats.js';
+import { TurnRunner } from './pipeline/turn-runner.js';
 import { ConversationStore } from './store/conversations.js';
 import { SeenStore } from './store/seen.js';
 import { SessionStore } from './store/sessions.js';
-import { ensureStoreDirs, resolveStorePaths } from './store/paths.js';
+import { ensureStoreDirs, resolveStorePaths, workspacePathFor } from './store/paths.js';
 import { buildHealthSnapshot, createHealthServer, type HealthServer } from './health.js';
 
 /** 处理中的 turn 结束前最多等多久（毫秒） */
@@ -81,6 +92,7 @@ function buildConnector(
     acceptsC2C: config.onebot.c2cEnabled,
     autoAcceptFriend: config.onebot.autoAcceptFriend,
     autoAcceptGroupInvite: config.onebot.autoAcceptGroupInvite,
+    fileTransport: config.onebot.fileTransport,
     replyPolicy: {
       maxChars: config.onebot.maxChars,
       maxRepliesPerMsg: config.onebot.maxRepliesPerMsg,
@@ -158,51 +170,113 @@ async function main(): Promise<void> {
   });
 
   // --- 编排 -----------------------------------------------------------------
-  const dispatcher = new Dispatcher({
+  // 业务逻辑在这里显式组装：每个 stage / 闸门 / 服务都在本文件 new 出来并按序
+  // 排布，Orchestrator 只是运行机制（事件分流 + 驱动 stage 链），不决定有哪些
+  // 拦截、也不决定顺序。
+  //
+  // Ingress 顺序即架构约束：去重 → /offpeak 命令 → 谷时段闸 → 记录 → 准入
+  // （命令先于闸：管理员要能在峰时段关闸；闸先于记录与名额：被拦消息不写
+  // 对话记录、不占并发。详见 src/pipeline/ingress/types.ts）。
+  const stats = new PipelineStats();
+
+  // 谷时段闸服务：生效配置 = env 默认 + 运行期覆盖（持久化在 stateDir，
+  // 由管理员 /offpeak 命令热切换，下一条消息即生效）。
+  // 命令路由与闸拦截两个 stage 共享同一个实例。
+  const offpeak = new OffpeakGate({
+    defaults: {
+      enabled: config.offpeak.enabled,
+      windows: config.offpeak.windows,
+      timeZone: config.offpeak.timeZone,
+      modelPattern: config.offpeak.modelPattern,
+      weekendsAllDay: config.offpeak.weekendsAllDay,
+      holidays: new Set([...CN_HOLIDAYS_2026, ...config.offpeak.holidays]),
+    },
+    filePath: join(paths.stateDir, 'offpeak-override.json'),
+    logger: logger.child({ component: 'offpeak' }),
+  });
+
+  // 准入闸门：全局并发名额 + 每会话串行锁（全系统唯一一处每会话串行）
+  const admission = new AdmissionGate({
+    maxConcurrentTurns: config.pool.maxConcurrentTurns,
+    stats,
+  });
+
+  const turnRunner = new TurnRunner({
     config,
-    logger: logger.child({ component: 'dispatcher' }),
+    logger: logger.child({ component: 'turn-runner' }),
     pool,
-    connectors,
     conversations,
-    seen,
     sessions,
     paths,
+    stats,
+  });
+
+  const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
+
+  const stages: IngressStage[] = [
+    createDedupeStage({ seen, stats }),
+    offpeakCommands.stage(),
+    createOffpeakGateStage({ gate: offpeak, config, stats }),
+    createRecordStage({ conversations }),
+    admission.stage(),
+  ];
+
+  const orchestrator = new Orchestrator({
+    logger: logger.child({ component: 'orchestrator' }),
+    connectors,
+    admins: config.admins,
+    stats,
+    stages,
+    terminal: (ctx) => turnRunner.runTurn(ctx),
+    createResponder: (message, connector, policy, messageLogger) =>
+      new Responder({
+        message,
+        connector,
+        policy,
+        conversations,
+        stats,
+        logger: messageLogger,
+        // outbox 目录路径在这里拼好：Responder 不感知工作区布局，
+        // 只拿一个"该扫哪个目录"的绝对路径（目录不存在 = 没有产物）。
+        ...(config.media.enabled
+          ? {
+              media: {
+                outboxDir: join(workspacePathFor(paths, message.target.key), config.media.outboxDir),
+                maxFileBytes: config.media.maxFileBytes,
+                maxAttachments: config.media.maxAttachmentsPerMsg,
+                imageExtensions: config.media.imageExtensions,
+              },
+            }
+          : {}),
+      }),
+    turns: turnRunner,
+    status: () => ({
+      inFlight: admission.inUse,
+      queued: admission.queued,
+      offpeak: offpeak.snapshot(),
+    }),
   });
 
   // runtime 事件 → 编排器（按会话路由）
   pool.on('session.event', (conversationKey, notification) => {
-    dispatcher.routeSessionEvent(conversationKey, notification.event);
+    orchestrator.routeSessionEvent(conversationKey, notification.event);
   });
   pool.on('session.status', (conversationKey, notification) => {
-    dispatcher.routeSessionStatus(conversationKey, notification);
+    orchestrator.routeSessionStatus(conversationKey, notification);
   });
 
   // --- 连接器事件 → 编排器 ----------------------------------------------------
-  // 各平台的 handler 都是同步回调，我们在内部按会话串行链式调用，避免同一会话并发进入。
-  const eventChains = new Map<string, Promise<void>>();
-  const onConnectorEvent = (event: NormalizedEvent): void => {
-    // 消息与进群/加好友事件都按各自会话串行；其余系统事件共用一条链。
-    const key =
-      isUserMessage(event) || event.kind === 'group-add-robot' || event.kind === 'c2c-friend-add'
-        ? (event.target?.key ?? '__system__')
-        : '__system__';
-    const previous = eventChains.get(key) ?? Promise.resolve();
-    const next = previous
-      .catch(() => {})
-      .then(() => dispatcher.handleEvent(event))
-      .catch((error: unknown) => {
-        logger.error('处理事件链时出错', {
+  // 同步回调里直接派发：Ingress 管线的准入 stage 保证同一会话串行进入 turn，
+  // 这里只留一层 .catch 作为组装级保险（Orchestrator 自身永不抛错）。
+  for (const connector of connectors.values()) {
+    connector.on((event) => {
+      void orchestrator.handleEvent(event).catch((error: unknown) => {
+        logger.error('处理事件时出错', {
           kind: event.kind,
           error: error instanceof Error ? error.message : String(error),
         });
-      })
-      .finally(() => {
-        if (eventChains.get(key) === next) eventChains.delete(key);
       });
-    eventChains.set(key, next);
-  };
-  for (const connector of connectors.values()) {
-    connector.on(onConnectorEvent);
+    });
   }
 
   // --- 健康检查 -------------------------------------------------------------
@@ -216,7 +290,7 @@ async function main(): Promise<void> {
           [...connectors.entries()].map(([name, connector]) => [name, connector.health()]),
         ),
         runtime: { size: pool.size, activeConversationKeys: pool.activeConversationKeys() },
-        dispatcher: dispatcher.snapshotStats(),
+        dispatcher: orchestrator.snapshotStats(),
       }),
   });
   await health.start();
@@ -240,10 +314,10 @@ async function main(): Promise<void> {
 
     // 2. 等处理中的 turn 结束（有上限，避免卡死）
     const drainDeadline = Date.now() + DRAIN_TIMEOUT_MS;
-    while (dispatcher.snapshotStats().inFlight > 0 && Date.now() < drainDeadline) {
+    while (orchestrator.snapshotStats().inFlight > 0 && Date.now() < drainDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    const stats = dispatcher.snapshotStats();
+    const stats = orchestrator.snapshotStats();
     if (stats.inFlight > 0) {
       logger.warn('仍有 turn 未结束，强制继续关闭', { inFlight: stats.inFlight });
     }

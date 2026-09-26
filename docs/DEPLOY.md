@@ -372,6 +372,8 @@ docker stats qqbot-dsh
 | 只想服务群聊，不接受私聊 | `QQ_C2C_ENABLED=false`（`1<<25` 无法只订群聊，只能在这里关） |
 | 单聊回复条数不够 | 调小 `QQ_C2C_PROGRESS_MAX`；上限 `QQ_C2C_MAX_REPLIES_PER_MSG=4`，不能再高 |
 | 日志太吵 | `QQ_LOG_LEVEL=warn` |
+| 图片烧 token / 模型不支持图片 | `BOT_ATTACHMENT_ENABLED=false`（消息照收，图片变成 `[图片]` 占位） |
+| 图片太多/太大读不进来 | `BOT_ATTACHMENT_MAX_IMAGES`（默认 4）、`BOT_ATTACHMENT_MAX_BYTES`（默认 8MB）；排查看 `/metrics` 里的 `imagesInlined`/`imagesSkipped`，见 [RUNBOOK 4.5](RUNBOOK.md) |
 | 想给某个会话定规矩 | 在该会话工作区目录下写 `AGENTS.md`，DSH 会自动加载（改规则不用重建镜像） |
 
 ---

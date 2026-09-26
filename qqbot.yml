@@ -87,6 +87,11 @@ onebot:
   progressIntervalMs: 90000
   # OneBot 没有被动回复窗口，单轮超时可以放宽到任务真正需要的时长
   turnTimeoutMs: 600000
+  # 附件字节怎么传给框架（环境变量 ONEBOT_FILE_TRANSPORT）：
+  #   base64（默认）：文件内容编码进 WS 帧，跨容器部署也能用；
+  #   path          ：只传绝对路径，要求 bot 与框架同机同文件系统（省 33% 体积）。
+  # 注意 ws 库的 maxPayload 默认 100MiB，与 media.maxFileMB 联动。
+  fileTransport: base64
 
 # --- DSH runtime -------------------------------------------------------------
 dsh:
@@ -160,6 +165,54 @@ offpeak:
   # holidays:
   #   - 2027-01-01
   #   - 2027-01-02
+
+# --- 富媒体输入（图片 / 语音 / 引用 / 卡片送进模型）--------------------------
+# 与平台无关，官方与 OneBot 共用。环境变量前缀：BOT_ATTACHMENT_*
+#
+# 能收到什么、会怎么送进模型：
+#   - 图片：官方 attachments(content_type=image/*) 与 OneBot image 段 → 内联成
+#     多模态 image block（下载 → 嗅探真实格式 → base64）；
+#   - 引用：官方 message_type=103 的 msg_elements、OneBot reply 段（回查 get_msg）
+#     → 渲染成 `[引用 谁] 内容`，被引用消息里的图片同样会被内联；
+#   - 语音：官方给 asr_refer_text 时直接用它的识别文本（本项目不做本地语音识别）；
+#   - 视频/文件/卡片：渲染成 `[视频: x.mp4]` / `[文件: y.zip]` / `[卡片消息 …]`
+#     一行说明，不送字节。
+#
+# 注意：图片进 prompt 会消耗额外的 token 与带宽；用本地小模型/纯文本模型时
+# 建议把 enabled 设为 false（关掉后消息仍能收到，只是图片变成 `[图片]` 占位）。
+attachments:
+  # 是否把图片内联送进模型（需要模型支持多模态）
+  enabled: true
+  # 单条消息最多内联几张图（含引用消息里的图片）。超出的只留文字说明。
+  maxImages: 4
+  # 单张图片最大字节数。超限的只留文字说明——QQ 单图硬上限是 200MB，
+  # 照单全收会把 prompt 撑爆。
+  maxImageBytes: 8388608
+  # 单张图片下载超时（毫秒）；下载失败会降级成文字说明，不影响文字部分回答
+  downloadTimeoutMs: 15000
+
+# --- 富媒体出站（把 agent 生成的文件发给用户）--------------------------------
+# 与平台无关，官方与 OneBot 共用。环境变量前缀：BOT_MEDIA_*
+#
+# 机制（详见 docs/RICH-MEDIA-PLAN.md）：agent 把要发给用户的文件放进会话
+# 工作区的 outbox/ 子目录（persona 里已约定），一轮回答结束后机器人扫描该
+# 目录、逐个发送、发完归档到 outbox/.sent/。
+#   - 图片（png/jpg/jpeg/gif，白名单见下）以图片消息内联展示；
+#   - 其余一律以文件消息发送（可下载、可转发）；
+#   - 官方平台附件与文本共享回复配额：平时给文本保底 1 条，
+#     只剩 1 条额度时附件优先。
+media:
+  enabled: true
+  # 单附件体积上限（MB）。超出的文件降级为文本里的一行说明。
+  # base64 传输体积 +33%，不建议调大。
+  maxFileMB: 20
+  # 单次回复最多发几个附件，超出的降级为文本说明
+  maxAttachmentsPerMsg: 4
+  # 图片扩展名白名单（小写不带点）。svg/webp/bmp 等不在名单里的按文件发——
+  # "以文件形式收到的 svg"用户能打开，"以图片形式发被平台拒掉的"什么都看不到。
+  imageExtensions: [png, jpg, jpeg, gif]
+  # 工作区内的约定目录名（纯目录名，不能含路径分隔符）
+  outboxDir: outbox
 
 # --- 健康检查 ----------------------------------------------------------------
 # /healthz + /metrics；容器 HEALTHCHECK 探这个端口（compose 里未映射到宿主）

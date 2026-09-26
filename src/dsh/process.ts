@@ -18,6 +18,7 @@ import {
   HarnessSdkClient,
   SDK_SERVER_INFO_NAME,
   type InitializeResult,
+  type PromptContentBlock,
   type ProtocolViolationError,
   type SessionEventNotification,
   type SessionPromptResult,
@@ -190,15 +191,17 @@ export class DshRuntime extends EventEmitter {
     }
   }
 
-  /** 派发一次提示。返回入队回执；结果通过 session.event 流出。 */
-  async prompt(sessionId: string, text: string): Promise<SessionPromptResult> {
+  /**
+   * 派发一次提示。返回入队回执；结果通过 session.event 流出。
+   *
+   * `blocks` 允许 text + image 混排（多模态输入）。图片字节在 dsh/media.ts 里
+   * 已经过 MIME 嗅探与大小裁剪，这里只负责原样透传。
+   */
+  async prompt(sessionId: string, blocks: PromptContentBlock[]): Promise<SessionPromptResult> {
     if (this._state !== 'ready' || this.client === undefined) {
       throw new Error(`runtime 状态为 ${this._state}，不能 prompt()（需要 ready）`);
     }
-    return this.client.prompt({
-      sessionId,
-      contentBlocks: [{ type: 'text', text }],
-    });
+    return this.client.prompt({ sessionId, contentBlocks: blocks });
   }
 
   /** 是否已就绪且可接受新提示 */

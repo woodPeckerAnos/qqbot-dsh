@@ -340,6 +340,58 @@ describe('QqGateway 事件归一化', () => {
     await gateway.stop();
   });
 
+  it('带图片附件与引用消息的事件归一化出可读正文与 parts', async () => {
+    const { gateway, events, socket } = await readyGateway();
+    socket.fireMessage({
+      id: 'EVENT-RICH',
+      op: OpCode.DISPATCH,
+      s: 20,
+      t: 'GROUP_AT_MESSAGE_CREATE',
+      d: {
+        id: 'MSG-RICH',
+        content: '这个建议不错',
+        group_openid: 'GROUP-A',
+        timestamp: '2026-07-21T10:02:00+08:00',
+        message_type: 103,
+        author: { member_openid: 'MEMBER-1', username: '小华' },
+        attachments: [
+          {
+            content_type: 'image/jpeg',
+            filename: 'photo.jpg',
+            url: 'https://multimedia.nt.qq.com.cn/download?appid=x',
+            width: 1920,
+            height: 1080,
+          },
+        ],
+        msg_elements: [
+          {
+            msg_idx: 'REFIDX_a==',
+            author: { username: '小明' },
+            message_type: 103,
+            content: '每天坚持阅读半小时',
+          },
+        ],
+        message_scene: { source: 'default', ext: ['ref_msg_idx=REFIDX_a=='] },
+      },
+    });
+
+    const message = events.find((e) => (e as { kind: string }).kind === 'group-at-message') as {
+      content: string;
+      parts: Array<{ type: string; text?: string; url?: string }>;
+    };
+    expect(message).toBeDefined();
+    // 引用在前、本条正文与图片标记在后
+    expect(message.content).toBe('[引用 小明] 每天坚持阅读半小时\n这个建议不错\n[图片: photo.jpg]');
+    expect(message.parts[0]).toMatchObject({ type: 'quote', author: '小明' });
+    expect(message.parts[1]).toEqual({ type: 'text', text: '这个建议不错' });
+    expect(message.parts[2]).toMatchObject({
+      type: 'image',
+      url: 'https://multimedia.nt.qq.com.cn/download?appid=x',
+      mimeType: 'image/jpeg',
+    });
+    await gateway.stop();
+  });
+
   it('C2C_MESSAGE_CREATE 归一化出单聊目标（会话键带 c2c: 前缀，避免与群 openid 混用）', async () => {
     const { gateway, events, socket } = await readyGateway();
     socket.fireMessage({

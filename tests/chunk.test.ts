@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { segmentText } from '../src/pipeline/chunk.js';
+import { segmentText } from '../src/pipeline/egress/chunk.js';
 import {
   defuseMentions,
   normalizeWhitespace,

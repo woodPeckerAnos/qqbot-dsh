@@ -32,7 +32,7 @@ import {
   OffpeakConfigError,
   parseWindowsSpec,
   type OffpeakWindow,
-} from './offpeak.js';
+} from './offpeak/index.js';
 
 export { ConfigError } from './config-error.js';
 
@@ -112,6 +112,8 @@ export interface Config {
     autoAcceptFriend: boolean;
     /** 收到拉群邀请时自动同意（默认关闭：被拉进陌生群意味着陌生人能触发 agent） */
     autoAcceptGroupInvite: boolean;
+    /** 附件字节传输方式：base64（跨容器安全）或 path（同机部署省体积） */
+    fileTransport: 'base64' | 'path';
   };
   dsh: {
     provider: string;
@@ -137,7 +139,7 @@ export interface Config {
   };
   /**
    * 谷时段闸：命中 modelPattern 的模型在谷时段窗口之外不调用 API，直接回复提示。
-   * 运行期可被管理员 /offpeak 命令覆盖（见 offpeak.ts），这里只是 env/文件默认层。
+   * 运行期可被管理员 /offpeak 命令覆盖（见 offpeak/ 目录），这里只是 env/文件默认层。
    */
   offpeak: {
     /** 总开关（QQ_OFFPEAK_ENABLED / offpeak.enabled，默认 false） */
@@ -153,10 +155,54 @@ export interface Config {
     /** 追加的全天谷价日期（YYYY-MM-DD），与内置官方节假日表合并 */
     holidays: string[];
   };
+  /**
+   * 富媒体输入（图片 / 语音 / 引用 / 卡片）送进模型的总开关与配额。
+   *
+   * 与平台无关：官方与 OneBot 都走这一套。关闭后所有消息都退回"纯文本 +
+   * `[图片]` 之类占位标记"的行为，适合模型不支持多模态时使用。
+   */
+  attachments: AttachmentsConfig;
+  /**
+   * 富媒体出站（agent 产物回发用户）：outbox 目录约定 + 体积/数量上限。
+   *
+   * 与平台无关：官方走 /files 上传 + msg_type=7，OneBot 走消息段/upload 动作，
+   * 差异都在适配器内部。agent 侧只有一条约定——把要发的文件放进工作区的
+   * `outboxDir` 目录（见 dsh-profile 的 persona 与 docs/RICH-MEDIA-PLAN.md）。
+   */
+  media: MediaConfig;
   health: {
     port: number;
   };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
+}
+
+/** 富媒体出站配置（见 Config.media）。 */
+export interface MediaConfig {
+  /** 是否扫描并发送 outbox 产物（BOT_MEDIA_ENABLED / media.enabled） */
+  enabled: boolean;
+  /** 单附件体积上限（字节）。超出的文件降级为文本说明 */
+  maxFileBytes: number;
+  /** 单次回复最多发几个附件（超出的降级为文本说明） */
+  maxAttachmentsPerMsg: number;
+  /** 图片扩展名白名单（小写不带点）；其余一律按文件发 */
+  imageExtensions: string[];
+  /**
+   * 工作区内的约定目录名（BOT_MEDIA_OUTBOX_DIR / media.outboxDir，默认 outbox）。
+   * 必须是不含路径分隔符的纯目录名——它会拼进每个会话的工作区路径。
+   */
+  outboxDir: string;
+}
+
+/** 富媒体输入配额（见 Config.attachments）。 */
+export interface AttachmentsConfig {
+  /** 是否把图片内联送进模型（BOT_ATTACHMENT_ENABLED / attachments.enabled） */
+  enabled: boolean;
+  /** 单条消息最多内联几张图（含引用消息里的图片） */
+  maxImages: number;
+  /** 单张图片最大字节数，超过则只留文字说明 */
+  maxImageBytes: number;
+  /** 单张图片下载超时（毫秒） */
+  downloadTimeoutMs: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -434,6 +480,28 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   const dshFile = file.dsh ?? {};
   const poolFile = file.pool ?? {};
   const pathsFile = file.paths ?? {};
+  const attachmentsFile = file.attachments ?? {};
+  const mediaFile = file.media ?? {};
+
+  // outboxDir 会拼进每个会话的工作区路径，必须是纯目录名（不含分隔符、不是 . / ..），
+  // 否则"产物只能落在会话工作区内"这条安全不变量就被配置自己打破了。
+  const mediaOutboxDir = pickString(env, 'BOT_MEDIA_OUTBOX_DIR', mediaFile.outboxDir, 'outbox');
+  if (
+    mediaOutboxDir.includes('/') ||
+    mediaOutboxDir.includes('\\') ||
+    mediaOutboxDir === '.' ||
+    mediaOutboxDir === '..'
+  ) {
+    throw new ConfigError(
+      `media 的 outboxDir 必须是纯目录名（不含路径分隔符），收到 ${JSON.stringify(mediaOutboxDir)}`,
+      ['正确示例：outbox、deliverables'],
+    );
+  }
+
+  const mediaImageExtensionsRaw = pickList(env, 'BOT_MEDIA_IMAGE_EXTENSIONS', mediaFile.imageExtensions);
+  const mediaImageExtensions = (
+    mediaImageExtensionsRaw.length > 0 ? mediaImageExtensionsRaw : ['png', 'jpg', 'jpeg', 'gif']
+  ).map((ext) => ext.trim().toLowerCase().replace(/^\./, ''));
 
   return {
     connectors: enabledConnectors,
@@ -469,6 +537,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       turnTimeoutMs: onebotTurnTimeoutMs,
       autoAcceptFriend: pickBool(env, 'ONEBOT_AUTO_ACCEPT_FRIEND', obFile.autoAcceptFriend, true),
       autoAcceptGroupInvite: pickBool(env, 'ONEBOT_AUTO_ACCEPT_GROUP_INVITE', obFile.autoAcceptGroupInvite, false),
+      fileTransport: pickEnum(env, 'ONEBOT_FILE_TRANSPORT', obFile.fileTransport, ['base64', 'path'] as const, 'base64', 'onebot.fileTransport'),
     },
     dsh: {
       provider: pickString(env, 'DSH_PROVIDER', dshFile.provider, 'deepseek-official'),
@@ -496,6 +565,25 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       modelPattern: pickString(env, 'QQ_OFFPEAK_MODEL_PATTERN', file.offpeak?.modelPattern, 'deepseek'),
       weekendsAllDay: pickBool(env, 'QQ_OFFPEAK_WEEKENDS', file.offpeak?.weekendsAllDay, true),
       holidays: offpeakHolidays,
+    },
+    attachments: {
+      enabled: pickBool(env, 'BOT_ATTACHMENT_ENABLED', attachmentsFile.enabled, true),
+      // 上限都刻意保守：一条消息塞十几张图既烧 token 又压不住延迟，
+      // 而 QQ 单图硬上限是 200MB，绝不能照抄。
+      maxImages: pickInt(env, 'BOT_ATTACHMENT_MAX_IMAGES', attachmentsFile.maxImages, 4, { min: 0, max: 20 }, 'attachments.maxImages'),
+      maxImageBytes: pickInt(env, 'BOT_ATTACHMENT_MAX_BYTES', attachmentsFile.maxImageBytes, 8 * 1024 * 1024, { min: 1024, max: 200 * 1024 * 1024 }, 'attachments.maxImageBytes'),
+      downloadTimeoutMs: pickInt(env, 'BOT_ATTACHMENT_TIMEOUT_MS', attachmentsFile.downloadTimeoutMs, 15_000, { min: 1_000, max: 120_000 }, 'attachments.downloadTimeoutMs'),
+    },
+    media: {
+      enabled: pickBool(env, 'BOT_MEDIA_ENABLED', mediaFile.enabled, true),
+      // 默认 20MB：base64 传输膨胀 +33%，再大既拖慢发送也容易撞上平台/框架的上限
+      maxFileBytes:
+        pickInt(env, 'BOT_MEDIA_MAX_FILE_MB', mediaFile.maxFileMB, 20, { min: 1, max: 100 }, 'media.maxFileMB') *
+        1024 *
+        1024,
+      maxAttachmentsPerMsg: pickInt(env, 'BOT_MEDIA_MAX_ATTACHMENTS', mediaFile.maxAttachmentsPerMsg, 4, { min: 1, max: 10 }, 'media.maxAttachmentsPerMsg'),
+      imageExtensions: mediaImageExtensions,
+      outboxDir: mediaOutboxDir,
     },
     health: {
       port: pickInt(env, 'QQ_HEALTH_PORT', file.health?.port, 8080, { min: 0, max: 65_535 }, 'health.port'),
@@ -545,6 +633,14 @@ export function describeConfig(config: Config): Record<string, unknown> {
     pool: config.pool,
     paths: config.paths,
     adminCount: config.admins.length,
+    attachments: config.attachments,
+    media: {
+      enabled: config.media.enabled,
+      maxFileBytes: config.media.maxFileBytes,
+      maxAttachmentsPerMsg: config.media.maxAttachmentsPerMsg,
+      imageExtensions: config.media.imageExtensions,
+      outboxDir: config.media.outboxDir,
+    },
     offpeak: {
       enabled: config.offpeak.enabled,
       windows: formatWindows(config.offpeak.windows),

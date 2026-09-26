@@ -185,7 +185,87 @@ export function describeIntents(mask: number): string[] {
 // 事件（op=0 Dispatch）
 // ---------------------------------------------------------------------------
 
-/** GROUP_AT_MESSAGE_CREATE 等消息事件的 d */
+/**
+ * 接收侧的消息内容类型（`message_type`）。
+ *
+ * 依据官方「消息类型」页与 group_message_create / c2c_message_create 事件页：
+ *   0=普通文本(content) / 3=结构化卡片(ark_data) / 101=并行消息 /
+ *   102=聊天记录 / 103=引用消息(msg_elements)。
+ * ⚠ 图片、视频、语音、文件**不**由 message_type 表达，而是走 `attachments`。
+ */
+export const MessageType = {
+  TEXT: 0,
+  ARK: 3,
+  PARALLEL: 101,
+  CHAT_RECORD: 102,
+  QUOTE: 103,
+} as const;
+
+/**
+ * 消息场景上下文。
+ *
+ * `ext` 是 `key=value` 字符串数组，已核实会出现：
+ *   - `msg_idx=...`       本条消息索引（官方建议用它做去重）
+ *   - `ref_msg_idx=...`   被引用的消息索引
+ *   - `auth_token=...`    鉴权令牌
+ */
+export interface MessageScene {
+  source?: string;
+  ext?: string[];
+}
+
+/**
+ * 消息附件。
+ *
+ * `content_type` 是判定附件种类的唯一依据，已核实取值：
+ * `voice`（语音）、`image/jpeg`、`image/png`、`image/gif`、`video/mp4`、`file`（群文件）。
+ * 图片附件会额外带 `width` / `height`。
+ */
+export interface MessageAttachment {
+  url?: string;
+  filename?: string;
+  /** 图片宽度（像素），非图片附件无此字段 */
+  width?: number;
+  /** 图片高度（像素），非图片附件无此字段 */
+  height?: number;
+  size?: number;
+  content_type?: string;
+  /** 语音消息转换后的 WAV 地址 */
+  voice_wav_url?: string;
+  /** 语音消息的 ASR 参考结果（可直接当文本用，省一次语音识别） */
+  asr_refer_text?: string;
+}
+
+/** 结构化卡片（message_type=3）的数据 */
+export interface ArkData {
+  prompt?: string;
+  ark_type?: string;
+  ark_name?: string;
+  fields?: Record<string, unknown>;
+}
+
+/**
+ * 消息元素（message_type=103 引用消息时，被引用的内容在这里）。
+ *
+ * 结构是**递归**的：元素自己也可能带 `msg_elements`（引用里再引用）。
+ * `message_type` 取值与事件主体一致（0/3/101/102/103）。
+ */
+export interface MsgElement {
+  msg_idx?: string;
+  author?: {
+    id?: string;
+    username?: string;
+    member_openid?: string;
+    user_openid?: string;
+  };
+  message_type?: number;
+  content?: string;
+  attachments?: MessageAttachment[];
+  ark_data?: ArkData;
+  msg_elements?: MsgElement[];
+}
+
+/** 群 @机器人 / 群全量消息事件的 d（两个事件字段完全一致） */
 export interface GroupMessageEvent {
   /** 消息 id，被动回复时作为 msg_id 使用 */
   id: string;
@@ -203,15 +283,12 @@ export interface GroupMessageEvent {
     username?: string;
     bot?: boolean;
   };
-  message_scene?: { source?: string; ext?: string[] };
-  attachments?: Array<{
-    url?: string;
-    filename?: string;
-    content_type?: string;
-    size?: number;
-    voice_wav_url?: string;
-    asr_refer_text?: string;
-  }>;
+  message_scene?: MessageScene;
+  attachments?: MessageAttachment[];
+  /** 消息里 @ 的用户列表（不含机器人自己） */
+  mentions?: Array<{ id?: string; username?: string; bot?: boolean }>;
+  ark_data?: ArkData;
+  msg_elements?: MsgElement[];
 }
 
 /** C2C_MESSAGE_CREATE（单聊消息）的 d */
@@ -227,16 +304,12 @@ export interface C2CMessageEvent {
     /** 单聊用户在机器人下的 openid（与群里的 member_openid 不是同一个） */
     user_openid?: string;
     union_openid?: string;
+    username?: string;
   };
-  message_scene?: { source?: string; ext?: string[] };
-  attachments?: Array<{
-    url?: string;
-    filename?: string;
-    content_type?: string;
-    size?: number;
-    voice_wav_url?: string;
-    asr_refer_text?: string;
-  }>;
+  message_scene?: MessageScene;
+  attachments?: MessageAttachment[];
+  ark_data?: ArkData;
+  msg_elements?: MsgElement[];
 }
 
 /** GROUP_ADD_ROBOT 的 d（时间戳是 unix 秒，不是 RFC3339） */
@@ -263,6 +336,45 @@ export const MsgType = {
   MARKDOWN: 2,
   MEDIA: 7,
 } as const;
+
+// ---------------------------------------------------------------------------
+// 富媒体上传（/files）
+// ---------------------------------------------------------------------------
+
+/**
+ * 上传文件的类型（file_type）。本期只用 1 与 4；2/3 留作扩展。
+ *
+ * ⚠ 待实测：file_type=4（文件）是否对机器人开放、各类型的大小上限，
+ * 见 docs/RICH-MEDIA-PLAN.md §10。
+ */
+export const MediaFileType = {
+  IMAGE: 1,
+  VIDEO: 2,
+  VOICE: 3,
+  FILE: 4,
+} as const;
+
+/**
+ * POST /v2/groups/{group_openid}/files 与 /v2/users/{openid}/files 请求体。
+ *
+ * `srv_send_msg=false`：只上传拿 file_info，发送仍走 /messages 端点——
+ * 这样才能保持 msg_id / msg_seq 的被动回复语义（上传与发送分离）。
+ * 本服务没有公网可下载地址，所以只用 file_data（base64），不用 url。
+ */
+export interface UploadFileRequest {
+  file_type: number;
+  srv_send_msg: boolean;
+  /** 文件内容的 base64 编码 */
+  file_data?: string;
+}
+
+/** 上传响应。file_info 有时效（ttl 秒），拿到就要立刻用，不缓存。 */
+export interface UploadFileResponse {
+  file_info?: string;
+  ttl?: number;
+  /** 过期时间（unix 秒），不同文档版本字段名不一，留作诊断 */
+  expired_time?: number;
+}
 
 /**
  * 发送消息请求体。**群聊与单聊共用同一套字段**，只是端点不同：
