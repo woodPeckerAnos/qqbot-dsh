@@ -69,3 +69,29 @@ export function renderMessage(text: string, options: RenderOptions): SendMessage
 export function messageTextLength(body: SendMessageRequest): number {
   return body.content?.length ?? body.markdown?.content.length ?? 0;
 }
+
+/**
+ * 渲染一条富媒体消息（msg_type=7）的请求体。
+ *
+ * 与 renderMessage 的关系：文本/markdown 走 renderMessage；附件走这里。
+ * 两者不合并成一条消息——msg_type=7 能否同时携带 content 文本尚未实测
+ * （按"不允许"设计，见 docs/RICH-MEDIA-PLAN.md §10），且一次 reply 对应
+ * 一个 msg_seq 的账本语义也装不下混合消息。
+ */
+export function renderMediaMessage(
+  fileInfo: string,
+  options: Pick<RenderOptions, 'msgId' | 'eventId' | 'msgSeq'>,
+): SendMessageRequest {
+  const body: SendMessageRequest = {
+    msg_type: MsgType.MEDIA,
+    media: { file_info: fileInfo },
+    msg_seq: options.msgSeq,
+  };
+  // msg_id 与 event_id 互斥，规则同 renderMessage
+  if (options.msgId !== undefined && options.msgId !== '') {
+    body.msg_id = options.msgId;
+  } else if (options.eventId !== undefined && options.eventId !== '') {
+    body.event_id = options.eventId;
+  }
+  return body;
+}

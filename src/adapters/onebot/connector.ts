@@ -16,6 +16,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 
@@ -28,6 +29,7 @@ import type {
   MessageQuotePart,
   NormalizedEvent,
   NormalizedMessage,
+  OutgoingAttachment,
   OutgoingMessage,
   ReplyContext,
   ReplyPolicy,
@@ -55,6 +57,12 @@ export interface OnebotConnectorOptions {
   autoAcceptGroupInvite: boolean;
   /** 回复策略（群聊与单聊相同——OneBot 没有官方那种按会话类型的配额差） */
   replyPolicy: ReplyPolicy;
+  /**
+   * 附件字节怎么传给框架（ONEBOT_FILE_TRANSPORT / onebot.fileTransport）：
+   *   - `base64`（默认）：文件内容编码进 WS 帧，跨容器部署也能用；
+   *   - `path`：只传绝对路径，要求 bot 与框架同机同文件系统（省 33% 体积）。
+   */
+  fileTransport?: 'base64' | 'path';
   logger: Logger;
   /** 动作响应等待超时（毫秒） */
   actionTimeoutMs?: number;
@@ -218,9 +226,28 @@ export class OnebotConnector implements BotConnector {
 
   async reply(ctx: ReplyContext, out: OutgoingMessage): Promise<void> {
     const session = this.pickSession(ctx.target.key);
-    // OneBot 正文是纯文本：@ 用消息段表达，文本里的 "@xx" 不会触发提醒，
-    // 所以不做 defuseMentions，只剥 markdown 与控制字符。
+    const attachments = out.attachments ?? [];
+
+    // 附件与文本分条发送（Responder 保证一次 reply 要么纯文本、要么一个附件；
+    // 这里的文本分支兜底"两者都有"的防御场景）。
+    // OneBot 其实支持 text+image 混合消息段，合并能省消息条数，但编排层的
+    // 账本语义是"一次 reply = 一条消息"，且附件需要逐个隔离失败——
+    // OneBot 配额足够宽（默认 10），分条没有实际代价。
     const text = normalizeWhitespace(stripControlChars(toPlainText(out.text)));
+    // 无附件时保持旧行为（哪怕空文本也发，交给平台判定）；有附件时空文本不再发。
+    if (text !== '' || attachments.length === 0) {
+      await this.sendText(session, ctx, text);
+    }
+    for (const attachment of attachments) {
+      await this.sendAttachment(session, ctx, attachment);
+    }
+  }
+
+  private async sendText(
+    session: Session,
+    ctx: ReplyContext,
+    text: string,
+  ): Promise<void> {
     const message = [{ type: 'text', data: { text } }];
     const data =
       ctx.target.kind === 'c2c'
@@ -239,6 +266,61 @@ export class OnebotConnector implements BotConnector {
       length: text.length,
       messageId: (data as { message_id?: number } | null)?.message_id,
     });
+  }
+
+  /**
+   * 发一个附件：图片走消息段（客户端内联展示），其余走群/私聊文件上传动作。
+   *
+   * file 参数的两种形态见 options.fileTransport 的注释。注意 ws 库的 maxPayload
+   * 默认 100MiB，与全局 media.maxFileMB 上限联动（base64 后 +33%）。
+   */
+  private async sendAttachment(
+    session: Session,
+    ctx: ReplyContext,
+    attachment: OutgoingAttachment,
+  ): Promise<void> {
+    const file = await this.encodeAttachment(attachment);
+    if (attachment.kind === 'image') {
+      const message = [{ type: 'image', data: { file } }];
+      const data =
+        ctx.target.kind === 'c2c'
+          ? await this.callAction(session, 'send_private_msg', {
+              user_id: Number(ctx.target.id),
+              message,
+            })
+          : await this.callAction(session, 'send_group_msg', {
+              group_id: Number(ctx.target.id),
+              message,
+            });
+      this.options.logger.debug('OneBot 图片已发送', {
+        conversation: ctx.target.key,
+        fileName: attachment.fileName,
+        sizeBytes: attachment.sizeBytes,
+        messageId: (data as { message_id?: number } | null)?.message_id,
+      });
+      return;
+    }
+    const params =
+      ctx.target.kind === 'c2c'
+        ? { user_id: Number(ctx.target.id), file, name: attachment.fileName }
+        : { group_id: Number(ctx.target.id), file, name: attachment.fileName };
+    await this.callAction(
+      session,
+      ctx.target.kind === 'c2c' ? 'upload_private_file' : 'upload_group_file',
+      params,
+    );
+    this.options.logger.debug('OneBot 文件已上传', {
+      conversation: ctx.target.key,
+      fileName: attachment.fileName,
+      sizeBytes: attachment.sizeBytes,
+    });
+  }
+
+  /** 按 fileTransport 编码附件：base64:// URI 或绝对路径。 */
+  private async encodeAttachment(attachment: OutgoingAttachment): Promise<string> {
+    if ((this.options.fileTransport ?? 'base64') === 'path') return attachment.absPath;
+    const data = await readFile(attachment.absPath);
+    return `base64://${data.toString('base64')}`;
   }
 
   // -------------------------------------------------------------------------

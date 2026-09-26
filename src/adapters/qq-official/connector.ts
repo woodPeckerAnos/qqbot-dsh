@@ -9,6 +9,8 @@
  * 编排层只看到 BotConnector 接口，不感知以上任何细节。
  */
 
+import { readFile } from 'node:fs/promises';
+
 import type {
   BotConnector,
   ConnectorHealth,
@@ -16,6 +18,7 @@ import type {
   MediaBytes,
   MediaFetchOptions,
   NormalizedEvent,
+  OutgoingAttachment,
   OutgoingMessage,
   RemoteMedia,
   ReplyContext,
@@ -29,8 +32,9 @@ import {
   type EventSourceHealth,
   type WebSocketFactory,
 } from './gateway.js';
-import { renderMessage } from './render.js';
+import { renderMediaMessage, renderMessage } from './render.js';
 import { TokenManager } from './token.js';
+import { MediaFileType, type UploadFileRequest } from './types.js';
 
 /** access_token 状态快照（health 展示用） */
 export interface TokenSnapshot {
@@ -69,6 +73,7 @@ export class QqOfficialConnector implements BotConnector {
       appSecret: options.appSecret,
       apiBase: options.apiBase,
       logger: options.logger.child({ component: 'token' }),
+      ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
     });
     this.api = new QqApi({
       apiBase: options.apiBase,
@@ -113,6 +118,29 @@ export class QqOfficialConnector implements BotConnector {
   }
 
   async reply(ctx: ReplyContext, out: OutgoingMessage): Promise<void> {
+    const attachments = out.attachments ?? [];
+    if (attachments.length > 0) {
+      // 一次 reply = 一个 msg_seq，装不下"文本 + 附件"混合消息；
+      // Responder 保证二者分次调用。这里防御性地只发第一个附件，
+      // 多余的（不该出现）记 warn 丢弃，避免同 seq 重发被平台去重（40054005）。
+      if (out.text !== '') {
+        this.options.logger.warn('同一 reply 调用同时携带文本与附件，文本部分被丢弃', {
+          conversation: ctx.target.key,
+          seq: ctx.seq,
+        });
+      }
+      if (attachments.length > 1) {
+        this.options.logger.warn('同一 reply 调用携带多个附件，只发第一个', {
+          conversation: ctx.target.key,
+          seq: ctx.seq,
+          dropped: attachments.slice(1).map((item) => item.fileName),
+        });
+      }
+      const first = attachments[0];
+      if (first !== undefined) await this.sendAttachment(ctx, first);
+      return;
+    }
+
     const body = renderMessage(out.text, {
       msgType: this.options.msgType,
       msgSeq: ctx.seq,
@@ -124,6 +152,44 @@ export class QqOfficialConnector implements BotConnector {
       return;
     }
     await this.api.sendGroupMessage(ctx.target.id, body);
+  }
+
+  /**
+   * 发一个附件：先 /files 上传拿 file_info（srv_send_msg=false），
+   * 再走 /messages 发 msg_type=7——两步都保持 msg_id/msg_seq 被动回复语义。
+   */
+  private async sendAttachment(ctx: ReplyContext, attachment: OutgoingAttachment): Promise<void> {
+    const data = await readFile(attachment.absPath);
+    const upload: UploadFileRequest = {
+      file_type: attachment.kind === 'image' ? MediaFileType.IMAGE : MediaFileType.FILE,
+      srv_send_msg: false,
+      file_data: data.toString('base64'),
+    };
+    const uploaded =
+      ctx.target.kind === 'c2c'
+        ? await this.api.uploadUserFile(ctx.target.id, upload)
+        : await this.api.uploadGroupFile(ctx.target.id, upload);
+    if (uploaded.file_info === undefined || uploaded.file_info === '') {
+      throw new Error('上传富媒体文件失败：响应里没有 file_info');
+    }
+
+    const body = renderMediaMessage(uploaded.file_info, {
+      msgSeq: ctx.seq,
+      ...(ctx.msgId !== undefined && ctx.msgId !== '' ? { msgId: ctx.msgId } : {}),
+      ...(ctx.eventId !== undefined && ctx.eventId !== '' ? { eventId: ctx.eventId } : {}),
+    });
+    if (ctx.target.kind === 'c2c') {
+      await this.api.sendUserMessage(ctx.target.id, body);
+    } else {
+      await this.api.sendGroupMessage(ctx.target.id, body);
+    }
+    this.options.logger.debug('官方富媒体消息已发送', {
+      conversation: ctx.target.key,
+      fileName: attachment.fileName,
+      kind: attachment.kind,
+      sizeBytes: attachment.sizeBytes,
+      seq: ctx.seq,
+    });
   }
 
   /**

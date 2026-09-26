@@ -337,6 +337,45 @@ export const MsgType = {
   MEDIA: 7,
 } as const;
 
+// ---------------------------------------------------------------------------
+// 富媒体上传（/files）
+// ---------------------------------------------------------------------------
+
+/**
+ * 上传文件的类型（file_type）。本期只用 1 与 4；2/3 留作扩展。
+ *
+ * ⚠ 待实测：file_type=4（文件）是否对机器人开放、各类型的大小上限，
+ * 见 docs/RICH-MEDIA-PLAN.md §10。
+ */
+export const MediaFileType = {
+  IMAGE: 1,
+  VIDEO: 2,
+  VOICE: 3,
+  FILE: 4,
+} as const;
+
+/**
+ * POST /v2/groups/{group_openid}/files 与 /v2/users/{openid}/files 请求体。
+ *
+ * `srv_send_msg=false`：只上传拿 file_info，发送仍走 /messages 端点——
+ * 这样才能保持 msg_id / msg_seq 的被动回复语义（上传与发送分离）。
+ * 本服务没有公网可下载地址，所以只用 file_data（base64），不用 url。
+ */
+export interface UploadFileRequest {
+  file_type: number;
+  srv_send_msg: boolean;
+  /** 文件内容的 base64 编码 */
+  file_data?: string;
+}
+
+/** 上传响应。file_info 有时效（ttl 秒），拿到就要立刻用，不缓存。 */
+export interface UploadFileResponse {
+  file_info?: string;
+  ttl?: number;
+  /** 过期时间（unix 秒），不同文档版本字段名不一，留作诊断 */
+  expired_time?: number;
+}
+
 /**
  * 发送消息请求体。**群聊与单聊共用同一套字段**，只是端点不同：
  *   - 群聊：POST /v2/groups/{group_openid}/messages

@@ -6,6 +6,8 @@
  *   - POST /v2/groups/{group_openid}/messages          发群消息
  *   - POST /v2/users/{user_openid}/messages            发单聊消息
  *   - POST /v2/users/{user_openid}/stream_messages     流式发单聊消息（本 MVP 未使用）
+ *   - POST /v2/groups/{group_openid}/files             上传群富媒体（拿 file_info）
+ *   - POST /v2/users/{user_openid}/files               上传单聊富媒体（拿 file_info）
  *
  * 发消息关键约束（群聊与单聊一致）：
  *   - `Authorization: QQBot <access_token>`；
@@ -24,6 +26,8 @@ import {
   type SendUserMessageRequest,
   type SendUserStreamMessageRequest,
   type SendMessageResponse,
+  type UploadFileRequest,
+  type UploadFileResponse,
 } from './types.js';
 
 export interface QqApiOptions {
@@ -86,12 +90,15 @@ export class QqApi {
     method: string,
     path: string,
     body?: unknown,
-    options: { retryOn401?: boolean } = {},
+    options: { retryOn401?: boolean; timeoutMs?: number } = {},
   ): Promise<T> {
     const token = await this.options.tokenManager.get();
     const url = `${this.options.apiBase.replace(/\/+$/, '')}${path}`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.options.timeoutMs ?? 15_000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      options.timeoutMs ?? this.options.timeoutMs ?? 15_000,
+    );
     timeout.unref?.();
 
     let response: Response;
@@ -150,6 +157,40 @@ export class QqApi {
   /** 取 WebSocket 接入点。 */
   async getGateway(): Promise<GatewayResponse> {
     return this.request<GatewayResponse>('GET', '/gateway');
+  }
+
+  /**
+   * 上传群富媒体文件，返回可用来发 msg_type=7 消息的 file_info。
+   *
+   * 注意（依据 docs/RICH-MEDIA-PLAN.md §6.1）：
+   *   - `srv_send_msg` 必须 false：只上传不发送，发送走 /messages 端点，
+   *     否则丢掉 msg_id/msg_seq 的被动回复语义；
+   *   - file_info 有时效，调用方拿到后要立刻发送，不缓存；
+   *   - 上传的是 base64 后的字节（体积 +33%），单次超时放宽到 60s。
+   */
+  async uploadGroupFile(
+    groupOpenid: string,
+    file: UploadFileRequest,
+  ): Promise<UploadFileResponse> {
+    return this.request<UploadFileResponse>(
+      'POST',
+      `/v2/groups/${encodeURIComponent(groupOpenid)}/files`,
+      file,
+      { timeoutMs: 60_000 },
+    );
+  }
+
+  /** 上传单聊富媒体文件（语义同 uploadGroupFile）。 */
+  async uploadUserFile(
+    userOpenId: string,
+    file: UploadFileRequest,
+  ): Promise<UploadFileResponse> {
+    return this.request<UploadFileResponse>(
+      'POST',
+      `/v2/users/${encodeURIComponent(userOpenId)}/files`,
+      file,
+      { timeoutMs: 60_000 },
+    );
   }
 
   /**

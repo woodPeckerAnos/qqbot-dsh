@@ -9,6 +9,9 @@
  */
 
 import { describe, expect, it, afterEach } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import WebSocket from 'ws';
 
 import {
@@ -347,10 +350,12 @@ async function connectClient(
 describe('OneBot 反向 WS 回路', () => {
   let connector: OnebotConnector | undefined;
   const clients: WebSocket[] = [];
+  const tempDirs: string[] = [];
   afterEach(async () => {
     for (const ws of clients.splice(0)) ws.close();
     await connector?.stop();
     connector = undefined;
+    for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true });
   });
 
   it('事件归一化进来，reply 以 action 帧发回同一条连接', async () => {
@@ -559,5 +564,124 @@ describe('OneBot 反向 WS 回路', () => {
     expect(health.warnings?.join('')).toContain('尚无框架客户端');
     await connector.stop();
     expect(connector.health().connected).toBe(false);
+  });
+
+  // -----------------------------------------------------------------------
+  // 富媒体出站（agent 产物回发）
+  // -----------------------------------------------------------------------
+
+  async function makeAttachmentFile(name: string, content: string): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'qqbot-onebot-media-'));
+    tempDirs.push(dir);
+    const path = join(dir, name);
+    await writeFile(path, content);
+    return path;
+  }
+
+  /** 回复并等框架侧收到 n 个 action 帧，逐个回 ok。 */
+  async function replyAndCollect(
+    ws: WebSocket,
+    replyPromise: Promise<void>,
+    count: number,
+  ): Promise<Record<string, unknown>[]> {
+    const actions: Record<string, unknown>[] = [];
+    const allReceived = new Promise<void>((resolve) => {
+      const handler = (data: WebSocket.RawData): void => {
+        const frame = JSON.parse(String(data)) as Record<string, unknown>;
+        if (frame['action'] === undefined) return;
+        actions.push(frame);
+        ws.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 100 }, echo: frame['echo'] }));
+        if (actions.length >= count) {
+          ws.off('message', handler);
+          resolve();
+        }
+      };
+      ws.on('message', handler);
+    });
+    await Promise.all([replyPromise, allReceived]);
+    return actions;
+  }
+
+  it('图片附件：send_group_msg 带 image 段，默认 base64 传输', async () => {
+    const { connector: c } = makeConnector(0);
+    connector = c;
+    await connector.start();
+    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const ws = await connectClient(address.port);
+    clients.push(ws);
+
+    const absPath = await makeAttachmentFile('pic.png', 'fake-png-bytes');
+    const actions = await replyAndCollect(
+      ws,
+      connector.reply(
+        { target: onebotGroupTarget(8888), seq: 1, kind: 'final' },
+        { text: '', attachments: [{ kind: 'image', absPath, fileName: 'pic.png', sizeBytes: 14 }] },
+      ),
+      1,
+    );
+    expect(actions[0]!['action']).toBe('send_group_msg');
+    const params = actions[0]!['params'] as { group_id: number; message: Array<{ type: string; data: { file: string } }> };
+    expect(params.group_id).toBe(8888);
+    expect(params.message[0]!.type).toBe('image');
+    expect(params.message[0]!.data.file).toBe(`base64://${Buffer.from('fake-png-bytes').toString('base64')}`);
+  });
+
+  it('文件附件：群走 upload_group_file，单聊走 upload_private_file', async () => {
+    const { connector: c } = makeConnector(0);
+    connector = c;
+    await connector.start();
+    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const ws = await connectClient(address.port);
+    clients.push(ws);
+
+    const groupFile = await makeAttachmentFile('run.sh', '#!/bin/sh');
+    const groupActions = await replyAndCollect(
+      ws,
+      connector.reply(
+        { target: onebotGroupTarget(8888), seq: 1, kind: 'final' },
+        { text: '', attachments: [{ kind: 'file', absPath: groupFile, fileName: 'run.sh', sizeBytes: 9 }] },
+      ),
+      1,
+    );
+    expect(groupActions[0]!['action']).toBe('upload_group_file');
+    const groupParams = groupActions[0]!['params'] as { group_id: number; file: string; name: string };
+    expect(groupParams.group_id).toBe(8888);
+    expect(groupParams.name).toBe('run.sh');
+    expect(groupParams.file.startsWith('base64://')).toBe(true);
+
+    const c2cFile = await makeAttachmentFile('page.html', '<html/>');
+    const c2cActions = await replyAndCollect(
+      ws,
+      connector.reply(
+        { target: onebotC2cTarget(12345), seq: 1, kind: 'final' },
+        { text: '', attachments: [{ kind: 'file', absPath: c2cFile, fileName: 'page.html', sizeBytes: 7 }] },
+      ),
+      1,
+    );
+    expect(c2cActions[0]!['action']).toBe('upload_private_file');
+    const c2cParams = c2cActions[0]!['params'] as { user_id: number; name: string };
+    expect(c2cParams.user_id).toBe(12345);
+    expect(c2cParams.name).toBe('page.html');
+  });
+
+  it('fileTransport=path 时直接传绝对路径（同机部署优化）', async () => {
+    const { connector: c } = makeConnector(0, { fileTransport: 'path' });
+    connector = c;
+    await connector.start();
+    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const ws = await connectClient(address.port);
+    clients.push(ws);
+
+    const absPath = await makeAttachmentFile('pic.png', 'fake-png-bytes');
+    const actions = await replyAndCollect(
+      ws,
+      connector.reply(
+        { target: onebotGroupTarget(8888), seq: 1, kind: 'final' },
+        { text: '', attachments: [{ kind: 'image', absPath, fileName: 'pic.png', sizeBytes: 14 }] },
+      ),
+      1,
+    );
+    const params = actions[0]!['params'] as { message: Array<{ data: { file: string } }> };
+    expect(params.message[0]!.data.file).toBe(absPath);
   });
 });

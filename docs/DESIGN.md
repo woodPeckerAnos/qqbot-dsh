@@ -645,6 +645,9 @@ qqbot-dsh/
 | 8 | 单聊被动回复有效期与次数（文档写 60 分钟 / 4 次） | 按文档取上限 4 并独立配置；单轮超时仍沿用群聊的保守上限，所以即使文档有出入也不会发出窗口外的消息 |
 | 9 | 单聊事件里用户 openid 的字段路径 | 按 `author.user_openid` 解析，并对 `d.user_openid`/`author.id`/`author.union_openid` 做回退，字段名猜错时不会整条丢弃 |
 | 10 | `FRIEND_ADD` 事件的 payload 与 `event_id` 回复是否被接受 | 按 `d.openid` + 信封 id 回复欢迎语；失败只记 warn，不影响正常问答 |
+| 11 | `/files` 上传的 `file_type=4`（文件）是否对机器人开放、各类型大小上限、`file_info` 时效 | 按文档字段实现；上限配置化（media.maxFileMB）不写死；file_info 拿到立刻用不缓存 |
+| 12 | `msg_type=7` 媒体消息能否同时携带 `content` 文本 | 按"不允许"设计（附件与文本分条发送）；若实测允许可升级为图文合并 |
+| 13 | webp/bmp 走 `file_type=1` 的平台接受度 | 图片白名单默认只含 png/jpg/jpeg/gif，其余按文件发 |
 
 ---
 
@@ -864,5 +867,56 @@ DshRuntime  session/prompt（text 块 + image 块）
   关闭时 prompt 里会显式说明"有 N 张图片未读入"，避免模型以为用户什么都没发。
 - `/metrics` 的 `imagesInlined` / `imagesSkipped` 给出内联与跳过的图片数——
   "机器人说看不到图"时先看这两个数。
+
+---
+
+## 12. 富媒体出站（把 agent 生成的文件发给用户）
+
+> 详细方案与决策论证见 [RICH-MEDIA-PLAN.md](./RICH-MEDIA-PLAN.md)，这里只记
+> 落地后的架构要点。
+
+### 12.1 检测：outbox 目录约定
+
+agent 把要发给用户的文件放进会话工作区的 `outbox/` 子目录（persona 里约定，
+见 `dsh-profile/cordis.patch.yml`）。一轮 turn 结束后 Responder 扫描该目录
+（`src/pipeline/egress/outbox.ts`），逐个发送，发完归档到 `outbox/.sent/`。
+
+选目录约定而不是文本标记（`<<<FILE:path>>>`）的决定性理由：超时/中断路径下
+文本是残缺的，标记可能只写了一半，而文件实打实落在磁盘上——最需要兜底的
+场景恰好是它最稳的场景。安全上，每个候选文件的 realpath 必须仍落在 outbox
+目录内（挡符号链接逃逸）；扫描范围天然不含其他会话的工作区。
+
+### 12.2 消息模型与配额
+
+`OutgoingMessage` 增加 `attachments`（`OutgoingAttachment`：kind/absPath/
+fileName/sizeBytes）。一次 `reply()` 调用要么纯文本、要么一个附件——官方平台
+"一次 reply = 一个 msg_seq"的账本语义装不下混合消息，混合的渲染差异留在
+适配器内。
+
+附件与文本共享被动窗口配额（官方群 5 / 单聊 4 条），分配规则：
+
+1. 平时**文本保底 1 条**：附件预算 = 剩余额度 - 1；
+2. 只剩 1 条额度且有附件时**反转给附件**（文本告知可以推迟，文件不发就丢了）；
+3. 发送顺序**附件先、文本后**；
+4. 超预算/超体积的附件降级为文本里的一行说明，不静默丢弃。
+
+### 12.3 两个平台的发出方式
+
+- **官方**：两步走。`POST /v2/groups|users/{openid}/files` 上传
+  （`file_type` 1=图片/4=文件，`file_data` base64，`srv_send_msg=false`）拿到
+  `file_info`，再走 `/messages` 发 `msg_type=7`——msg_id/msg_seq 语义不变。
+  媒体消息能否同时携带 `content` 文本未实测，按"不允许"设计（§8 待实测）。
+- **OneBot**：图片走消息段 `{type:'image', data:{file}}`，其余文件走
+  `upload_group_file` / `upload_private_file` 动作。字节传输两种形态由
+  `onebot.fileTransport` 决定：`base64`（默认，跨容器可用）/ `path`
+  （同机部署省 33% 体积）。
+
+### 12.4 配置与可观测性
+
+- `media.enabled` / `maxFileMB` / `maxAttachmentsPerMsg` / `imageExtensions` /
+  `outboxDir`（env 前缀 `BOT_MEDIA_*`），详见 qqbot.yml 注释；
+- 图片扩展名白名单默认 `png/jpg/jpeg/gif`：svg 等"是图片但平台不当图片渲染"
+  的一律按文件发；
+- `/metrics` 的 `attachmentsSent` 计数成功发出的附件数。
 
 ---

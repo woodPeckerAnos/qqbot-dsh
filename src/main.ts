@@ -45,7 +45,7 @@ import { TurnRunner } from './pipeline/turn-runner.js';
 import { ConversationStore } from './store/conversations.js';
 import { SeenStore } from './store/seen.js';
 import { SessionStore } from './store/sessions.js';
-import { ensureStoreDirs, resolveStorePaths } from './store/paths.js';
+import { ensureStoreDirs, resolveStorePaths, workspacePathFor } from './store/paths.js';
 import { buildHealthSnapshot, createHealthServer, type HealthServer } from './health.js';
 
 /** 处理中的 turn 结束前最多等多久（毫秒） */
@@ -92,6 +92,7 @@ function buildConnector(
     acceptsC2C: config.onebot.c2cEnabled,
     autoAcceptFriend: config.onebot.autoAcceptFriend,
     autoAcceptGroupInvite: config.onebot.autoAcceptGroupInvite,
+    fileTransport: config.onebot.fileTransport,
     replyPolicy: {
       maxChars: config.onebot.maxChars,
       maxRepliesPerMsg: config.onebot.maxRepliesPerMsg,
@@ -228,7 +229,26 @@ async function main(): Promise<void> {
     stages,
     terminal: (ctx) => turnRunner.runTurn(ctx),
     createResponder: (message, connector, policy, messageLogger) =>
-      new Responder({ message, connector, policy, conversations, stats, logger: messageLogger }),
+      new Responder({
+        message,
+        connector,
+        policy,
+        conversations,
+        stats,
+        logger: messageLogger,
+        // outbox 目录路径在这里拼好：Responder 不感知工作区布局，
+        // 只拿一个"该扫哪个目录"的绝对路径（目录不存在 = 没有产物）。
+        ...(config.media.enabled
+          ? {
+              media: {
+                outboxDir: join(workspacePathFor(paths, message.target.key), config.media.outboxDir),
+                maxFileBytes: config.media.maxFileBytes,
+                maxAttachments: config.media.maxAttachmentsPerMsg,
+                imageExtensions: config.media.imageExtensions,
+              },
+            }
+          : {}),
+      }),
     turns: turnRunner,
     status: () => ({
       inFlight: admission.inUse,

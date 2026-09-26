@@ -259,9 +259,33 @@ export interface BotConnector {
 
 export type OutgoingKind = 'progress' | 'final' | 'error';
 
-/** 编排层给出的回复内容。text 是 agent 原始输出（可能是 Markdown）。 */
+/**
+ * 一个待发送的附件（agent 在会话工作区里的产物）。
+ *
+ * 编排层只说"发什么"，怎么发（官方两步上传、OneBot 消息段）是适配器的事。
+ * 安全不变量由编排层保证（见 pipeline/egress/outbox.ts）：
+ * `absPath` 必须 realpath 后仍落在该会话工作区的 outbox 目录内。
+ */
+export interface OutgoingAttachment {
+  /** audio/video 预留，本期只做这两种 */
+  kind: 'image' | 'file';
+  /** 已通过工作区包含性校验的绝对路径 */
+  absPath: string;
+  /** 发送时展示的文件名（不含目录） */
+  fileName: string;
+  sizeBytes: number;
+}
+
+/**
+ * 编排层给出的回复内容。text 是 agent 原始输出（可能是 Markdown）。
+ *
+ * attachments 与 text 的关系由发送方（Responder）决定：一次 reply() 调用
+ * 要么只有 text、要么只带一个附件——因为官方平台"一次 reply = 一个 msg_seq"
+ * 的账本语义装不下混合消息（见 pipeline/egress/responder.ts）。
+ */
 export interface OutgoingMessage {
   text: string;
+  attachments?: OutgoingAttachment[];
 }
 
 /**

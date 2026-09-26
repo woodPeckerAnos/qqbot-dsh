@@ -45,6 +45,7 @@ export interface OnebotFileConfig {
   c2cEnabled?: boolean;
   autoAcceptFriend?: boolean;
   autoAcceptGroupInvite?: boolean;
+  fileTransport?: string;
   maxChars?: number;
   maxRepliesPerMsg?: number;
   progressMax?: number;
@@ -97,6 +98,15 @@ export interface AttachmentsFileConfig {
   downloadTimeoutMs?: number;
 }
 
+/** 富媒体出站（agent 产物回发，与平台无关）。 */
+export interface MediaFileConfig {
+  enabled?: boolean;
+  maxFileMB?: number;
+  maxAttachmentsPerMsg?: number;
+  imageExtensions?: string[];
+  outboxDir?: string;
+}
+
 /** 配置文件里允许出现的全部内容（每项都可选）。 */
 export interface FileConfig {
   connectors?: string[];
@@ -107,6 +117,7 @@ export interface FileConfig {
   paths?: PathsFileConfig;
   offpeak?: OffpeakFileConfig;
   attachments?: AttachmentsFileConfig;
+  media?: MediaFileConfig;
   health?: HealthFileConfig;
   logLevel?: string;
 }
@@ -156,6 +167,7 @@ const ONEBOT_SPEC: SectionSpec = {
   c2cEnabled: 'bool',
   autoAcceptFriend: 'bool',
   autoAcceptGroupInvite: 'bool',
+  fileTransport: 'string',
   maxChars: 'int',
   maxRepliesPerMsg: 'int',
   progressMax: 'int',
@@ -197,6 +209,13 @@ const ATTACHMENTS_SPEC: SectionSpec = {
   maxImageBytes: 'int',
   downloadTimeoutMs: 'int',
 };
+const MEDIA_SPEC: SectionSpec = {
+  enabled: 'bool',
+  maxFileMB: 'int',
+  maxAttachmentsPerMsg: 'int',
+  imageExtensions: 'stringList',
+  outboxDir: 'string',
+};
 
 const TOP_SCALARS: SectionSpec = {
   connectors: 'stringList',
@@ -212,6 +231,7 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'paths', field: 'paths', spec: PATHS_SPEC },
   { yamlKey: 'offpeak', field: 'offpeak', spec: OFFPEAK_SPEC },
   { yamlKey: 'attachments', field: 'attachments', spec: ATTACHMENTS_SPEC },
+  { yamlKey: 'media', field: 'media', spec: MEDIA_SPEC },
   { yamlKey: 'health', field: 'health', spec: HEALTH_SPEC },
 ];
 

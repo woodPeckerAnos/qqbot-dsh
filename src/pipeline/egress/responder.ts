@@ -19,11 +19,17 @@
  * （startProgress → deliver），不会两条都走。
  */
 
-import type { BotConnector, NormalizedMessage, ReplyPolicy } from '../../core/connector.js';
+import type {
+  BotConnector,
+  NormalizedMessage,
+  OutgoingMessage,
+  ReplyPolicy,
+} from '../../core/connector.js';
 import type { TurnOutcome } from '../../dsh/turns.js';
 import type { Logger } from '../../logger.js';
 import type { ConversationStore } from '../../store/conversations.js';
 import { segmentText } from './chunk.js';
+import { archiveSent, scanOutbox } from './outbox.js';
 import {
   ProgressScheduler,
   ReplyLedger,
@@ -40,7 +46,27 @@ export interface ResponderOptions {
   conversations: ConversationStore;
   stats: PipelineStats;
   logger: Logger;
+  /** 富媒体出站（agent 产物回发）。缺省 = 不扫描 outbox，纯文本行为。 */
+  media?: ResponderMediaOptions;
   now?: () => number;
+}
+
+/**
+ * 富媒体出站配置（来自全局 media 配置 + 本会话的 outbox 绝对路径）。
+ *
+ * 为什么放在 ResponderOptions 而不是 ReplyPolicy：当前两个平台的出站限制
+ * 一致（全局 media 配置），没有按平台分化的实际需求；ReplyPolicy 保持表达
+ * "配额/窗口"这类平台硬约束。哪天官方与 OneBot 的限制真的分化了，再下沉。
+ */
+export interface ResponderMediaOptions {
+  /** 本会话工作区内 outbox 目录的绝对路径（由装配层拼好） */
+  outboxDir: string;
+  /** 单附件体积上限（字节） */
+  maxFileBytes: number;
+  /** 单次回复最多发几个附件 */
+  maxAttachments: number;
+  /** 图片扩展名白名单（小写不带点），其余一律按文件发 */
+  imageExtensions: readonly string[];
 }
 
 export class Responder {
@@ -78,7 +104,7 @@ export class Responder {
       renderText,
       send: async (text) => {
         const ticket = this.ledger.allocate('progress');
-        await this.sendSegment(text, ticket);
+        await this.sendSegment({ text }, ticket);
         stats.progressSent += 1;
       },
       allocateTicket: () => {
@@ -102,15 +128,54 @@ export class Responder {
    *
    * 结果一律按 'final' 记账：即使是 error 类结果，它也是对本轮提问的正式答复，
    * 不应占用 error 那条"系统级错误提示"的语义。
+   *
+   * 附件（outbox 产物）与文本共享同一个配额账本，分配规则（定稿见
+   * docs/RICH-MEDIA-PLAN.md §5，改动前先读那段论证）：
+   *   1. 平时**文本保底 1 条**：附件预算 = 剩余额度 - 1；
+   *   2. 生死二选一（只剩 1 条额度且有附件）时**反转给附件**——超时场景下
+   *      文本只是"中断了"的告知，可以并入后续回复；文件不发就丢了；
+   *   3. 发送顺序**附件先、文本后**：先保证稀缺额度用在不可再生的内容上；
+   *   4. 超预算/超体积的附件降级为文本里的一行说明，不静默丢弃。
    */
   async deliver(outcome: TurnOutcome): Promise<void> {
-    const { message, conversations, logger } = this.options;
+    const { message, conversations, logger, stats } = this.options;
     const conversationKey = message.target.key;
+
+    // --- 扫描 outbox，按配额规则决定发哪几个附件 ---------------------------
+    const media = this.options.media;
+    let attachments: OutgoingMessage['attachments'] = [];
+    const degradeNotes: string[] = [];
+    if (media !== undefined) {
+      const scan = await scanOutbox(media.outboxDir, {
+        maxFileBytes: media.maxFileBytes,
+        imageExtensions: media.imageExtensions,
+        logger,
+      });
+      if (scan.oversize.length > 0) {
+        degradeNotes.push(`（有 ${scan.oversize.length} 个文件超过大小上限，未发出：${scan.oversize.join('、')}）`);
+      }
+      if (scan.attachments.length > 0) {
+        const remaining = this.ledger.remaining;
+        // 规则 1 与 2：>=2 条额度时给文本留 1 条；只剩 1 条时全给附件
+        const quotaBudget = remaining >= 2 ? remaining - 1 : remaining;
+        const budget = Math.min(quotaBudget, media.maxAttachments, scan.attachments.length);
+        attachments = scan.attachments.slice(0, budget);
+        const overflow = scan.attachments.slice(budget);
+        if (overflow.length > 0) {
+          degradeNotes.push(
+            `（回复条数有限，还有 ${overflow.length} 个文件未发出：${overflow
+              .map((item) => item.fileName)
+              .join('、')}；需要的话跟我说一声）`,
+          );
+        }
+      }
+    }
 
     let text = outcome.text;
     switch (outcome.kind) {
       case 'completed':
-        if (text === '') {
+        // 有附件时不用占位文案：文件本身就是答复
+        if (text === '' && (attachments === undefined || attachments.length === 0)) {
           text = '（这次没有产生可回复的内容）';
         }
         break;
@@ -139,17 +204,57 @@ export class Responder {
               }）`;
         break;
     }
+    if (degradeNotes.length > 0) {
+      text = text === '' ? degradeNotes.join('\n') : `${text}\n${degradeNotes.join('\n')}`;
+    }
 
-    const sentAny = await this.sendLong(text, 'final');
-    if (!sentAny) {
+    // --- 附件先、文本后 ------------------------------------------------------
+    let sentAttachments = 0;
+    const sentNames: string[] = [];
+    for (const attachment of attachments ?? []) {
+      let ticket: ReplyTicket;
+      try {
+        ticket = this.ledger.allocate('final');
+      } catch (error) {
+        if (error instanceof ReplyQuotaExhaustedError) {
+          logger.warn('回复配额用尽，剩余附件未发送', { used: error.used, total: error.total });
+          break;
+        }
+        throw error;
+      }
+      try {
+        await this.sendSegment({ text: '', attachments: [attachment] }, ticket);
+        sentAttachments += 1;
+        sentNames.push(attachment.fileName);
+        stats.attachmentsSent += 1;
+      } catch (error) {
+        logger.error('发送附件失败', {
+          seq: ticket.msgSeq,
+          fileName: attachment.fileName,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        // 一个附件失败不阻塞其余：继续尝试（失败的文件留在 outbox，不归档）
+      }
+    }
+    if (media !== undefined && sentNames.length > 0) {
+      await archiveSent(media.outboxDir, sentNames, logger, () => this.now());
+    }
+
+    const sentAnyText = await this.sendLong(text, 'final');
+    if (!sentAnyText && sentAttachments === 0) {
       logger.warn('本轮结果未能发送出去（配额或平台错误）', { kind: outcome.kind });
     }
 
-    // 记录助手回复（供下次冷启动回放）
+    // 记录助手回复（供下次冷启动回放）：附件也在记录里留名，
+    // 否则冷启动后的 agent 不知道文件已经发出去了
+    const recordText =
+      sentNames.length > 0
+        ? `${text}${text === '' ? '' : '\n'}（已发送文件：${sentNames.join('、')}）`
+        : text;
     conversations.append(conversationKey, {
       role: 'assistant',
       speaker: 'bot',
-      text,
+      text: recordText,
       ts: this.now(),
       replyToMsgId: message.msgId,
     });
@@ -185,7 +290,7 @@ export class Responder {
         throw error;
       }
       try {
-        await this.sendSegment(segment, ticket);
+        await this.sendSegment({ text: segment }, ticket);
         sent += 1;
       } catch (error) {
         logger.error('发送回复失败', {
@@ -199,7 +304,7 @@ export class Responder {
   }
 
   /** 实际发送一条消息：平台专有的渲染与端点选择都在连接器内部。 */
-  private async sendSegment(text: string, ticket: ReplyTicket): Promise<void> {
+  private async sendSegment(out: OutgoingMessage, ticket: ReplyTicket): Promise<void> {
     const { message, connector, logger, stats } = this.options;
     await connector.reply(
       {
@@ -208,13 +313,14 @@ export class Responder {
         kind: ticket.kind,
         ...(message.msgId !== '' ? { msgId: message.msgId } : {}),
       },
-      { text },
+      out,
     );
     stats.repliesSent += 1;
     logger.debug('已发送回复', {
       seq: ticket.msgSeq,
       kind: ticket.kind,
-      length: text.length,
+      length: out.text.length,
+      attachments: out.attachments?.length ?? 0,
     });
   }
 
