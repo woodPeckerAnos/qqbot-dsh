@@ -32,7 +32,7 @@ import {
   OffpeakConfigError,
   parseWindowsSpec,
   type OffpeakWindow,
-} from './offpeak.js';
+} from './offpeak/index.js';
 
 export { ConfigError } from './config-error.js';
 
@@ -137,7 +137,7 @@ export interface Config {
   };
   /**
    * 谷时段闸：命中 modelPattern 的模型在谷时段窗口之外不调用 API，直接回复提示。
-   * 运行期可被管理员 /offpeak 命令覆盖（见 offpeak.ts），这里只是 env/文件默认层。
+   * 运行期可被管理员 /offpeak 命令覆盖（见 offpeak/ 目录），这里只是 env/文件默认层。
    */
   offpeak: {
     /** 总开关（QQ_OFFPEAK_ENABLED / offpeak.enabled，默认 false） */

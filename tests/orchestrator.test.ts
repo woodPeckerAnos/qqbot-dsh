@@ -20,7 +20,7 @@ import { loadConfig, type Config } from '../src/config.js';
 import { createNullLogger } from '../src/logger.js';
 import type { RuntimeEntry, RuntimePool } from '../src/dsh/pool.js';
 import type { SessionEventNotification, PromptContentBlock } from '../src/dsh/protocol.js';
-import { CN_HOLIDAYS_2026, OffpeakGate } from '../src/offpeak.js';
+import { CN_HOLIDAYS_2026, OffpeakGate } from '../src/offpeak/index.js';
 import { Responder } from '../src/pipeline/egress/responder.js';
 import { AdmissionGate } from '../src/pipeline/ingress/admission.js';
 import { createDedupeStage } from '../src/pipeline/ingress/dedupe.js';

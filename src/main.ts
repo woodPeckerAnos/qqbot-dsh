@@ -30,7 +30,7 @@ import { TokenError } from './adapters/qq-official/token.js';
 import { OnebotConnector, ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import type { BotConnector } from './core/connector.js';
 import { createLogger } from './logger.js';
-import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak.js';
+import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
 import { RuntimePool } from './dsh/pool.js';
 import { Responder } from './pipeline/egress/responder.js';
 import { AdmissionGate } from './pipeline/ingress/admission.js';

@@ -24,7 +24,7 @@ import type {
 import { isUserMessage } from '../core/connector.js';
 import type { SessionStatusNotification } from '../dsh/protocol.js';
 import type { Logger } from '../logger.js';
-import type { OffpeakSnapshot } from '../offpeak.js';
+import type { OffpeakSnapshot } from '../offpeak/index.js';
 import type { Responder } from './egress/responder.js';
 import { handleWelcomeEvent } from './ingress/welcome.js';
 import { runStages, type IngressStage, type MessageContext } from './ingress/types.js';

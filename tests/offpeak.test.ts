@@ -34,7 +34,7 @@ import {
   parseWindowsSpec,
   renderGateNotice,
   type OffpeakGateConfig,
-} from '../src/offpeak.js';
+} from '../src/offpeak/index.js';
 
 // 2026-01-15 是周四。以下常量都是「北京时间 → UTC」的换算，不依赖宿主时区。
 // 正价时段（09:00–12:00 / 14:00–18:00）：

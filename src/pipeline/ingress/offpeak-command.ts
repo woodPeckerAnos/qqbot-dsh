@@ -23,7 +23,7 @@ import {
   parseWindowsSpec,
   type OffpeakCommand,
   type OffpeakGate,
-} from '../../offpeak.js';
+} from '../../offpeak/index.js';
 import type { PipelineStats } from '../stats.js';
 import type { IngressStage, MessageContext } from './types.js';
 

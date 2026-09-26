@@ -8,7 +8,7 @@
  *   - health 端点原样展示快照，不在此层做格式化。
  */
 
-import type { OffpeakSnapshot } from '../offpeak.js';
+import type { OffpeakSnapshot } from '../offpeak/index.js';
 
 export class PipelineStats {
   /** 收到的用户消息数（Orchestrator 入口） */
@@ -35,6 +35,8 @@ export class PipelineStats {
   imagesSkipped = 0;
   /** 成功发出的回复段数（Responder / 欢迎语） */
   repliesSent = 0;
+  /** 成功发出的附件数（Responder；附件消息同时计入 repliesSent） */
+  attachmentsSent = 0;
   /** 成功发出的进度回执数（Responder） */
   progressSent = 0;
 }

@@ -10,7 +10,7 @@
  */
 
 import type { Config } from '../../config.js';
-import { evaluateGate, renderGateNotice, type OffpeakGate } from '../../offpeak.js';
+import { evaluateGate, renderGateNotice, type OffpeakGate } from '../../offpeak/index.js';
 import type { PipelineStats } from '../stats.js';
 import type { IngressStage } from './types.js';
 
