@@ -157,7 +157,7 @@ text 段 + image 段合并为一条消息；文件走独立的 upload 动作（�
 上传复用 `QqApi.request`（token 鉴权与 401 重试白拿）。体积上限与
 file_type=4 是否对机器人开放都未实测——上限写进配置不写死，开放性列入待实测。
 
-### 6.2 OneBot（NapCat / LLOneBot / Lagrange）
+### 6.2 OneBot（NapCat / LLBot / Lagrange）
 
 - **图片**：`send_group_msg / send_private_msg` 消息段数组：
   `[{ type: 'text', ... }, { type: 'image', data: { file: 'base64://...' } }]`；

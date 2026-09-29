@@ -4,14 +4,14 @@
 接入层是可插拔的多平台结构，同一个服务可以同时挂：
 
 - **官方开放平台**（`qq-official`）：api.bot.qq.com，需审核；
-- **社区框架**（`onebot`）：NapCat / LLOneBot / Lagrange 等 OneBot v11 实现，
+- **社区框架**（`onebot`）：NapCat / LLBot / Lagrange 等 OneBot v11 实现，
   反向 WebSocket 接入，**无需审核**（官方目前不对个人开发者开放审核时走这条路）。
 
 只支持 Docker 部署，`docker compose up -d --build` 即可运行。
 
 ```
 官方：QQ 群 @机器人 / 单聊私信 ──wss 连出──▶ api.bot.qq.com
-社区：NapCat/LLOneBot ──反向 wss 连入──▶ 本服务 :6700
+社区：NapCat/LLBot    ──反向 wss 连入──▶ 本服务 :6700
                     │（两路可同时启用）
                     ▼
 ┌──────────────────────────────────────────────┐
@@ -40,11 +40,13 @@ docker compose logs -f
 
 ### 用社区框架接入（免审核）
 
-官方开放平台目前不对个人开发者开放审核。社区框架（LLBot / NapCat 等 OneBot v11
+官方开放平台目前不对个人开发者开放审核。社区框架（NapCat / LLBot 等 OneBot v11
 实现）不需要审核，而且没有被动回复窗口与回复次数限制，自由度更高。
 
-推荐拓扑是**框架原生跑在宿主、bot 留在 Docker**——这也是 macOS 上能用「有头模式」
-（拉起真实 QQ 客户端，官方称比纯协议模式更稳）的唯一形态：
+推荐拓扑是**框架原生跑在宿主、bot 留在 Docker**。**macOS 上框架选 NapCat**：
+官方 Mac 安装器把 NapCat 注入真实 QQ 客户端（有头形态，协议流量出自官方客户端
+本体，掉线/风控画像显著好于纯协议复刻）；LLBot 在 macOS 上实际只有无头（纯协议，
+LagrangeV2 内核）可用，掉线率更高，仅作备选：
 
 ```sh
 # .env 里（密钥）：
@@ -55,12 +57,12 @@ DEEPSEEK_API_KEY=...
 connectors: [onebot]                    # 或 [qq-official, onebot] 并存
 ```
 
-然后在 LLBot 里加一条**反向 WebSocket** 指向
+然后在框架（NapCat / LLBot）里加一条**反向 WebSocket** 指向
 `ws://127.0.0.1:6700/onebot/v11/ws`，token 与 `ONEBOT_ACCESS_TOKEN` 一致。
 6700 端口映射在 `docker-compose.yml` 里默认已打开（只绑 loopback）。
 
-完整步骤（含 macOS 安装、两个必踩的端口/图形会话坑、反向 WS 配置）见
-[docs/DEPLOY.md 第 3.1 节](docs/DEPLOY.md)。
+完整步骤（含框架选型、NapCat 的 macOS 安装、必踩的端口/图形会话坑、反向 WS
+配置）见 [docs/DEPLOY.md 第 3.1 节](docs/DEPLOY.md)。
 
 社区框架没有官方那种"5 分钟被动窗口 + 每条消息最多 5 次回复"的限制，
 所以 OneBot 通道的单轮超时默认放宽到 10 分钟（`ONEBOT_TURN_TIMEOUT_MS`），

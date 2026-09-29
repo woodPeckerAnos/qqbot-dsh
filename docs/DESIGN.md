@@ -102,7 +102,7 @@ const rec = { handle: await this.ctx.agents.create({
 ## 3. 总体架构
 
 ```
-   官方 QQ 云 (api.bot.qq.com)          社区框架（NapCat / LLOneBot / Lagrange）
+   官方 QQ 云 (api.bot.qq.com)          社区框架（NapCat / LLBot / Lagrange）
         │ wss 连出 + https 发消息            │ 反向 wss 连入（框架是 WS 客户端）
         ▼                                   ▼
 ┌───────────────────────────────────────────────────────────────┐
@@ -593,7 +593,7 @@ qqbot-dsh/
 │   │   │   ├── api.ts            发群消息 / 发单聊消息 / getGateway
 │   │   │   ├── render.ts         文本 → 官方消息请求体
 │   │   │   └── types.ts          QQ 协议 wire 类型
-│   │   └── onebot/               OneBot v11（NapCat / LLOneBot / Lagrange）
+│   │   └── onebot/               OneBot v11（NapCat / LLBot / Lagrange）
 │   │       ├── connector.ts      反向 WS server + token 鉴权 + 动作调用
 │   │       ├── normalize.ts      OneBot 事件 → NormalizedEvent（纯函数）
 │   │       └── types.ts          OneBot v11 wire 类型子集
@@ -694,10 +694,19 @@ qqbot-dsh/
 ### 10.1 为什么要抽象
 
 官方开放平台目前不对个人开发者开放机器人审核——有 AppID 也无法过审上线。
-社区框架（NapCat / LLOneBot / Lagrange）走 NTQQ 客户端 hook，不需要审核，
+社区框架（NapCat / LLBot / Lagrange）直接对接 NTQQ，不需要审核，
 而且没有被动回复窗口与回复次数限制，自由度更高。它们共同遵守
 **OneBot v11** 协议，所以对接一个协议就覆盖整个生态（go-cqhttp 已停止
 维护，不作为目标）。
+
+社区框架有两种形态，掉线/风控画像差一个量级：**真实客户端注入**（NapCat——
+协议流量出自官方 QQ 客户端本体，风控特征接近真人）与**纯协议复刻**（LLBot
+的内核是 LagrangeV2——自研协议栈特征可被识别，掉线率与风控率更高）。同一
+框架在不同平台提供的形态可能不同：NapCat 在 macOS 上经
+[官方安装器](https://github.com/NapNeko/NapCat-Mac-Installer)注入真实客户端
+（有头），LLBot 在 macOS 上只有纯协议（无头）——所以 macOS 部署首选 NapCat，
+接入步骤见 [DEPLOY.md 第 3.1 节](DEPLOY.md)。对本项目而言两者没有差别：
+都是 OneBot v11 反向 WS 连入，适配器无感知。
 
 ### 10.2 接缝：`src/core/connector.ts`
 
@@ -766,8 +775,8 @@ qqbot-dsh/
 
 ### 10.6 社区框架的残余风险（在第 6.4 节之上追加）
 
-1. **账号风控**：社区框架基于 NTQQ 客户端 hook，违反 QQ 用户协议，存在
-   封号风险。建议用专门小号，不要上大号。
+1. **账号风控**：自动化操作 QQ 账号违反 QQ 用户协议，无论真实客户端注入还是
+   纯协议复刻都存在封号风险（纯协议形态风险更高）。建议用专门小号，不要上大号。
 2. **入站端口**：OneBot 反向 WS 需要暴露一个端口（虽然有 token 鉴权），
    只在可信网络内监听/映射，不要对公网开放。
 3. **成员身份更不可信**：社区框架能拿到真实 QQ 号，也意味着任何人都能

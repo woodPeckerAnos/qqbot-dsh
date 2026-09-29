@@ -100,15 +100,72 @@ docker compose logs -f qqbot
 
 ### 3.1 社区框架接入（OneBot，免审核）
 
-官方不对个人开发者开放审核时，用 LLBot（LuckyLilliaBot，原 LLOneBot）或 NapCat
+官方不对个人开发者开放审核时，用 NapCat 或 LLBot（LuckyLilliaBot，原 LLOneBot）
 等 OneBot v11 实现接入（设计细节见 [DESIGN.md 第 10 节](DESIGN.md)）。
 
-**推荐拓扑：框架原生跑在宿主 macOS，bot 留在 Docker。** 这也是 macOS 上唯一能
-用上「有头模式」的形态——有头模式要在容器里拉起真实 QQ 客户端并需要
-`privileged`，而官方 FAQ 明确说 macOS 上用 Docker Desktop 会「QQ 无法启动」
-（建议 OrbStack）。
+**推荐拓扑：框架原生跑在宿主 macOS，bot 留在 Docker。** 有头形态（拉起/注入真实
+QQ 客户端）需要图形会话，进容器基本走不通：官方 FAQ 明确说 macOS 上用 Docker
+Desktop 会「QQ 无法启动」（建议 OrbStack）。
 
-#### 3.1.1 装 LLBot（宿主，有头模式）
+#### 3.1.1 选框架（macOS 先读这段）
+
+社区框架有两种形态，掉线/风控画像差一个量级：
+
+- **有头（真实客户端）**：协议流量出自官方 QQ 客户端二进制本体，风控特征与真人
+  登录几乎一致，掉线率显著更低；
+- **无头（纯协议）**：框架自己实现 NTQQ 协议栈（LLBot 的内核是 LagrangeV2），
+  协议特征可被识别，是「频繁被踢下线」的典型来源。
+
+macOS 上截至本文撰写时的支持现状：
+
+| 框架 | macOS 形态 | 结论 |
+|---|---|---|
+| **NapCat** | [官方 Mac 安装器](https://github.com/NapNeko/NapCat-Mac-Installer/releases/)修改 QQ.app 入口、注入真实客户端 = **有头** | **macOS 首选** |
+| **LLBot** | 有头组件（`bin/pmhq`）不可用，**实际只有无头（纯协议）** | 备选，掉线频繁是预期内的 |
+
+LLBot 的有头模式在 Windows / Linux 上可用；坚持要跑 LLBot 有头就得换宿主平台。
+
+> 两个框架对上说的都是 OneBot v11，bot 侧的接线完全一样（3.1.4 / 3.1.5），
+> 换框架不需要动本仓库任何代码或配置。
+
+#### 3.1.2 macOS：装 NapCat（有头注入，推荐）
+
+前提：**Apple Silicon + macOS 12.0 及以上**（官方安装器只出 aarch64 包）。
+
+1. **登录图形会话**：有头形态要拉起真实 QQ 客户端，Mac mini 如果没人登录图形
+   界面（纯 SSH 使用），QQ 起不来——先用屏幕共享/VNC 登录一次。
+2. **装 QQ，推荐 Mac App Store 版**：商店版不含 QQUpdate.app 热更新模块，
+   切回原版 QQ 时没有入口残留问题。
+3. **装 NapCat**：从 [NapCat-Mac-Installer Releases](https://github.com/NapNeko/NapCat-Mac-Installer/releases/)
+   下载 `NapCat安装器.app`。先在「系统设置 → 隐私与安全性 → App 管理」里勾选它
+   （否则无法自动切换 QQ 入口），再打开安装器点安装——过程会要一次 sudo 密码，
+   自动把 `/Applications/QQ.app/Contents/Resources/app/package.json` 备份为
+   `package.json.bak` 后，把 `main` 入口改指向 NapCat 加载器。
+4. **启动与登录**：从安装器的 **NapCat 入口**启动（人工用 QQ 时选「原版 QQ」
+   入口），会拉起真实 QQ 客户端，扫码登录。用**专门小号**。
+5. **配反向 WS**：WebUI 默认 `http://127.0.0.1:6099`（不与 DSH Web GUI 的
+   3080 冲突），配置见 3.1.5。
+
+四个必须知道的事：
+
+- **原理**：NapCat 文件放在 QQ 的沙箱容器目录
+  （`~/Library/Containers/com.tencent.qq/Data/`）内，靠改 `package.json` 的
+  `main` 字段加载——QQ 本体没动，只换了入口，有备份、可回滚；
+- **QQ 升级后**：客户端大版本更新可能使补丁失效，用安装器再跑一次
+  「更新/修复」即可；mac 端适配整体略滞后于 Windows，升级后先确认 NapCat
+  已跟进；
+- **双入口**：bot 与真人**不要同时登同一个 QQ 号**——人工用 QQ 切回原版入口，
+  用完再切回 NapCat 入口；
+- **开机自启**：把「启动 NapCat 入口」加进登录项（或 LaunchAgent），前提仍是
+  有已登录的图形会话。
+
+回滚：用安装器切回原版入口，或手动还原 `package.json.bak`。
+
+#### 3.1.3 备选：装 LLBot
+
+> ⚠ macOS 上 LLBot 的有头组件不可用，实际跑的是无头（纯协议复刻），掉线率
+> 显著高于 NapCat 有头注入——这正是把 NapCat 列为 macOS 首选的原因。
+> 以下步骤在 Windows / Linux 上同样适用（那两个平台上可跑有头）。
 
 LLBot 官方支持 **macOS 12 及以上**，两个包：
 
@@ -126,18 +183,19 @@ xattr -dr com.apple.quarantine .   # macOS 会拦未签名二进制，第一次�
 ./llbot                             # 之后启动；或 ./llbot --qq <QQ号> 免扫码快速登录
 ```
 
-**有头模式是默认的**，不需要任何开关：它由 `bin/pmhq/pmhq_config.json` 里的
-`headless` 字段控制，默认 `false` = 拉起真实 QQ 客户端。想改用无头模式（纯协议复刻、
-不需要 QQ 客户端，但官方称掉线率更高）才把它设成 `true`。
+有头/无头由 `bin/pmhq/pmhq_config.json` 里的 `headless` 字段控制：默认 `false`
+= 有头（拉起真实 QQ 客户端）；`true` = 无头（纯协议复刻、不需要 QQ 客户端，
+但官方称掉线率更高）。**macOS 上有头组件不可用**，实际等于只有无头。
 
 两个同机部署必踩的坑：
 
 1. **WebUI 默认端口 3080 与 DSH 的 Web GUI 冲突**（两者都默认 3080，同机必然撞）。
    首次登录前改 `bin/llbot/default_config.json` 里的 `webui.port`；已经登录过则改
    `bin/llbot/data/config_<你的QQ号>.json`。改成 3081 之类即可，改完再启动。
-2. **有头模式需要图形会话**：它要拉起 QQ 客户端。Mac mini 如果没人登录图形界面
-   （纯 SSH 使用），QQ 起不来——要么先用屏幕共享/VNC 登录一次图形会话，要么改用
-   无头模式。
+   （NapCat 的 WebUI 默认 6099，没有这个坑。）
+2. **有头模式需要图形会话**（Windows / Linux）：它要拉起 QQ 客户端。机器如果
+   没人登录图形界面（纯 SSH 使用），QQ 起不来——先用屏幕共享/VNC 登录一次
+   图形会话。
 
 登录：二维码的网址与文件路径会打印在终端，也可以直接开 WebUI 登录。用**专门小号**。
 
@@ -145,7 +203,7 @@ xattr -dr com.apple.quarantine .   # macOS 会拦未签名二进制，第一次�
 > 必填（有头模式下给 pmhq 用）。原生包是否也需要、以及会不会引导你填，我没能核实
 > （官方 CLI 说明文档里没提）——按首次启动的提示走。
 
-#### 3.1.2 配 bot 侧
+#### 3.1.4 配 bot 侧
 
 `.env`（密钥）：
 
@@ -173,7 +231,7 @@ docker compose up -d --build
 这条拓扑的连通路径：
 
 ```
-LLBot（宿主原生）──ws://127.0.0.1:6700/...──▶ 宿主 127.0.0.1:6700
+框架（宿主原生） ──ws://127.0.0.1:6700/...──▶ 宿主 127.0.0.1:6700
                                                     │ Docker Desktop 端口转发
                                                     ▼
                                               容器内 0.0.0.0:6700
@@ -184,16 +242,40 @@ LLBot（宿主原生）──ws://127.0.0.1:6700/...──▶ 宿主 127.0.0.1:6
 > loopback，转发就够不到，症状是"端口映射看着正常但框架死活连不上"。保持
 > 默认的 `0.0.0.0`，安全性由宿主侧那个 `127.0.0.1:` 前缀保证。
 >
-> 同理，LLBot 侧填 `127.0.0.1` 是对的，**不要**填 `host.docker.internal`
+> 同理，框架侧填 `127.0.0.1` 是对的，**不要**填 `host.docker.internal`
 > ——那是反方向（容器访问宿主）才用的名字，从这里连反而连不上。
 
-启动顺序建议**先起 bot 容器、再起 LLBot**，这样 LLBot 首次配好反向 WS 时端口已经
-在监听。容器重启后 LLBot 若不自动重连，在它的 WebUI 里把那条反向 WS 关掉再启用一次
+启动顺序建议**先起 bot 容器、再起框架**，这样框架首次配好反向 WS 时端口已经
+在监听。容器重启后框架若不自动重连，在它的 WebUI 里把那条反向 WS 关掉再启用一次
 即可（我们的接入层接受任意时刻重连）。
 
-#### 3.1.3 在 LLBot 里加一条反向 WebSocket
+#### 3.1.5 在框架里加一条反向 WebSocket
 
-WebUI（登录后）里启用 **OneBot 11 → 反向 WS**，或直接改
+两个框架语义一致：**框架当 WS 客户端连我们**（本项目的接入层是 WS server）。
+
+**NapCat**：WebUI（默认 `http://127.0.0.1:6099`）→ 网络配置 → OneBot11 →
+新增一个 **WebSocket 客户端**（即反向 WS）。生成的配置对应
+`onebot11_<你的QQ号>.json` 里的 `wsClients`，形如（字段名随 NapCat 版本可能
+略有出入，以 WebUI 生成的为准）：
+
+```json
+{
+  "wsClients": [
+    {
+      "name": "qqbot-dsh",
+      "url": "ws://127.0.0.1:6700/onebot/v11/ws",
+      "token": "与 .env 里 ONEBOT_ACCESS_TOKEN 完全相同的值",
+      "messagePostFormat": "array",
+      "reportSelfMessage": false,
+      "reportOfflineMessage": false,
+      "heartInterval": 30000,
+      "debug": false
+    }
+  ]
+}
+```
+
+**LLBot**：WebUI（登录后）里启用 **OneBot 11 → 反向 WS**，或直接改
 `bin/llbot/data/config_<你的QQ号>.json` 的 `ob11.connect`：
 
 ```json
@@ -210,17 +292,17 @@ WebUI（登录后）里启用 **OneBot 11 → 反向 WS**，或直接改
 }
 ```
 
-几处是有意的，别改：
+几处是有意的，别改（括号里是 NapCat 侧的对应字段）：
 
-- `ws-reverse` —— LLBot 当客户端连我们（本项目的接入层是 WS server）；
+- 反向连接（NapCat `wsClients` / LLBot `ws-reverse`）—— 框架当客户端连我们；
 - `token` 必须与 `.env` 的 `ONEBOT_ACCESS_TOKEN` **一致**，不一致会在握手阶段被 401 拒绝；
-- `messageFormat: "array"` —— 两种格式我们都支持，array 更规范；
+- 消息段用数组格式（NapCat `messagePostFormat: "array"` / LLBot `messageFormat: "array"`）—— 两种格式我们都支持，array 更规范；
 - `reportSelfMessage: false` —— 我们另有防自触发兜底；
 - `heartInterval: 30000` —— 低于我们 150 秒的「通道僵死」阈值，不会误报。
 
 URL 路径随便是多少都行：我们只校验 token，不校验路径。
 
-#### 3.1.4 验证
+#### 3.1.6 验证
 
 ```sh
 docker compose logs -f qqbot | grep -i onebot     # OneBot 反向 WS 已监听 → 客户端已连入 → 框架已就绪
@@ -235,9 +317,14 @@ docker compose exec qqbot node dist/health-probe.js && echo HEALTHY
 > 拉群邀请默认不自动同意（`ONEBOT_AUTO_ACCEPT_GROUP_INVITE=false`），
 > 需要机器人进新群时先打开，进完再关回去。
 
-#### 3.1.5 如果以后想让框架也进容器
+#### 3.1.7 如果以后想让框架也进容器
 
-官方提供一键脚本（会自动生成 compose）：
+**NapCat**：官方 [NapCat.Docker](https://github.com/NapNeko/NapCat-Docker) 镜像
+只跑 **Linux NTQQ**，macOS 上没有 Docker 形态；容器里跑的"Linux QQ"意味着客户端
+环境特征与真实 macOS 设备不一致，风控画像未知——macOS 上建议就保持宿主有头
+（3.1.2）。
+
+**LLBot**：官方提供一键脚本（会自动生成 compose）：
 
 ```sh
 curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/LLOneBot/LuckyLilliaBot/refs/heads/main/script/install-llbot-docker.sh -o llbot-docker.sh \
