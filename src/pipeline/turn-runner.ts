@@ -20,7 +20,11 @@ import type { Config } from '../config.js';
 import { messageImageParts } from '../core/content.js';
 import { buildImageBlocks } from '../dsh/media.js';
 import type { RuntimeEntry, RuntimePool } from '../dsh/pool.js';
-import type { PromptContentBlock, SessionStatusNotification } from '../dsh/protocol.js';
+import type {
+  PromptContentBlock,
+  SessionEventNotification,
+  SessionStatusNotification,
+} from '../dsh/protocol.js';
 import { TurnAccumulator, type TurnOutcome } from '../dsh/turns.js';
 import type { Logger } from '../logger.js';
 import type { ConversationStore } from '../store/conversations.js';
@@ -43,6 +47,16 @@ export interface TurnRunnerDeps {
   now?: () => number;
 }
 
+/**
+ * 单个会话最多暂存几条"后台任务结果"等待带出。
+ *
+ * 后台子代理完成后，父代理会被 DSH 唤醒跑一个"自发轮次"总结结果（见
+ * routeSessionStatus 的 spontaneous 分支）。QQ 被动回复窗口只有 5 分钟，
+ * 那条总结当时多半发不出去，所以暂存下来，等该会话**下一条用户消息**的回复
+ * 一并带出。设上限是防止长时间没有下一条消息时无限累积；超出丢最旧的。
+ */
+const MAX_PENDING_BACKGROUND = 3;
+
 /** 已组装好、待派发的 prompt（含图片记账，供准入失败时回退与统计）。 */
 interface PreparedPrompt {
   blocks: PromptContentBlock[];
@@ -58,6 +72,19 @@ export class TurnRunner {
    * 结束判定用轮询 `isSettled`（见 runTurn），因此这里不需要额外的完成回调。
    */
   private readonly activeTurns = new Map<string, TurnAccumulator>();
+
+  /**
+   * "自发轮次"累积器：后台子代理完成时，DSH 会唤醒空闲的父代理跑一轮总结
+   * （settlement notice），这一轮不是任何 runTurn 发起的。没有它，父代理对
+   * 后台结果的总结就会被当成"无归属事件"丢弃，用户永远看不到后台任务结果。
+   */
+  private readonly spontaneousTurns = new Map<string, TurnAccumulator>();
+
+  /**
+   * 每会话待带出的后台任务结果（自发轮次捕获，下一条用户消息的回复里前置）。
+   * 内存态：桥接进程重启即丢——后台结果本就是尽力而为的提醒，可接受。
+   */
+  private readonly pendingBackground = new Map<string, string[]>();
 
   constructor(private readonly deps: TurnRunnerDeps) {}
 
@@ -80,6 +107,12 @@ export class TurnRunner {
 
       accumulator = new TurnAccumulator(session.currentSessionId);
       this.activeTurns.set(conversationKey, accumulator);
+      // 用户轮次接管该会话：若此刻恰有一个"自发轮次"在跑（后台任务总结与用户
+      // 新消息撞在一起的罕见竞态），丢弃它——两者会并进同一个 running 相位，
+      // 父代理对用户问题的最终答复才是本轮要交付的内容（见 DESIGN 13.4）。
+      if (this.spontaneousTurns.delete(conversationKey)) {
+        logger.debug('用户轮次开始，丢弃进行中的自发轮次累积器');
+      }
 
       const promptText = this.buildPrompt(message, conversationKey, session.generation, !entry.replayed);
       // 图片在派发前下载并编码：放在这里（而不是适配器归一化时）是因为
@@ -118,7 +151,9 @@ export class TurnRunner {
         void pool.drop(conversationKey).catch(() => {});
       }
 
-      await responder.deliver(outcome);
+      // 后台任务结果搭车：把之前捕获、当时发不出去的自发轮次总结前置到本轮回复。
+      const delivered = this.attachPendingBackground(conversationKey, outcome);
+      await responder.deliver(delivered);
     } finally {
       responder.stopProgress();
       this.activeTurns.delete(conversationKey);
@@ -126,29 +161,120 @@ export class TurnRunner {
     }
   }
 
-  /** 把 runtime 推送的事件路由到对应会话的在途 turn。 */
-  routeSessionEvent(
-    conversationKey: string,
-    event: { type: string; seq: number; data: Record<string, unknown> },
-  ): void {
-    const accumulator = this.activeTurns.get(conversationKey);
+  /**
+   * 把 runtime 推送的事件路由到对应会话的在途 turn。
+   *
+   * **必须按 sessionId 过滤**：一个 runtime 进程里除了父会话，还有后台子代理
+   * 的子会话，事件都从同一条 wire 上来（`session.event` 携带各自的 sessionId）。
+   * 不过滤的话，子代理的 `assistant/message` / `turn/end` 会灌进父轮次的累积器，
+   * 轻则把子代理的中间文本当成最终答案，重则子代理的 turn/end 让父轮次提前结算。
+   */
+  routeSessionEvent(conversationKey: string, notification: SessionEventNotification): void {
+    if (!this.isParentSession(conversationKey, notification.sessionId)) {
+      this.deps.stats.childEventsFiltered += 1;
+      this.deps.logger.debug('过滤掉子会话事件（后台子代理，不进父轮次）', {
+        conversation: conversationKey,
+        sessionId: notification.sessionId,
+        type: notification.event.type,
+      });
+      return;
+    }
+    const accumulator =
+      this.activeTurns.get(conversationKey) ?? this.spontaneousTurns.get(conversationKey);
     if (accumulator === undefined) {
       // 没有在途 turn（例如回收竞态、或事件属于上一轮）——记录到 debug 便于排查
       this.deps.logger.debug('收到无归属的会话事件', {
         conversation: conversationKey,
-        type: event.type,
+        type: notification.event.type,
       });
       return;
     }
-    accumulator.observe({ type: event.type, seq: event.seq, data: event.data });
+    accumulator.observe(notification.event);
   }
 
-  /** 把 runtime 推送的 agent 状态变化路由到对应会话。 */
-  routeSessionStatus(conversationKey: string, status: SessionStatusNotification): void {
-    const accumulator = this.activeTurns.get(conversationKey);
+  /**
+   * 把 runtime 推送的 agent 状态变化路由到对应会话。
+   *
+   * 两条路径：
+   *   - 有在途 runTurn → 喂给它的累积器（结束判定由 runTurn 轮询 isSettled）；
+   *   - 无在途 runTurn 但父会话 running → 这是后台子代理完成后 DSH 唤醒父代理
+   *     跑的"自发轮次"，用 spontaneousTurns 捕获，settle 后暂存待下次带出。
+   */
+  routeSessionStatus(conversationKey: string, notification: SessionStatusNotification): void {
+    if (!this.isParentSession(conversationKey, notification.sessionId)) return;
+
+    const active = this.activeTurns.get(conversationKey);
+    if (active !== undefined) {
+      active.observeStatus(notification.status);
+      return;
+    }
+    this.handleSpontaneousStatus(conversationKey, notification.sessionId, notification.status);
+  }
+
+  /** 该 sessionId 是否是会话当前的父会话（子代理会话返回 false）。 */
+  private isParentSession(conversationKey: string, sessionId: string): boolean {
+    const parentId = this.deps.sessions.peek(conversationKey)?.currentSessionId;
+    return parentId !== undefined && parentId === sessionId;
+  }
+
+  /** 处理"自发轮次"（后台任务总结）的状态机：running 建累积器，idle+turn/end 落定。 */
+  private handleSpontaneousStatus(
+    conversationKey: string,
+    sessionId: string,
+    status: 'idle' | 'running',
+  ): void {
+    if (status === 'running') {
+      let accumulator = this.spontaneousTurns.get(conversationKey);
+      if (accumulator === undefined) {
+        accumulator = new TurnAccumulator(sessionId);
+        this.spontaneousTurns.set(conversationKey, accumulator);
+        this.deps.logger.debug('开始捕获自发轮次（后台任务完成总结）', { conversation: conversationKey });
+      }
+      accumulator.observeStatus('running');
+      return;
+    }
+    // idle：只在已有自发累积器时处理
+    const accumulator = this.spontaneousTurns.get(conversationKey);
     if (accumulator === undefined) return;
-    accumulator.observeStatus(status.status);
-    // 结束判定由 runTurn 的 waitUntil 轮询 isSettled 完成，这里只更新状态
+    accumulator.observeStatus('idle');
+    if (!accumulator.isSettled) return;
+    this.spontaneousTurns.delete(conversationKey);
+    this.captureBackgroundResult(conversationKey, accumulator);
+  }
+
+  /** 把自发轮次的最终文本暂存起来，等下一条用户消息带出（受被动回复窗口所限）。 */
+  private captureBackgroundResult(conversationKey: string, accumulator: TurnAccumulator): void {
+    const text = accumulator.finalText.trim();
+    if (text === '') {
+      this.deps.logger.debug('自发轮次没有产出可见文本，不暂存', { conversation: conversationKey });
+      return;
+    }
+    const queue = this.pendingBackground.get(conversationKey) ?? [];
+    queue.push(text);
+    while (queue.length > MAX_PENDING_BACKGROUND) queue.shift();
+    this.pendingBackground.set(conversationKey, queue);
+    this.deps.stats.backgroundCaptured += 1;
+    this.deps.logger.info('捕获后台任务结果，待下一条回复带出', {
+      conversation: conversationKey,
+      length: text.length,
+      queued: queue.length,
+    });
+  }
+
+  /**
+   * 取出并清空该会话暂存的后台结果，前置到本轮 outcome 的文本上。
+   *
+   * 前置而不是单独发一条：QQ 被动回复配额是稀缺资源，合并进本轮回复不额外占额。
+   * 保留 outcome.kind，让 Responder 照常按结果类型渲染（超时/错误的话术不受影响）。
+   */
+  private attachPendingBackground(conversationKey: string, outcome: TurnOutcome): TurnOutcome {
+    const queue = this.pendingBackground.get(conversationKey);
+    if (queue === undefined || queue.length === 0) return outcome;
+    this.pendingBackground.delete(conversationKey);
+    this.deps.stats.backgroundDelivered += queue.length;
+    const prefix = queue.map((text) => `【后台任务完成】${text}`).join('\n\n');
+    const body = outcome.text.trim();
+    return { ...outcome, text: body === '' ? prefix : `${prefix}\n\n${body}` };
   }
 
   private buildPrompt(

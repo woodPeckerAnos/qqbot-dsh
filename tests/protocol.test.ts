@@ -123,6 +123,69 @@ describe('HarnessSdkClient', () => {
     client.close();
   });
 
+  it('subagent.started/finished 通知被解析成类型化载荷', async () => {
+    const { client, toClient } = makeClient();
+    const started = vi.fn();
+    const finished = vi.fn();
+    client.on('subagent.started', started);
+    client.on('subagent.finished', finished);
+
+    toClient.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'subagent.started',
+        params: { parentSessionId: 'p1', childSessionId: 'c1' },
+      })}\n`,
+    );
+    toClient.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'subagent.finished',
+        params: {
+          provider: 'spawn',
+          agentId: 'c1',
+          parentSessionId: 'p1',
+          childSessionId: 'c1',
+          status: 'ok',
+          stopReason: 'completed',
+          lastAssistantMessage: [{ type: 'text', text: '结果' }, null, 'garbage'],
+        },
+      })}\n`,
+    );
+    await settle();
+
+    expect(started).toHaveBeenCalledWith({ parentSessionId: 'p1', childSessionId: 'c1' });
+    expect(finished).toHaveBeenCalledTimes(1);
+    const payload = finished.mock.calls[0]![0] as {
+      status: string;
+      stopReason: string;
+      lastAssistantMessage: unknown[];
+    };
+    expect(payload.status).toBe('ok');
+    expect(payload.stopReason).toBe('completed');
+    // 非对象的块被防御性剔除，合法块原样保留
+    expect(payload.lastAssistantMessage).toEqual([{ type: 'text', text: '结果' }]);
+    client.close();
+  });
+
+  it('形状不对的 subagent 通知走 unknown 诊断，不抛错', async () => {
+    const { client, toClient } = makeClient();
+    const started = vi.fn();
+    const unknown = vi.fn();
+    client.on('subagent.started', started);
+    client.on('unknown', unknown);
+
+    toClient.write(
+      `${JSON.stringify({ jsonrpc: '2.0', method: 'subagent.started', params: { parentSessionId: 'p1' } })}\n`,
+    );
+    toClient.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'subagent.finished', params: null })}\n`);
+    await settle();
+
+    expect(started).not.toHaveBeenCalled();
+    expect(unknown).toHaveBeenCalledTimes(2);
+    client.close();
+  });
+
   it('stdout 出现非 JSON 内容时报 violation（而不是静默丢弃）', async () => {
     const { client, replyRaw, violations } = makeClient();
     replyRaw('这是一行被插件写进 stdout 的日志\n');

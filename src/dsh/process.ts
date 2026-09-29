@@ -23,6 +23,8 @@ import {
   type SessionEventNotification,
   type SessionPromptResult,
   type SessionStatusNotification,
+  type SubagentFinishedNotification,
+  type SubagentStartedNotification,
 } from './protocol.js';
 
 export interface DshRuntimeOptions {
@@ -51,6 +53,8 @@ export interface DshRuntimeOptions {
 export interface DshRuntimeEvents {
   'session.event': (notification: SessionEventNotification) => void;
   'session.status': (notification: SessionStatusNotification) => void;
+  'subagent.started': (notification: SubagentStartedNotification) => void;
+  'subagent.finished': (notification: SubagentFinishedNotification) => void;
   violation: (error: ProtocolViolationError) => void;
   exit: (code: number | null, signal: NodeJS.Signals | null) => void;
 }
@@ -156,6 +160,8 @@ export class DshRuntime extends EventEmitter {
 
     client.on('session.event', (n) => this.emit('session.event', n));
     client.on('session.status', (n) => this.emit('session.status', n));
+    client.on('subagent.started', (n) => this.emit('subagent.started', n));
+    client.on('subagent.finished', (n) => this.emit('subagent.finished', n));
     client.on('violation', (error) => {
       options.logger.error('DSH 协议通道被污染', { raw: error.rawLine.slice(0, 200) });
       this.emit('violation', error);

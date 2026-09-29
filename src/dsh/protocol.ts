@@ -82,6 +82,74 @@ export interface SessionStatusNotification {
   status: 'idle' | 'running';
 }
 
+/**
+ * `subagent.started` 载荷：runtime 内创建了一个子代理会话。
+ *
+ * 桥接层用它做两件事：
+ *   1. runtime 池给对应 entry 记一个"活子代理"，豁免空闲回收/LRU 驱逐
+ *      （子代理驻留在 runtime 进程内，进程被回收 = 后台任务被静默杀掉）；
+ *   2. 统计与日志（health 可观测）。
+ */
+export interface SubagentStartedNotification {
+  /** 发起委托的父会话（= 某会话的 currentSessionId） */
+  parentSessionId: string;
+  /** 新建的子会话 */
+  childSessionId: string;
+}
+
+/**
+ * `subagent.finished` 载荷：一个进程内子代理运行结束（远程运行不会上报）。
+ *
+ * `lastAssistantMessage` 是子代理最后一条非空 assistant 消息（dsh-llm 的
+ * ContentBlock 数组）。当前桥接层**不**用它做投递——后台结果统一从父会话的
+ * "自发轮次"捕获（见 pipeline/turn-runner.ts 的 spontaneous 路径），父代理会
+ * 把子代理结果整理成面向用户的文本；这里保留字段只为诊断与将来扩展。
+ */
+export interface SubagentFinishedNotification {
+  provider: string;
+  /** 子代理 id（本地运行 = childSessionId） */
+  agentId: string;
+  parentSessionId: string;
+  childSessionId: string;
+  /** 部署映射后的运行结果（completed → ok；其余按 maxTokensAsSuccess 归并） */
+  status: 'ok' | 'error';
+  /** provider 上报的停止原因（completed / aborted / max-tokens / …） */
+  stopReason: string;
+  lastAssistantMessage?: readonly Record<string, unknown>[];
+}
+
+/** 防御性解析：wire 数据不可信，形状不对时返回 undefined（调用方转 unknown 诊断）。 */
+function parseSubagentStarted(params: unknown): SubagentStartedNotification | undefined {
+  if (params === null || typeof params !== 'object') return undefined;
+  const record = params as Record<string, unknown>;
+  const parentSessionId = record['parentSessionId'];
+  const childSessionId = record['childSessionId'];
+  if (typeof parentSessionId !== 'string' || typeof childSessionId !== 'string') return undefined;
+  return { parentSessionId, childSessionId };
+}
+
+/** 防御性解析（同上）。status 采取"非 error 即 ok"的宽松归并。 */
+function parseSubagentFinished(params: unknown): SubagentFinishedNotification | undefined {
+  if (params === null || typeof params !== 'object') return undefined;
+  const record = params as Record<string, unknown>;
+  const strings = ['provider', 'agentId', 'parentSessionId', 'childSessionId', 'stopReason'] as const;
+  for (const key of strings) {
+    if (typeof record[key] !== 'string') return undefined;
+  }
+  const rawLast = record['lastAssistantMessage'];
+  return {
+    provider: record['provider'] as string,
+    agentId: record['agentId'] as string,
+    parentSessionId: record['parentSessionId'] as string,
+    childSessionId: record['childSessionId'] as string,
+    status: record['status'] === 'error' ? 'error' : 'ok',
+    stopReason: record['stopReason'] as string,
+    ...(Array.isArray(rawLast)
+      ? { lastAssistantMessage: rawLast.filter((b): b is Record<string, unknown> => b !== null && typeof b === 'object') }
+      : {}),
+  };
+}
+
 /** 协议方法名 → 载荷形状 */
 export interface HarnessSdkRequestMap {
   initialize: { params: InitializeParams; result: InitializeResult };
@@ -126,8 +194,8 @@ export class ProtocolViolationError extends Error {
 export interface HarnessSdkClientEvents {
   'session.event': (notification: SessionEventNotification) => void;
   'session.status': (notification: SessionStatusNotification) => void;
-  'subagent.started': (payload: Record<string, unknown>) => void;
-  'subagent.finished': (payload: Record<string, unknown>) => void;
+  'subagent.started': (payload: SubagentStartedNotification) => void;
+  'subagent.finished': (payload: SubagentFinishedNotification) => void;
   /** stdout 污染 / 无法解析的帧 */
   violation: (error: ProtocolViolationError) => void;
   /** 传输层收到无法归类的消息（未知通知），仅用于诊断 */
@@ -355,11 +423,21 @@ export class HarnessSdkClient {
         return;
       }
       case 'subagent.started': {
-        this.emitter.emit('subagent.started', params as Record<string, unknown>);
+        const payload = parseSubagentStarted(params);
+        if (payload === undefined) {
+          this.emitter.emit('unknown', { method, params });
+          return;
+        }
+        this.emitter.emit('subagent.started', payload);
         return;
       }
       case 'subagent.finished': {
-        this.emitter.emit('subagent.finished', params as Record<string, unknown>);
+        const payload = parseSubagentFinished(params);
+        if (payload === undefined) {
+          this.emitter.emit('unknown', { method, params });
+          return;
+        }
+        this.emitter.emit('subagent.finished', payload);
         return;
       }
       default:

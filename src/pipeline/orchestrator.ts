@@ -22,7 +22,7 @@ import type {
   ReplyPolicy,
 } from '../core/connector.js';
 import { isUserMessage } from '../core/connector.js';
-import type { SessionStatusNotification } from '../dsh/protocol.js';
+import type { SessionEventNotification, SessionStatusNotification } from '../dsh/protocol.js';
 import type { Logger } from '../logger.js';
 import type { OffpeakSnapshot } from '../offpeak/index.js';
 import type { Responder } from './egress/responder.js';
@@ -32,10 +32,7 @@ import type { PipelineStats, PipelineStatsSnapshot } from './stats.js';
 
 /** runtime 事件路由的委托面（由 TurnRunner 实现）。 */
 export interface SessionEventRouter {
-  routeSessionEvent(
-    conversationKey: string,
-    event: { type: string; seq: number; data: Record<string, unknown> },
-  ): void;
+  routeSessionEvent(conversationKey: string, notification: SessionEventNotification): void;
   routeSessionStatus(conversationKey: string, status: SessionStatusNotification): void;
 }
 
@@ -93,11 +90,8 @@ export class Orchestrator {
   }
 
   /** runtime 事件路由直接委托给 TurnRunner（与 Ingress 管线无关）。 */
-  routeSessionEvent(
-    conversationKey: string,
-    event: { type: string; seq: number; data: Record<string, unknown> },
-  ): void {
-    this.deps.turns.routeSessionEvent(conversationKey, event);
+  routeSessionEvent(conversationKey: string, notification: SessionEventNotification): void {
+    this.deps.turns.routeSessionEvent(conversationKey, notification);
   }
 
   routeSessionStatus(conversationKey: string, status: SessionStatusNotification): void {

@@ -929,3 +929,102 @@ fileName/sizeBytes）。一次 `reply()` 调用要么纯文本、要么一个附
 - `/metrics` 的 `attachmentsSent` 计数成功发出的附件数。
 
 ---
+
+## 13. 后台任务托管（长流程不阻塞会话 + 可被自然语言停止）
+
+### 13.1 问题
+
+DSH 的一轮（turn）在桥接层是**每会话串行**的（§5.4 的 KeyedMutex）：一条消息
+派发给 runtime 后，`runTurn` 会一直等到本轮 `turn/end` + `idle` 才释放会话锁。
+如果 agent 在这一轮里同步跑一个长流程（编译、批处理、爬取、多步命令），整个
+会话在这段时间里对**新消息完全无响应**，体验很差；而 SDK wire 协议没有取消
+方法，桥接层一旦派发就只能等它超时后回收整个 runtime 进程（§5.2）——既不能
+提前停，也会误伤同会话的其他工作。
+
+### 13.2 方案：把长流程托管给后台子代理
+
+DSH 的 `sdk` profile（继承 `dsh-base`）已经带全套 continuable 后台子代理能力，
+本项目的 patch 只关了 `tool-jobs`，这些都保留着：
+
+- `subagent`（`backgroundMode: continuable`）：后台派发长任务，工具调用**立即
+  返回** `started subagent <id>`，父轮次随即结束、会话锁释放，新消息立刻可处理；
+  子代理驻留在**同一个 runtime 进程**内继续跑；
+- `interrupt_agent`：停掉某个后台子代理的当前轮次（接受即返回，子代理不销毁，
+  仍可 `send_message` 续聊）；`list_agents`：查子代理 id 与状态；
+- 子代理结束时 DSH 会唤醒空闲的父代理跑一个**自发轮次**总结结果，同时 wire 上
+  发 `subagent.started` / `subagent.finished`（后者带 `lastAssistantMessage`）。
+
+于是"停止"落地为：用户说"停/取消"→ 触发一个**新的短轮次**（此时会话空闲）→
+父代理 `list_agents` 找到 id → `interrupt_agent` 停掉它。`maxDepth` 默认 1，
+子代理不会再生孙代理，一次 interrupt 即停掉整个委托任务。
+
+**硬边界（诚实记录）**：这套机制停的是**后台子代理**，停不了父代理自己正在跑
+的这一轮——SDK 协议只有 `initialize` / `session/prompt` / `shutdown`，没有
+cancel，且 `session/prompt` 对运行中的轮次是 `followup`（排到下一轮，不能
+steering 进当前轮）。所以"模型不守纪律、在父轮次里同步跑长命令"仍只能靠超时
+回收兜底。方案的有效性依赖 persona 纪律把长任务**赶进子代理**（§13.6）。
+
+### 13.3 桥接层准备①：事件按 sessionId 过滤（串扰防护）
+
+一个 runtime 进程里除了父会话，还有后台子代理的**子会话**，它们的
+`session.event` / `session.status` 都从同一条 wire 上来，各自带自己的 sessionId。
+若不过滤，子代理的 `assistant/message` / `turn/end` / `idle` 会灌进父轮次的
+累积器：轻则把子代理的中间文本当成最终答案，重则子代理的 `turn/end` 让父轮次
+**提前结算**（`TurnAccumulator.isSettled` 只看 turnEnd + sawIdle）。
+
+因此 `routeSessionEvent` / `routeSessionStatus` 现在都带完整 notification，
+TurnRunner 用 `sessions.peek(key).currentSessionId` 做父会话判定
+（`isParentSession`），只放行父会话事件，子会话事件计入
+`stats.childEventsFiltered` 后丢弃（`src/pipeline/turn-runner.ts`）。
+
+### 13.4 桥接层准备②：子代理生命周期订阅 + 池回收豁免
+
+后台子代理**驻留在 runtime 进程内**（DSH 的 residency 是进程本地的）。而池的
+`busy` 标记在父轮次结束后就会变回 false——若不加保护，空闲回收与 LRU 驱逐会
+把承载着后台任务的进程关掉，任务被**静默杀掉**，用户永远等不到结果。
+
+`RuntimeEntry` 增加 `activeChildren: Set<string>`：`subagent.started` 加、
+`subagent.finished` 删（`src/dsh/pool.ts`）。`reclaimIdle` 与 `evictIfNeeded`
+把 `activeChildren.size > 0` 视同 `busy` 一并豁免；`drop` 若发现仍有活子代理会
+打 warn（能走到这里说明是超时终止 / disposeAll / 进程死亡重建）。协议层给这两个
+通知补了类型与防御性解析（`src/dsh/protocol.ts`），process 层转发
+（`src/dsh/process.ts`），main.ts 计入 `stats.backgroundStarted/Finished`。
+
+**自发轮次与用户轮次的罕见竞态**：子代理恰好在用户新消息派发的那一刻完成时，
+两者会并进父代理同一个 running 相位（§5.2 的"多排队轮次跑在一个 kick 里"）。
+此时 `runTurn` 丢弃进行中的自发累积器，父代理对用户问题的最终答复才是本轮要
+交付的内容—— spontaneous 的总结被吸收进这一轮，不再单独带出。
+
+### 13.5 桥接层准备③：自发轮次收口（捕获 + 暂存 + 下次带出）
+
+子代理完成时父代理跑的那个自发轮次**不是任何 runTurn 发起的**，若无人接收，
+父代理对后台结果的总结会被当成"无归属事件"丢弃，用户永远看不到结果。
+
+TurnRunner 增加 `spontaneousTurns`：父会话 `running` 且当前没有在途 runTurn 时
+建一个累积器，`idle` + `turn/end` 落定后取 `finalText` 暂存进 `pendingBackground`
+（`captureBackgroundResult`）。因为 QQ 被动回复窗口只有 5 分钟，这条总结当时
+多半发不出去，所以**不主动推送**，而是等该会话**下一条用户消息**的回复里前置
+带出（`attachPendingBackground`，合并进同一条消息不额外占配额）。暂存有上限
+`MAX_PENDING_BACKGROUND` 条、且是内存态（桥接进程重启即丢——后台结果本就是
+尽力而为的提醒）。计数见 `stats.backgroundCaptured/Delivered`。
+
+> OneBot 无被动窗口，将来可在此处改为"完成即主动推送"（见 §13.7 待办）。
+
+### 13.6 桥接层准备④：persona 纪律
+
+机制能不能生效，取决于模型是否**愿意把长任务派发出去**。`dsh-profile/
+cordis.patch.yml` 的 personaPrefix 增加"后台任务纪律"：耗时工作必须用
+`subagent` 后台派发、派发后立刻简短回执并结束本轮、绝不在这轮同步等；用户要求
+停止时 `list_agents` + `interrupt_agent`；收到完成通知时用一两句话转达结果
+（这段文本会作为独立消息发给用户）。patch 里也注明**不要关 subagent 家族**。
+
+### 13.7 已知边界与待办
+
+- 停不了父轮次本身（§13.2 硬边界）；模型不守纪律时仍靠超时回收；
+- 自发轮次总结当前只在"下一条用户消息"时带出，QQ 被动窗口下可能延迟较久；
+  待办：OneBot 通道改为完成即主动推送；官方通道评估在窗口内的即时投递；
+- `pendingBackground` 为内存态，重启丢失；
+- `interrupt_agent` 只停子代理当前轮次，子代理内用 bash `&` 起的分离进程不被
+  回收，兜底仍是容器级 `pids_limit` / `mem_limit`。
+
+---
