@@ -327,4 +327,14 @@ export interface ReplyPolicy {
   progressIntervalMs: number;
   /** 该平台允许的单轮超时（毫秒） */
   turnTimeoutMs: number;
+  /**
+   * 被动回复窗口（毫秒）：一条用户消息到达后，多久之内还能用它的 msg_id 作锚点
+   * 主动补发消息（算被动回复，不消耗稀缺的主动消息额度）。
+   *
+   * 后台任务完成时若仍在窗口内、且该 msg_id 的回复配额未用尽，就能把结果
+   * "即时投递"出去，而不必干等用户下一条消息（见 pipeline/egress/background.ts）。
+   *   - 官方群聊 5 分钟、单聊 60 分钟（平台硬约束）；
+   *   - OneBot 无窗口，用 Number.POSITIVE_INFINITY 表示"永远可主动发"。
+   */
+  passiveWindowMs: number;
 }

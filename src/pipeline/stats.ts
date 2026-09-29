@@ -35,6 +35,8 @@ export class PipelineStats {
   backgroundFinished = 0;
   /** 捕获到的"自发轮次"结果条数（TurnRunner，后台任务完成后父代理的总结） */
   backgroundCaptured = 0;
+  /** 后台结果被主动推送出去的条数（BackgroundPusher：OneBot 即推 / 官方窗口内投递） */
+  backgroundPushed = 0;
   /** 随下一条回复带出的后台结果条数（TurnRunner） */
   backgroundDelivered = 0;
   /** 因 sessionId 不匹配被过滤掉的子会话事件数（TurnRunner，串扰防护命中计数） */

@@ -16,6 +16,7 @@ import { createServer, type Server } from 'node:http';
 
 import type { ConnectorHealth } from './core/connector.js';
 import type { Logger } from './logger.js';
+import type { BackgroundSnapshot } from './pipeline/egress/background.js';
 import type { PipelineStatsSnapshot } from './pipeline/stats.js';
 
 export interface HealthSnapshot {
@@ -23,7 +24,9 @@ export interface HealthSnapshot {
   uptimeMs: number;
   /** 平台标识 → 该连接器的健康状态 */
   connectors: Record<string, ConnectorHealth & { staleMs?: number }>;
-  runtime: { size: number; activeConversationKeys: string[] };
+  runtime: { size: number; activeConversationKeys: string[]; activeSubagents: number };
+  /** 后台任务投递状态：待带出结果的会话数与总条数（见 DESIGN §13.5） */
+  background: BackgroundSnapshot;
   /** 编排层统计（字段名 dispatcher 是 /metrics 的对外契约，RUNBOOK 在用） */
   dispatcher: PipelineStatsSnapshot;
   /** 最近一次收到任何连接器事件的时间距今毫秒；undefined 表示还没收到过 */
@@ -65,6 +68,7 @@ export function createHealthServer(options: HealthServerOptions): HealthServer {
             uptimeMs: snapshot.uptimeMs,
             connectors: snapshot.connectors,
             runtime: snapshot.runtime,
+            background: snapshot.background,
             dispatcher: snapshot.dispatcher,
             lastEventAgeMs: snapshot.lastEventAgeMs,
             warnings: snapshot.warnings,
@@ -127,7 +131,8 @@ export const EVENT_STALE_THRESHOLD_MS = 150_000;
 export function buildHealthSnapshot(input: {
   startedAt: number;
   connectors: Record<string, ConnectorHealth>;
-  runtime: { size: number; activeConversationKeys: string[] };
+  runtime: { size: number; activeConversationKeys: string[]; activeSubagents: number };
+  background: BackgroundSnapshot;
   dispatcher: PipelineStatsSnapshot;
   now?: number;
 }): HealthSnapshot {
@@ -175,6 +180,7 @@ export function buildHealthSnapshot(input: {
     uptimeMs: now - input.startedAt,
     connectors,
     runtime: input.runtime,
+    background: input.background,
     dispatcher: input.dispatcher,
     ...(lastEventAt !== undefined ? { lastEventAgeMs: now - lastEventAt } : {}),
     warnings,

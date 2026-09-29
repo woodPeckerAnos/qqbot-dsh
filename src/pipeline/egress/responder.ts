@@ -83,6 +83,16 @@ export class Responder {
   }
 
   /**
+   * 本条用户消息已经用掉的回复条数（= 已分配的 msg_seq 数）。
+   *
+   * 后台结果主动推送要接着这个号往后排（见 egress/background.ts），否则同
+   * `(msg_id, msg_seq)` 会被官方平台去重（40054005），用户收不到。
+   */
+  get repliesSent(): number {
+    return this.ledger.sent;
+  }
+
+  /**
    * 发一条简短回复（闸通知 / 命令回执 / 忙提示 / 错误）。
    * 配额不足时静默失败——这条语义从 replySimple 继承：提示类消息不该再抛错。
    */

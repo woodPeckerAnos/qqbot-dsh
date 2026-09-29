@@ -995,20 +995,34 @@ TurnRunner 用 `sessions.peek(key).currentSessionId` 做父会话判定
 此时 `runTurn` 丢弃进行中的自发累积器，父代理对用户问题的最终答复才是本轮要
 交付的内容—— spontaneous 的总结被吸收进这一轮，不再单独带出。
 
-### 13.5 桥接层准备③：自发轮次收口（捕获 + 暂存 + 下次带出）
+### 13.5 桥接层准备③：自发轮次收口 + 后台结果投递（BackgroundPusher）
 
 子代理完成时父代理跑的那个自发轮次**不是任何 runTurn 发起的**，若无人接收，
 父代理对后台结果的总结会被当成"无归属事件"丢弃，用户永远看不到结果。
 
 TurnRunner 增加 `spontaneousTurns`：父会话 `running` 且当前没有在途 runTurn 时
-建一个累积器，`idle` + `turn/end` 落定后取 `finalText` 暂存进 `pendingBackground`
-（`captureBackgroundResult`）。因为 QQ 被动回复窗口只有 5 分钟，这条总结当时
-多半发不出去，所以**不主动推送**，而是等该会话**下一条用户消息**的回复里前置
-带出（`attachPendingBackground`，合并进同一条消息不额外占配额）。暂存有上限
-`MAX_PENDING_BACKGROUND` 条、且是内存态（桥接进程重启即丢——后台结果本就是
-尽力而为的提醒）。计数见 `stats.backgroundCaptured/Delivered`。
+建一个累积器，`idle` + `turn/end` 落定后取 `finalText`，交给 `BackgroundPusher`
+（`src/pipeline/egress/background.ts`）投递。投递器统一收口"怎么把结果送到用户
+手上"，按平台能力分两条路：
 
-> OneBot 无被动窗口，将来可在此处改为"完成即主动推送"（见 §13.7 待办）。
+1. **能即时推送就推送**（`stats.backgroundPushed`）：
+   - **OneBot** 无被动窗口（`passiveWindowMs = +∞`），完成即主动发；
+   - **官方**在被动窗口内（群 5 分钟 / 单聊 60 分钟，`ReplyPolicy.passiveWindowMs`）
+     且该 `msg_id` 回复配额未尽时，用**最后一条用户消息**的 `msg_id` 作锚点、
+     接着已用的 `msg_seq` 往后补发（`ReplyAnchor.usedSeq`，由 Responder 的
+     `repliesSent` 提供）。seq 必须续号，否则同 `(msg_id, msg_seq)` 被平台去重
+     （40054005），用户收不到；
+2. **推不出去就暂存**（超窗 / 配额耗尽 / 无锚点 / 发送失败），等该会话**下一条
+   用户消息**的回复里前置带出（`attachPendingBackground`，合并进同一条消息不额外
+   占配额，计入 `stats.backgroundDelivered`）。
+
+暂存**持久化**到 `stateDir/background-pending.json`（原子写，启动时加载），桥接
+进程重启后仍能带出——注意重启会连带杀掉 runtime 里**正在跑**的子代理（进程内
+驻留，救不回），持久化救的是"已完成、已捕获成文本、只差投递"的结果。锚点不持久化
+（`msg_id` 只在窗口内有效，重启后基本都过期，退回"下一条消息带出"即可）。
+
+`/metrics` 与 health 暴露后台状态（见 §13.7）：`runtime.activeSubagents`（在跑的
+子代理总数）与 `background.{pendingConversations,pendingTotal}`（待带出积压）。
 
 ### 13.6 桥接层准备④：persona 纪律
 
@@ -1018,13 +1032,20 @@ cordis.patch.yml` 的 personaPrefix 增加"后台任务纪律"：耗时工作必
 停止时 `list_agents` + `interrupt_agent`；收到完成通知时用一两句话转达结果
 （这段文本会作为独立消息发给用户）。patch 里也注明**不要关 subagent 家族**。
 
-### 13.7 已知边界与待办
+### 13.7 可观测性与已知边界
+
+`/metrics` 的 `dispatcher` 计数：`backgroundStarted/Finished`（子代理启停）、
+`backgroundCaptured`（自发轮次捕获）、`backgroundPushed`（主动推送）、
+`backgroundDelivered`（随下一条消息带出）、`childEventsFiltered`（子会话事件
+过滤命中）；`runtime.activeSubagents` 与 `background.*` 给出实时积压。
+
+已知边界：
 
 - 停不了父轮次本身（§13.2 硬边界）；模型不守纪律时仍靠超时回收；
-- 自发轮次总结当前只在"下一条用户消息"时带出，QQ 被动窗口下可能延迟较久；
-  待办：OneBot 通道改为完成即主动推送；官方通道评估在窗口内的即时投递；
-- `pendingBackground` 为内存态，重启丢失；
+- 官方通道超窗（群 >5 分钟）完成的后台任务无法主动推送，只能等用户下一条消息
+  带出——这是平台硬约束，非本实现可绕过；
 - `interrupt_agent` 只停子代理当前轮次，子代理内用 bash `&` 起的分离进程不被
-  回收，兜底仍是容器级 `pids_limit` / `mem_limit`。
+  回收，兜底仍是容器级 `pids_limit` / `mem_limit`；
+- 主动推送是尽力而为：发送失败会回落暂存，不会丢结果，但可能延迟到下一条消息。
 
 ---
