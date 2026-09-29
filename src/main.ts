@@ -257,12 +257,29 @@ async function main(): Promise<void> {
     }),
   });
 
-  // runtime 事件 → 编排器（按会话路由）
+  // runtime 事件 → 编排器（按会话路由）。
+  // 传**完整 notification**（含 sessionId）：一个 runtime 进程里除了父会话还有
+  // 后台子代理的子会话，事件都从同一条 wire 上来；TurnRunner 需要 sessionId
+  // 才能把子会话事件过滤掉，否则子代理的 turn/end 会把父轮次提前"结算"（串扰）。
   pool.on('session.event', (conversationKey, notification) => {
-    orchestrator.routeSessionEvent(conversationKey, notification.event);
+    orchestrator.routeSessionEvent(conversationKey, notification);
   });
   pool.on('session.status', (conversationKey, notification) => {
     orchestrator.routeSessionStatus(conversationKey, notification);
+  });
+  // 后台子代理生命周期 → 统计（回收豁免已由池自己记账，这里只做可观测）。
+  pool.on('subagent.started', (conversationKey, notification) => {
+    stats.backgroundStarted += 1;
+    logger.info('后台子代理启动', { conversation: conversationKey, child: notification.childSessionId });
+  });
+  pool.on('subagent.finished', (conversationKey, notification) => {
+    stats.backgroundFinished += 1;
+    logger.info('后台子代理结束', {
+      conversation: conversationKey,
+      child: notification.childSessionId,
+      status: notification.status,
+      stopReason: notification.stopReason,
+    });
   });
 
   // --- 连接器事件 → 编排器 ----------------------------------------------------

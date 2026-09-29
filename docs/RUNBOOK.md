@@ -338,6 +338,23 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 | OneBot | 框架上报的图片 URL 指向宿主 `127.0.0.1:<port>`，容器访问不到 | 容器内 `curl` 那个 URL 测试；需要让框架用可被容器访问的地址 |
 | 两者 | 就想要纯文本 | 设 `BOT_ATTACHMENT_ENABLED=false`，行为回到只有 `[图片]` 占位 |
 
+### 4.6 长任务把会话卡住 / 后台任务没结果
+
+长流程应由 agent 用 `subagent` 后台派发（见 DESIGN §13），父轮次随即结束、会话
+不再被占住。相关排障：
+
+| 现象 | 先看 | 原因 / 处置 |
+|---|---|---|
+| 会话长时间对新消息无响应 | 日志有没有"后台子代理已启动"；`/metrics` 的 `backgroundStarted` | agent 没把长任务派发给子代理，而是在父轮次里同步跑——只能等 `turnTimeoutMs` 超时回收。加强 persona 纪律（`dsh-profile/cordis.patch.yml`），或调低超时 |
+| 想中途停掉长任务 | — | 直接对机器人说"停掉那个后台任务"，父代理会 `list_agents` + `interrupt_agent`（需会话空闲，即当前没有别的轮次在跑） |
+| 后台任务完成了但用户没收到结果 | `/metrics` 的 `backgroundCaptured` vs `backgroundDelivered` | 结果被捕获后要等该会话**下一条用户消息**才带出（QQ 被动窗口所限，见 DESIGN §13.5）；`captured` 涨了但 `delivered` 没涨 = 还没有下一条消息 |
+| 后台任务"凭空消失" | 日志有没有"关闭 runtime 将终止其承载的后台子代理" | runtime 被回收/超时终止连带杀了子代理。正常空闲/LRU 回收已豁免有活子代理的进程（DESIGN §13.4），出现这条说明是超时终止或 disposeAll |
+| `childEventsFiltered` 一直涨 | — | 正常现象：这是子代理子会话的事件被正确过滤掉的计数（DESIGN §13.3），不是错误 |
+
+`/metrics` 的 `dispatcher` 里新增计数：`backgroundStarted` / `backgroundFinished`
+（子代理启停）、`backgroundCaptured` / `backgroundDelivered`（自发轮次结果的捕获
+与带出）、`childEventsFiltered`（子会话事件过滤命中）。
+
 ---
 
 ## 5. 重启后"失忆"

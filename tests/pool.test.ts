@@ -36,6 +36,13 @@ class FakeRuntime {
     (this.handlers[event] ??= []).push(handler);
   }
 
+  /** 测试驱动：触发已注册的事件 handler。 */
+  emit(event: string, ...args: unknown[]): void {
+    for (const handler of this.handlers[event] ?? []) {
+      (handler as unknown as (...a: unknown[]) => void)(...args);
+    }
+  }
+
   async start(): Promise<unknown> {
     this.startCount += 1;
     return { serverInfo: { name: 'deepseek-harness-sdk-runtime', version: '0.0.1' } };
@@ -218,6 +225,86 @@ describe('RuntimePool', () => {
     for (const handler of handlers) (handler as unknown as (c: number, s: string) => void)(1, 'SIGTERM');
 
     expect(onExit).toHaveBeenCalledWith('G1', 1, 'SIGTERM');
+    await pool.disposeAll();
+  });
+
+  // -------------------------------------------------------------------------
+  // 后台子代理记账（回收豁免的依据，见 RuntimeEntry.activeChildren）
+  // -------------------------------------------------------------------------
+
+  const STARTED = { parentSessionId: 'parent-1', childSessionId: 'child-1' };
+  const FINISHED = {
+    provider: 'spawn',
+    agentId: 'child-1',
+    parentSessionId: 'parent-1',
+    childSessionId: 'child-1',
+    status: 'ok' as const,
+    stopReason: 'completed',
+  };
+
+  it('subagent.started/finished 维护 activeChildren 并按会话冒泡', async () => {
+    const { pool } = makePool();
+    const onStarted = vi.fn();
+    const onFinished = vi.fn();
+    pool.on('subagent.started', onStarted);
+    pool.on('subagent.finished', onFinished);
+
+    const entry = await pool.acquire('G1', '/ws/1');
+    const runtime = entry.runtime as unknown as FakeRuntime;
+
+    runtime.emit('subagent.started', STARTED);
+    expect([...entry.activeChildren]).toEqual(['child-1']);
+    expect(onStarted).toHaveBeenCalledWith('G1', STARTED);
+
+    // 重复 started 幂等（Set 语义），finished 后清零
+    runtime.emit('subagent.started', STARTED);
+    expect(entry.activeChildren.size).toBe(1);
+    runtime.emit('subagent.finished', FINISHED);
+    expect(entry.activeChildren.size).toBe(0);
+    expect(onFinished).toHaveBeenCalledWith('G1', FINISHED);
+
+    // 未知子代理的 finished 不会把计数打成负数
+    runtime.emit('subagent.finished', { ...FINISHED, childSessionId: 'child-unknown' });
+    expect(entry.activeChildren.size).toBe(0);
+    await pool.disposeAll();
+  });
+
+  it('承载后台子代理的 runtime 不会被空闲回收（回收 = 静默杀任务）', async () => {
+    vi.useFakeTimers();
+    try {
+      let nowMs = 0;
+      const { pool } = makePool({ runtimeIdleMs: 1_000, now: () => nowMs });
+      const entry = await pool.acquire('G1', '/ws/1');
+      pool.release('G1');
+      (entry.runtime as unknown as FakeRuntime).emit('subagent.started', STARTED);
+
+      nowMs += 60_000;
+      await vi.advanceTimersByTimeAsync(30_000);
+      await Promise.resolve();
+
+      expect(pool.size).toBe(1);
+
+      // 子代理结束后恢复可回收
+      (entry.runtime as unknown as FakeRuntime).emit('subagent.finished', FINISHED);
+      nowMs += 60_000;
+      await vi.advanceTimersByTimeAsync(30_000);
+      await Promise.resolve();
+      expect(pool.size).toBe(0);
+      await pool.disposeAll();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('LRU 回收跳过承载后台子代理的 runtime', async () => {
+    const { pool, created } = makePool({ maxRuntimes: 1 });
+    const g1 = await pool.acquire('G1', '/ws/1');
+    (g1.runtime as unknown as FakeRuntime).emit('subagent.started', STARTED);
+
+    // 池已满且唯一成员承载后台任务：与 busy 同样豁免，不强杀
+    await pool.acquire('G2', '/ws/2');
+    expect(pool.activeConversationKeys()).toContain('G1');
+    expect((created[0] as unknown as FakeRuntime).disposeCount).toBe(0);
     await pool.disposeAll();
   });
 });
