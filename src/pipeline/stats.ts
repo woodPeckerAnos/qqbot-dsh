@@ -29,6 +29,16 @@ export class PipelineStats {
   failed = 0;
   /** turn 超时数（TurnRunner） */
   timedOut = 0;
+  /** 后台子代理启动数（main.ts，来自 pool 的 subagent.started） */
+  backgroundStarted = 0;
+  /** 后台子代理结束数（main.ts，来自 pool 的 subagent.finished） */
+  backgroundFinished = 0;
+  /** 捕获到的"自发轮次"结果条数（TurnRunner，后台任务完成后父代理的总结） */
+  backgroundCaptured = 0;
+  /** 随下一条回复带出的后台结果条数（TurnRunner） */
+  backgroundDelivered = 0;
+  /** 因 sessionId 不匹配被过滤掉的子会话事件数（TurnRunner，串扰防护命中计数） */
+  childEventsFiltered = 0;
   /** 成功内联进 prompt 的图片数（TurnRunner） */
   imagesInlined = 0;
   /** 读取失败/超限/格式不支持而跳过的图片数（TurnRunner） */

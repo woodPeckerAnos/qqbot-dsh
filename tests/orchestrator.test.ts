@@ -141,6 +141,7 @@ function createFakePool(runtime: FakeRuntime) {
           createdAt: 0,
           lastUsedAt: 0,
           busy: false,
+          activeChildren: new Set<string>(),
         };
       },
     ),
@@ -301,7 +302,7 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
   // 这里的假池 on() 只是 spy，所以直接订阅假 runtime 的事件。
   runtime.on('session.event', (n: SessionEventNotification) => {
     const conversationKey = conversationKeyOf(n.sessionId, sessions);
-    orchestrator.routeSessionEvent(conversationKey, n.event);
+    orchestrator.routeSessionEvent(conversationKey, n);
   });
   runtime.on('session.status', (n: { sessionId: string; status: 'idle' | 'running' }) => {
     const conversationKey = conversationKeyOf(n.sessionId, sessions);
@@ -1150,5 +1151,146 @@ describe('多模态输入', () => {
     ctx.runtime.completeTurn(sessionId, ['我看到一张图片']);
     await pending;
     expect(ctx.sent.at(-1)!.body.content).toBe('我看到一张图片');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 后台子代理桥接：子会话事件过滤（串扰防护）+ 自发轮次收口（结果暂存与带出）
+// ---------------------------------------------------------------------------
+
+describe('后台子代理桥接', () => {
+  beforeEach(() => {
+    ctx = setup();
+  });
+
+  it('子会话（后台子代理）的事件不会污染父轮次', async () => {
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+
+    ctx.runtime.emitStatus(sessionId, 'running');
+    // 子会话也在同一个 runtime 进程里跑：它的 assistant 文本、turn/end、idle
+    // 都会从同一条 wire 上来。若不过滤，父轮次会被提前"结算"成子代理的文本。
+    ctx.runtime.emitEvent('child-session-x', {
+      type: 'assistant/message',
+      seq: 1,
+      data: { message: { content: [{ type: 'text', text: '子代理的中间输出' }] } },
+    });
+    ctx.runtime.emitEvent('child-session-x', {
+      type: 'turn/end',
+      seq: 2,
+      data: { turn: 1, reason: { kind: 'completed' } },
+    });
+    ctx.runtime.emitStatus('child-session-x', 'idle');
+
+    // 父轮次此时必须仍未结算，随后给出自己的答案
+    ctx.runtime.completeTurn(sessionId, ['父会话的最终答案']);
+    await pending;
+
+    expect(ctx.sent).toHaveLength(1);
+    expect(ctx.sent[0]!.body.content).toBe('父会话的最终答案');
+    expect(ctx.orchestrator.snapshotStats().childEventsFiltered).toBeGreaterThan(0);
+  });
+
+  it('后台任务完成的自发轮次被捕获，并随下一条回复带出', async () => {
+    // 第一轮：建立会话（真实系统里子代理只可能在某个轮次中被派发）
+    const first = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['已派发后台任务']);
+    await first;
+    expect(ctx.sent).toHaveLength(1);
+
+    // 子代理完成 → DSH 唤醒空闲的父代理跑"自发轮次"（没有新的用户消息）
+    ctx.runtime.emitStatus(sessionId, 'running');
+    ctx.runtime.emitEvent(sessionId, {
+      type: 'assistant/message',
+      seq: 10,
+      data: { message: { content: [{ type: 'text', text: '压缩完成，共处理 42 个文件' }] } },
+    });
+    ctx.runtime.emitEvent(sessionId, {
+      type: 'turn/end',
+      seq: 11,
+      data: { turn: 2, reason: { kind: 'completed' } },
+    });
+    ctx.runtime.emitStatus(sessionId, 'idle');
+
+    // 捕获进暂存，不主动发消息（QQ 被动窗口下当时多半发不出去）
+    expect(ctx.sent).toHaveLength(1);
+    expect(ctx.orchestrator.snapshotStats().backgroundCaptured).toBe(1);
+
+    // 第二轮：用户新消息 → 回复前置带出后台结果
+    const second = ctx.orchestrator.handleEvent(
+      makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY', content: '跑得怎么样了' }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 2);
+    // 假池每次 acquire 都返回 replayed:false → 第二轮会轮换 sessionId，必须重读
+    // （真实池只在 runtime 重建后轮换，见 store/sessions.ts）
+    const sessionId2 = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId2, ['一切正常']);
+    await second;
+
+    const last = ctx.sent.at(-1)!.body.content ?? '';
+    expect(last).toContain('【后台任务完成】压缩完成，共处理 42 个文件');
+    expect(last).toContain('一切正常');
+    const stats = ctx.orchestrator.snapshotStats();
+    expect(stats.backgroundCaptured).toBe(1);
+    expect(stats.backgroundDelivered).toBe(1);
+  });
+
+  it('自发轮次没有产出文本时不暂存、不带出', async () => {
+    const first = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await first;
+
+    // 自发轮次只有工具调用没有可见文本
+    ctx.runtime.emitStatus(sessionId, 'running');
+    ctx.runtime.emitEvent(sessionId, {
+      type: 'assistant/message',
+      seq: 10,
+      data: { message: { content: [{ type: 'text', text: '' }] } },
+    });
+    ctx.runtime.emitEvent(sessionId, { type: 'turn/end', seq: 11, data: { turn: 2, reason: { kind: 'completed' } } });
+    ctx.runtime.emitStatus(sessionId, 'idle');
+    expect(ctx.orchestrator.snapshotStats().backgroundCaptured).toBe(0);
+
+    const second = ctx.orchestrator.handleEvent(
+      makeMessage({ eventId: 'EVENT-2', msgId: 'MSG-2', senderId: 'SOMEBODY' }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 2);
+    // 同上：假池每轮都轮换 sessionId，重读后再驱动
+    const sessionId2 = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId2, ['第二轮答案']);
+    await second;
+
+    expect(ctx.sent.at(-1)!.body.content).toBe('第二轮答案');
+  });
+
+  it('用户轮次进行中时，自发轮次不会与之争抢事件（activeTurns 优先）', async () => {
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+
+    // 用户轮次在途时子代理完成：settlement 会被 DSH steer 进当前轮次，
+    // 桥上表现为同一个 activeTurns 累积器继续收事件，不产生自发轮次
+    ctx.runtime.emitStatus(sessionId, 'running');
+    ctx.runtime.emitEvent(sessionId, {
+      type: 'assistant/message',
+      seq: 1,
+      data: { message: { content: [{ type: 'text', text: '顺便说一句：后台任务完成了' }] } },
+    });
+    ctx.runtime.emitEvent(sessionId, {
+      type: 'assistant/message',
+      seq: 2,
+      data: { message: { content: [{ type: 'text', text: '对你问题的正式回答' }] } },
+    });
+    ctx.runtime.emitEvent(sessionId, { type: 'turn/end', seq: 3, data: { turn: 1, reason: { kind: 'completed' } } });
+    ctx.runtime.emitStatus(sessionId, 'idle');
+    await pending;
+
+    expect(ctx.sent.at(-1)!.body.content).toBe('对你问题的正式回答');
+    expect(ctx.orchestrator.snapshotStats().backgroundCaptured).toBe(0);
   });
 });

@@ -166,6 +166,22 @@ curl -s -X POST https://api.bot.qq.com/app/getAppAccessToken \
 - `4914`：机器人已下架，只允许连沙箱环境 → 到控制台检查机器人状态；
 - `4915`：机器人已被封禁 → 联系平台。
 
+### 2.5 社区通道（onebot）频繁掉线 / 被踢下线
+
+2.1–2.4 说的是官方网关。社区通道频繁掉线通常不是本服务的问题，而是**框架侧
+形态**问题：
+
+| 排查 | 说明 |
+|---|---|
+| 框架是不是纯协议（无头）形态 | LLBot 在 macOS 上只有无头可用（LagrangeV2 纯协议内核），协议特征可被识别，掉线/风控频繁是常态 |
+| macOS 换 NapCat 有头注入 | 官方 Mac 安装器注入真实 QQ 客户端，协议流量出自客户端本体，显著更稳，步骤见 [DEPLOY.md 第 3.1 节](DEPLOY.md) |
+| 有头后仍频繁掉线 | 多为账号侧风控（新号、主动消息高频、被举报）：用小号、压低发送频率、让号静养几天；并确认同一个 QQ 号没有同时登在第二台设备/第二个框架上 |
+| QQ 客户端升级过（NapCat） | 注入补丁可能失效：用安装器再跑一次更新/修复 |
+
+框架断开后 `connectors.onebot.state` 会回到 `listening`（本服务仍在监听、不需要
+重启容器），框架恢复后会自动重连；不重连就在框架 WebUI 里把那条反向 WS 关掉
+再启用一次。
+
 ---
 
 ## 3. 连着但收不到消息
@@ -337,6 +353,23 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 | OneBot | 图片只有本地路径 / `base64://`，容器里取不到 | 日志或消息里出现 `[图片]` 占位；让框架开启"图片以 URL 上报" |
 | OneBot | 框架上报的图片 URL 指向宿主 `127.0.0.1:<port>`，容器访问不到 | 容器内 `curl` 那个 URL 测试；需要让框架用可被容器访问的地址 |
 | 两者 | 就想要纯文本 | 设 `BOT_ATTACHMENT_ENABLED=false`，行为回到只有 `[图片]` 占位 |
+
+### 4.6 长任务把会话卡住 / 后台任务没结果
+
+长流程应由 agent 用 `subagent` 后台派发（见 DESIGN §13），父轮次随即结束、会话
+不再被占住。相关排障：
+
+| 现象 | 先看 | 原因 / 处置 |
+|---|---|---|
+| 会话长时间对新消息无响应 | 日志有没有"后台子代理已启动"；`/metrics` 的 `backgroundStarted` | agent 没把长任务派发给子代理，而是在父轮次里同步跑——只能等 `turnTimeoutMs` 超时回收。加强 persona 纪律（`dsh-profile/cordis.patch.yml`），或调低超时 |
+| 想中途停掉长任务 | — | 直接对机器人说"停掉那个后台任务"，父代理会 `list_agents` + `interrupt_agent`（需会话空闲，即当前没有别的轮次在跑） |
+| 后台任务完成了但用户没收到结果 | `/metrics` 的 `backgroundCaptured` vs `backgroundDelivered` | 结果被捕获后要等该会话**下一条用户消息**才带出（QQ 被动窗口所限，见 DESIGN §13.5）；`captured` 涨了但 `delivered` 没涨 = 还没有下一条消息 |
+| 后台任务"凭空消失" | 日志有没有"关闭 runtime 将终止其承载的后台子代理" | runtime 被回收/超时终止连带杀了子代理。正常空闲/LRU 回收已豁免有活子代理的进程（DESIGN §13.4），出现这条说明是超时终止或 disposeAll |
+| `childEventsFiltered` 一直涨 | — | 正常现象：这是子代理子会话的事件被正确过滤掉的计数（DESIGN §13.3），不是错误 |
+
+`/metrics` 的 `dispatcher` 里新增计数：`backgroundStarted` / `backgroundFinished`
+（子代理启停）、`backgroundCaptured` / `backgroundDelivered`（自发轮次结果的捕获
+与带出）、`childEventsFiltered`（子会话事件过滤命中）。
 
 ---
 
