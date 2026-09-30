@@ -1,6 +1,15 @@
 # 话题介入（旁听 / 续聊 / 主动插话）方案规划
 
-> 状态：**方案 v2，未实施**。
+> 状态：**Phase 0 + 规则生成器已落地**（事件模型、observed 适配器、
+> 规则文件夹架构与拦截器链、watcher、intervention 配置段、首批规则
+> 01/02/04、codegen 生成器与 `npm run gen:rule` CLI，411 项离线单测全绿）。
+> Phase 1（续聊）/ Phase 2（介入判定与发言）未实施。
+>
+> 实施期对方案的一处偏差：**首批 3 条规则为手写**（开发环境无 LLM 密钥，
+> 无法真实驱动生成口）。它们是生成器的模板定稿件与回归基准——密钥就位后
+> 用 `npm run gen:rule -- --from-requirement src/intervention/rules/01-master-switch`
+> 做「需求 → 重新生成」回归，diff 应语义等价（§15 P3-2）。
+>
 > v2（2026-09-29）按维护者反馈重构规则层：规则必须首先是**一段自然语言需求**，
 > 其次才是一段代码；一条规则自包含于一个文件夹，多规则并列，以接近拦截器的
 > 形式一层一层触发；并提供**自然语言输入口**，调用 LLM 严格生成规则文件夹（§5）。
@@ -689,17 +698,19 @@ health（`/healthz`、`/metrics`）新增 `intervention` 段：每群相位、�
 
 每步独立可合并，测试全离线（沿用 `npm test` 不触网、不起 DSH 子进程的纪律）：
 
-- [ ] **P0-1** `core/connector.ts`：observed 事件类型 + `origin` 字段 +
+- [x] **P0-1** `core/connector.ts`：observed 事件类型 + `origin` 字段 +
       `isObservedMessage()`
-- [ ] **P0-2** `adapters/onebot/normalize.ts`：非 @ 群消息 → observed
+- [x] **P0-2** `adapters/onebot/normalize.ts`：非 @ 群消息 → observed
       （含 atOthers / quotedMsgId 提取）；`adapters/qq-official/gateway.ts`：
       `GROUP_MESSAGE_CREATE` → observed
-- [ ] **P0-3** `intervention/contract.ts` + `chain.ts` + `state.ts` +
+- [x] **P0-3** `intervention/contract.ts` + `chain.ts` + `state.ts` +
       `watcher.ts` 骨架；`orchestrator.ts` 分流；`main.ts` 组装
-- [ ] **P0-4** 规则文件夹 ×3（01-master-switch / 02-group-whitelist /
+- [x] **P0-4** 规则文件夹 ×3（01-master-switch / 02-group-whitelist /
       04-duplicate-event）+ `rules/README.md`（模板与编写指南）+
       `rules/CHAIN.md` + `index.ts` 注册表 + 链冒烟测试
-- [ ] **P0-5** config：`intervention` 段（含 `rules.<name>` 覆盖与未注册名
+      （手写模板定稿件，见文首偏差说明；链一致性由永驻测试
+      `tests/intervention-chain.test.ts` 兜底）
+- [x] **P0-5** config：`intervention` 段（含 `rules.<name>` 覆盖与未注册名
       报错）+ `BOT_LISTEN_GROUPS` + 文档；验收 §7.4
 - [ ] **P1-1** 规则文件夹 `40-promotion-window`、`41-inflight-merge`；
       continuation 链接入 watcher；晋升消息回投 `handleEvent`
@@ -720,9 +731,10 @@ health（`/healthz`、`/metrics`）新增 `intervention` 段：每群相位、�
       qqbot.yml 注释）
 - [ ] **P2-7** 灰度：测试群白名单 + `dryRun: true` 跑一周，看 rules-trace
       与 Gate 判定质量，再放开发言
-- [ ] **P3-1** `intervention/codegen/`：需求结构化 prompt、静态纪律检查器、
+- [x] **P3-1** `intervention/codegen/`：需求结构化 prompt、静态纪律检查器、
       校验管道编排（a–d 四步全部可离线单测，LLM 调用注入 fake）
-- [ ] **P3-2** `scripts/gen-rule.mjs` CLI（含 `--from-requirement` 模式）；
-      用手写规则做回归：从既有 REQUIREMENT.md 重生成，diff 应语义等价
+- [x] **P3-2** `scripts/gen-rule.ts` CLI（含 `--from-requirement` 模式，
+      `npm run gen:rule`；vite-node 运行）——**回归验证待 LLM 密钥**：
+      从既有 REQUIREMENT.md 重生成，diff 应语义等价
 - [ ] **P3-3** 用生成口实产一条新规则（候选：§14-4 冷群补偿），全程走
       两道闸，验证管道成熟度

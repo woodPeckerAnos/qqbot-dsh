@@ -78,6 +78,7 @@ connectors: [onebot]                    # 或 [qq-official, onebot] 并存
 | [docs/DESIGN.md](docs/DESIGN.md) | 方案设计：架构、多接入模型、协议契约、硬约束落地、权限与安全、实测结论 |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | 部署手册：从零到跑通，含沙箱后端验证与调参建议 |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | 排障手册：按症状组织的排查流程 + 未实测项清单 |
+| [docs/TOPIC-INTERVENTION-PLAN.md](docs/TOPIC-INTERVENTION-PLAN.md) | 话题介入（旁听/续聊/主动插话）方案：规则文件夹 × 拦截器链 × 规则生成口 |
 
 ## 这个项目特别处理了什么问题
 
