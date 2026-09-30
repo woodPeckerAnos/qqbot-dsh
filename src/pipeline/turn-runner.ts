@@ -47,6 +47,11 @@ export interface TurnRunnerDeps {
   stats: PipelineStats;
   /** 后台结果投递器：主动推送（OneBot/官方窗口内）或暂存待下次带出，并持久化 */
   background: BackgroundPusher;
+  /**
+   * bot 可见回复交付后的回调（话题介入的 09/12 号规则输入：
+   * 快速回应窗口与关键词回声）。main.ts 接线到 watcher.notifyBotSpoke。
+   */
+  onBotSpoke?: (conversationKey: string, text: string) => void;
   now?: () => number;
 }
 
@@ -80,6 +85,9 @@ export class TurnRunner {
     const { message, responder, policy, logger } = ctx;
     const { pool, sessions, paths, stats } = this.deps;
     const conversationKey = message.target.key;
+    // origin 三分叉（方案 §9.4）：介入 turn 跳过冷启动回放（转录已提供上下文）、
+    // 图片块构建（observed 无媒体）、进度回执（插话场景发「仍在处理中」很怪）。
+    const isIntervention = message.origin === 'intervention';
 
     const workspacePath = ensureWorkspace(paths, conversationKey);
     const startedAt = this.now();
@@ -87,6 +95,17 @@ export class TurnRunner {
     let entry: RuntimeEntry | undefined;
 
     try {
+      // 介入 turn 的对话记录：speaker 标「(介入)」，冷启动回放里 bot 知道
+      // 自己插过什么话（方案 §9.4）。位置在 record stage 之外（介入不过
+      // Ingress 管线），所以在这里记。
+      if (isIntervention) {
+        this.deps.conversations.append(conversationKey, {
+          role: 'user',
+          speaker: '(介入)',
+          text: message.content,
+          ts: message.ts,
+        });
+      }
       entry = await pool.acquire(conversationKey, workspacePath);
 
       // 会话：新建的 runtime 需要新 sessionId + 冷启动回放
@@ -101,17 +120,22 @@ export class TurnRunner {
         logger.debug('用户轮次开始，丢弃进行中的自发轮次累积器');
       }
 
-      const promptText = this.buildPrompt(message, conversationKey, session.generation, !entry.replayed);
+      const promptText = this.buildPrompt(
+        message,
+        conversationKey,
+        session.generation,
+        !entry.replayed && !isIntervention, // 跳过①：介入不回放
+      );
       // 图片在派发前下载并编码：放在这里（而不是适配器归一化时）是因为
       // 被去重/闸拦掉的消息不该产生网络 IO。
-      const prepared = await this.buildPromptBlocks(ctx, promptText);
+      const prepared = isIntervention
+        ? { blocks: [{ type: 'text' as const, text: promptText }], totalImages: 0, inlinedImages: 0 } // 跳过②
+        : await this.buildPromptBlocks(ctx, promptText);
       entry.replayed = true;
       entry.busy = true;
 
       // 先注册在途 turn（上一行）再派发，避免事件早于注册到达而被丢弃
       await this.dispatchPrompt(entry, session.currentSessionId, prepared);
-      // origin 贯通（P1-2）：continuation 与 user 完全同权（这是设计决定，
-      // 见方案 §8.1）；origin:'intervention' 的三分叉在 Phase 2（§9.4）落地。
       logger.debug('已派发 prompt', {
         sessionId: session.currentSessionId,
         generation: session.generation,
@@ -119,9 +143,12 @@ export class TurnRunner {
         origin: message.origin ?? 'user',
       });
 
-      responder.startProgress(() =>
-        defaultProgressText(this.elapsedSince(startedAt), accumulator.toolsInvoked),
-      );
+      // 跳过③：介入不发进度回执（最终答案照常）
+      if (!isIntervention) {
+        responder.startProgress(() =>
+          defaultProgressText(this.elapsedSince(startedAt), accumulator.toolsInvoked),
+        );
+      }
 
       // 结束条件：status 回 idle 且本轮已 turn/end（由 routeSessionStatus 触发 finish）
       const settled = await waitUntil(() => accumulator.isSettled, policy.turnTimeoutMs, 120);
@@ -144,6 +171,10 @@ export class TurnRunner {
       // 后台任务结果搭车：把之前捕获、当时发不出去的自发轮次总结前置到本轮回复。
       const delivered = this.attachPendingBackground(conversationKey, outcome);
       await responder.deliver(delivered);
+      // bot 发言记账（话题介入的 09/12 号规则输入；仅成功交付时记）
+      if (delivered.text.trim() !== '') {
+        this.deps.onBotSpoke?.(conversationKey, delivered.text);
+      }
 
       // 记录本条用户消息的"被动回复锚点"：后台子代理稍后完成时，若仍在被动窗口
       // 内且配额未尽，就能用这个 msg_id 接着 seq 主动补发结果（见 background.ts）。

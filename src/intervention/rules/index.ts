@@ -10,15 +10,43 @@
 import type { RuleRegistry } from '../watcher.js';
 import { rule as masterSwitch } from './01-master-switch/rule.js';
 import { rule as groupWhitelist } from './02-group-whitelist/rule.js';
+import { rule as offpeakWindow } from './03-offpeak-window/rule.js';
 import { rule as duplicateEvent } from './04-duplicate-event/rule.js';
+import { rule as atOthers } from './05-at-others/rule.js';
+import { rule as noText } from './06-no-text/rule.js';
+import { rule as rateLimitPrecheck } from './07-rate-limit-precheck/rule.js';
+import { rule as strongQuickReply } from './08-strong-quick-reply/rule.js';
+import { rule as strongQuoteBot } from './09-strong-quote-bot/rule.js';
+import { rule as strongOpenQuestion } from './10-strong-open-question/rule.js';
+import { rule as strongKeywordEcho } from './11-strong-keyword-echo/rule.js';
+import { rule as evalCooldown } from './12-eval-cooldown/rule.js';
+import { rule as samplingDebounce } from './13-sampling-debounce/rule.js';
+import { rule as semanticGate } from './20-semantic-gate/rule.js';
+import { rule as rateLimitVeto } from './30-rate-limit-veto/rule.js';
+import { rule as focusBudget } from './31-focus-budget/rule.js';
+import { rule as admissionTry } from './32-admission-try/rule.js';
 import { rule as promotionWindow } from './40-promotion-window/rule.js';
 import { rule as inflightMerge } from './41-inflight-merge/rule.js';
 
 export const RULE_REGISTRY: RuleRegistry = {
   continuation: [promotionWindow, inflightMerge],
-  intake: [masterSwitch, groupWhitelist, duplicateEvent],
-  evaluate: [],
-  speak: [],
+  intake: [
+    masterSwitch,
+    groupWhitelist,
+    offpeakWindow,
+    duplicateEvent,
+    atOthers,
+    noText,
+    rateLimitPrecheck,
+    strongQuickReply,
+    strongQuoteBot,
+    strongOpenQuestion,
+    strongKeywordEcho,
+    evalCooldown,
+    samplingDebounce,
+  ],
+  evaluate: [semanticGate],
+  speak: [rateLimitVeto, focusBudget, admissionTry],
 };
 
 /** 全部已注册规则名（配置校验用：qqbot.yml 里出现未注册名 → 启动报错）。 */

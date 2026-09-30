@@ -35,6 +35,8 @@ export interface ChainResult {
   haltedBy?: string;
   reason?: string;
   deferMs?: number;
+  /** 拦截规则要求「不评估但仍入缓冲做上下文」（halt 裁决带 buffer:true） */
+  bufferRequested?: boolean;
   marks: RuleMarks;
   trace: ChainTraceStep[];
 }
@@ -109,6 +111,7 @@ export async function runChain(
           outcome: 'halted',
           haltedBy: rule.name,
           reason: verdict.reason,
+          ...(verdict.buffer === true ? { bufferRequested: true } : {}),
           marks,
           trace,
         };

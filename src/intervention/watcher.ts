@@ -15,12 +15,13 @@
  * adapters/* 内部实现（与编排层既有纪律一致）。
  */
 
-import type { NormalizedMessage, NormalizedObservedMessage } from '../core/connector.js';
+import type { ConversationTarget, NormalizedMessage, NormalizedObservedMessage } from '../core/connector.js';
 import type { Logger } from '../logger.js';
 import type { PipelineStats } from '../pipeline/stats.js';
 import { formatTrace, runChain, type ChainResult } from './chain.js';
-import type { InterventionRule, RuleParamValue } from './contract.js';
-import { ConversationWatchState } from './state.js';
+import type { GateClient, InterventionRule, RuleParamValue, RuleTrigger } from './contract.js';
+import { ConversationWatchState, type PhaseDurations } from './state.js';
+import { renderStateSummary, renderTranscript } from './transcript.js';
 
 /** 介入层的运行时配置（由 config.ts 产出；见 Config.intervention）。 */
 export interface InterventionConfig {
@@ -33,6 +34,13 @@ export interface InterventionConfig {
   buffer: {
     maxMessages: number;
     maxAgeMs: number;
+  };
+  /** Gate 客户端配置（apiKey 只来自 env DEEPSEEK_API_KEY，由组装层读取） */
+  gate: {
+    apiBase: string;
+    model: string;
+    timeoutMs: number;
+    maxConcurrent: number;
   };
   /** 按规则名的覆盖：enabled 单独停用某层；params 覆盖该规则参数 */
   rules: Record<
@@ -61,6 +69,8 @@ export interface InterventionSnapshot {
     inFlight?: boolean;
     /** pending 合并队列长度（Phase 1；仅在非零时输出） */
     pending?: number;
+    /** 介入相位（Phase 2：cold/focus/fading） */
+    phase?: string;
   }>;
   /** 按规则名的拦截计数（进程期累计） */
   halts: Record<string, number>;
@@ -79,24 +89,62 @@ export interface TopicWatcherDeps {
    * 必须有一侧后注入）。
    */
   promote?: (message: NormalizedMessage) => void | Promise<void>;
+  /**
+   * 语义 Gate（evaluate 链注入；缺省 → 20 号规则 halt('gate-unavailable')，
+   * fail-closed 不发言）。
+   */
+  gate?: GateClient;
+  /**
+   * 介入发言投递口（Phase 2；组装层接 orchestrator.runIntervention）。
+   * 返回 false = 准入 try 被拒（并发满/会话锁占），runner 计数放弃。
+   */
+  speak?: (message: NormalizedMessage) => Promise<boolean>;
+  /** 谷时段探针（03 号规则；缺省 → 该规则放行） */
+  offpeakNow?: () => boolean;
+  /** 全局并发名额探针（32 号规则） */
+  admissionFree?: () => boolean;
+  /**
+   * 定时器调度（去抖/答案窗口/Gate 重查；返回取消函数）。
+   * 缺省用 setTimeout（unref）；测试注入手动时钟。
+   */
+  schedule?: (fn: () => void, delayMs: number) => () => void;
 }
 
 export class TopicWatcher {
   private readonly states = new Map<string, ConversationWatchState>();
   /** 按规则名的拦截计数（health 展示用） */
   private readonly halts = new Map<string, number>();
+  /** 每群的静默去抖定时器（重新武装 = 取消旧的挂新的） */
+  private readonly debounceTimers = new Map<string, () => void>();
+  /** 每群最多一个待触发的 Gate wait 重查 */
+  private readonly gateRecheckPending = new Set<string>();
   private readonly now: () => number;
+  private readonly schedule: (fn: () => void, delayMs: number) => () => void;
   private promoter: TopicWatcherDeps['promote'];
+  private speaker: TopicWatcherDeps['speak'];
 
   constructor(private readonly deps: TopicWatcherDeps) {
     this.now = deps.now ?? Date.now;
     this.promoter = deps.promote;
+    this.speaker = deps.speak;
+    this.schedule =
+      deps.schedule ??
+      ((fn, delayMs) => {
+        const timer = setTimeout(fn, delayMs);
+        timer.unref?.();
+        return () => clearTimeout(timer);
+      });
     this.assertRegistryKnown();
   }
 
   /** 组装层注入晋升回投口（Orchestrator 建成后）。 */
   setPromoter(promote: NonNullable<TopicWatcherDeps['promote']>): void {
     this.promoter = promote;
+  }
+
+  /** 组装层注入介入发言投递口（Orchestrator 建成后；§9.5 try 语义）。 */
+  setSpeaker(speak: NonNullable<TopicWatcherDeps['speak']>): void {
+    this.speaker = speak;
   }
 
   /**
@@ -192,6 +240,7 @@ export class TopicWatcher {
           : {}),
         ...(state.inFlight ? { inFlight: true } : {}),
         ...(state.pendingMerge.length > 0 ? { pending: state.pendingMerge.length } : {}),
+        phase: state.phaseAt(this.now()),
       });
     }
     return {
@@ -202,18 +251,28 @@ export class TopicWatcher {
     };
   }
 
+  /**
+   * bot 发出了可见回复时记账（main.ts 从 TurnRunner 的 onBotSpoke 接入）：
+   * 09 号规则的「快速回应窗口」与 12 号规则的关键词集都以此为输入。
+   */
+  notifyBotSpoke(conversationKey: string, text: string, msgIds: readonly string[] = []): void {
+    this.stateFor(conversationKey).noteBotSpeech(this.now(), text, msgIds);
+  }
+
   // -------------------------------------------------------------------------
 
-  /** 链序编排：continuation →（未晋升）→ intake。 */
+  /** 链序编排：continuation →（未晋升）→ intake →（按 marks）→ evaluate → speak。 */
   private async dispatch(
     message: NormalizedObservedMessage,
     state: ConversationWatchState,
+    trigger: RuleTrigger = 'message',
   ): Promise<void> {
-    if (this.deps.rules.continuation.length > 0) {
+    // continuation 链只对平台真实消息触发（定时器重入的消息早已过过它）
+    if (trigger === 'message' && this.deps.rules.continuation.length > 0) {
       const promoted = await this.runContinuation(message, state);
       if (promoted) return; // 已离开 watcher（晋升或入合并队列），不再进 intake
     }
-    await this.runIntake(message, state);
+    await this.runIntake(message, state, trigger);
   }
 
   /**
@@ -350,15 +409,19 @@ export class TopicWatcher {
   private async runIntake(
     message: NormalizedObservedMessage,
     state: ConversationWatchState,
+    trigger: RuleTrigger = 'message',
   ): Promise<void> {
     const result: ChainResult = await runChain(
       this.deps.rules.intake,
       {
         message,
-        trigger: 'message',
+        trigger,
         state,
         marks: {},
         now: this.now(),
+        ...(this.deps.offpeakNow !== undefined
+          ? { offpeakNow: this.deps.offpeakNow() }
+          : {}),
       },
       (rule) => this.resolveParams(rule),
       (rule) => this.isRuleEnabled(rule),
@@ -367,20 +430,269 @@ export class TopicWatcher {
     this.deps.logger.debug('rules-trace', {
       conversation: message.target.key,
       msgId: message.msgId,
-      trigger: 'message',
+      trigger: `intake:${trigger}`,
       trace: formatTrace(result.trace),
     });
 
-    if (result.outcome === 'halted' || result.outcome === 'deferred') {
-      if (result.haltedBy !== undefined) {
-        this.halts.set(result.haltedBy, (this.halts.get(result.haltedBy) ?? 0) + 1);
-        this.deps.stats.observedHalted += 1;
+    if (result.outcome === 'halted') {
+      if (result.haltedBy !== undefined) this.countHalt(result.haltedBy);
+      this.deps.stats.observedHalted += 1;
+      // 硬限流命中 → 相位强制降 fading 冷却（方案 §9.3，迁移表联动）
+      if (result.haltedBy === 'rate-limit-precheck') {
+        state.applyPhaseEvent('rate-limit-hit', this.now(), this.phaseDurations());
+      }
+      // halt(buffer:true)：不评估但仍入缓冲做上下文（05/06 号规则）
+      if (result.bufferRequested === true) state.pushEntry(message, this.now());
+      return;
+    }
+
+    if (result.outcome === 'deferred') {
+      // 11 号规则的答案窗口：消息先入缓冲做上下文，挂定时器到期重查
+      state.pushEntry(message, this.now());
+      const key = message.target.key;
+      this.schedule(() => {
+        void this.dispatch(message, this.stateFor(key), 'answer-window').catch(
+          (error: unknown) => {
+            this.deps.logger.warn('答案窗口重查失败（按不处理）', {
+              conversation: key,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
+        );
+      }, result.deferMs ?? 90_000);
+      return;
+    }
+
+    // 全层通过：入缓冲，然后按 marks 决定评估时机（方案 §5.4 ②）
+    state.pushEntry(message, this.now());
+    if (this.deps.rules.evaluate.length === 0) return; // evaluate 链未装配：只听不评
+    if (result.marks.strongSignal !== undefined || result.marks.samplingHit === true) {
+      await this.runEvaluate(state, trigger);
+      return;
+    }
+    this.armDebounce(state);
+  }
+
+  /**
+   * evaluate 链（方案 §5.4 ③）：进入即记账（冷却/采样原点），
+   * Gate 判 silent 进冷却（相位事件），判 wait 排一次重查，判 speak 进 speak 链。
+   */
+  private async runEvaluate(state: ConversationWatchState, trigger: RuleTrigger): Promise<void> {
+    const now = this.now();
+    state.recordEvaluate(now);
+    const gateRule = this.findRule('semantic-gate');
+    const contextMessages = Number(
+      gateRule !== undefined ? (this.resolveParams(gateRule)['contextMessages'] ?? 30) : 30,
+    );
+    const gate = this.countingGate();
+
+    const result = await runChain(
+      this.deps.rules.evaluate,
+      {
+        message: undefined,
+        trigger,
+        state,
+        marks: {},
+        now,
+        ...(gate !== undefined ? { gate } : {}),
+        transcript: () => renderTranscript(state.entries, contextMessages),
+        stateSummary: () =>
+          renderStateSummary({
+            phase: state.phaseAt(now),
+            lastSpokeAgoSec:
+              state.botLastSpokeAt === undefined
+                ? undefined
+                : Math.max(0, Math.round((now - state.botLastSpokeAt) / 1000)),
+            interventionsLast10Min: state.countSpokeSince(now - 600_000),
+            interventionsLastHour: state.countSpokeSince(now - 3_600_000),
+            recentMessages10Min: state.entries.filter((e) => e.ts >= now - 600_000).length,
+          }),
+      },
+      (rule) => this.resolveParams(rule),
+      (rule) => this.isRuleEnabled(rule),
+    );
+
+    this.deps.logger.debug('rules-trace', {
+      conversation: state.key,
+      trigger: `evaluate:${trigger}`,
+      trace: formatTrace(result.trace),
+    });
+
+    if (result.outcome === 'halted') {
+      if (result.haltedBy !== undefined) this.countHalt(result.haltedBy);
+      if (result.reason === 'gate-silent') {
+        state.applyPhaseEvent('gate-silent', now, this.phaseDurations());
       }
       return;
     }
 
-    // Phase 0 的终局：入旁听缓冲。评估与发言（Phase 2）从这里分出去。
-    state.pushEntry(message, this.now());
+    if (result.outcome === 'deferred') {
+      // Gate 判 wait：每群最多挂一个重查（最多重查一次由规则保证）
+      if (this.gateRecheckPending.has(state.key)) return;
+      this.gateRecheckPending.add(state.key);
+      this.schedule(() => {
+        this.gateRecheckPending.delete(state.key);
+        void this.runEvaluate(state, 'gate-wait-recheck').catch((error: unknown) => {
+          this.deps.logger.warn('Gate 重查失败（按不处理）', {
+            conversation: state.key,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, result.deferMs ?? 30_000);
+      return;
+    }
+
+    if (result.marks.gateDecision === 'speak') {
+      await this.runSpeak(state, trigger);
+    }
+  }
+
+  /**
+   * speak 链（方案 §5.4 ④）：否决式复审，全过才合成介入 turn。
+   * 介入绝不排队——投递口返回 false 即放弃计数。
+   */
+  private async runSpeak(state: ConversationWatchState, trigger: RuleTrigger): Promise<void> {
+    const now = this.now();
+    const result = await runChain(
+      this.deps.rules.speak,
+      {
+        message: undefined,
+        trigger,
+        state,
+        marks: {},
+        now,
+        ...(this.deps.admissionFree !== undefined
+          ? { admissionFree: this.deps.admissionFree() }
+          : {}),
+      },
+      (rule) => this.resolveParams(rule),
+      (rule) => this.isRuleEnabled(rule),
+    );
+
+    this.deps.logger.debug('rules-trace', {
+      conversation: state.key,
+      trigger: `speak:${trigger}`,
+      trace: formatTrace(result.trace),
+    });
+
+    if (result.outcome !== 'passed') {
+      if (result.haltedBy !== undefined) this.countHalt(result.haltedBy);
+      if (result.haltedBy === 'rate-limit-veto') {
+        state.applyPhaseEvent('rate-limit-hit', now, this.phaseDurations());
+      }
+      return;
+    }
+
+    if (this.deps.config.dryRun) {
+      this.deps.stats.interventionsDryRun += 1;
+      this.deps.logger.info('dryRun：判定应发言但不投递', { conversation: state.key, trigger });
+      return;
+    }
+    if (this.speaker === undefined) {
+      this.deps.logger.warn('介入被丢弃：未装配 speak 投递口', { conversation: state.key });
+      return;
+    }
+
+    const message = this.synthesizeIntervention(state, now);
+    if (message === undefined) return;
+    const sent = await this.speaker(message);
+    if (sent) {
+      this.deps.stats.interventionsSent += 1;
+      state.applyPhaseEvent('spoke', now, this.phaseDurations());
+      this.deps.logger.info('已发起介入 turn', { conversation: state.key, trigger });
+    } else {
+      // 准入 try 被拒（并发满/会话锁占）：放弃本次介入
+      this.deps.stats.interventionsDroppedBusy += 1;
+    }
+  }
+
+  /** 合成介入 turn 的 NormalizedMessage（方案 §9.4：转录 + 介入指令）。 */
+  private synthesizeIntervention(
+    state: ConversationWatchState,
+    now: number,
+  ): NormalizedMessage | undefined {
+    const target = state.target;
+    if (target === undefined) {
+      this.deps.logger.warn('介入被丢弃：会话缺少 target（不应发生）', { conversation: state.key });
+      return undefined;
+    }
+    const gateRule = this.findRule('semantic-gate');
+    const contextMessages = Number(
+      gateRule !== undefined ? (this.resolveParams(gateRule)['contextMessages'] ?? 30) : 30,
+    );
+    const last = state.entries[state.entries.length - 1];
+    const transcript = renderTranscript(state.entries, contextMessages);
+    return {
+      kind: 'group-at-message',
+      target,
+      eventId: `intervention:${state.key}:${now}`,
+      msgId: last?.msgId ?? '',
+      senderId: 'intervention',
+      username: '(介入)',
+      content:
+        `${transcript}\n` +
+        '（你作为群成员主动参与以上话题。这是一次自主介入，不是用户委托的任务：' +
+        '只输出你要在群里说的那段话；除非话题明确需要，不要执行工具或产生文件；' +
+        '如果转录里有对你的直接提问，优先回答它。）',
+      origin: 'intervention',
+      ts: now,
+      raw: {},
+    };
+  }
+
+  /** 静默去抖：无新消息达 silenceDebounceMs 后以 trigger='debounce' 进 evaluate 链。 */
+  private armDebounce(state: ConversationWatchState): void {
+    if (this.deps.rules.evaluate.length === 0) return;
+    const rule13 = this.findRule('sampling-debounce');
+    const debounceMs = Number(
+      rule13 !== undefined ? (this.resolveParams(rule13)['silenceDebounceMs'] ?? 20_000) : 20_000,
+    );
+    this.debounceTimers.get(state.key)?.();
+    this.debounceTimers.set(
+      state.key,
+      this.schedule(() => {
+        this.debounceTimers.delete(state.key);
+        if (state.unevaluatedCount === 0) return; // 没有新内容可评
+        void this.runEvaluate(state, 'debounce').catch((error: unknown) => {
+          this.deps.logger.warn('去抖评估失败（按不处理）', {
+            conversation: state.key,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, debounceMs),
+    );
+  }
+
+  /** 相位迁移参数（规则 31 的 params 生效值；runner 执行迁移时消费）。 */
+  private phaseDurations(): PhaseDurations {
+    const rule = this.findRule('focus-budget');
+    const params = rule !== undefined ? this.resolveParams(rule) : {};
+    return {
+      focusMs: Number(params['focusMs'] ?? 120_000),
+      fadingMs: Number(params['fadingMs'] ?? 120_000),
+      focusMaxReplies: Number(params['focusMaxReplies'] ?? 2),
+    };
+  }
+
+  /** Gate 调用的计数包装（gateCalls/gateErrors 统计）。 */
+  private countingGate(): GateClient | undefined {
+    const gate = this.deps.gate;
+    if (gate === undefined) return undefined;
+    const stats = this.deps.stats;
+    return {
+      judge: async (input) => {
+        stats.gateCalls += 1;
+        const verdict = await gate.judge(input);
+        if (verdict.reason === 'gate-call-failed' || verdict.reason === 'gate-output-unparseable') {
+          stats.gateErrors += 1;
+        }
+        return verdict;
+      },
+    };
+  }
+
+  private countHalt(ruleName: string): void {
+    this.halts.set(ruleName, (this.halts.get(ruleName) ?? 0) + 1);
   }
 
   private stateFor(conversationKey: string): ConversationWatchState {

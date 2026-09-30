@@ -60,6 +60,12 @@ describe('04-duplicate-event', () => {
     expect(verdict).toEqual({ action: 'halt', reason: 'no-message' });
   });
 
+  it('验收5：定时器重入（answer-window）不参与去重 → pass', () => {
+    const ctx = makeCtx('ob11:1000:1', { seen: true });
+    const verdict = rule.evaluate({ ...ctx, trigger: 'answer-window' });
+    expect(verdict).toEqual({ action: 'pass' });
+  });
+
   it('契约：name/stage/order 与 frontmatter 一致', () => {
     expect(rule.name).toBe('duplicate-event');
     expect(rule.stage).toBe('intake');

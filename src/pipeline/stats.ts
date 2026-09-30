@@ -24,6 +24,16 @@ export class PipelineStats {
   continuationsMerged = 0;
   /** pending 队列淘汰/作废数（TopicWatcher：超限丢最旧、过期、窗口已关） */
   continuationsDropped = 0;
+  /** Gate 判定调用数（TopicWatcher；经计数包装） */
+  gateCalls = 0;
+  /** Gate 判定失败数（超时/HTTP 错/输出无法解析——fail-closed 为 silent） */
+  gateErrors = 0;
+  /** 介入 turn 实际发起数（TopicWatcher：speak 链全过且准入 try 成功） */
+  interventionsSent = 0;
+  /** 介入因准入 try 被拒放弃数（并发满/会话锁占；绝不排队） */
+  interventionsDroppedBusy = 0;
+  /** dryRun 灰度期判定应发言但未投递数 */
+  interventionsDryRun = 0;
   /** 事件去重丢弃数（dedupe stage） */
   deduplicated = 0;
   /** 并发满员拒绝数（admission stage） */

@@ -125,6 +125,8 @@ export interface InterventionFileConfig {
   /** 灰度：判定照跑、trace 照记、不发言 */
   dryRun?: boolean;
   buffer?: { maxMessages?: number; maxAgeHours?: number };
+  /** Gate 客户端（20 号规则用；apiKey 只来自 env，不进本文件） */
+  gate?: { apiBase?: string; model?: string; timeoutMs?: number; maxConcurrent?: number };
   rules?: Record<string, InterventionRuleOverrideFileConfig>;
 }
 
@@ -239,6 +241,12 @@ const MEDIA_SPEC: SectionSpec = {
   outboxDir: 'string',
 };
 const INTERVENTION_BUFFER_SPEC: SectionSpec = { maxMessages: 'int', maxAgeHours: 'int' };
+const INTERVENTION_GATE_SPEC: SectionSpec = {
+  apiBase: 'string',
+  model: 'string',
+  timeoutMs: 'int',
+  maxConcurrent: 'int',
+};
 
 const TOP_SCALARS: SectionSpec = {
   connectors: 'stringList',
@@ -360,7 +368,7 @@ function readInterventionSection(raw: unknown, path: string): InterventionFileCo
   if (!isPlainObject(raw)) {
     throw new ConfigError(`${path} 必须是一个映射（key: value），收到 ${describeValue(raw)}`);
   }
-  const allowed = ['enabled', 'dryRun', 'buffer', 'rules'];
+  const allowed = ['enabled', 'dryRun', 'buffer', 'gate', 'rules'];
   for (const key of Object.keys(raw)) {
     if (!allowed.includes(key)) {
       throw new ConfigError(`${path}.${key} 不是可识别的配置项`, [
@@ -377,6 +385,10 @@ function readInterventionSection(raw: unknown, path: string): InterventionFileCo
   const buffer = readSection(raw['buffer'], `${path}.buffer`, INTERVENTION_BUFFER_SPEC);
   if (Object.keys(buffer).length > 0) {
     out.buffer = buffer as InterventionFileConfig['buffer'];
+  }
+  const gate = readSection(raw['gate'], `${path}.gate`, INTERVENTION_GATE_SPEC);
+  if (Object.keys(gate).length > 0) {
+    out.gate = gate as InterventionFileConfig['gate'];
   }
 
   const rulesRaw = raw['rules'];

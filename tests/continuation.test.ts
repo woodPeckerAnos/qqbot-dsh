@@ -38,6 +38,7 @@ function makeConfig(overrides: Partial<InterventionConfig> = {}): InterventionCo
     dryRun: false,
     whitelistGroups: ['onebot:123'],
     buffer: { maxMessages: 200, maxAgeMs: 72 * 3600 * 1000 },
+    gate: { apiBase: '', model: 'stub', timeoutMs: 1000, maxConcurrent: 2 },
     rules: {},
     ...overrides,
   };

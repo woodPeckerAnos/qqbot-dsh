@@ -46,10 +46,15 @@ export type RuleVerdict =
   | { action: 'mark'; marks: Partial<RuleMarks> }
   /** 延迟重查（答案窗口到期 / Gate 判 wait），runner 负责排定时器 */
   | { action: 'defer'; ms: number; reason: string }
-  /** 拦截，链在此短路；reason 进 trace 日志与统计 */
-  | { action: 'halt'; reason: string };
+  /**
+   * 拦截，链在此短路；reason 进 trace 日志与统计。
+   * `buffer: true` 表示「不评估，但仍入旁听缓冲做上下文」（05/06 号规则用；
+   * 缺省 = 完全丢弃，连缓冲都不进——01/02 的隐私语义）。
+   */
+  | { action: 'halt'; reason: string; buffer?: boolean };
 
-/** 链执行的触发来源（定时器触发时 ctx.message 为空）。 */
+/** 链执行的触发来源（answer-window 重入时 ctx.message 携带原始问句；debounce /
+ *  gate-wait-recheck 触发时 ctx.message 为空）。 */
 export type RuleTrigger = 'message' | 'debounce' | 'answer-window' | 'gate-wait-recheck';
 
 /** 规则参数值：只允许标量（frontmatter 声明默认值，qqbot.yml 按规则名覆盖）。 */
@@ -75,6 +80,11 @@ export interface GateJudgeInput {
   transcript: string;
   /** bot 状态块（距上次发言、近期介入次数、时段、活跃度等，已渲染成文本） */
   stateSummary: string;
+  /**
+   * 判定标准正文：来自 20 号规则的 REQUIREMENT.md 投影（params.criteria），
+   * 需求即 prompt（方案 §5.6）；输出契约段由客户端固定拼接，不在需求文档里。
+   */
+  criteria: string;
 }
 
 export interface RuleContext {
@@ -97,6 +107,18 @@ export interface RuleContext {
   readonly gate?: GateClient;
   /** 惰性转录：需要时才渲染，被拦截的消息不付渲染成本 */
   readonly transcript?: () => string;
+  /** 惰性 bot 状态块（同 transcript，仅 evaluate 链注入） */
+  readonly stateSummary?: () => string;
+  /**
+   * 当前是否谷时段（03 号规则用；runner 每次链执行时从注入探针计算，
+   * undefined = 无探针，规则按「不拦」放行——@ 路径的谷时段闸不受影响）。
+   */
+  readonly offpeakNow?: boolean;
+  /**
+   * 全局并发是否还有名额（32 号规则用；runner 在 speak 链执行前从准入闸门
+   * 探测，真正的原子 try 仍在 runner 侧完成）。
+   */
+  readonly admissionFree?: boolean;
 }
 
 /** 一条介入规则。name/stage/order 必须与 REQUIREMENT.md frontmatter 一致。 */

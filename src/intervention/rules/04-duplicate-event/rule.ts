@@ -10,6 +10,9 @@ export const rule: InterventionRule = {
   stage: 'intake',
   order: 4,
   evaluate(ctx) {
+    // 验收5：定时器重入（answer-window 等）是 runner 内部行为，不是平台重放，
+    // 不参与去重（否则答案窗口到期的重查会被自己拦掉）
+    if (ctx.trigger !== 'message') return { action: 'pass' };
     // 验收4：无消息上下文 → fail-closed
     const message = ctx.message;
     if (message === undefined) return { action: 'halt', reason: 'no-message' };

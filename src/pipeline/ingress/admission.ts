@@ -24,6 +24,8 @@ export class AdmissionGate {
     private readonly deps: {
       maxConcurrentTurns: number;
       stats: PipelineStats;
+      /** try 路径（介入 turn）没有 MessageContext，错误只能落这里 */
+      logger?: { error(msg: string, meta?: Record<string, unknown>): void };
     },
   ) {
     this.semaphore = new Semaphore(deps.maxConcurrentTurns);
@@ -37,6 +39,40 @@ export class AdmissionGate {
   /** 排队数（当前策略是满员直接拒绝，正常恒为 0；留作防御性观测） */
   get queued(): number {
     return this.semaphore.queued;
+  }
+
+  /** 全局并发是否还有名额（介入层 speak 链 32 号规则的探测位） */
+  get hasFreeSlot(): boolean {
+    return this.semaphore.inUse < this.deps.maxConcurrentTurns;
+  }
+
+  /**
+   * 介入专用的 try 语义（方案 §9.5）：全局并发满或该会话锁被占 → 立即
+   * 返回 false，绝不排队（排到时话题早已翻篇）。成功拿到则在
+   * 「名额 + 会话锁」内执行 fn 并返回 true。错误处理与 stage() 一致
+   * （兜底记日志、不外抛），但介入路径没有 Responder 回执语义——
+   * 静默失败即可。
+   */
+  async tryRunExclusive(key: string, fn: () => Promise<void>): Promise<boolean> {
+    const release = this.semaphore.tryAcquire();
+    if (release === undefined) return false;
+    try {
+      return await this.conversationLock.tryRun(key, async () => {
+        try {
+          await fn();
+        } catch (error) {
+          this.deps.stats.failed += 1;
+          // 与 stage() 的兜底一致：介入 turn 的未预期错误只记日志
+          // （没有用户在场，不需要错误回复）
+          this.deps.logger?.error('介入 turn 发生未预期错误', {
+            conversation: key,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    } finally {
+      release();
+    }
   }
 
   stage(): IngressStage {

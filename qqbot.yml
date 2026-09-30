@@ -228,10 +228,23 @@ intervention:
   buffer:
     maxMessages: 200      # 条数上限（BOT_INTERVENTION_BUFFER_MAX_MESSAGES）
     maxAgeHours: 72       # 年龄上限（BOT_INTERVENTION_BUFFER_MAX_AGE_HOURS）
+  # 语义 Gate（规则 20 的 ctx.gate；密钥只从 env DEEPSEEK_API_KEY 读，不进本文件）
+  gate:
+    apiBase: https://api.deepseek.com  # BOT_INTERVENTION_GATE_API_BASE
+    model: deepseek-flash              # BOT_INTERVENTION_GATE_MODEL
+    timeoutMs: 15000                   # BOT_INTERVENTION_GATE_TIMEOUT_MS
+    maxConcurrent: 2                   # BOT_INTERVENTION_GATE_MAX_CONCURRENT
   # 按规则名覆盖（键必须已注册，拼错会在启动期报错并列出可用规则）：
   # rules:
-  #   sampling-debounce:
-  #     params: { evaluateEvery: 6, silenceDebounceMs: 20000 }
+  #   promotion-window:     { params: { windowMs: 120000 } }      # 续聊窗口时长
+  #   inflight-merge:       { params: { maxPending: 5, maxAgeMs: 60000 } }
+  #   eval-cooldown:        { params: { cooldownMs: 60000, strongSignalCooldownMs: 15000 } }
+  #   strong-quick-reply:   { params: { quickResponseMs: 30000 } }
+  #   strong-open-question: { params: { answerWindowMs: 90000 } }
+  #   sampling-debounce:    { params: { evaluateEvery: 6, silenceDebounceMs: 20000 } }
+  #   semantic-gate:        { params: { contextMessages: 30 } }   # criteria 也可在此覆盖
+  #   rate-limit-veto:      { params: { maxPer10Min: 3, maxPerHour: 8 } }
+  #   focus-budget:         { params: { focusMs: 120000, fadingMs: 120000, focusMaxReplies: 2 } }
   #   at-others:
   #     enabled: false    # 单独停用某条规则（该层恒放行）
   rules: {}

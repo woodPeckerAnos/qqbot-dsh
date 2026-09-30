@@ -30,10 +30,11 @@ import { TokenError } from './adapters/qq-official/token.js';
 import { OnebotConnector, ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import type { BotConnector } from './core/connector.js';
 import { createLogger } from './logger.js';
-import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
+import { evaluateGate, CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
 import { RuntimePool } from './dsh/pool.js';
 import { BackgroundPusher } from './pipeline/egress/background.js';
 import { Responder } from './pipeline/egress/responder.js';
+import { createGateClient } from './intervention/gate-client.js';
 import { TopicWatcher } from './intervention/watcher.js';
 import { RULE_REGISTRY } from './intervention/rules/index.js';
 import { AdmissionGate } from './pipeline/ingress/admission.js';
@@ -213,6 +214,7 @@ async function main(): Promise<void> {
   const admission = new AdmissionGate({
     maxConcurrentTurns: config.pool.maxConcurrentTurns,
     stats,
+    logger: logger.child({ component: 'admission' }),
   });
 
   // 后台结果投递器：后台子代理完成后，能即时推送就推送（OneBot 恒可、官方在
@@ -226,6 +228,45 @@ async function main(): Promise<void> {
     persistPath: join(paths.stateDir, 'background-pending.json'),
   });
 
+  const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
+
+  // 话题介入 watcher：旁听非 @ 群消息（observed 事件由 Orchestrator 分流给它，
+  // 永不进 Ingress 管线）。intake 链放行的消息进每群内存缓冲；continuation 链
+  // 命中的晋升为正常提问回投编排层（Phase 1）；evaluate/speak 链经 Gate 判定与
+  // 三道否决后合成介入 turn（Phase 2，dryRun 灰度期只记不投）。
+  //
+  // Gate 客户端：直连 chat completions（不经 DSH 进程，方案 §6.2），密钥只从
+  // env 读；缺密钥则不装配——20 号规则 halt('gate-unavailable')，fail-closed。
+  const gateApiKey = process.env['GEN_RULE_API_KEY'] ?? process.env['DEEPSEEK_API_KEY'];
+  const gate =
+    config.intervention.enabled && gateApiKey !== undefined && gateApiKey !== ''
+      ? createGateClient({
+          apiBase: config.intervention.gate.apiBase,
+          apiKey: gateApiKey,
+          model: config.intervention.gate.model,
+          timeoutMs: config.intervention.gate.timeoutMs,
+          maxConcurrent: config.intervention.gate.maxConcurrent,
+        })
+      : undefined;
+  const watcher = new TopicWatcher({
+    config: config.intervention,
+    rules: RULE_REGISTRY,
+    stats,
+    logger: logger.child({ component: 'intervention' }),
+    ...(gate !== undefined ? { gate } : {}),
+    // 谷时段探针（规则 03 消费）：与 @ 路径同一个闸服务、同一份生效配置
+    offpeakNow: () =>
+      !evaluateGate({
+        config: offpeak.effective(),
+        provider: config.dsh.provider,
+        model: config.dsh.model,
+        isAdmin: false,
+        now: Date.now(),
+      }).gated,
+    // 全局并发名额探针（规则 32 消费；原子 try 在 AdmissionGate.tryRunExclusive）
+    admissionFree: () => admission.hasFreeSlot,
+  });
+
   const turnRunner = new TurnRunner({
     config,
     logger: logger.child({ component: 'turn-runner' }),
@@ -235,19 +276,8 @@ async function main(): Promise<void> {
     paths,
     stats,
     background,
-  });
-
-  const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
-
-  // 话题介入 watcher：旁听非 @ 群消息（observed 事件由 Orchestrator 分流给它，
-  // 永不进 Ingress 管线）。intake 链（01 开关/02 白名单/04 去重）放行的消息进
-  // 每群内存缓冲；continuation 链（40 窗口/41 在途合并）命中的消息晋升为
-  // 正常提问回投编排层（Phase 1，走完整 Ingress 管线，与 @ 同权）。
-  const watcher = new TopicWatcher({
-    config: config.intervention,
-    rules: RULE_REGISTRY,
-    stats,
-    logger: logger.child({ component: 'intervention' }),
+    // bot 发言记账 → 介入规则 09（快速回应窗口）/12（关键词回声）的输入
+    onBotSpoke: (conversationKey, text) => watcher.notifyBotSpoke(conversationKey, text),
   });
 
   const stages: IngressStage[] = [
@@ -298,6 +328,17 @@ async function main(): Promise<void> {
       }),
     turns: turnRunner,
     watcher,
+    // 介入 turn 终态（方案 §9.5）：AdmissionGate 的 try 语义包 TurnRunner——
+    // 并发满或会话锁被占立即返回 false，介入绝不排队。
+    interventionTerminal: (ctx) =>
+      admission.tryRunExclusive(ctx.message.target.key, async () => {
+        watcher.notifyTurnStarted(ctx.message);
+        try {
+          await turnRunner.runTurn(ctx);
+        } finally {
+          watcher.notifyTurnEnded(ctx.message.target.key);
+        }
+      }),
     status: () => ({
       inFlight: admission.inUse,
       queued: admission.queued,
@@ -306,9 +347,10 @@ async function main(): Promise<void> {
     }),
   });
 
-  // 续聊晋升回投口：watcher 与 Orchestrator 互相持有，只能有一侧后注入
-  // （方案 §8.1：晋升消息走完整 Ingress 管线，与 @ 消息同权）。
+  // 续聊晋升回投口 + 介入发言投递口：watcher 与 Orchestrator 互相持有，
+  // 只能有一侧后注入（方案 §8.1/§9.4）。
   watcher.setPromoter((message) => orchestrator.handleEvent(message));
+  watcher.setSpeaker((message) => orchestrator.runIntervention(message));
 
   // runtime 事件 → 编排器（按会话路由）。
   // 传**完整 notification**（含 sessionId）：一个 runtime 进程里除了父会话还有

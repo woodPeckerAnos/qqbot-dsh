@@ -36,6 +36,13 @@ export class Semaphore {
     return () => this.release();
   }
 
+  /** 非阻塞获取：有名额返回释放函数，没有返回 undefined（介入路径用，绝不排队）。 */
+  tryAcquire(): (() => void) | undefined {
+    if (this.available <= 0) return undefined;
+    this.available -= 1;
+    return () => this.release();
+  }
+
   private release(): void {
     const next = this.waiters.shift();
     if (next !== undefined) {
@@ -82,6 +89,16 @@ export class KeyedMutex {
       // 只有当自己仍是链尾时才删除，避免误删后来者的链
       if (this.chains.get(key) === chained) this.chains.delete(key);
     }
+  }
+
+  /**
+   * 非阻塞版 run：key 被占立即返回 false，否则执行 fn 并返回 true。
+   * 检查与上锁之间无 await（单线程内原子），介入路径「绝不排队」用。
+   */
+  async tryRun(key: string, fn: () => Promise<unknown>): Promise<boolean> {
+    if (this.chains.has(key)) return false;
+    await this.run(key, fn);
+    return true;
   }
 }
 

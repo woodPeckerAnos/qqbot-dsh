@@ -67,6 +67,12 @@ export interface OrchestratorDeps {
    * observed 事件在 handleEvent 入口分流给它，永不进入 Ingress 管线。
    */
   watcher?: TopicWatcher;
+  /**
+   * 介入 turn 的终态（可选）：AdmissionGate 的 try 语义包 TurnRunner——
+   * 拿不到名额/会话锁立即返回 false，绝不排队（方案 §9.5）。
+   * 由业务层组装（main.ts）；未装配时 runIntervention 恒 false。
+   */
+  interventionTerminal?: (ctx: MessageContext) => Promise<boolean>;
   /** health 快照的状态探针：准入闸门、谷时段闸与介入层的实时状态（对象归业务层持有） */
   status: () => {
     inFlight: number;
@@ -122,9 +128,30 @@ export class Orchestrator {
   // 用户消息入口：构建上下文，进入 Ingress 管线
   // -------------------------------------------------------------------------
 
+  /**
+   * 介入入口（方案 §9.4/§9.5）：合成 turn 的 NormalizedMessage（origin:
+   * 'intervention'）在此进入。**绕过** Ingress stage 链——去重/命令/谷时段/
+   * 记录的职责已由 watcher 的规则链承担（合成消息没有平台事件可去重，
+   * 记录由 TurnRunner 按 origin 处理）；只经准入的 try 语义进 TurnRunner。
+   * 返回 false = 未装配终态或准入被拒（调用方计数放弃）。
+   */
+  async runIntervention(message: NormalizedMessage): Promise<boolean> {
+    if (this.deps.interventionTerminal === undefined) return false;
+    const ctx = this.buildContext(message);
+    if (ctx === undefined) return false;
+    return this.deps.interventionTerminal(ctx);
+  }
+
   private async handleMessage(message: NormalizedMessage): Promise<void> {
-    const { logger } = this.deps;
     this.deps.stats.received += 1;
+    const ctx = this.buildContext(message);
+    if (ctx === undefined) return;
+    await runStages(this.deps.stages, ctx, () => this.deps.terminal(ctx));
+  }
+
+  /** 构建消息上下文；未知平台 / 禁用的单聊返回 undefined（消息丢弃）。 */
+  private buildContext(message: NormalizedMessage): MessageContext | undefined {
+    const { logger } = this.deps;
 
     const connector = this.deps.connectors.get(message.target.platform);
     if (connector === undefined) {
@@ -133,7 +160,7 @@ export class Orchestrator {
         platform: message.target.platform,
         conversation: message.target.key,
       });
-      return;
+      return undefined;
     }
     const policy = connector.policy(message.target.kind);
 
@@ -142,7 +169,7 @@ export class Orchestrator {
     if (message.target.kind === 'c2c' && !connector.acceptsC2C) {
       this.deps.stats.skippedC2C += 1;
       logger.debug('单聊已禁用，忽略私聊消息', { conversation: message.target.key });
-      return;
+      return undefined;
     }
 
     const messageLogger = logger.child({
@@ -152,7 +179,7 @@ export class Orchestrator {
       msgId: message.msgId,
     });
 
-    const ctx: MessageContext = {
+    return {
       message,
       connector,
       policy,
@@ -161,7 +188,5 @@ export class Orchestrator {
       logger: messageLogger,
       responder: this.deps.createResponder(message, connector, policy, messageLogger),
     };
-
-    await runStages(this.deps.stages, ctx, () => this.deps.terminal(ctx));
   }
 }

@@ -10,7 +10,7 @@
  *     且绕开 SeenStore 的「一消息一文件」磁盘模型（活跃群会刷爆小文件目录）。
  */
 
-import type { NormalizedObservedMessage } from '../core/connector.js';
+import type { ConversationTarget, NormalizedObservedMessage } from '../core/connector.js';
 
 /** 旁听缓冲里的一条消息。 */
 export interface ObservedEntry {
@@ -44,6 +44,19 @@ export interface PendingMergeLimits {
   maxAgeMs: number;
 }
 
+/** 介入相位（方案 §9.3；迁移表集中在本文件，不散进规则文件夹）。 */
+export type InterventionPhase = 'cold' | 'focus' | 'fading';
+
+/** 相位迁移事件的参数（来自规则 31 的 params 生效值，由 runner 解析后传入）。 */
+export interface PhaseDurations {
+  focusMs: number;
+  fadingMs: number;
+  focusMaxReplies: number;
+}
+
+/** 相位迁移事件：只有这三种（方案 §5.5）。 */
+export type PhaseEvent = 'spoke' | 'gate-silent' | 'rate-limit-hit';
+
 /** 规则可见的只读视图。 */
 export interface ConversationStateView {
   /** 会话键（如 ob11:g123456） */
@@ -59,10 +72,26 @@ export interface ConversationStateView {
    * 窗口由 runner 在 @ turn 派发后打开、晋升后重置（方案 §8.1）。
    */
   continuationWindowUntil(senderId: string): number | undefined;
-  /** 本会话当前是否有 turn 在途（41 号规则用；runner 在派发/结束时维护） */
+  /** 本会话当前是否有 turn 在途（41/32 号规则用；runner 在派发/结束时维护） */
   readonly inFlight: boolean;
   /** pending 合并队列只读视图，旧 → 新（41 号规则用） */
   readonly pendingMerge: readonly PendingMergeEntry[];
+  /** 当前生效相位（懒过期：窗口期满自动视为 cold；方案 §9.3） */
+  phaseAt(now: number): InterventionPhase;
+  /** FOCUS 相位内已主动发言次数（31 号规则用；相位过期视为 0） */
+  focusSpokeCountAt(now: number): number;
+  /** 上次进入 evaluate 链的时刻（08 号规则的冷却判定用；undefined = 从未评估） */
+  readonly lastEvaluateAt: number | undefined;
+  /** 自上次评估以来入缓冲的条数（13 号规则的采样计数用） */
+  readonly unevaluatedCount: number;
+  /** 近 windowMs 内（now-windowMs 之后）的介入发言次数（07/30 号规则用） */
+  countSpokeSince(sinceTs: number): number;
+  /** bot 最近一次发言时刻（09 号规则用；runner 在 turn 交付时记账） */
+  readonly botLastSpokeAt: number | undefined;
+  /** 某 msgId 是否为 bot 近期发过的消息（10 号规则用） */
+  botHasSpoken(msgId: string): boolean;
+  /** bot 上次发言提取的实词关键词（12 号规则用；最多 20 个） */
+  readonly botKeywords: readonly string[];
 }
 
 /** 缓冲配置。 */
@@ -96,6 +125,8 @@ export class LruSet {
 /** 一个群的完整可变状态（runner 专用；规则经 ConversationStateView 只读访问）。 */
 export class ConversationWatchState implements ConversationStateView {
   readonly key: string;
+  /** 会话寻址（runner 合成介入 turn 时用；首个消息到达时记录） */
+  target?: ConversationTarget;
   /** 旧 → 新；超出容量/年龄从头部淘汰 */
   readonly entries: ObservedEntry[] = [];
   readonly seen = new LruSet(500);
@@ -106,6 +137,23 @@ export class ConversationWatchState implements ConversationStateView {
   inFlight = false;
   /** pending 合并队列（41 号规则的 runner 侧落点），旧 → 新 */
   readonly pendingMerge: PendingMergeEntry[] = [];
+  /** 相位（懒过期：读取时按 now 归一化） */
+  private phase: InterventionPhase = 'cold';
+  private phaseUntil = 0;
+  private focusSpokeCount = 0;
+  private consecutiveGateSilent = 0;
+  /** 介入发言时刻（滑动限流窗口：10min/1h；只记主动介入，不含 @ 回复） */
+  private spokeAt: number[] = [];
+  /** 上次进入 evaluate 链的时刻 */
+  lastEvaluateAt: number | undefined = undefined;
+  /** 自上次评估以来入缓冲的条数（13 号规则采样用） */
+  unevaluatedCount = 0;
+  /** bot 最近一次发言时刻（@ 回复与介入都算；09 号规则用） */
+  botLastSpokeAt: number | undefined = undefined;
+  /** bot 近期发言的 msgId 集（10 号规则用；官方通道回传，OneBot 通常拿不到） */
+  private readonly botMsgIds = new LruSet(50);
+  /** bot 上次发言提取的实词关键词（12 号规则用） */
+  botKeywords: string[] = [];
 
   constructor(
     key: string,
@@ -124,9 +172,14 @@ export class ConversationWatchState implements ConversationStateView {
     return this.continuationWindows.get(senderId);
   }
 
-  /** runner：把一条消息追加进缓冲（同时按容量与年龄淘汰）。 */
+  /**
+   * runner：把一条消息追加进缓冲（同时按容量与年龄淘汰，并累计未评估计数）。
+   * 幂等：eventId 已认领（入过缓冲/晋升过/入过合并队列）则跳过——
+   * 定时器重入（answer-window）不会让同一条消息重复进缓冲。
+   */
   pushEntry(message: NormalizedObservedMessage, now: number): void {
-    this.seen.claim(message.eventId);
+    if (this.seen.claim(message.eventId)) return;
+    this.target ??= message.target;
     const entry: ObservedEntry = {
       msgId: message.msgId,
       senderId: message.senderId,
@@ -137,6 +190,7 @@ export class ConversationWatchState implements ConversationStateView {
       ...(message.quotedMsgId !== undefined ? { quotedMsgId: message.quotedMsgId } : {}),
     };
     this.entries.push(entry);
+    this.unevaluatedCount += 1;
     const cutoff = now - this.limits.maxAgeMs;
     while (this.entries.length > this.limits.maxMessages) this.entries.shift();
     while (this.entries.length > 0 && this.entries[0]!.ts < cutoff) this.entries.shift();
@@ -178,4 +232,138 @@ export class ConversationWatchState implements ConversationStateView {
   drainPending(): PendingMergeEntry[] {
     return this.pendingMerge.splice(0, this.pendingMerge.length);
   }
+
+  // ---------------------------------------------------------------------------
+  // 以下为 Phase 2 的 runner 侧记账与相位迁移（迁移表 = 唯一真相，方案 §5.5/§9.3）
+  // ---------------------------------------------------------------------------
+
+  /** 当前生效相位（懒过期，不改内部状态） */
+  phaseAt(now: number): InterventionPhase {
+    if (this.phase !== 'cold' && now >= this.phaseUntil) return 'cold';
+    return this.phase;
+  }
+
+  /** FOCUS 相位内已主动发言次数（相位过期视为 0） */
+  focusSpokeCountAt(now: number): number {
+    return this.phaseAt(now) === 'focus' ? this.focusSpokeCount : 0;
+  }
+
+  /** 近 windowMs 内的介入发言次数（滑动窗口） */
+  countSpokeSince(sinceTs: number): number {
+    let count = 0;
+    for (const ts of this.spokeAt) if (ts >= sinceTs) count += 1;
+    return count;
+  }
+
+  botHasSpoken(msgId: string): boolean {
+    return this.botMsgIds.has(msgId);
+  }
+
+  /** runner：进入 evaluate 链时记账（冷却与采样计数的原点）。 */
+  recordEvaluate(now: number): void {
+    this.lastEvaluateAt = now;
+    this.unevaluatedCount = 0;
+  }
+
+  /** runner：bot 发出了可见回复（@ 回复或介入）时记账（09/12 号规则的输入）。 */
+  noteBotSpeech(now: number, text: string, msgIds: readonly string[] = []): void {
+    this.botLastSpokeAt = now;
+    this.botKeywords = extractKeywords(text);
+    for (const id of msgIds) this.botMsgIds.claim(id);
+  }
+
+  /**
+   * 相位迁移表（方案 §9.3）：
+   *   spoke          cold→focus（开窗，计数 1）；focus→focus（计数 +1，续窗；
+   *                  计数满 focusMaxReplies → fading）；fading→fading（续窗）
+   *   gate-silent    连续 2 次且处于 focus → fading
+   *   rate-limit-hit 任何相位 → fading（强制降级 + 冷却）
+   * 期满的懒过期在 phaseAt 读取时生效（focus/fading → cold）。
+   */
+  applyPhaseEvent(event: PhaseEvent, now: number, durations: PhaseDurations): void {
+    // 先归一化过期相位
+    if (this.phase !== 'cold' && now >= this.phaseUntil) {
+      this.phase = 'cold';
+      this.focusSpokeCount = 0;
+      this.consecutiveGateSilent = 0;
+    }
+    switch (event) {
+      case 'spoke': {
+        this.consecutiveGateSilent = 0;
+        this.spokeAt.push(now);
+        const cutoff = now - 3_600_000;
+        while (this.spokeAt.length > 0 && this.spokeAt[0]! < cutoff) this.spokeAt.shift();
+        if (this.phase === 'cold') {
+          this.phase = 'focus';
+          this.phaseUntil = now + durations.focusMs;
+          this.focusSpokeCount = 1;
+        } else if (this.phase === 'focus') {
+          this.focusSpokeCount += 1;
+          if (this.focusSpokeCount >= durations.focusMaxReplies) {
+            this.phase = 'fading';
+            this.phaseUntil = now + durations.fadingMs;
+          } else {
+            this.phaseUntil = now + durations.focusMs;
+          }
+        } else {
+          this.phaseUntil = now + durations.fadingMs;
+        }
+        return;
+      }
+      case 'gate-silent': {
+        this.consecutiveGateSilent += 1;
+        if (this.phase === 'focus' && this.consecutiveGateSilent >= 2) {
+          this.phase = 'fading';
+          this.phaseUntil = now + durations.fadingMs;
+        }
+        return;
+      }
+      case 'rate-limit-hit': {
+        if (this.phase !== 'fading') {
+          this.phase = 'fading';
+          this.phaseUntil = now + durations.fadingMs;
+        }
+        return;
+      }
+    }
+  }
+}
+
+/**
+ * 从 bot 发言文本提取实词关键词（12 号规则的输入）：
+ * 拉丁词整取（≥3 字母）；CJK 没有分词，长串（>4 字）取整串 + 全部 2/3 字
+ * n-gram（宁可漏不可滥——误命中只是多一次 Gate 判定）。去停用词，上限 20 个。
+ */
+export function extractKeywords(text: string): string[] {
+  const STOPWORDS = new Set([
+    '这个', '那个', '什么', '可以', '没有', '就是', '已经', '一下', '如果', '因为',
+    '所以', '但是', '而且', '我们', '你们', '他们', '自己', 'the', 'and', 'for',
+    'with', 'that', 'this',
+  ]);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (word: string): void => {
+    if (word === '' || STOPWORDS.has(word) || seen.has(word)) return;
+    if (out.length >= 20) return;
+    seen.add(word);
+    out.push(word);
+  };
+  for (const match of text.matchAll(/[一-鿿]+|[a-zA-Z]{3,}/g)) {
+    const run = match[0];
+    if (/^[a-zA-Z]+$/.test(run)) {
+      push(run);
+      continue;
+    }
+    if (run.length < 2) continue;
+    if (run.length <= 4) {
+      push(run);
+      continue;
+    }
+    for (const n of [3, 2]) {
+      for (let i = 0; i + n <= run.length; i += 1) {
+        push(run.slice(i, i + n));
+      }
+    }
+  }
+  return out;
 }

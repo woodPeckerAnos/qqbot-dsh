@@ -107,23 +107,44 @@ export function parseGateVerdict(raw: string): GateVerdict | undefined {
 }
 
 /**
- * 构造语义 Gate 客户端（20-semantic-gate 规则的 ctx.gate 实现，Phase 2 接线）。
- * 判定标准正文来自规则 20 的 REQUIREMENT.md（需求即 prompt 来源，方案 §5.6），
- * 这里只拼输出契约；任何失败 fail-closed 为 silent。
+ * 构造语义 Gate 客户端（20-semantic-gate 规则的 ctx.gate 实现）。
+ * 判定标准正文随每次判定传入（来自规则 20 的 REQUIREMENT.md 投影，
+ * 需求即 prompt，方案 §5.6），这里只拼输出契约；任何失败 fail-closed
+ * 为 silent。maxConcurrent 限制全局并发判定数（超出排队等待）。
  */
 export function createGateClient(
-  options: ChatClientOptions & { criteria: string },
+  options: ChatClientOptions & { maxConcurrent?: number },
 ): GateClient {
   const chat = createChatClient(options);
+  // 轻量并发闸门（Gate 判定是 LLM 调用，全局 ≤2 是方案 §5.6 的成本纪律）
+  const maxConcurrent = Math.max(1, options.maxConcurrent ?? 2);
+  let inFlight = 0;
+  const waiters: Array<() => void> = [];
+  const acquire = async (): Promise<() => void> => {
+    if (inFlight < maxConcurrent) {
+      inFlight += 1;
+      return () => {
+        inFlight -= 1;
+        waiters.shift()?.();
+      };
+    }
+    await new Promise<void>((resolve) => waiters.push(resolve));
+    inFlight += 1;
+    return () => {
+      inFlight -= 1;
+      waiters.shift()?.();
+    };
+  };
   return {
     async judge(input: GateJudgeInput): Promise<GateVerdict> {
+      const release = await acquire();
       try {
         const raw = await chat.complete([
           {
             role: 'system',
             content: [
               '你是 QQ 群里一个任务型助手的发言守门人。',
-              options.criteria,
+              input.criteria,
               GATE_OUTPUT_CONTRACT,
             ].join('\n\n'),
           },
@@ -135,6 +156,8 @@ export function createGateClient(
         return parseGateVerdict(raw) ?? { decision: 'silent', reason: 'gate-output-unparseable' };
       } catch {
         return { decision: 'silent', reason: 'gate-call-failed' };
+      } finally {
+        release();
       }
     },
   };

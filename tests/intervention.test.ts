@@ -184,7 +184,7 @@ describe('TopicWatcher（P0：只听不说）', () => {
     expect(stats.observedHalted).toBe(0);
     const snapshot = watcher.snapshot();
     expect(snapshot.conversations).toEqual([
-      { key: 'ob11:g123', buffered: 1 },
+      { key: 'ob11:g123', buffered: 1, phase: 'cold' },
     ]);
   });
 

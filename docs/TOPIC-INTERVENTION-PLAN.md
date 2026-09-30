@@ -1,10 +1,18 @@
 # 话题介入（旁听 / 续聊 / 主动插话）方案规划
 
-> 状态：**Phase 0（旁听）+ Phase 1（续聊）+ 规则生成器已落地**（事件模型、
-> observed 适配器、规则文件夹架构与拦截器链、watcher、intervention 配置段、
-> 规则 01/02/04（intake）与 40/41（continuation）、晋升回投与在途合并冲刷、
-> codegen 生成器与 `npm run gen:rule` CLI，442 项离线单测全绿）。
-> Phase 2（介入判定与发言）未实施。
+> 状态：**Phase 0（旁听）+ Phase 1（续聊）+ Phase 2（介入判定与发言）已落地**
+> （事件模型、observed 适配器、规则文件夹 ×19 与四条拦截器链、watcher 调度
+> （去抖/答案窗口/Gate 重查定时器）、相位状态机、合成介入 turn 与准入 try
+> 语义、intervention.gate 配置、codegen 生成器与 `npm run gen:rule` CLI，
+> 535 项离线单测全绿）。**待做**：P2-5 `/listen` 命令、P2-6 文档收尾、
+> P2-7 灰度观察（先 dryRun 一周）、P3-3 生成口实产验证（待 LLM 密钥）。
+>
+> 实施期对方案的偏差与修正：
+> 1. **首批规则为手写**（开发环境无 LLM 密钥）——它们是生成器的模板定稿
+>    件与回归基准（§15 P3-2）；
+> 2. **冷却规则从 08 移到 12**（§15 P2-2 的实施修正：先标注后冷却）；
+> 3. halt 裁决增加 `buffer` 标记（05/06/12 号规则：不评估但仍入缓冲做上下文，
+>    契约文档化在 contract.ts）。
 >
 > 实施期对方案的一处偏差：**首批 3 条规则为手写**（开发环境无 LLM 密钥，
 > 无法真实驱动生成口）。它们是生成器的模板定稿件与回归基准——密钥就位后
@@ -187,11 +195,11 @@ REQUIREMENT.md，这里只有一句话摘要）：
 | `05-at-others` | intake | @ 了其他成员的消息不是在叫 bot，不评估（仍入缓冲做上下文） | P2 |
 | `06-no-text` | intake | 无文本内容（纯图/表情/文件）的消息不评估 | P2 |
 | `07-rate-limit-precheck` | intake | 该群已达硬限流时不再评估，省 Gate 成本 | P2 |
-| `08-eval-cooldown` | intake | Gate 冷却期内不重复评估（常规 60s / 强信号 15s） | P2 |
-| `09-strong-quick-reply` | intake | bot 发言后 30s 内的任何文本，大概率是在回应 bot → 标强信号 | P2 |
-| `10-strong-quote-bot` | intake | 引用了 bot 发过的消息 → 标强信号 | P2 |
-| `11-strong-open-question` | intake | 问句且 90s 内无人应答 → 标强信号（defer 到窗口满再判） | P2 |
-| `12-strong-keyword-echo` | intake | 命中 bot 上次发言的实词关键词 → 标强信号 | P2 |
+| `08-strong-quick-reply` | intake | bot 发言后 30s 内的任何文本，大概率是在回应 bot → 标强信号 | P2 |
+| `09-strong-quote-bot` | intake | 引用了 bot 发过的消息 → 标强信号 | P2 |
+| `10-strong-open-question` | intake | 问句且 90s 内无人应答 → 标强信号（defer 到窗口满再判） | P2 |
+| `11-strong-keyword-echo` | intake | 命中 bot 上次发言的实词关键词 → 标强信号 | P2 |
+| `12-eval-cooldown` | intake | Gate 冷却期内不重复评估（常规 60s / 强信号 15s；排在强信号之后才能读到标注） | P2 |
 | `13-sampling-debounce` | intake | 终局：距上次评估累计 ≥6 条，或静默 ≥20s → 评估；否则只入缓冲 | P2 |
 | `20-semantic-gate` | evaluate | 这个话题值不值得插话（需求文档正文即 Gate prompt 的来源） | P2 |
 | `30-rate-limit-veto` | speak | 硬限流终检：每群 10 分钟 ≤3 次且 1 小时 ≤8 次主动介入 | P2 |
@@ -340,7 +348,7 @@ Gate prompt 的主体**（外加固定的输出契约段与边界标记），实
 
 ```sh
 npm run gen:rule -- "群里有人提问且 90 秒无人应答时，bot 可以回答"
-npm run gen:rule -- --from-requirement src/intervention/rules/11-strong-open-question
+npm run gen:rule -- --from-requirement src/intervention/rules/10-strong-open-question
 ```
 
 为什么是开发期而非运行时：容器根文件系统只读（docker-compose 既有约束），
@@ -538,9 +546,9 @@ KeyedMutex 串行，现状语义不改）。
 
 逐层语义见 §5.2 清单与 §5.4 时序。要点：
 
-- 强信号规则（09–12）只 `mark` 不触发；`13-sampling-debounce` 是 intake
+- 强信号规则（08–11）只 `mark` 不触发；`13-sampling-debounce` 是 intake
   终局，读 marks 决定 立即评估 / 去抖等待 / 只缓冲；
-- `11-strong-open-question` 用 `defer`：问句先挂 90s 答案窗口，窗口内有人
+- `10-strong-open-question` 用 `defer`：问句先挂 90s 答案窗口，窗口内有人
   应答则消息作废（下次链执行时 halt），无人应答才以 `trigger:'answer-window'`
   重入评估——「有人问了没人答」是任务型助手最该介入的场景；
 - 明确不做：反馈词开头（嗯/对/真的…）这类陪聊向信号，对任务型助手误报太高。
@@ -685,7 +693,7 @@ health（`/healthz`、`/metrics`）新增 `intervention` 段：每群相位、�
 
 1. 旁听缓冲是否落盘（带轮转的独立文件）以跨重启保留语境；
 2. 介入是否需要独立「闲谈 session」以防污染任务上下文（§6.4 备选）；
-3. `11-strong-open-question` 的疑问模式词表与 `answerWindowMs` 调参；
+3. `10-strong-open-question` 的疑问模式词表与 `answerWindowMs` 调参；
 4. 冷群补偿 / deferred 定时评估（bl-chat 冷群机制）——「群里安静时主动
    找话说」与 proactive_chat 型需求合流再议；
 5. 续聊判定升级为小模型二分类的触发条件（误晋升率阈值，§8.3）；
@@ -718,13 +726,15 @@ health（`/healthz`、`/metrics`）新增 `intervention` 段：每群相位、�
 - [x] **P1-2** `origin` 贯通（NormalizedMessage → record → TurnRunner 分叉）
 - [x] **P1-3** 单测（窗口过期 / @别人不晋升 / 在途合并上限 / 与 offpeak 闸
       交互 / 命令不晋升）
-- [ ] **P2-1** `gate-client.ts`（mock fetch 单测：JSON 解析、超时、错误
+- [x] **P2-1** `gate-client.ts`（mock fetch 单测：JSON 解析、超时、错误
       → fail-closed 全路径）+ `transcript.ts`
-- [ ] **P2-2** 规则文件夹 ×11（03、05–13），intake 链补齐；假时钟单测
-      （每条规则的验收标准 + 相位迁移表 + 滑动限流边界）
-- [ ] **P2-3** 规则文件夹 `20-semantic-gate`（REQUIREMENT.md 正文即 prompt
+- [x] **P2-2** 规则文件夹 ×11（03、05–13），intake 链补齐；假时钟单测
+      （每条规则的验收标准 + 相位迁移表 + 滑动限流边界）。
+      **实施修正**：冷却规则从 08 移到 12——「强信号用短冷却」要求先标注
+      后冷却，08 在 09–12 之前读不到 marks（本表已同步编号）
+- [x] **P2-3** 规则文件夹 `20-semantic-gate`（REQUIREMENT.md 正文即 prompt
       来源）+ evaluate 链 + dryRun 开关
-- [ ] **P2-4** 规则文件夹 ×3（30–32）+ speak 链 + `admission.ts` try 语义 +
+- [x] **P2-4** 规则文件夹 ×3（30–32）+ speak 链 + `admission.ts` try 语义 +
       `orchestrator.runIntervention` + TurnRunner `origin:'intervention'`
       三跳过
 - [ ] **P2-5** `/listen` 命令 stage + listen-override 持久化

@@ -23,8 +23,10 @@ eventId）只进入旁听缓冲一次，重放的直接丢弃。
 # 判定
 
 - 输入：一条 observed 消息
-- 条件 A：`ctx.message` 为空 → `halt('no-message')`（fail-closed）
-- 条件 B：`state.hasSeen(message.eventId)` 为真 → `halt('duplicate')`
+- 条件 A：`ctx.trigger !== 'message'`（定时器重入，如 answer-window 答案窗口
+  到期的重查）→ pass（重入是 runner 内部行为，不是平台重放，不参与去重）
+- 条件 B：`ctx.message` 为空 → `halt('no-message')`（fail-closed）
+- 条件 C：`state.hasSeen(message.eventId)` 为真 → `halt('duplicate')`
 - 否则 → pass（eventId 的**记录**由 runner 在消息入缓冲时完成，
   规则保持纯函数不写状态）
 
@@ -37,7 +39,8 @@ eventId）只进入旁听缓冲一次，重放的直接丢弃。
 1. 事件首次到达（eventId 未见过）→ pass；
 2. 同一 eventId 再次到达（已被 runner 记录过）→ halt('duplicate')；
 3. eventId 为空串的消息不去重（无法判定，按首次处理）→ pass；
-4. 无消息上下文 → halt('no-message')。
+4. 无消息上下文 → halt('no-message')；
+5. 非 message 触发（trigger='answer-window'）→ 已认领的 eventId 也 pass。
 
 # 背景与调研来源
 

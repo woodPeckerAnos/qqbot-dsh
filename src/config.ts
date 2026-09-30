@@ -392,6 +392,31 @@ function buildInterventionConfig(env: Env, file: FileConfig): InterventionConfig
           'intervention.buffer.maxAgeHours',
         ) * 3_600_000,
     },
+    gate: {
+      apiBase: pickString(
+        env,
+        'BOT_INTERVENTION_GATE_API_BASE',
+        section?.gate?.apiBase,
+        'https://api.deepseek.com',
+      ),
+      model: pickString(env, 'BOT_INTERVENTION_GATE_MODEL', section?.gate?.model, 'deepseek-flash'),
+      timeoutMs: pickInt(
+        env,
+        'BOT_INTERVENTION_GATE_TIMEOUT_MS',
+        section?.gate?.timeoutMs,
+        15_000,
+        { min: 1000, max: 120_000 },
+        'intervention.gate.timeoutMs',
+      ),
+      maxConcurrent: pickInt(
+        env,
+        'BOT_INTERVENTION_GATE_MAX_CONCURRENT',
+        section?.gate?.maxConcurrent,
+        2,
+        { min: 1, max: 16 },
+        'intervention.gate.maxConcurrent',
+      ),
+    },
     rules,
   };
 }
