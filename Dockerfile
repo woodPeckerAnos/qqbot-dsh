@@ -9,10 +9,10 @@ COPY scripts/docker-install.mjs ./scripts/docker-install.mjs
 # 1) 安装全部依赖（含 devDependencies，编译需要 typescript）
 RUN node scripts/docker-install.mjs install
 
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 # 2) 编译。注意必须在剪枝之前——typescript 属于 devDependencies。
-RUN ./node_modules/.bin/tsc -p tsconfig.json
+RUN ./node_modules/.bin/tsc -p tsconfig.build.json
 
 # 3) 剪枝：剔除 devDependencies 与不匹配本平台的可选依赖，
 #    否则 typescript/vitest 以及 macOS 平台的 .node 二进制都会被带进运行镜像。

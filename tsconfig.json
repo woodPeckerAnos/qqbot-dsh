@@ -31,6 +31,7 @@
   "exclude": [
     "node_modules",
     "dist",
-    "tests"
+    "tests",
+    "src/intervention/rules/_rejected"
   ]
 }

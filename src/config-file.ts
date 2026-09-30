@@ -107,6 +107,27 @@ export interface MediaFileConfig {
   outboxDir?: string;
 }
 
+/**
+ * 话题介入的单条规则覆盖（intervention.rules.<rule-name>）。
+ * rule-name 必须已注册（src/intervention/rules/index.ts），
+ * 未注册名在 config.ts 的语义校验层报错（它知道注册表）。
+ */
+export interface InterventionRuleOverrideFileConfig {
+  /** 单独停用某条规则（停用 = 该层恒 pass） */
+  enabled?: boolean;
+  /** 覆盖该规则的参数（标量；默认值在规则的 REQUIREMENT.md frontmatter 声明） */
+  params?: Record<string, string | number | boolean>;
+}
+
+/** 话题介入（旁听/续聊/主动插话，见 docs/TOPIC-INTERVENTION-PLAN.md）。 */
+export interface InterventionFileConfig {
+  enabled?: boolean;
+  /** 灰度：判定照跑、trace 照记、不发言 */
+  dryRun?: boolean;
+  buffer?: { maxMessages?: number; maxAgeHours?: number };
+  rules?: Record<string, InterventionRuleOverrideFileConfig>;
+}
+
 /** 配置文件里允许出现的全部内容（每项都可选）。 */
 export interface FileConfig {
   connectors?: string[];
@@ -118,6 +139,7 @@ export interface FileConfig {
   offpeak?: OffpeakFileConfig;
   attachments?: AttachmentsFileConfig;
   media?: MediaFileConfig;
+  intervention?: InterventionFileConfig;
   health?: HealthFileConfig;
   logLevel?: string;
 }
@@ -216,6 +238,7 @@ const MEDIA_SPEC: SectionSpec = {
   imageExtensions: 'stringList',
   outboxDir: 'string',
 };
+const INTERVENTION_BUFFER_SPEC: SectionSpec = { maxMessages: 'int', maxAgeHours: 'int' };
 
 const TOP_SCALARS: SectionSpec = {
   connectors: 'stringList',
@@ -329,6 +352,82 @@ function readSection(
 }
 
 /**
+ * 读 intervention section。它有一个动态键名的 `rules` 映射（键 = 规则名，
+ * 注册表校验在 config.ts 做），通用的 SectionSpec 机制表达不了，单列一个函数。
+ */
+function readInterventionSection(raw: unknown, path: string): InterventionFileConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new ConfigError(`${path} 必须是一个映射（key: value），收到 ${describeValue(raw)}`);
+  }
+  const allowed = ['enabled', 'dryRun', 'buffer', 'rules'];
+  for (const key of Object.keys(raw)) {
+    if (!allowed.includes(key)) {
+      throw new ConfigError(`${path}.${key} 不是可识别的配置项`, [
+        `可用项：${allowed.join('、')}`,
+      ]);
+    }
+  }
+
+  const out: InterventionFileConfig = {};
+  const enabled = coerceScalar(raw['enabled'], `${path}.enabled`, 'bool');
+  if (enabled !== undefined) out.enabled = enabled as boolean;
+  const dryRun = coerceScalar(raw['dryRun'], `${path}.dryRun`, 'bool');
+  if (dryRun !== undefined) out.dryRun = dryRun as boolean;
+  const buffer = readSection(raw['buffer'], `${path}.buffer`, INTERVENTION_BUFFER_SPEC);
+  if (Object.keys(buffer).length > 0) {
+    out.buffer = buffer as InterventionFileConfig['buffer'];
+  }
+
+  const rulesRaw = raw['rules'];
+  if (rulesRaw !== undefined && rulesRaw !== null) {
+    if (!isPlainObject(rulesRaw)) {
+      throw new ConfigError(`${path}.rules 必须是以规则名为键的映射，收到 ${describeValue(rulesRaw)}`);
+    }
+    const rules: Record<string, InterventionRuleOverrideFileConfig> = {};
+    for (const [name, value] of Object.entries(rulesRaw)) {
+      if (!isPlainObject(value)) {
+        throw new ConfigError(
+          `${path}.rules.${name} 必须是一个映射（enabled / params），收到 ${describeValue(value)}`,
+        );
+      }
+      for (const key of Object.keys(value)) {
+        if (key !== 'enabled' && key !== 'params') {
+          throw new ConfigError(`${path}.rules.${name}.${key} 不是可识别的配置项`, [
+            '可用项：enabled（是否停用该规则）、params（覆盖该规则参数）',
+          ]);
+        }
+      }
+      const entry: InterventionRuleOverrideFileConfig = {};
+      const enabled = coerceScalar(value['enabled'], `${path}.rules.${name}.enabled`, 'bool');
+      if (enabled !== undefined) entry.enabled = enabled as boolean;
+      const paramsRaw = value['params'];
+      if (paramsRaw !== undefined && paramsRaw !== null) {
+        if (!isPlainObject(paramsRaw)) {
+          throw new ConfigError(
+            `${path}.rules.${name}.params 必须是映射（参数名: 标量），收到 ${describeValue(paramsRaw)}`,
+          );
+        }
+        const params: Record<string, string | number | boolean> = {};
+        for (const [paramName, paramValue] of Object.entries(paramsRaw)) {
+          const t = typeof paramValue;
+          if (t !== 'string' && t !== 'number' && t !== 'boolean') {
+            throw new ConfigError(
+              `${path}.rules.${name}.params.${paramName} 必须是标量（字符串/数字/布尔），收到 ${describeValue(paramValue)}`,
+            );
+          }
+          params[paramName] = paramValue as string | number | boolean;
+        }
+        entry.params = params;
+      }
+      rules[name] = entry;
+    }
+    out.rules = rules;
+  }
+  return out;
+}
+
+/**
  * 解析 YAML 文本为 FileConfig（纯函数，便于单测）。
  * @param source 出错信息里显示的文件名
  */
@@ -347,7 +446,7 @@ export function parseConfigFileText(text: string, source = DEFAULT_CONFIG_FILE):
     throw new ConfigError(`${source} 顶层必须是映射（key: value），收到 ${describeValue(root)}`);
   }
 
-  const allowedTop = [...Object.keys(TOP_SCALARS), ...TOP_SECTIONS.map((s) => s.yamlKey)];
+  const allowedTop = [...Object.keys(TOP_SCALARS), ...TOP_SECTIONS.map((s) => s.yamlKey), 'intervention'];
   for (const key of Object.keys(root)) {
     const rejected = REJECTED_KEYS[key];
     if (rejected !== undefined) {
@@ -372,6 +471,8 @@ export function parseConfigFileText(text: string, source = DEFAULT_CONFIG_FILE):
     const section = readSection(root[yamlKey], `${source}: ${yamlKey}`, spec, nested);
     if (Object.keys(section).length > 0) mutable[field] = section;
   }
+  const intervention = readInterventionSection(root['intervention'], `${source}: intervention`);
+  if (intervention !== undefined) mutable['intervention'] = intervention;
   return out;
 }
 

@@ -8,11 +8,16 @@
  *   - health 端点原样展示快照，不在此层做格式化。
  */
 
+import type { InterventionSnapshot } from '../intervention/watcher.js';
 import type { OffpeakSnapshot } from '../offpeak/index.js';
 
 export class PipelineStats {
   /** 收到的用户消息数（Orchestrator 入口） */
   received = 0;
+  /** 旁听到的群消息数（TopicWatcher 入口，未 @ 机器人） */
+  observed = 0;
+  /** 旁听消息被介入规则链拦截数（TopicWatcher；按规则名的明细在 watcher 快照里） */
+  observedHalted = 0;
   /** 事件去重丢弃数（dedupe stage） */
   deduplicated = 0;
   /** 并发满员拒绝数（admission stage） */
@@ -53,11 +58,12 @@ export class PipelineStats {
   progressSent = 0;
 }
 
-/** health 端点展示用的完整快照：计数 + 准入闸门状态 + 谷时段闸状态。 */
+/** health 端点展示用的完整快照：计数 + 准入闸门状态 + 谷时段闸状态 + 介入层状态。 */
 export type PipelineStatsSnapshot = {
   [K in keyof PipelineStats]: number;
 } & {
   inFlight: number;
   queued: number;
   offpeak: OffpeakSnapshot;
+  intervention: InterventionSnapshot;
 };

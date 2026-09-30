@@ -70,7 +70,7 @@ describe('OneBot 归一化', () => {
     expect(event.ts).toBe(1_700_000_000_000);
   });
 
-  it('群消息：没 @ 机器人时忽略', () => {
+  it('群消息：没 @ 机器人时归一化为旁听事件（话题介入的输入）', () => {
     const result = normalizeOneBotEvent({
       post_type: 'message',
       message_type: 'group',
@@ -79,7 +79,50 @@ describe('OneBot 归一化', () => {
       message_id: 1,
       group_id: 8888,
       user_id: 12345,
+      sender: { card: '群名片', nickname: '昵称' },
       message: [{ type: 'text', data: { text: '大家好' } }],
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    expect(result.event.kind).toBe('group-message-observed');
+    if (result.event.kind !== 'group-message-observed') return;
+    expect(result.event.content).toBe('大家好');
+    expect(result.event.atOthers).toBe(false);
+    expect(result.event.target.key).toBe('ob11:g8888');
+    expect(result.event.eventId).toBe('ob11:10000:1');
+    // 旁听事件不触发引用回查（quotedMessageId 不透出到 NormalizeResult）
+    expect(result.quotedMessageId).toBeUndefined();
+  });
+
+  it('群消息：@ 了其他成员的旁听事件带 atOthers 标记', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 2,
+      group_id: 8888,
+      user_id: 12345,
+      message: [
+        { type: 'at', data: { qq: '7777', name: '张三' } },
+        { type: 'text', data: { text: ' 你怎么看' } },
+      ],
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event' || result.event.kind !== 'group-message-observed') return;
+    expect(result.event.atOthers).toBe(true);
+  });
+
+  it('群消息：非 @ 且无内容的（纯戳一戳等）仍忽略', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 3,
+      group_id: 8888,
+      user_id: 12345,
+      message: [{ type: 'poke', data: {} }],
     });
     expect(result.type).toBe('ignored');
   });

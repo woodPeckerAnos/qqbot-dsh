@@ -170,6 +170,47 @@ export interface NormalizedMessage {
    * 此时编排层按 `content` 处理。
    */
   parts?: MessagePart[];
+  /**
+   * 本轮 turn 的来源（缺省 = 'user'）：
+   *   - `user`：用户直接 @ 提问 / 私聊；
+   *   - `continuation`：话题介入的续聊晋升（@ 破冰后的窗口内跟进，Phase 1）；
+   *   - `intervention`：话题介入的合成 turn（旁听判定后的自主插话，Phase 2）。
+   * 下游（记录、TurnRunner 的冷启动回放/图片/进度回执分叉）按它区分处理。
+   */
+  origin?: 'user' | 'continuation' | 'intervention';
+  /** 毫秒时间戳 */
+  ts: number;
+  /** 原始事件，便于排障与将来扩展 */
+  raw: Record<string, unknown>;
+}
+
+/**
+ * 旁听到的群消息（未 @ 机器人，不触发回复，仅供话题介入的判定与缓冲）。
+ *
+ * 与 `NormalizedMessage` 平级而不是复用它：旁听消息没有回复锚点语义，
+ * 也不该被 `isUserMessage()` 捞进 Ingress 管线（去重磁盘层、谷时段闸、
+ * 记录、并发准入对它全都不适用）。消费方是 `src/intervention/` 的
+ * TopicWatcher——编排层只做分流。
+ *
+ * v1 不携带 `parts`（不下载任何媒体，纯文本判定；转录里图片以 `[图片]`
+ * 占位，与 `content` 的扁平化规则一致）。
+ */
+export interface NormalizedObservedMessage {
+  kind: 'group-message-observed';
+  /** 与该群 at-message 相同的会话键（旁听缓冲按它归属） */
+  target: ConversationTarget;
+  /** 平台内唯一、带平台命名空间的事件 id（介入层内存去重用，不进 SeenStore） */
+  eventId: string;
+  /** 消息 id（官方将来用它做介入回复的被动锚点；OneBot 忽略） */
+  msgId: string;
+  senderId: string;
+  username?: string;
+  /** 扁平化文本（[图片] 等占位与 NormalizedMessage.content 规则一致） */
+  content: string;
+  /** 是否 @ 了其他成员（@ 机器人的消息由 at 路径处理，不会成为 observed） */
+  atOthers: boolean;
+  /** 引用（回复）了某条消息时为该消息 id；引用 bot 消息是强介入信号 */
+  quotedMsgId?: string;
   /** 毫秒时间戳 */
   ts: number;
   /** 原始事件，便于排障与将来扩展 */
@@ -193,11 +234,24 @@ export interface NormalizedSystemEvent {
   raw?: Record<string, unknown>;
 }
 
-export type NormalizedEvent = NormalizedMessage | NormalizedSystemEvent;
+export type NormalizedEvent =
+  | NormalizedMessage
+  | NormalizedSystemEvent
+  | NormalizedObservedMessage;
 
 /** 是否为用户消息（群聊或单聊），用于把消息事件与系统事件分开。 */
 export function isUserMessage(event: NormalizedEvent): event is NormalizedMessage {
   return event.kind === 'group-at-message' || event.kind === 'c2c-message';
+}
+
+/**
+ * 是否为旁听到的群消息（未 @ 机器人）。
+ * 由编排层分流给话题介入的 TopicWatcher，永不进入 Ingress 提问管线。
+ */
+export function isObservedMessage(
+  event: NormalizedEvent,
+): event is NormalizedObservedMessage {
+  return event.kind === 'group-message-observed';
 }
 
 // ---------------------------------------------------------------------------

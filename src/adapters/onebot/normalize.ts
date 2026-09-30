@@ -65,6 +65,8 @@ export interface ExtractedContent {
   content: string;
   /** 是否 @ 了机器人自己 */
   atSelf: boolean;
+  /** 是否 @ 了其他成员（含 @全体成员；旁听事件的预筛信号） */
+  atOthers: boolean;
   /** `reply` 段引用的消息 id */
   quotedMessageId?: string;
 }
@@ -132,6 +134,7 @@ export function extractMessageContent(
 
   const parts: MessagePart[] = [];
   let atSelf = false;
+  let atOthers = false;
   let quotedMessageId: string | undefined;
 
   for (const segment of segments) {
@@ -147,6 +150,7 @@ export function extractMessageContent(
           atSelf = true;
           break;
         }
+        atOthers = true;
         const name = asString(segment.data['name']) ?? (qq !== '' ? qq : undefined);
         if (name !== undefined) parts.push({ type: 'text', text: `@${name}` });
         break;
@@ -218,6 +222,7 @@ export function extractMessageContent(
     parts,
     content,
     atSelf,
+    atOthers,
     ...(quotedMessageId !== undefined ? { quotedMessageId } : {}),
   };
 }
@@ -297,7 +302,34 @@ function normalizeMessage(raw: OneBotEvent, now: () => number): NormalizeResult 
     }
     if (raw.group_id === undefined) return { type: 'ignored', reason: '群消息缺少 group_id' };
     const extracted = extractMessageContent(raw.message ?? raw.raw_message, selfId);
-    if (!extracted.atSelf) return { type: 'ignored', reason: '群消息未 @ 机器人' };
+    if (!extracted.atSelf) {
+      // 非 @ 群消息：归一化为旁听事件，交给话题介入层（src/intervention/），
+      // 而不是丢弃。白名单/开关判定不在适配器做（那是规则 01/02 的事），
+      // 这里只管"这是什么"。连占位符都没有的消息（纯戳一戳等）没有任何信号，
+      // 仍忽略。
+      // 注意：不把 quotedMessageId 放到 NormalizeResult 上——那会触发连接器的
+      // get_msg 引用回查（那是给触发消息用的 IO；旁听量级完全不同，会把框架打爆），
+      // 引用 id 只作为事件字段透出（强信号 R2 用）。
+      if (extracted.parts.length === 0) return { type: 'ignored', reason: '群消息无内容' };
+      return {
+        type: 'event',
+        event: {
+          kind: 'group-message-observed',
+          target: onebotGroupTarget(raw.group_id),
+          eventId: `ob11:${selfId}:${messageId}`,
+          msgId: String(messageId),
+          senderId: String(userId),
+          ...(senderName !== undefined ? { username: senderName } : {}),
+          content: extracted.content,
+          atOthers: extracted.atOthers,
+          ...(extracted.quotedMessageId !== undefined
+            ? { quotedMsgId: extracted.quotedMessageId }
+            : {}),
+          ts,
+          raw: raw as unknown as Record<string, unknown>,
+        },
+      };
+    }
     if (extracted.parts.length === 0) return { type: 'ignored', reason: '@ 之后没有正文' };
     return {
       type: 'event',

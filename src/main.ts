@@ -34,6 +34,8 @@ import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
 import { RuntimePool } from './dsh/pool.js';
 import { BackgroundPusher } from './pipeline/egress/background.js';
 import { Responder } from './pipeline/egress/responder.js';
+import { TopicWatcher } from './intervention/watcher.js';
+import { RULE_REGISTRY } from './intervention/rules/index.js';
 import { AdmissionGate } from './pipeline/ingress/admission.js';
 import { createDedupeStage } from './pipeline/ingress/dedupe.js';
 import { OffpeakCommandRouter } from './pipeline/ingress/offpeak-command.js';
@@ -237,6 +239,16 @@ async function main(): Promise<void> {
 
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
 
+  // 话题介入 watcher：旁听非 @ 群消息（observed 事件由 Orchestrator 分流给它，
+  // 永不进 Ingress 管线）。Phase 0 只听不说：intake 链（01 开关/02 白名单/04 去重）
+  // 放行的消息进每群内存缓冲，供后续 Phase 的续聊与介入判定使用。
+  const watcher = new TopicWatcher({
+    config: config.intervention,
+    rules: RULE_REGISTRY,
+    stats,
+    logger: logger.child({ component: 'intervention' }),
+  });
+
   const stages: IngressStage[] = [
     createDedupeStage({ seen, stats }),
     offpeakCommands.stage(),
@@ -274,10 +286,12 @@ async function main(): Promise<void> {
           : {}),
       }),
     turns: turnRunner,
+    watcher,
     status: () => ({
       inFlight: admission.inUse,
       queued: admission.queued,
       offpeak: offpeak.snapshot(),
+      intervention: watcher.snapshot(),
     }),
   });
 

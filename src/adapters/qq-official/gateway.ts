@@ -374,6 +374,35 @@ export class QqGateway implements QqEventSource {
       // 富媒体/引用/卡片统一翻译成片段：content 是它的可读扁平形态（进对话记录、
       // 进日志、也是命令匹配对象），parts 供 TurnRunner 组装多模态 prompt。
       const parts = buildMessageParts(d as MessageBodyLike);
+
+      if (type === 'GROUP_MESSAGE_CREATE') {
+        // 全量模式（需平台侧开启「接收所有消息」能力，未获批时平台不推该事件）：
+        // 非 @ 的群消息归一化为旁听事件，交给话题介入层（src/intervention/），
+        // 绝不当提问触发——否则能力一旦开放，群里每条消息都会拉起一轮 agent。
+        // atOthers 用 mentions 数组非空近似（全量模式下 @ 机器人的消息是否同时
+        // 以 GROUP_AT_MESSAGE_CREATE 到达待实测；介入层按 msgId 幂等处理，
+        // 见 docs/TOPIC-INTERVENTION-PLAN.md §12）。
+        const mentions = Array.isArray(d['mentions']) ? (d['mentions'] as unknown[]) : [];
+        this.emit({
+          kind: 'group-message-observed',
+          target: groupTarget(groupOpenid),
+          eventId: payload.id ?? '',
+          msgId,
+          senderId: asString(author['member_openid']) ?? asString(author['id']) ?? 'unknown',
+          ...(asString(author['username']) !== undefined
+            ? { username: asString(author['username']) as string }
+            : {}),
+          content: flattenParts(parts),
+          atOthers: mentions.length > 0,
+          ...(officialQuotedMsgRef(d) !== undefined
+            ? { quotedMsgId: officialQuotedMsgRef(d) as string }
+            : {}),
+          ts: parseTimestamp(d['timestamp']) ?? this.now(),
+          raw: d,
+        });
+        return;
+      }
+
       this.emit({
         kind: 'group-at-message',
         target: groupTarget(groupOpenid),
@@ -619,6 +648,26 @@ export class QqGateway implements QqEventSource {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/**
+ * 从官方事件的 message_scene.ext 里取被引用消息的引用索引（ref_msg_idx）。
+ * 官方不给被引用消息的 msg_id，这个索引是唯一可用的「引用关系」标记
+ * （介入层只用它判断「引用了某条消息」，不取内容）。
+ */
+function officialQuotedMsgRef(d: Record<string, unknown>): string | undefined {
+  const scene = d['message_scene'];
+  if (typeof scene !== 'object' || scene === null) return undefined;
+  const ext = (scene as Record<string, unknown>)['ext'];
+  if (!Array.isArray(ext)) return undefined;
+  for (const entry of ext) {
+    if (typeof entry !== 'string') continue;
+    if (entry.startsWith('ref_msg_idx=')) {
+      const value = entry.slice('ref_msg_idx='.length);
+      if (value !== '') return value;
+    }
+  }
+  return undefined;
 }
 
 /** 解析 RFC3339 字符串或 unix 秒/毫秒数字，失败返回 undefined。 */

@@ -8,14 +8,15 @@
     "node": ">=22.4"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "node --experimental-strip-types --no-warnings src/main.ts",
     "start": "node dist/main.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "verify:sandbox": "node scripts/verify-sandbox.mjs"
+    "verify:sandbox": "node scripts/verify-sandbox.mjs",
+    "gen:rule": "vite-node scripts/gen-rule.ts"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.1.5-rc.2",

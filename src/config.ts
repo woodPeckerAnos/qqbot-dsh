@@ -25,6 +25,8 @@ import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import { ConfigError } from './config-error.js';
 import type { FileConfig } from './config-file.js';
+import type { InterventionConfig } from './intervention/watcher.js';
+import { REGISTERED_RULE_NAMES } from './intervention/rules/index.js';
 import {
   formatWindows,
   isValidDateString,
@@ -170,6 +172,12 @@ export interface Config {
    * `outboxDir` 目录（见 dsh-profile 的 persona 与 docs/RICH-MEDIA-PLAN.md）。
    */
   media: MediaConfig;
+  /**
+   * 话题介入（旁听/续聊/主动插话，见 docs/TOPIC-INTERVENTION-PLAN.md）。
+   * 默认关（fail-closed）；群白名单只来自 env（BOT_LISTEN_GROUPS，群号属个人
+   * 标识，与 BOT_ADMINS 同纪律）。
+   */
+  intervention: InterventionConfig;
   health: {
     port: number;
   };
@@ -328,6 +336,64 @@ function assertProgressQuota(
         '否则进度回执会把配额用光，最终答案发不出去',
     );
   }
+}
+
+/**
+ * 话题介入配置（Config.intervention，见 docs/TOPIC-INTERVENTION-PLAN.md）。
+ *
+ * 群白名单（BOT_LISTEN_GROUPS）只认 env：群号与 BOT_ADMINS 一样是真实个人
+ * 标识，不进随仓库提交的配置文件。条目接受两种形式：会话键（ob11:g123）或
+ * 平台:群号（onebot:123），与规则 02-group-whitelist 的判定一致。
+ *
+ * rules 覆盖的规则名必须已注册（src/intervention/rules/index.ts）——拼错的
+ * 键名在启动期直接报错，而不是静默无效（与 config-file.ts 的严格校验同哲学）。
+ */
+function buildInterventionConfig(env: Env, file: FileConfig): InterventionConfig {
+  const section = file.intervention;
+  const whitelistGroups = pickList(env, 'BOT_LISTEN_GROUPS', undefined);
+  for (const entry of whitelistGroups) {
+    if (!entry.includes(':')) {
+      throw new ConfigError(
+        `BOT_LISTEN_GROUPS 的条目 ${JSON.stringify(entry)} 缺少平台前缀`,
+        ['条目格式：会话键（如 ob11:g123456）或 平台:群号（如 onebot:123456），逗号分隔'],
+      );
+    }
+  }
+
+  const rules = section?.rules ?? {};
+  for (const name of Object.keys(rules)) {
+    if (!REGISTERED_RULE_NAMES.includes(name)) {
+      throw new ConfigError(`配置文件里的 intervention.rules.${name} 不是已注册的介入规则`, [
+        `可用规则：${REGISTERED_RULE_NAMES.join('、')}`,
+      ]);
+    }
+  }
+
+  return {
+    enabled: pickBool(env, 'BOT_INTERVENTION_ENABLED', section?.enabled, false),
+    dryRun: pickBool(env, 'BOT_INTERVENTION_DRY_RUN', section?.dryRun, false),
+    whitelistGroups,
+    buffer: {
+      maxMessages: pickInt(
+        env,
+        'BOT_INTERVENTION_BUFFER_MAX_MESSAGES',
+        section?.buffer?.maxMessages,
+        200,
+        { min: 10, max: 10_000 },
+        'intervention.buffer.maxMessages',
+      ),
+      maxAgeMs:
+        pickInt(
+          env,
+          'BOT_INTERVENTION_BUFFER_MAX_AGE_HOURS',
+          section?.buffer?.maxAgeHours,
+          72,
+          { min: 1, max: 720 },
+          'intervention.buffer.maxAgeHours',
+        ) * 3_600_000,
+    },
+    rules,
+  };
 }
 
 export function loadConfig(env: Env = process.env, file: FileConfig = {}): Config {
@@ -585,6 +651,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       imageExtensions: mediaImageExtensions,
       outboxDir: mediaOutboxDir,
     },
+    intervention: buildInterventionConfig(env, file),
     health: {
       port: pickInt(env, 'QQ_HEALTH_PORT', file.health?.port, 8080, { min: 0, max: 65_535 }, 'health.port'),
     },
@@ -648,6 +715,13 @@ export function describeConfig(config: Config): Record<string, unknown> {
       modelPattern: config.offpeak.modelPattern,
       weekendsAllDay: config.offpeak.weekendsAllDay,
       extraHolidays: config.offpeak.holidays.length,
+    },
+    intervention: {
+      enabled: config.intervention.enabled,
+      dryRun: config.intervention.dryRun,
+      whitelistGroups: config.intervention.whitelistGroups.length,
+      buffer: config.intervention.buffer,
+      ruleOverrides: Object.keys(config.intervention.rules),
     },
   };
 }

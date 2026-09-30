@@ -214,6 +214,28 @@ media:
   # 工作区内的约定目录名（纯目录名，不能含路径分隔符）
   outboxDir: outbox
 
+# --- 话题介入（旁听 / 续聊 / 主动插话，见 docs/TOPIC-INTERVENTION-PLAN.md）-----
+# 默认关闭（fail-closed）。开启后机器人会**旁听白名单群的全部消息**（内存缓冲，
+# 不落盘），供续聊与介入判定使用。隐私与成本都敏感，默认不开。
+# 环境变量前缀：BOT_INTERVENTION_*；群白名单只在 .env 的 BOT_LISTEN_GROUPS
+# （群号属个人标识，与 BOT_ADMINS 同纪律，不写进本文件）。
+intervention:
+  # 全局总开关（BOT_INTERVENTION_ENABLED）。false = 什么都不听（规则 01）
+  enabled: false
+  # 灰度开关：判定照跑、trace 照记、永不发言（BOT_INTERVENTION_DRY_RUN）
+  dryRun: false
+  # 每群旁听缓冲（内存 ring buffer，进程重启即清空——隐私默认值）
+  buffer:
+    maxMessages: 200      # 条数上限（BOT_INTERVENTION_BUFFER_MAX_MESSAGES）
+    maxAgeHours: 72       # 年龄上限（BOT_INTERVENTION_BUFFER_MAX_AGE_HOURS）
+  # 按规则名覆盖（键必须已注册，拼错会在启动期报错并列出可用规则）：
+  # rules:
+  #   sampling-debounce:
+  #     params: { evaluateEvery: 6, silenceDebounceMs: 20000 }
+  #   at-others:
+  #     enabled: false    # 单独停用某条规则（该层恒放行）
+  rules: {}
+
 # --- 健康检查 ----------------------------------------------------------------
 # /healthz + /metrics；容器 HEALTHCHECK 探这个端口（compose 里未映射到宿主）
 health:

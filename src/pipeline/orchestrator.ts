@@ -21,8 +21,9 @@ import type {
   NormalizedMessage,
   ReplyPolicy,
 } from '../core/connector.js';
-import { isUserMessage } from '../core/connector.js';
+import { isObservedMessage, isUserMessage } from '../core/connector.js';
 import type { SessionEventNotification, SessionStatusNotification } from '../dsh/protocol.js';
+import type { InterventionSnapshot, TopicWatcher } from '../intervention/watcher.js';
 import type { Logger } from '../logger.js';
 import type { OffpeakSnapshot } from '../offpeak/index.js';
 import type { Responder } from './egress/responder.js';
@@ -61,8 +62,18 @@ export interface OrchestratorDeps {
   ) => Responder;
   /** runtime 事件路由（TurnRunner 的委托面） */
   turns: SessionEventRouter;
-  /** health 快照的状态探针：准入闸门与谷时段闸的实时状态（对象归业务层持有） */
-  status: () => { inFlight: number; queued: number; offpeak: OffpeakSnapshot };
+  /**
+   * 话题介入 watcher（可选；缺省 = 旁听消息直接丢弃）。
+   * observed 事件在 handleEvent 入口分流给它，永不进入 Ingress 管线。
+   */
+  watcher?: TopicWatcher;
+  /** health 快照的状态探针：准入闸门、谷时段闸与介入层的实时状态（对象归业务层持有） */
+  status: () => {
+    inFlight: number;
+    queued: number;
+    offpeak: OffpeakSnapshot;
+    intervention: InterventionSnapshot;
+  };
 }
 
 export class Orchestrator {
@@ -74,7 +85,16 @@ export class Orchestrator {
 
   /** 入口：处理一个归一化事件。永不抛错（所有失败都转成回复或日志）。 */
   async handleEvent(event: NormalizedEvent): Promise<void> {
+    // 旁听消息最先分流：不进 Ingress 管线（去重磁盘层、谷时段闸、记录、
+    // 并发准入对它全都不适用），同步交给 watcher，永不抛错由 watcher 收口。
+    if (isObservedMessage(event)) {
+      this.deps.watcher?.observe(event);
+      return;
+    }
     if (isUserMessage(event)) {
+      // 官方全量模式下同一 msgId 可能同时以 at/observed 两个事件到达；
+      // 通知 watcher 标记 addressed，介入评估跳过它（方案 §12 幂等）。
+      this.deps.watcher?.markAddressed(event.target.key, event.msgId);
       await this.handleMessage(event);
       return;
     }
