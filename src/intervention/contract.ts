@@ -25,6 +25,17 @@ export interface RuleMarks {
   samplingHit?: boolean;
   /** 语义 Gate 的裁决（20 号规则写入；silent 表达为 halt 不进 marks） */
   gateDecision?: 'speak' | 'wait';
+  /**
+   * 续聊窗口内合格、应晋升为正常提问（40 号规则写入）。
+   * runner 据此把消息还原成 NormalizedMessage（origin:'continuation'）回投编排层；
+   * 没有此标注的链放行 ≠ 晋升（落回 intake 链按普通旁听处理）。
+   */
+  promote?: boolean;
+  /**
+   * turn 在途，晋升转入 pending 合并队列而不是立即回投（41 号规则写入；
+   * 与 promote 同时出现，runner 决定入队还是直投）。
+   */
+  merge?: boolean;
 }
 
 /** 规则裁决：四种，且只有四种。 */

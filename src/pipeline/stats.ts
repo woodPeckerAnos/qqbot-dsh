@@ -18,6 +18,12 @@ export class PipelineStats {
   observed = 0;
   /** 旁听消息被介入规则链拦截数（TopicWatcher；按规则名的明细在 watcher 快照里） */
   observedHalted = 0;
+  /** 续聊晋升数（TopicWatcher：observed 消息还原成正常提问回投编排层，含合并冲刷） */
+  continuationsPromoted = 0;
+  /** 续聊晋升转入 pending 合并队列数（TopicWatcher：turn 在途时的落点） */
+  continuationsMerged = 0;
+  /** pending 队列淘汰/作废数（TopicWatcher：超限丢最旧、过期、窗口已关） */
+  continuationsDropped = 0;
   /** 事件去重丢弃数（dedupe stage） */
   deduplicated = 0;
   /** 并发满员拒绝数（admission stage） */

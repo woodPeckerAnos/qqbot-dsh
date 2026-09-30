@@ -1,9 +1,10 @@
 # 话题介入（旁听 / 续聊 / 主动插话）方案规划
 
-> 状态：**Phase 0 + 规则生成器已落地**（事件模型、observed 适配器、
-> 规则文件夹架构与拦截器链、watcher、intervention 配置段、首批规则
-> 01/02/04、codegen 生成器与 `npm run gen:rule` CLI，411 项离线单测全绿）。
-> Phase 1（续聊）/ Phase 2（介入判定与发言）未实施。
+> 状态：**Phase 0（旁听）+ Phase 1（续聊）+ 规则生成器已落地**（事件模型、
+> observed 适配器、规则文件夹架构与拦截器链、watcher、intervention 配置段、
+> 规则 01/02/04（intake）与 40/41（continuation）、晋升回投与在途合并冲刷、
+> codegen 生成器与 `npm run gen:rule` CLI，442 项离线单测全绿）。
+> Phase 2（介入判定与发言）未实施。
 >
 > 实施期对方案的一处偏差：**首批 3 条规则为手写**（开发环境无 LLM 密钥，
 > 无法真实驱动生成口）。它们是生成器的模板定稿件与回归基准——密钥就位后
@@ -712,10 +713,10 @@ health（`/healthz`、`/metrics`）新增 `intervention` 段：每群相位、�
       `tests/intervention-chain.test.ts` 兜底）
 - [x] **P0-5** config：`intervention` 段（含 `rules.<name>` 覆盖与未注册名
       报错）+ `BOT_LISTEN_GROUPS` + 文档；验收 §7.4
-- [ ] **P1-1** 规则文件夹 `40-promotion-window`、`41-inflight-merge`；
+- [x] **P1-1** 规则文件夹 `40-promotion-window`、`41-inflight-merge`；
       continuation 链接入 watcher；晋升消息回投 `handleEvent`
-- [ ] **P1-2** `origin` 贯通（NormalizedMessage → record → TurnRunner 分叉）
-- [ ] **P1-3** 单测（窗口过期 / @别人不晋升 / 在途合并上限 / 与 offpeak 闸
+- [x] **P1-2** `origin` 贯通（NormalizedMessage → record → TurnRunner 分叉）
+- [x] **P1-3** 单测（窗口过期 / @别人不晋升 / 在途合并上限 / 与 offpeak 闸
       交互 / 命令不晋升）
 - [ ] **P2-1** `gate-client.ts`（mock fetch 单测：JSON 解析、超时、错误
       → fail-closed 全路径）+ `transcript.ts`

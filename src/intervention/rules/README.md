@@ -49,8 +49,8 @@
 | `30-rate-limit-veto` | speak | 硬限流终检：10min ≤3 且 1h ≤8 | P2 |
 | `31-focus-budget` | speak | FOCUS 相位内主动发言 ≤2 次 | P2 |
 | `32-admission-try` | speak | 并发无名额或会话锁被占则放弃 | P2 |
-| `40-promotion-window` | continuation | @ 后 120s 内同发送者的非 @ 文本晋升为提问 | P1 |
-| `41-inflight-merge` | continuation | turn 在途时晋升消息合并（≤5 条/60s） | P1 |
+| [40-promotion-window](40-promotion-window/REQUIREMENT.md) | continuation | @ 后 120s 内同发送者的非 @ 文本晋升为提问 | P1 |
+| [41-inflight-merge](41-inflight-merge/REQUIREMENT.md) | continuation | turn 在途时晋升消息合并（≤5 条/60s） | P1 |
 
 新增规则：复制任意现有文件夹改名改编号，或走生成口
 `npm run gen:rule -- "<自然语言需求>"`（见 `../codegen/`）。

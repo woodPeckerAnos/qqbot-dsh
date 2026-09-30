@@ -11,7 +11,7 @@
 `NormalizedMessage`（`origin:'continuation'`）回投编排层，走完整既有
 Ingress 管线（与 @ 消息同权）。
 
-成员（机器维护）：（空）
+成员（机器维护）：40-promotion-window、41-inflight-merge
 
 ## ② intake 链（Phase 0 起逐期加层）
 

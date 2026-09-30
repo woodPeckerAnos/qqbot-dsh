@@ -29,6 +29,21 @@ export interface ObservedEntry {
   addressed?: boolean;
 }
 
+/** pending 合并队列里的一条（41 号规则的 runner 侧落点，方案 §8.2）。 */
+export interface PendingMergeEntry {
+  message: NormalizedObservedMessage;
+  /** 入队时刻（注入时钟；过期淘汰用） */
+  enqueuedAt: number;
+}
+
+/** pending 队列的容量纪律（参数归规则 41 的 REQUIREMENT.md 所有，runner 执行）。 */
+export interface PendingMergeLimits {
+  /** 队列上限；超限丢最旧（计数归 runner） */
+  maxEntries: number;
+  /** 入队时淘汰比这更旧的条目；flush 时过期条目直接作废 */
+  maxAgeMs: number;
+}
+
 /** 规则可见的只读视图。 */
 export interface ConversationStateView {
   /** 会话键（如 ob11:g123456） */
@@ -39,6 +54,15 @@ export interface ConversationStateView {
   hasSeen(eventId: string): boolean;
   /** 运行期群开关（/listen on|off 写入；undefined = 未设置，跟随静态配置） */
   readonly runtimeEnabled: boolean | undefined;
+  /**
+   * 该发送者的续聊窗口截止时刻（40 号规则用；undefined = 未开窗）。
+   * 窗口由 runner 在 @ turn 派发后打开、晋升后重置（方案 §8.1）。
+   */
+  continuationWindowUntil(senderId: string): number | undefined;
+  /** 本会话当前是否有 turn 在途（41 号规则用；runner 在派发/结束时维护） */
+  readonly inFlight: boolean;
+  /** pending 合并队列只读视图，旧 → 新（41 号规则用） */
+  readonly pendingMerge: readonly PendingMergeEntry[];
 }
 
 /** 缓冲配置。 */
@@ -76,6 +100,12 @@ export class ConversationWatchState implements ConversationStateView {
   readonly entries: ObservedEntry[] = [];
   readonly seen = new LruSet(500);
   runtimeEnabled: boolean | undefined = undefined;
+  /** 续聊窗口：senderId → 截止时刻（过期即失效，读取方比较 now） */
+  private readonly continuationWindows = new Map<string, number>();
+  /** 本会话是否有 turn 在途（runner 在派发/结束时维护） */
+  inFlight = false;
+  /** pending 合并队列（41 号规则的 runner 侧落点），旧 → 新 */
+  readonly pendingMerge: PendingMergeEntry[] = [];
 
   constructor(
     key: string,
@@ -87,6 +117,11 @@ export class ConversationWatchState implements ConversationStateView {
   /** 内存去重查询（ConversationStateView）。 */
   hasSeen(eventId: string): boolean {
     return this.seen.has(eventId);
+  }
+
+  /** 续聊窗口查询（ConversationStateView）。 */
+  continuationWindowUntil(senderId: string): number | undefined {
+    return this.continuationWindows.get(senderId);
   }
 
   /** runner：把一条消息追加进缓冲（同时按容量与年龄淘汰）。 */
@@ -112,5 +147,35 @@ export class ConversationWatchState implements ConversationStateView {
     for (const entry of this.entries) {
       if (entry.msgId === msgId) entry.addressed = true;
     }
+  }
+
+  /** runner：@ turn 派发后开窗 / 晋升后重置（方案 §8.1：每次晋升后重置）。 */
+  openContinuationWindow(senderId: string, until: number): void {
+    this.continuationWindows.set(senderId, until);
+  }
+
+  /**
+   * runner：入队一条待合并的晋升消息。入队即认领 eventId（防重放双晋升）；
+   * 先淘汰过期条目，再按容量丢最旧。返回被淘汰的条数（计数归 runner）。
+   */
+  enqueuePending(message: NormalizedObservedMessage, now: number, limits: PendingMergeLimits): number {
+    this.seen.claim(message.eventId);
+    const cutoff = now - limits.maxAgeMs;
+    let evicted = 0;
+    while (this.pendingMerge.length > 0 && this.pendingMerge[0]!.enqueuedAt < cutoff) {
+      this.pendingMerge.shift();
+      evicted += 1;
+    }
+    while (this.pendingMerge.length >= limits.maxEntries) {
+      this.pendingMerge.shift();
+      evicted += 1;
+    }
+    this.pendingMerge.push({ message, enqueuedAt: now });
+    return evicted;
+  }
+
+  /** runner：取空 pending 队列（turn 结束后的冲刷；返回旧 → 新）。 */
+  drainPending(): PendingMergeEntry[] {
+    return this.pendingMerge.splice(0, this.pendingMerge.length);
   }
 }

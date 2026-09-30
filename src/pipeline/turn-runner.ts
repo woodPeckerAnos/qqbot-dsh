@@ -110,10 +110,13 @@ export class TurnRunner {
 
       // 先注册在途 turn（上一行）再派发，避免事件早于注册到达而被丢弃
       await this.dispatchPrompt(entry, session.currentSessionId, prepared);
+      // origin 贯通（P1-2）：continuation 与 user 完全同权（这是设计决定，
+      // 见方案 §8.1）；origin:'intervention' 的三分叉在 Phase 2（§9.4）落地。
       logger.debug('已派发 prompt', {
         sessionId: session.currentSessionId,
         generation: session.generation,
         images: prepared.inlinedImages,
+        origin: message.origin ?? 'user',
       });
 
       responder.startProgress(() =>

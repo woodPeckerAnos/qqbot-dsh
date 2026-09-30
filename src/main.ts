@@ -240,8 +240,9 @@ async function main(): Promise<void> {
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
 
   // 话题介入 watcher：旁听非 @ 群消息（observed 事件由 Orchestrator 分流给它，
-  // 永不进 Ingress 管线）。Phase 0 只听不说：intake 链（01 开关/02 白名单/04 去重）
-  // 放行的消息进每群内存缓冲，供后续 Phase 的续聊与介入判定使用。
+  // 永不进 Ingress 管线）。intake 链（01 开关/02 白名单/04 去重）放行的消息进
+  // 每群内存缓冲；continuation 链（40 窗口/41 在途合并）命中的消息晋升为
+  // 正常提问回投编排层（Phase 1，走完整 Ingress 管线，与 @ 同权）。
   const watcher = new TopicWatcher({
     config: config.intervention,
     rules: RULE_REGISTRY,
@@ -263,7 +264,17 @@ async function main(): Promise<void> {
     admins: config.admins,
     stats,
     stages,
-    terminal: (ctx) => turnRunner.runTurn(ctx),
+    // terminal 包装：向 watcher 通报 turn 生命周期（续聊窗口的开窗时机 =
+    // 「@ 消息触发的 turn 派发后」，方案 §8.1；在途标记与结束冲刷见 §8.2）。
+    // 位置在准入 stage 之内，只有真正拿到名额与串行锁的 turn 才会开窗。
+    terminal: async (ctx) => {
+      watcher.notifyTurnStarted(ctx.message);
+      try {
+        await turnRunner.runTurn(ctx);
+      } finally {
+        watcher.notifyTurnEnded(ctx.message.target.key);
+      }
+    },
     createResponder: (message, connector, policy, messageLogger) =>
       new Responder({
         message,
@@ -294,6 +305,10 @@ async function main(): Promise<void> {
       intervention: watcher.snapshot(),
     }),
   });
+
+  // 续聊晋升回投口：watcher 与 Orchestrator 互相持有，只能有一侧后注入
+  // （方案 §8.1：晋升消息走完整 Ingress 管线，与 @ 消息同权）。
+  watcher.setPromoter((message) => orchestrator.handleEvent(message));
 
   // runtime 事件 → 编排器（按会话路由）。
   // 传**完整 notification**（含 sessionId）：一个 runtime 进程里除了父会话还有
