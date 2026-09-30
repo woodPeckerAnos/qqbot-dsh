@@ -27,6 +27,7 @@ import { rule as focusBudget } from './31-focus-budget/rule.js';
 import { rule as admissionTry } from './32-admission-try/rule.js';
 import { rule as promotionWindow } from './40-promotion-window/rule.js';
 import { rule as inflightMerge } from './41-inflight-merge/rule.js';
+import { rule as nightSilenceVeto } from './33-night-silence-veto/rule.js';
 
 export const RULE_REGISTRY: RuleRegistry = {
   continuation: [promotionWindow, inflightMerge],
@@ -46,7 +47,7 @@ export const RULE_REGISTRY: RuleRegistry = {
     samplingDebounce,
   ],
   evaluate: [semanticGate],
-  speak: [rateLimitVeto, focusBudget, admissionTry],
+  speak: [rateLimitVeto, focusBudget, admissionTry, nightSilenceVeto],
 };
 
 /** 全部已注册规则名（配置校验用：qqbot.yml 里出现未注册名 → 启动报错）。 */

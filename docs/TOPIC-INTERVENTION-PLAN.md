@@ -745,7 +745,10 @@ health（`/healthz`、`/metrics`）新增 `intervention` 段：每群相位、�
 - [x] **P3-1** `intervention/codegen/`：需求结构化 prompt、静态纪律检查器、
       校验管道编排（a–d 四步全部可离线单测，LLM 调用注入 fake）
 - [x] **P3-2** `scripts/gen-rule.ts` CLI（含 `--from-requirement` 模式，
-      `npm run gen:rule`；vite-node 运行）——**回归验证待 LLM 密钥**：
-      从既有 REQUIREMENT.md 重生成，diff 应语义等价
-- [ ] **P3-3** 用生成口实产一条新规则（候选：§14-4 冷群补偿），全程走
+      `npm run gen:rule`；vite-node 运行）——**回归已验证**（真实 LLM）：
+      从 01-master-switch 的 REQUIREMENT.md 重生成，一轮过校验闸，
+      diff 语义等价（判定逐条同构，注释与断言更丰富），已还原定稿件
+- [x] **P3-3** 生成口实产：`33-night-silence-veto`（speak 链深夜静默否决），
+      自然语言 → 结构化草稿 → 人工确认 → 生成 → 校验两轮修复后通过 →
+      注册 diff，全程真实 LLM 走通。候选「§14-4 冷群补偿」仍待做
       两道闸，验证管道成熟度

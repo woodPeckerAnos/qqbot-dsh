@@ -49,6 +49,7 @@
 | [30-rate-limit-veto](30-rate-limit-veto/REQUIREMENT.md) | speak | 硬限流终检：10min ≤3 且 1h ≤8 | P2 |
 | [31-focus-budget](31-focus-budget/REQUIREMENT.md) | speak | FOCUS 相位内主动发言 ≤2 次 | P2 |
 | [32-admission-try](32-admission-try/REQUIREMENT.md) | speak | 并发无名额或会话锁被占则放弃 | P2 |
+| `33-night-silence-veto` | speak | 在 speak 链中增加一条夜间静默否决规则 | P2 |
 | [40-promotion-window](40-promotion-window/REQUIREMENT.md) | continuation | @ 后 120s 内同发送者的非 @ 文本晋升为提问 | P1 |
 | [41-inflight-merge](41-inflight-merge/REQUIREMENT.md) | continuation | turn 在途时晋升消息合并（≤5 条/60s） | P1 |
 

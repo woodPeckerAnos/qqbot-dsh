@@ -55,11 +55,23 @@ async function main(): Promise<void> {
     ...RULE_REGISTRY.speak,
   ];
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
   const confirm = async (draft: string): Promise<boolean> => {
     process.stdout.write(`\n────────── REQUIREMENT.md 草稿 ──────────\n${draft}\n────────────────────────────────────────\n`);
-    const answer = await rl.question('确认这份需求草稿？[y/N] ');
-    return answer.trim().toLowerCase() === 'y';
+    // 管道输入（echo y | …）：stdin 可能在提问前已到 EOF 触发 close，
+    // readline.question 会抛 ERR_USE_AFTER_CLOSE——直接读全量 stdin。
+    if (!process.stdin.isTTY) {
+      let data = '';
+      for await (const chunk of process.stdin) data += String(chunk);
+      process.stdout.write(`确认这份需求草稿？[y/N] ${data.trim()}\n`);
+      return data.trim().toLowerCase() === 'y';
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const answer = await rl.question('确认这份需求草稿？[y/N] ');
+      return answer.trim().toLowerCase() === 'y';
+    } finally {
+      rl.close();
+    }
   };
 
   try {
@@ -85,7 +97,7 @@ async function main(): Promise<void> {
       process.stdout.write(`注册 diff 已写入：${result.touchedFiles.join('、')}\n请 git diff 审查后提交。\n`);
     }
   } finally {
-    rl.close();
+    // 交互式 readline 已在 confirm 内部按需创建与关闭，这里无需收尾
   }
 }
 

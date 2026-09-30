@@ -38,4 +38,4 @@ silent → halt；wait → defer(30s)（最多重查一次）；speak → 放行
 全过才由 runner 合成介入 turn 投喂 TurnRunner。介入绝不排队：
 任何一层否决都直接放弃并计数。
 
-成员（机器维护）：30-rate-limit-veto、31-focus-budget、32-admission-try
+成员（机器维护）：30-rate-limit-veto、31-focus-budget、32-admission-try、33-night-silence-veto
