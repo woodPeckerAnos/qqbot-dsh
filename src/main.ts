@@ -32,6 +32,7 @@ import type { BotConnector } from './core/connector.js';
 import { createLogger } from './logger.js';
 import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
 import { RuntimePool } from './dsh/pool.js';
+import { BackgroundPusher } from './pipeline/egress/background.js';
 import { Responder } from './pipeline/egress/responder.js';
 import { AdmissionGate } from './pipeline/ingress/admission.js';
 import { createDedupeStage } from './pipeline/ingress/dedupe.js';
@@ -50,6 +51,14 @@ import { buildHealthSnapshot, createHealthServer, type HealthServer } from './he
 
 /** 处理中的 turn 结束前最多等多久（毫秒） */
 const DRAIN_TIMEOUT_MS = 30_000;
+
+/**
+ * 官方平台被动回复窗口（平台硬约束，不可配）：群聊 5 分钟、单聊 60 分钟。
+ * 后台任务完成时若仍在窗口内即可用最后一条消息的 msg_id 即时补发（见
+ * pipeline/egress/background.ts）。OneBot 无窗口，用 +∞。
+ */
+const QQ_GROUP_PASSIVE_WINDOW_MS = 5 * 60 * 1000;
+const QQ_C2C_PASSIVE_WINDOW_MS = 60 * 60 * 1000;
 
 /** 按配置建一个连接器（不启动）。 */
 function buildConnector(
@@ -72,6 +81,7 @@ function buildConnector(
         progressAfterMs: config.qq.progressAfterMs,
         progressIntervalMs: config.qq.progressIntervalMs,
         turnTimeoutMs: config.qq.turnTimeoutMs,
+        passiveWindowMs: QQ_GROUP_PASSIVE_WINDOW_MS,
       },
       c2cPolicy: {
         maxChars: config.qq.maxChars,
@@ -80,6 +90,7 @@ function buildConnector(
         progressAfterMs: config.qq.progressAfterMs,
         progressIntervalMs: config.qq.progressIntervalMs,
         turnTimeoutMs: config.qq.turnTimeoutMs,
+        passiveWindowMs: QQ_C2C_PASSIVE_WINDOW_MS,
       },
       logger: logger.child({ component: `connector:${name}` }),
     });
@@ -100,6 +111,7 @@ function buildConnector(
       progressAfterMs: config.onebot.progressAfterMs,
       progressIntervalMs: config.onebot.progressIntervalMs,
       turnTimeoutMs: config.onebot.turnTimeoutMs,
+      passiveWindowMs: Number.POSITIVE_INFINITY,
     },
     logger: logger.child({ component: `connector:${name}` }),
   });
@@ -201,6 +213,17 @@ async function main(): Promise<void> {
     stats,
   });
 
+  // 后台结果投递器：后台子代理完成后，能即时推送就推送（OneBot 恒可、官方在
+  // 被动窗口内且配额未尽），否则暂存待下一条消息带出；暂存持久化到 stateDir，
+  // 桥接进程重启后仍能带出（见 pipeline/egress/background.ts、DESIGN §13.5）。
+  const background = new BackgroundPusher({
+    connectors,
+    conversations,
+    stats,
+    logger: logger.child({ component: 'background' }),
+    persistPath: join(paths.stateDir, 'background-pending.json'),
+  });
+
   const turnRunner = new TurnRunner({
     config,
     logger: logger.child({ component: 'turn-runner' }),
@@ -209,6 +232,7 @@ async function main(): Promise<void> {
     sessions,
     paths,
     stats,
+    background,
   });
 
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
@@ -306,7 +330,12 @@ async function main(): Promise<void> {
         connectors: Object.fromEntries(
           [...connectors.entries()].map(([name, connector]) => [name, connector.health()]),
         ),
-        runtime: { size: pool.size, activeConversationKeys: pool.activeConversationKeys() },
+        runtime: {
+          size: pool.size,
+          activeConversationKeys: pool.activeConversationKeys(),
+          activeSubagents: pool.activeSubagents(),
+        },
+        background: background.snapshot(),
         dispatcher: orchestrator.snapshotStats(),
       }),
   });

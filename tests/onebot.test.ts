@@ -325,6 +325,7 @@ function makeConnector(port: number, overrides: Partial<OnebotConnectorOptions> 
       progressAfterMs: 90_000,
       progressIntervalMs: 90_000,
       turnTimeoutMs: 600_000,
+      passiveWindowMs: Number.POSITIVE_INFINITY,
     },
     logger: createNullLogger(),
     ...overrides,

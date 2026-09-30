@@ -24,6 +24,7 @@ const POLICY: ReplyPolicy = {
   progressAfterMs: 90_000,
   progressIntervalMs: 90_000,
   turnTimeoutMs: 240_000,
+  passiveWindowMs: 300_000,
 };
 
 interface RecordedRequest {

@@ -34,6 +34,7 @@ import { ensureWorkspace, type StorePaths } from '../store/paths.js';
 import { waitUntil } from './concurrency.js';
 import type { MessageContext } from './ingress/types.js';
 import { defaultProgressText } from './egress/progress.js';
+import type { BackgroundPusher } from './egress/background.js';
 import type { PipelineStats } from './stats.js';
 
 export interface TurnRunnerDeps {
@@ -44,18 +45,10 @@ export interface TurnRunnerDeps {
   sessions: SessionStore;
   paths: StorePaths;
   stats: PipelineStats;
+  /** 后台结果投递器：主动推送（OneBot/官方窗口内）或暂存待下次带出，并持久化 */
+  background: BackgroundPusher;
   now?: () => number;
 }
-
-/**
- * 单个会话最多暂存几条"后台任务结果"等待带出。
- *
- * 后台子代理完成后，父代理会被 DSH 唤醒跑一个"自发轮次"总结结果（见
- * routeSessionStatus 的 spontaneous 分支）。QQ 被动回复窗口只有 5 分钟，
- * 那条总结当时多半发不出去，所以暂存下来，等该会话**下一条用户消息**的回复
- * 一并带出。设上限是防止长时间没有下一条消息时无限累积；超出丢最旧的。
- */
-const MAX_PENDING_BACKGROUND = 3;
 
 /** 已组装好、待派发的 prompt（含图片记账，供准入失败时回退与统计）。 */
 interface PreparedPrompt {
@@ -79,12 +72,6 @@ export class TurnRunner {
    * 后台结果的总结就会被当成"无归属事件"丢弃，用户永远看不到后台任务结果。
    */
   private readonly spontaneousTurns = new Map<string, TurnAccumulator>();
-
-  /**
-   * 每会话待带出的后台任务结果（自发轮次捕获，下一条用户消息的回复里前置）。
-   * 内存态：桥接进程重启即丢——后台结果本就是尽力而为的提醒，可接受。
-   */
-  private readonly pendingBackground = new Map<string, string[]>();
 
   constructor(private readonly deps: TurnRunnerDeps) {}
 
@@ -154,6 +141,16 @@ export class TurnRunner {
       // 后台任务结果搭车：把之前捕获、当时发不出去的自发轮次总结前置到本轮回复。
       const delivered = this.attachPendingBackground(conversationKey, outcome);
       await responder.deliver(delivered);
+
+      // 记录本条用户消息的"被动回复锚点"：后台子代理稍后完成时，若仍在被动窗口
+      // 内且配额未尽，就能用这个 msg_id 接着 seq 主动补发结果（见 background.ts）。
+      // msgTs 用消息到达时间（平台时间戳），窗口判定 = now - msgTs < passiveWindowMs。
+      this.deps.background.noteAnchor({
+        target: message.target,
+        msgId: message.msgId,
+        msgTs: message.ts,
+        usedSeq: responder.repliesSent,
+      });
     } finally {
       responder.stopProgress();
       this.activeTurns.delete(conversationKey);
@@ -242,23 +239,22 @@ export class TurnRunner {
     this.captureBackgroundResult(conversationKey, accumulator);
   }
 
-  /** 把自发轮次的最终文本暂存起来，等下一条用户消息带出（受被动回复窗口所限）。 */
+  /**
+   * 把自发轮次的最终文本交给 BackgroundPusher：能即时推送就推送（OneBot / 官方
+   * 窗口内），否则暂存待下一条用户消息带出。空文本不处理。
+   */
   private captureBackgroundResult(conversationKey: string, accumulator: TurnAccumulator): void {
     const text = accumulator.finalText.trim();
     if (text === '') {
-      this.deps.logger.debug('自发轮次没有产出可见文本，不暂存', { conversation: conversationKey });
+      this.deps.logger.debug('自发轮次没有产出可见文本，不投递', { conversation: conversationKey });
       return;
     }
-    const queue = this.pendingBackground.get(conversationKey) ?? [];
-    queue.push(text);
-    while (queue.length > MAX_PENDING_BACKGROUND) queue.shift();
-    this.pendingBackground.set(conversationKey, queue);
     this.deps.stats.backgroundCaptured += 1;
-    this.deps.logger.info('捕获后台任务结果，待下一条回复带出', {
+    this.deps.logger.info('捕获后台任务结果，交由投递器处理', {
       conversation: conversationKey,
       length: text.length,
-      queued: queue.length,
     });
+    this.deps.background.capture(conversationKey, text);
   }
 
   /**
@@ -268,9 +264,8 @@ export class TurnRunner {
    * 保留 outcome.kind，让 Responder 照常按结果类型渲染（超时/错误的话术不受影响）。
    */
   private attachPendingBackground(conversationKey: string, outcome: TurnOutcome): TurnOutcome {
-    const queue = this.pendingBackground.get(conversationKey);
-    if (queue === undefined || queue.length === 0) return outcome;
-    this.pendingBackground.delete(conversationKey);
+    const queue = this.deps.background.takePending(conversationKey);
+    if (queue.length === 0) return outcome;
     this.deps.stats.backgroundDelivered += queue.length;
     const prefix = queue.map((text) => `【后台任务完成】${text}`).join('\n\n');
     const body = outcome.text.trim();

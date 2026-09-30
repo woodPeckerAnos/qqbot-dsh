@@ -99,6 +99,13 @@ export class RuntimePool extends EventEmitter {
     return [...this.entries.keys()];
   }
 
+  /** 全部 runtime 内仍在跑的后台子代理总数（health 展示，见 DESIGN §13.4）。 */
+  activeSubagents(): number {
+    let total = 0;
+    for (const entry of this.entries.values()) total += entry.activeChildren.size;
+    return total;
+  }
+
   /** 取该会话的条目，不存在则创建运行时并完成 initialize。 */
   async acquire(conversationKey: string, workspacePath: string): Promise<RuntimeEntry> {
     if (this.disposed) throw new Error('runtime 池已关闭');

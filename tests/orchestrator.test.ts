@@ -21,6 +21,7 @@ import { createNullLogger } from '../src/logger.js';
 import type { RuntimeEntry, RuntimePool } from '../src/dsh/pool.js';
 import type { SessionEventNotification, PromptContentBlock } from '../src/dsh/protocol.js';
 import { CN_HOLIDAYS_2026, OffpeakGate } from '../src/offpeak/index.js';
+import { BackgroundPusher } from '../src/pipeline/egress/background.js';
 import { Responder } from '../src/pipeline/egress/responder.js';
 import { AdmissionGate } from '../src/pipeline/ingress/admission.js';
 import { createDedupeStage } from '../src/pipeline/ingress/dedupe.js';
@@ -173,6 +174,7 @@ function createFakeConnector(config: Config, sent: SentMessage[]): BotConnector 
     progressAfterMs: config.qq.progressAfterMs,
     progressIntervalMs: config.qq.progressIntervalMs,
     turnTimeoutMs: config.qq.turnTimeoutMs,
+    passiveWindowMs: 300_000,
   };
   const c2cPolicy: ReplyPolicy = {
     maxChars: config.qq.maxChars,
@@ -181,6 +183,7 @@ function createFakeConnector(config: Config, sent: SentMessage[]): BotConnector 
     progressAfterMs: config.qq.progressAfterMs,
     progressIntervalMs: config.qq.progressIntervalMs,
     turnTimeoutMs: config.qq.turnTimeoutMs,
+    passiveWindowMs: 3_600_000,
   };
   return {
     platform: 'qq-official',
@@ -255,6 +258,15 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
     maxConcurrentTurns: config.pool.maxConcurrentTurns,
     stats,
   });
+  // 后台投递器：默认 now（真实时间）下官方被动窗口早已过期 → 走"暂存待下次带出"，
+  // 与既有自发轮次用例一致。主动推送路径在 tests/background.test.ts 单独覆盖。
+  const background = new BackgroundPusher({
+    connectors,
+    conversations,
+    stats,
+    logger,
+    ...(options.now !== undefined ? { now: options.now } : {}),
+  });
   const turnRunner = new TurnRunner({
     config,
     logger,
@@ -263,6 +275,7 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
     sessions,
     paths,
     stats,
+    background,
     now: options.now,
   });
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats, now: options.now });
@@ -320,6 +333,7 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
     sent,
     conversations,
     sessions,
+    background,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
@@ -1292,5 +1306,42 @@ describe('后台子代理桥接', () => {
 
     expect(ctx.sent.at(-1)!.body.content).toBe('对你问题的正式回答');
     expect(ctx.orchestrator.snapshotStats().backgroundCaptured).toBe(0);
+  });
+
+  it('官方窗口内的自发轮次：主动推送，不等下一条消息', async () => {
+    const T0 = 1_700_000_000_000;
+    // 注入 now = 消息到达后 1 分钟，仍在群聊 5 分钟被动窗口内
+    ctx = setup({ now: () => T0 + 60_000 });
+
+    // 第一轮：建立会话与锚点（makeMessage 默认 ts = T0，msgId = MSG-1）
+    const first = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['已派发后台任务']);
+    await first;
+    expect(ctx.sent).toHaveLength(1);
+    expect(ctx.sent[0]!.body.msg_seq).toBe(1);
+
+    // 子代理完成 → 自发轮次 → 窗口内即时推送（复用 MSG-1，seq 续到 2）
+    ctx.runtime.emitStatus(sessionId, 'running');
+    ctx.runtime.emitEvent(sessionId, {
+      type: 'assistant/message',
+      seq: 10,
+      data: { message: { content: [{ type: 'text', text: '压缩完成' }] } },
+    });
+    ctx.runtime.emitEvent(sessionId, { type: 'turn/end', seq: 11, data: { turn: 2, reason: { kind: 'completed' } } });
+    ctx.runtime.emitStatus(sessionId, 'idle');
+
+    // 主动推送是 fire-and-forget 异步，等它落定
+    await waitFor(() => ctx.sent.length === 2);
+    expect(ctx.sent[1]!.body.content).toBe('压缩完成');
+    expect(ctx.sent[1]!.body.msg_id).toBe('MSG-1');
+    expect(ctx.sent[1]!.body.msg_seq).toBe(2);
+
+    const stats = ctx.orchestrator.snapshotStats();
+    expect(stats.backgroundCaptured).toBe(1);
+    expect(stats.backgroundPushed).toBe(1);
+    // 推送成功就不再暂存
+    expect(ctx.background.takePending('GROUP-1')).toEqual([]);
   });
 });
