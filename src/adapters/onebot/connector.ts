@@ -26,11 +26,14 @@ import type {
   BotConnector,
   ConnectorHealth,
   ConversationKind,
+  MediaBytes,
+  MediaFetchOptions,
   MessageQuotePart,
   NormalizedEvent,
   NormalizedMessage,
   OutgoingAttachment,
   OutgoingMessage,
+  RemoteMedia,
   ReplyContext,
   ReplyPolicy,
 } from '../../core/connector.js';
@@ -585,6 +588,111 @@ export class OnebotConnector implements BotConnector {
 
   private now(): number {
     return this.options.now?.() ?? Date.now();
+  }
+
+  // -------------------------------------------------------------------------
+  // 媒体取字节（BotConnector.fetchMedia）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 取消息附件（当前主要是图片）的字节。
+   *
+   * 为什么需要平台侧实现而不是普通 GET：NapCat 的图片 URL 约 2 小时过期
+   * （`url expired`），且有头形态的图片段经常只带文件标识（file 字段是本地
+   * 路径或内部 id）不带 URL。所以顺序是：
+   *   1. 有 http(s) URL 先普通 GET（无需鉴权）；
+   *   2. 失败或无 URL 时用文件标识回查：`get_file`（NapCat 扩展，可直接返回
+   *      base64 或刷新后的 url），失败再试 `get_image`（OneBot 标准）；
+   *   3. 回查只给到**宿主本地路径**时放弃——容器够不到宿主的文件系统。
+   *
+   * 任何一步失败都返回 undefined（由编排层降级成文字说明），绝不抛错打断整轮。
+   */
+  async fetchMedia(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined> {
+    if (media.url !== undefined) {
+      const direct = await this.httpGet(media.url, options);
+      if (direct !== undefined) return direct;
+    }
+    if (media.fileId === undefined) return undefined;
+
+    // get_file：NapCat 扩展动作（file_id 或 file 二选一），可能直接给 base64。
+    const viaGetFile = await this.fetchViaFileAction('get_file', media.fileId, options);
+    if (viaGetFile !== undefined) return viaGetFile;
+    // get_image：OneBot 标准动作，NapCat 返回刷新后的 url 或本地路径。
+    return this.fetchViaFileAction('get_image', media.fileId, options);
+  }
+
+  /** 经 get_file / get_image 回查取字节；动作不支持或返回不可用时返回 undefined。 */
+  private async fetchViaFileAction(
+    action: 'get_file' | 'get_image',
+    fileId: string,
+    options: MediaFetchOptions,
+  ): Promise<MediaBytes | undefined> {
+    let session: Session;
+    try {
+      session = this.pickAnySession();
+    } catch {
+      return undefined;
+    }
+    let data: Record<string, unknown>;
+    try {
+      const result = await this.callAction(session, action, { file: fileId });
+      if (typeof result !== 'object' || result === null) return undefined;
+      data = result as Record<string, unknown>;
+    } catch (error) {
+      this.options.logger.debug(`${action} 回查失败`, {
+        fileId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+
+    // base64 直出：先按编码长度预判体积（base64 膨胀 4/3），超限直接不解码
+    const base64 = typeof data['base64'] === 'string' ? data['base64'] : undefined;
+    if (base64 !== undefined && base64 !== '') {
+      if (Math.ceil(base64.length * 0.75) > options.maxBytes) return undefined;
+      return { data: Buffer.from(base64, 'base64') };
+    }
+    // 刷新后的 URL（NapCat 文档建议的过期 URL 刷新路径）
+    const url = typeof data['url'] === 'string' ? data['url'] : undefined;
+    if (url !== undefined && /^https?:\/\//i.test(url)) {
+      return this.httpGet(url, options);
+    }
+    // 只剩宿主本地路径（data.file）：容器内读不到，放弃
+    return undefined;
+  }
+
+  /** 普通 GET：带超时与体积上限（content-length 预判 + 实际校验双保险）。 */
+  private async httpGet(url: string, options: MediaFetchOptions): Promise<MediaBytes | undefined> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    timer.unref?.();
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) return undefined;
+      const declaredLength = Number(response.headers.get('content-length') ?? '');
+      if (Number.isFinite(declaredLength) && declaredLength > options.maxBytes) return undefined;
+      const buffer = new Uint8Array(await response.arrayBuffer());
+      if (buffer.byteLength > options.maxBytes) return undefined;
+      const contentType = response.headers.get('content-type');
+      return {
+        data: buffer,
+        ...(contentType !== null ? { mimeType: contentType.split(';')[0]?.trim() } : {}),
+      };
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** 取媒体用的连接：优先已学到 self_id 的，否则任意连接（没有则抛错）。 */
+  private pickAnySession(): Session {
+    for (const session of this.sessions) {
+      if (session.selfId !== undefined) return session;
+    }
+    const any = [...this.sessions][0];
+    if (any === undefined) throw new OnebotActionError('没有已连入的 OneBot 客户端');
+    return any;
   }
 }
 

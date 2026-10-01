@@ -67,7 +67,17 @@ export interface MessageTextPart {
 /** 图片：url 指向平台侧可下载地址，真正取字节由 BotConnector.fetchMedia 完成 */
 export interface MessageImagePart {
   type: 'image';
-  url: string;
+  /**
+   * 平台侧可下载地址（http/https）。可能缺失：NapCat 有头形态的图片段经常只给
+   * 文件标识（`file` 字段是本地路径或内部 id），此时只能靠 fetchMedia 经
+   * 平台动作（get_file/get_image）取字节。
+   */
+  url?: string;
+  /**
+   * 平台侧文件标识（OneBot image 段的 `file` 原值）。url 缺失或过期时，
+   * 适配器用它回查文件（NapCat 图片 URL 约 2 小时过期，需要刷新）。
+   */
+  fileId?: string;
   /** 平台声明的 MIME（可能不准，实际以响应头与字节嗅探为准） */
   mimeType?: string;
   filename?: string;
@@ -121,7 +131,10 @@ export type MessagePart =
 
 /** 需要平台侧取字节的远端媒体（fetchMedia 的入参） */
 export interface RemoteMedia {
-  url: string;
+  /** http/https 下载地址；可能缺失（见 MessageImagePart.url） */
+  url?: string;
+  /** 平台侧文件标识；url 缺失或过期时适配器用它回查 */
+  fileId?: string;
   mimeType?: string;
   filename?: string;
 }

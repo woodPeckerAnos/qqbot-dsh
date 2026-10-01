@@ -200,6 +200,8 @@ export class QqOfficialConnector implements BotConnector {
    * 也不会因为多带一个头而被拒。网络错误不重试，避免把一次超时变成两次。
    */
   async fetchMedia(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined> {
+    // 官方适配器只产出带 url 的媒体（content.ts 保证），没有 url 说明数据异常
+    if (media.url === undefined) return undefined;
     const fetchImpl = this.options.fetchImpl ?? fetch;
     const first = await this.tryFetchMedia(fetchImpl, media.url, options, true);
     if (first.bytes !== undefined) return first.bytes;

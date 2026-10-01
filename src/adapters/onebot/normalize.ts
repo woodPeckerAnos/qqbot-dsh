@@ -154,14 +154,31 @@ export function extractMessageContent(
       case 'image':
       case 'mface': {
         const url = imageUrlOf(segment);
-        if (url === undefined) {
-          // 本地路径 / base64 形式的图片在容器里取不到，只留标记
+        // 文件标识（OneBot image 段的 file 原值）：可能是本地路径 / 内部 id /
+        // base64://。base64 形式的图片字节已经在上报里，但可能极大（ws 帧），
+        // 且 MIME 未知，不值得内联；其余形态留给 fetchMedia 回查。
+        const rawFile = asString(segment.data['file']);
+        const fileId =
+          rawFile !== undefined && !rawFile.startsWith('base64://') && httpUrl(rawFile) === undefined
+            ? rawFile
+            : undefined;
+        if (url === undefined && fileId === undefined) {
+          // 既没有可下载地址也没有可回查标识（如 base64 内联），只留标记
           parts.push({ type: 'text', text: '[图片]' });
           break;
         }
-        const image: MessageImagePart = { type: 'image', url };
+        const image: MessageImagePart = { type: 'image' };
+        if (url !== undefined) image.url = url;
+        if (fileId !== undefined) image.fileId = fileId;
+        // 文件名只用于渲染 [图片: xxx]：base64 内联与 file:// 本地路径都不是名字
         const filename = asString(segment.data['file']);
-        if (filename !== undefined && !filename.startsWith('base64://')) image.filename = filename;
+        if (
+          filename !== undefined &&
+          !filename.startsWith('base64://') &&
+          !filename.startsWith('file://')
+        ) {
+          image.filename = filename;
+        }
         parts.push(image);
         break;
       }

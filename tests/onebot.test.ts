@@ -126,7 +126,8 @@ describe('OneBot 归一化', () => {
     if (event.kind !== 'group-at-message') return;
     expect(event.parts).toEqual([
       { type: 'text', text: '看看这张' },
-      { type: 'image', url: 'https://cdn.example.com/a.jpg', filename: 'a.jpg' },
+      // fileId = image 段的 file 原值：url 过期（NapCat 约 2 小时）时靠它回查
+      { type: 'image', url: 'https://cdn.example.com/a.jpg', fileId: 'a.jpg', filename: 'a.jpg' },
     ]);
     expect(event.content).toBe('看看这张\n[图片: a.jpg]');
   });
@@ -151,7 +152,7 @@ describe('OneBot 归一化', () => {
     expect(result.event.content).toBe('[图片]');
   });
 
-  it('图片只有本地路径（容器里取不到）时降级成文字标记', () => {
+  it('图片只有本地路径/文件标识时保留 fileId（由 fetchMedia 经 get_file/get_image 回查）', () => {
     const result = normalizeOneBotEvent({
       post_type: 'message',
       message_type: 'group',
@@ -166,7 +167,31 @@ describe('OneBot 归一化', () => {
       ],
     });
     if (result.type !== 'event') throw new Error('应归一化为事件');
+    // 文本形态仍是占位标记（本地路径不是名字，不该渲染出来）
     expect(result.event.content).toBe('[图片]');
+    // 但片段保留了文件标识，turn 期可以经 OneBot 动作取字节
+    const image = result.event.parts?.find((p) => p.type === 'image');
+    expect(image).toMatchObject({ type: 'image', fileId: 'file:///home/qq/a.jpg' });
+    expect(image).not.toHaveProperty('url');
+  });
+
+  it('base64 内联图片没有可回查标识，只留占位标记', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 46,
+      group_id: 8888,
+      user_id: 12345,
+      message: [
+        { type: 'at', data: { qq: '10000' } },
+        { type: 'image', data: { file: 'base64://aGVsbG8=' } },
+      ],
+    });
+    if (result.type !== 'event') throw new Error('应归一化为事件');
+    expect(result.event.content).toBe('[图片]');
+    expect(result.event.parts?.some((p) => p.type === 'image')).toBe(false);
   });
 
   it('reply 段透出被引用消息 id，由连接器回查补全', () => {
@@ -684,5 +709,112 @@ describe('OneBot 反向 WS 回路', () => {
     );
     const params = actions[0]!['params'] as { message: Array<{ data: { file: string } }> };
     expect(params.message[0]!.data.file).toBe(absPath);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchMedia：URL 直连 + 动作回查（get_file / get_image）回退
+// ---------------------------------------------------------------------------
+
+describe('OneBot fetchMedia', () => {
+  let connector: OnebotConnector | undefined;
+  const clients: WebSocket[] = [];
+  afterEach(async () => {
+    for (const ws of clients.splice(0)) ws.close();
+    await connector?.stop();
+    connector = undefined;
+  });
+
+  /** 起一个连好客户端的连接器，返回客户端与端口。 */
+  async function started(): Promise<{ ws: WebSocket }> {
+    const made = makeConnector(0);
+    connector = made.connector;
+    await connector.start();
+    const address = (connector as unknown as { server: { address(): { port: number } } }).server.address();
+    const ws = await connectClient(address.port);
+    clients.push(ws);
+    return { ws };
+  }
+
+  /** 等框架侧收到一个 action 帧。 */
+  function nextAction(ws: WebSocket): Promise<Record<string, unknown>> {
+    return new Promise((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+  }
+
+  it('无 URL、只有文件标识时：经 get_file 动作取回 base64 字节', async () => {
+    const { ws } = await started();
+    const fetchPromise = connector!.fetchMedia({ fileId: 'IMG-ABC' }, { maxBytes: 1024, timeoutMs: 5000 });
+
+    const action = await nextAction(ws);
+    expect(action['action']).toBe('get_file');
+    expect((action['params'] as { file: string }).file).toBe('IMG-ABC');
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        data: { base64: Buffer.from('png-bytes').toString('base64'), file_name: 'a.png' },
+        echo: action['echo'],
+      }),
+    );
+
+    const bytes = await fetchPromise;
+    expect(bytes).toBeDefined();
+    expect(Buffer.from(bytes!.data).toString()).toBe('png-bytes');
+  });
+
+  it('URL 直连失败（过期/不可达）时回退到 get_file 回查', async () => {
+    const { ws } = await started();
+    // 127.0.0.1:1 必然连接被拒（离线安全）
+    const fetchPromise = connector!.fetchMedia(
+      { url: 'http://127.0.0.1:1/expired.jpg', fileId: 'RPT-1' },
+      { maxBytes: 1024, timeoutMs: 2000 },
+    );
+
+    const action = await nextAction(ws);
+    expect(action['action']).toBe('get_file');
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        data: { base64: Buffer.from('refreshed').toString('base64') },
+        echo: action['echo'],
+      }),
+    );
+    const bytes = await fetchPromise;
+    expect(Buffer.from(bytes!.data).toString()).toBe('refreshed');
+  });
+
+  it('get_file 不支持/失败时再试 get_image；都失败返回 undefined 而不是抛错', async () => {
+    const { ws } = await started();
+    const fetchPromise = connector!.fetchMedia({ fileId: 'X' }, { maxBytes: 1024, timeoutMs: 2000 });
+
+    const first = await nextAction(ws);
+    expect(first['action']).toBe('get_file');
+    ws.send(JSON.stringify({ status: 'failed', retcode: 1404, wording: 'action not found', echo: first['echo'] }));
+
+    const second = await nextAction(ws);
+    expect(second['action']).toBe('get_image');
+    // get_image 只给了宿主本地路径（容器够不到）→ 放弃
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        data: { file: '/home/qq/.config/QQ/NapCat/cache/x.jpg' },
+        echo: second['echo'],
+      }),
+    );
+
+    await expect(fetchPromise).resolves.toBeUndefined();
+  });
+
+  it('没有任何连接时返回 undefined（不抛错打断整轮）', async () => {
+    const made = makeConnector(0);
+    connector = made.connector;
+    await connector.start();
+    await expect(
+      connector.fetchMedia({ fileId: 'X' }, { maxBytes: 1024, timeoutMs: 1000 }),
+    ).resolves.toBeUndefined();
   });
 });

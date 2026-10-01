@@ -105,21 +105,27 @@ export async function buildImageBlocks(
     }
 
     const media: RemoteMedia = {
-      url: image.url,
+      ...(image.url !== undefined ? { url: image.url } : {}),
+      ...(image.fileId !== undefined ? { fileId: image.fileId } : {}),
       ...(image.mimeType !== undefined ? { mimeType: image.mimeType } : {}),
       ...(image.filename !== undefined ? { filename: image.filename } : {}),
     };
     let bytes: MediaBytes | undefined;
-    try {
-      bytes =
-        fetchMedia !== undefined
-          ? await fetchMedia(media, { maxBytes, timeoutMs })
-          : await defaultFetchMedia(media, { maxBytes, timeoutMs });
-    } catch (error) {
-      logger.warn('下载图片失败', {
-        url: image.url,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    // 没有可下载地址时只有平台侧 fetchMedia（动作回查）能拿到字节
+    if (media.url === undefined && fetchMedia === undefined) {
+      bytes = undefined;
+    } else {
+      try {
+        bytes =
+          fetchMedia !== undefined
+            ? await fetchMedia(media, { maxBytes, timeoutMs })
+            : await defaultFetchMedia(media, { maxBytes, timeoutMs });
+      } catch (error) {
+        logger.warn('下载图片失败', {
+          url: image.url ?? image.fileId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     if (bytes === undefined) {
@@ -151,6 +157,7 @@ export async function defaultFetchMedia(
   media: RemoteMedia,
   options: MediaFetchOptions,
 ): Promise<MediaBytes | undefined> {
+  if (media.url === undefined) return undefined;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
   timer.unref?.();
