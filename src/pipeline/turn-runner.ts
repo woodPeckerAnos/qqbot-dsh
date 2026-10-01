@@ -73,7 +73,39 @@ export class TurnRunner {
    */
   private readonly spontaneousTurns = new Map<string, TurnAccumulator>();
 
+  /**
+   * 话题重置标记（/new 命令或话题间隔超时）：命中的会话在下一次 runTurn 时
+   * 跳过冷启动回放——新话题不该背着旧话题的上下文。
+   */
+  private readonly freshStartMarks = new Set<string>();
+
   constructor(private readonly deps: TurnRunnerDeps) {}
+
+  /**
+   * 强制中断某会话当前进行中的 turn（/stop 命令）。
+   *
+   * 没有取消 API，终止手段就是回收整个 runtime 进程（在途的后台子代理随之
+   * 终止）；forceAbort 让等待中的 runTurn 立刻以 aborted 收尾，用户能马上
+   * 收到"已中断"的答复，而不是干等到 turn 超时。
+   *
+   * @returns 是否确有在途 turn 被中断
+   */
+  abortConversation(conversationKey: string): boolean {
+    const accumulator = this.activeTurns.get(conversationKey);
+    this.deps.logger.warn('会话被管理员强制中断，回收 runtime', {
+      conversation: conversationKey,
+      hadActiveTurn: accumulator !== undefined,
+    });
+    accumulator?.forceAbort();
+    // 回收是异步的；runTurn 的 finally 里的 release 对已被移除的条目是 no-op
+    void this.deps.pool.drop(conversationKey).catch(() => {});
+    return accumulator !== undefined;
+  }
+
+  /** 标记某会话下一条消息开启全新话题（跳过冷启动回放，并重置 runtime）。 */
+  markFreshStart(conversationKey: string): void {
+    this.freshStartMarks.add(conversationKey);
+  }
 
   /** 终态 handler：在准入 stage 的「并发名额 + 每会话串行锁」之内运行。 */
   async runTurn(ctx: MessageContext): Promise<void> {
@@ -87,9 +119,11 @@ export class TurnRunner {
     let entry: RuntimeEntry | undefined;
 
     try {
+      const freshTopic = this.freshStartMarks.delete(conversationKey);
+
       entry = await pool.acquire(conversationKey, workspacePath);
 
-      // 会话：新建的 runtime 需要新 sessionId + 冷启动回放
+      // 会话：新建的 runtime 需要新 sessionId + 冷启动回放（新话题除外）
       const session = sessions.ensure(conversationKey, /* rotate */ !entry.replayed);
 
       accumulator = new TurnAccumulator(session.currentSessionId);
@@ -101,7 +135,8 @@ export class TurnRunner {
         logger.debug('用户轮次开始，丢弃进行中的自发轮次累积器');
       }
 
-      const promptText = this.buildPrompt(message, conversationKey, session.generation, !entry.replayed);
+      const coldStart = !entry.replayed && !freshTopic;
+      const promptText = this.buildPrompt(message, conversationKey, session.generation, coldStart);
       // 图片在派发前下载并编码：放在这里（而不是适配器归一化时）是因为
       // 被去重/闸拦掉的消息不该产生网络 IO。
       const prepared = await this.buildPromptBlocks(ctx, promptText);

@@ -23,6 +23,10 @@ export class PipelineStats {
   gatedOffpeak = 0;
   /** 处理过的 /offpeak 命令数（offpeak-command stage） */
   adminCommands = 0;
+  /** 处理过的 /stop、/new 会话控制命令数（session-command stage） */
+  sessionCommands = 0;
+  /** 会话锁忙时发出的"排队提示"条数（admission stage） */
+  busyNoticed = 0;
   /** turn 正常完成数（TurnRunner） */
   completed = 0;
   /** turn 未预期错误数（admission stage 兜底） */

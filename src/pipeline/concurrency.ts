@@ -60,11 +60,12 @@ export class KeyedMutex {
   }
 
   /**
-   * 在 key 上串行执行 fn。
+   * 获取 key 的排他锁，返回释放函数（必须与获取一一配对调用）。
    *
-   * 返回值是 fn 的结果。前一个任务抛错不会阻塞后一个（错误被吸收进链）。
+   * 与 run() 共享同一条等待链；需要"拿到锁之后、做事之前再卡别的条件"
+   * 的调用方（如准入 stage 先排队等会话锁、再占全局并发名额）用这个形态。
    */
-  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  async acquire(key: string): Promise<() => void> {
     const previous = this.chains.get(key) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -75,12 +76,27 @@ export class KeyedMutex {
     this.chains.set(key, chained);
 
     await previous.catch(() => {});
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      release();
+      // 只有当自己仍是链尾时才删除，避免误删后来者的链
+      if (this.chains.get(key) === chained) this.chains.delete(key);
+    };
+  }
+
+  /**
+   * 在 key 上串行执行 fn。
+   *
+   * 返回值是 fn 的结果。前一个任务抛错不会阻塞后一个（错误被吸收进链）。
+   */
+  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const release = await this.acquire(key);
     try {
       return await fn();
     } finally {
       release();
-      // 只有当自己仍是链尾时才删除，避免误删后来者的链
-      if (this.chains.get(key) === chained) this.chains.delete(key);
     }
   }
 }

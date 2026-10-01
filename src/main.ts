@@ -39,6 +39,7 @@ import { createDedupeStage } from './pipeline/ingress/dedupe.js';
 import { OffpeakCommandRouter } from './pipeline/ingress/offpeak-command.js';
 import { createOffpeakGateStage } from './pipeline/ingress/offpeak-gate.js';
 import { createRecordStage } from './pipeline/ingress/record.js';
+import { SessionCommandRouter } from './pipeline/ingress/session-command.js';
 import type { IngressStage } from './pipeline/ingress/types.js';
 import { Orchestrator } from './pipeline/orchestrator.js';
 import { PipelineStats } from './pipeline/stats.js';
@@ -236,9 +237,12 @@ async function main(): Promise<void> {
   });
 
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
-
+  // 会话控制命令（/stop、/new，仅管理员）：必须在闸之前，且不进会话锁——
+  // /stop 的意义就是在锁被长任务占住时也能立刻生效。
+  const sessionCommands = new SessionCommandRouter({ pool, turns: turnRunner, stats });
   const stages: IngressStage[] = [
     createDedupeStage({ seen, stats }),
+    sessionCommands.stage(),
     offpeakCommands.stage(),
     createOffpeakGateStage({ gate: offpeak, config, stats }),
     createRecordStage({ conversations }),

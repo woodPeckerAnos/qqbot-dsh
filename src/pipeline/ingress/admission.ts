@@ -42,32 +42,49 @@ export class AdmissionGate {
   stage(): IngressStage {
     return async (ctx, next) => {
       const { stats } = this.deps;
+      const key = ctx.message.target.key;
 
-      if (this.semaphore.inUse >= this.deps.maxConcurrentTurns) {
-        stats.rejectedBusy += 1;
-        ctx.logger.warn('并发已满，礼貌拒绝本次提问', {
-          inUse: this.semaphore.inUse,
-          max: this.deps.maxConcurrentTurns,
-        });
+      // 顺序约束：先等**会话锁**，再占**全局并发名额**。旧顺序相反，效果是
+      // 排队等同会话锁的消息白占一个全局名额——一个跑长任务的群可以把全局
+      // 名额耗光，让别的群的新消息被误拒。
+      if (this.conversationLock.isBusy(key)) {
+        // 忙时提示：让用户知道消息没丢（在完成前不会回复别的），并给出 /stop 出口。
+        // 只占一条回复配额；发不出去（窗口/配额）不阻塞排队。
+        stats.busyNoticed += 1;
         await ctx.responder
-          .error('我现在同时在处理的请求太多，暂时忙不过来。请稍后再发一次。')
+          .error('上一条消息还在处理中，你这条会在它完成后自动处理，不用重发。等不及的话管理员可以发 /stop 强制中断。')
           .catch(() => {});
-        return;
       }
-
-      const release = await this.semaphore.acquire();
+      const releaseLock = await this.conversationLock.acquire(key);
       try {
-        await this.conversationLock.run(ctx.message.target.key, next);
-      } catch (error) {
-        stats.failed += 1;
-        ctx.logger.error('处理提问时发生未预期错误', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        await ctx.responder
-          .error('处理你的请求时出错了，我已经记录到日志。')
-          .catch(() => {});
+        if (this.semaphore.inUse >= this.deps.maxConcurrentTurns) {
+          stats.rejectedBusy += 1;
+          ctx.logger.warn('并发已满，礼貌拒绝本次提问', {
+            inUse: this.semaphore.inUse,
+            max: this.deps.maxConcurrentTurns,
+          });
+          await ctx.responder
+            .error('我现在同时在处理的请求太多，暂时忙不过来。请稍后再发一次。')
+            .catch(() => {});
+          return;
+        }
+
+        const release = await this.semaphore.acquire();
+        try {
+          await next();
+        } catch (error) {
+          stats.failed += 1;
+          ctx.logger.error('处理提问时发生未预期错误', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          await ctx.responder
+            .error('处理你的请求时出错了，我已经记录到日志。')
+            .catch(() => {});
+        } finally {
+          release();
+        }
       } finally {
-        release();
+        releaseLock();
       }
     };
   }

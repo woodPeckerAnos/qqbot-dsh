@@ -184,4 +184,14 @@ export class TurnAccumulator {
       reason: 'turn-timeout',
     };
   }
+
+  /**
+   * 外部强制中断（/stop 命令）：runtime 进程随即被回收，真实事件流不会再推进
+   * 本累积器，所以直接把状态补全为"已结束"，结果按 aborted 计。
+   * 若本轮已经自然结束（turn/end 已到达），不改写真实结果。
+   */
+  forceAbort(): void {
+    if (this.turnEnd === undefined) this.turnEnd = { reason: { kind: 'aborted' } };
+    this.sawIdle = true;
+  }
 }

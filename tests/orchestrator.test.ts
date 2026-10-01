@@ -28,6 +28,7 @@ import { createDedupeStage } from '../src/pipeline/ingress/dedupe.js';
 import { OffpeakCommandRouter } from '../src/pipeline/ingress/offpeak-command.js';
 import { createOffpeakGateStage } from '../src/pipeline/ingress/offpeak-gate.js';
 import { createRecordStage } from '../src/pipeline/ingress/record.js';
+import { SessionCommandRouter } from '../src/pipeline/ingress/session-command.js';
 import type { IngressStage } from '../src/pipeline/ingress/types.js';
 import { Orchestrator } from '../src/pipeline/orchestrator.js';
 import { PipelineStats } from '../src/pipeline/stats.js';
@@ -279,8 +280,10 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
     now: options.now,
   });
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats, now: options.now });
+  const sessionCommands = new SessionCommandRouter({ pool, turns: turnRunner, stats });
   const stages: IngressStage[] = [
     createDedupeStage({ seen, stats }),
+    sessionCommands.stage(),
     offpeakCommands.stage(),
     createOffpeakGateStage({ gate: offpeak, config, stats, now: options.now }),
     createRecordStage({ conversations }),
@@ -586,9 +589,9 @@ describe('编排 分段与配额', () => {
 describe('编排 冷启动回放', () => {
   it('首次为某群建会话时把历史并入 prompt', async () => {
     ctx = setup();
-    // 预置历史记录
-    ctx.conversations.append('GROUP-1', { role: 'user', speaker: '老王', text: '之前我们聊过部署', ts: 1 });
-    ctx.conversations.append('GROUP-1', { role: 'assistant', speaker: 'bot', text: '是的，用 docker compose', ts: 2 });
+    // 预置历史记录（时间戳贴着当前消息，处于话题间隔之内）
+    ctx.conversations.append('GROUP-1', { role: 'user', speaker: '老王', text: '之前我们聊过部署', ts: 1_700_000_000_000 - 60_000 });
+    ctx.conversations.append('GROUP-1', { role: 'assistant', speaker: 'bot', text: '是的，用 docker compose', ts: 1_700_000_000_000 - 30_000 });
 
     const pending = ctx.orchestrator.handleEvent(makeMessage({ content: '继续上次那个话题' }));
     await waitFor(() => ctx.runtime.prompts.length === 1);
@@ -1343,5 +1346,101 @@ describe('后台子代理桥接', () => {
     expect(stats.backgroundPushed).toBe(1);
     // 推送成功就不再暂存
     expect(ctx.background.takePending('GROUP-1')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 会话控制（/stop、/new，仅管理员）与排队反馈
+// ---------------------------------------------------------------------------
+
+describe('会话控制与排队反馈', () => {
+  it('会话忙时第二条消息先收到排队提示，第一条完成后它被正常处理', async () => {
+    ctx = setup();
+    const first = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+
+    const second = ctx.orchestrator.handleEvent(
+      makeMessage({ eventId: 'E-2', msgId: 'M-2', content: '第二个问题' }),
+    );
+    // 第二条在排队：先收到忙时提示，但还没进 runtime
+    await waitFor(() => ctx.sent.some((s) => (s.body.content ?? '').includes('还在处理中')));
+    expect(ctx.runtime.prompts).toHaveLength(1);
+    expect(ctx.orchestrator.snapshotStats().busyNoticed).toBe(1);
+
+    // 第一条完成 → 第二条拿到会话锁后接着跑
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['第一个答案']);
+    await first;
+    await waitFor(() => ctx.runtime.prompts.length === 2);
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['第二个答案']);
+    await second;
+
+    const texts = ctx.sent.map((s) => s.body.content ?? '');
+    expect(texts).toContain('第一个答案');
+    expect(texts).toContain('第二个答案');
+  });
+
+  it('/stop（管理员）：强制中断在途任务并回收 runtime，在途轮次立刻收尾', async () => {
+    ctx = setup({ configOverrides: { QQ_ADMIN_OPENIDS: 'MEMBER-1' } });
+    const first = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+
+    await ctx.orchestrator.handleEvent(makeMessage({ eventId: 'E-STOP', msgId: 'M-STOP', content: '/stop' }));
+    // forceAbort 让在途 turn 立刻以 aborted 收尾，不用等超时
+    await first;
+
+    const texts = ctx.sent.map((s) => s.body.content ?? '');
+    expect(texts.some((t) => t.includes('已强制中断'))).toBe(true);
+    expect(texts.some((t) => t.includes('被中断'))).toBe(true);
+    expect(ctx.pool.drop).toHaveBeenCalledWith('GROUP-1');
+    expect(ctx.orchestrator.snapshotStats().sessionCommands).toBe(1);
+  });
+
+  it('/stop（非管理员）被拒绝，在途任务不受影响', async () => {
+    ctx = setup({ configOverrides: { QQ_ADMIN_OPENIDS: 'SOMEONE-ELSE' } });
+    const first = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+
+    await ctx.orchestrator.handleEvent(makeMessage({ eventId: 'E-STOP', msgId: 'M-STOP', content: '/stop' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('无权限');
+    expect(ctx.pool.drop).not.toHaveBeenCalled();
+
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['正常答案']);
+    await first;
+    expect(ctx.sent.at(-1)!.body.content).toBe('正常答案');
+  });
+
+  it('/stop 在没有在途任务时如实回答', async () => {
+    ctx = setup({ configOverrides: { QQ_ADMIN_OPENIDS: 'MEMBER-1' } });
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '/stop' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('没有进行中的任务');
+    expect(ctx.runtime.prompts).toHaveLength(0);
+  });
+
+  it('/new（管理员）：下一条消息开启全新话题，不回放历史', async () => {
+    ctx = setup({ configOverrides: { QQ_ADMIN_OPENIDS: 'MEMBER-1' } });
+    const first = ctx.orchestrator.handleEvent(makeMessage({ content: '聊聊数据库' }));
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['好']);
+    await first;
+
+    await ctx.orchestrator.handleEvent(makeMessage({ eventId: 'E-NEW', msgId: 'M-NEW', content: '/new' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('已重置');
+    expect(ctx.pool.drop).toHaveBeenCalledWith('GROUP-1');
+
+    const second = ctx.orchestrator.handleEvent(
+      makeMessage({ eventId: 'E-2', msgId: 'M-2', senderId: 'SOMEBODY', content: '新话题' }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 2);
+    // 假池每轮都轮换（entry.replayed=false），本是冷启动回放场景；/new 标记后必须跳过
+    expect(ctx.runtime.prompts[1]!.text).not.toContain('聊聊数据库');
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['好']);
+    await second;
+  });
+
+  it('/new（非管理员）被拒绝', async () => {
+    ctx = setup({ configOverrides: { QQ_ADMIN_OPENIDS: 'SOMEONE-ELSE' } });
+    await ctx.orchestrator.handleEvent(makeMessage({ content: '/new' }));
+    expect(ctx.sent.at(-1)!.body.content).toContain('无权限');
+    expect(ctx.pool.drop).not.toHaveBeenCalled();
   });
 });
