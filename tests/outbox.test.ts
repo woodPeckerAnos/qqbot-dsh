@@ -127,3 +127,24 @@ describe('archiveSent', () => {
     expect(entries).toEqual([]);
   });
 });
+
+describe('scanOutbox notBeforeMs（只发本轮新产物）', () => {
+  it('mtime 早于 notBeforeMs 的文件被跳过，其余照常', async () => {
+    const outbox = await makeOutbox();
+    const { utimes } = await import('node:fs/promises');
+    await writeFile(join(outbox, 'fresh.png'), 'new');
+    await writeFile(join(outbox, 'stale.png'), 'old');
+    const past = new Date(Date.now() - 3600_000);
+    await utimes(join(outbox, 'stale.png'), past, past);
+
+    const result = await scanOutbox(outbox, { ...SCAN_OPTIONS, notBeforeMs: Date.now() - 60_000 });
+    expect(result.attachments.map((a) => a.fileName)).toEqual(['fresh.png']);
+  });
+
+  it('不传 notBeforeMs 时不过滤（兼容旧行为）', async () => {
+    const outbox = await makeOutbox();
+    await writeFile(join(outbox, 'a.png'), 'x');
+    const result = await scanOutbox(outbox, SCAN_OPTIONS);
+    expect(result.attachments).toHaveLength(1);
+  });
+});

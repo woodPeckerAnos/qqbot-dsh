@@ -31,6 +31,15 @@ export interface OutboxScanOptions {
   maxFileBytes: number;
   /** 图片扩展名白名单（小写、不带点）；不在名单里的一律按 file 发 */
   imageExtensions: readonly string[];
+  /**
+   * 只发送 mtime 不早于该时间戳的文件（= 本轮处理开始时间）。
+   *
+   * 为什么必须有：上轮发送失败/超额的文件会留在 outbox 里，不过滤的话下一轮
+   * 重扫会把它们再发一遍（"旧文件反复拆分发送"的生产问题）。早于此时间的
+   * 文件静默跳过（只在 debug 日志留痕）——要重发旧文件，persona 已约定
+   * "复制一份进 outbox"（复制即刷新 mtime）。
+   */
+  notBeforeMs?: number;
   logger: Logger;
 }
 
@@ -90,6 +99,15 @@ export async function scanOutbox(dir: string, options: OutboxScanOptions): Promi
       const info = await stat(realFile);
       if (!info.isFile()) {
         result.skipped.push(entry.name);
+        continue;
+      }
+      // 旧文件（非本轮产物）：静默跳过，避免上轮遗留被反复重发
+      if (options.notBeforeMs !== undefined && info.mtimeMs < options.notBeforeMs) {
+        options.logger.debug('outbox 旧文件跳过（非本轮产物）', {
+          name: entry.name,
+          mtimeMs: info.mtimeMs,
+          notBeforeMs: options.notBeforeMs,
+        });
         continue;
       }
       if (info.size > options.maxFileBytes) {

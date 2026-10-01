@@ -22,6 +22,7 @@
 import type {
   BotConnector,
   NormalizedMessage,
+  OutgoingAttachment,
   OutgoingMessage,
   ReplyPolicy,
 } from '../../core/connector.js';
@@ -30,6 +31,9 @@ import type { Logger } from '../../logger.js';
 import type { ConversationStore } from '../../store/conversations.js';
 import { segmentText } from './chunk.js';
 import { archiveSent, scanOutbox } from './outbox.js';
+import { packFiles } from './zip.js';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   ProgressScheduler,
   ReplyLedger,
@@ -38,8 +42,10 @@ import {
 } from './progress.js';
 import type { PipelineStats } from '../stats.js';
 
-export interface ResponderOptions {
-  /** 触发本次回复的用户消息（target / msgId 都从这里取） */
+/** 打包 zip 的临时子目录（隐藏目录，outbox 扫描器天然跳过）。 */
+const PACKED_DIR_NAME = '.packed';
+
+export interface ResponderOptions {  /** 触发本次回复的用户消息（target / msgId 都从这里取） */
   message: NormalizedMessage;
   connector: BotConnector;
   policy: ReplyPolicy;
@@ -72,6 +78,8 @@ export interface ResponderMediaOptions {
 export class Responder {
   private readonly ledger: ReplyLedger;
   private progress: ProgressScheduler | undefined;
+  /** 本条消息进入管线的时间：outbox 只发晚于它的文件（见 outbox.ts notBeforeMs） */
+  private readonly createdAt: number;
 
   constructor(private readonly options: ResponderOptions) {
     const { message, policy } = options;
@@ -80,6 +88,7 @@ export class Responder {
       totalQuota: policy.maxRepliesPerMsg,
       progressQuota: policy.progressMax,
     });
+    this.createdAt = this.now();
   }
 
   /**
@@ -155,10 +164,13 @@ export class Responder {
     const media = this.options.media;
     let attachments: OutgoingMessage['attachments'] = [];
     const degradeNotes: string[] = [];
+    let packedZipPath: string | undefined;
+    let packOriginals: string[] = [];
     if (media !== undefined) {
       const scan = await scanOutbox(media.outboxDir, {
         maxFileBytes: media.maxFileBytes,
         imageExtensions: media.imageExtensions,
+        notBeforeMs: this.createdAt,
         logger,
       });
       if (scan.oversize.length > 0) {
@@ -169,7 +181,7 @@ export class Responder {
         // 规则 1 与 2：>=2 条额度时给文本留 1 条；只剩 1 条时全给附件
         const quotaBudget = remaining >= 2 ? remaining - 1 : remaining;
         const budget = Math.min(quotaBudget, media.maxAttachments, scan.attachments.length);
-        attachments = scan.attachments.slice(0, budget);
+        let selected = scan.attachments.slice(0, budget);
         const overflow = scan.attachments.slice(budget);
         if (overflow.length > 0) {
           degradeNotes.push(
@@ -178,6 +190,23 @@ export class Responder {
               .join('、')}；需要的话跟我说一声）`,
           );
         }
+        // 多个文件合并成一个 zip 发一条消息（"发送文件本身仅允许单文件"的
+        // 桥接侧兑现）：群聊里逐条发文件既刷屏又割裂阅读。
+        if (selected.length > 1) {
+          const packed = await this.packAsZip(media.outboxDir, selected, media.maxFileBytes, logger);
+          if (packed.attachment !== undefined) {
+            packedZipPath = packed.attachment.absPath;
+            packOriginals = selected.map((item) => item.fileName);
+            selected = [packed.attachment];
+            degradeNotes.push(
+              `（${packed.fileCount} 个产物已打包为 ${packed.attachment.fileName}）`,
+            );
+          } else {
+            selected = [];
+            if (packed.note !== undefined) degradeNotes.push(packed.note);
+          }
+        }
+        attachments = selected;
       }
     }
 
@@ -220,7 +249,8 @@ export class Responder {
 
     // --- 附件先、文本后 ------------------------------------------------------
     let sentAttachments = 0;
-    const sentNames: string[] = [];
+    const sentDisplayNames: string[] = [];
+    const archiveNames: string[] = [];
     for (const attachment of attachments ?? []) {
       let ticket: ReplyTicket;
       try {
@@ -235,7 +265,13 @@ export class Responder {
       try {
         await this.sendSegment({ text: '', attachments: [attachment] }, ticket);
         sentAttachments += 1;
-        sentNames.push(attachment.fileName);
+        sentDisplayNames.push(attachment.fileName);
+        // zip 包发送成功 = 包内原始文件全部送达，归档的是原件而不是包
+        if (packedZipPath !== undefined && attachment.absPath === packedZipPath) {
+          archiveNames.push(...packOriginals);
+        } else {
+          archiveNames.push(attachment.fileName);
+        }
         stats.attachmentsSent += 1;
       } catch (error) {
         logger.error('发送附件失败', {
@@ -246,8 +282,12 @@ export class Responder {
         // 一个附件失败不阻塞其余：继续尝试（失败的文件留在 outbox，不归档）
       }
     }
-    if (media !== undefined && sentNames.length > 0) {
-      await archiveSent(media.outboxDir, sentNames, logger, () => this.now());
+    // zip 是派生产物，用完即删（发送失败时原件仍在 outbox，可重新打包）
+    if (packedZipPath !== undefined) {
+      await rm(packedZipPath, { force: true }).catch(() => {});
+    }
+    if (media !== undefined && archiveNames.length > 0) {
+      await archiveSent(media.outboxDir, archiveNames, logger, () => this.now());
     }
 
     const sentAnyText = await this.sendLong(text, 'final');
@@ -258,8 +298,8 @@ export class Responder {
     // 记录助手回复（供下次冷启动回放）：附件也在记录里留名，
     // 否则冷启动后的 agent 不知道文件已经发出去了
     const recordText =
-      sentNames.length > 0
-        ? `${text}${text === '' ? '' : '\n'}（已发送文件：${sentNames.join('、')}）`
+      sentDisplayNames.length > 0
+        ? `${text}${text === '' ? '' : '\n'}（已发送文件：${sentDisplayNames.join('、')}）`
         : text;
     conversations.append(conversationKey, {
       role: 'assistant',
@@ -336,5 +376,57 @@ export class Responder {
 
   private now(): number {
     return this.options.now?.() ?? Date.now();
+  }
+
+  /**
+   * 把多个产物打包成一个 zip（存放在 outbox/.packed/ 下，扫描器跳过隐藏目录）。
+   *
+   * 体积预算：stored zip ≈ 原始总字节 + 每条目 ~160B 元数据，先预估再实打包，
+   * 超 maxFileBytes 直接降级为一行说明（不逐个降级发送——那又回到了刷屏）。
+   */
+  private async packAsZip(
+    outboxDir: string,
+    files: OutgoingAttachment[],
+    maxFileBytes: number,
+    logger: Logger,
+  ): Promise<{ attachment?: OutgoingAttachment; fileCount: number; note?: string }> {
+    const estimated = files.reduce((acc, file) => acc + file.sizeBytes, 0) + files.length * 160 + 22;
+    if (estimated > maxFileBytes) {
+      return {
+        fileCount: files.length,
+        note: `（${files.length} 个文件打包后仍超过大小上限，未发出：${files
+          .map((file) => file.fileName)
+          .join('、')}；可以让我分开几次发）`,
+      };
+    }
+    try {
+      const data = await packFiles(files);
+      if (data.byteLength > maxFileBytes) {
+        return {
+          fileCount: files.length,
+          note: `（${files.length} 个文件打包后超过大小上限，未发出；可以让我分开几次发）`,
+        };
+      }
+      const packedDir = join(outboxDir, PACKED_DIR_NAME);
+      await mkdir(packedDir, { recursive: true });
+      const fileName = `产物打包-${this.now()}.zip`;
+      const absPath = join(packedDir, fileName);
+      await writeFile(absPath, data);
+      return {
+        attachment: { kind: 'file', absPath, fileName, sizeBytes: data.byteLength },
+        fileCount: files.length,
+      };
+    } catch (error) {
+      logger.warn('打包产物失败，本轮不发送附件', {
+        files: files.map((file) => file.fileName),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        fileCount: files.length,
+        note: `（${files.length} 个文件打包失败，未发出：${files
+          .map((file) => file.fileName)
+          .join('、')}）`,
+      };
+    }
   }
 }
