@@ -25,6 +25,8 @@ export class PipelineStats {
   adminCommands = 0;
   /** 处理过的 /stop、/new 会话控制命令数（session-command stage） */
   sessionCommands = 0;
+  /** 话题间隔超阈值触发上下文重置的次数（TurnRunner） */
+  topicResets = 0;
   /** 会话锁忙时发出的"排队提示"条数（admission stage） */
   busyNoticed = 0;
   /** turn 正常完成数（TurnRunner） */

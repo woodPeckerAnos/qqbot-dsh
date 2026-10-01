@@ -33,6 +33,7 @@ import type { IngressStage } from '../src/pipeline/ingress/types.js';
 import { Orchestrator } from '../src/pipeline/orchestrator.js';
 import { PipelineStats } from '../src/pipeline/stats.js';
 import { TurnRunner } from '../src/pipeline/turn-runner.js';
+import type { TopicJudge } from '../src/pipeline/topic-judge.js';
 import { ConversationStore } from '../src/store/conversations.js';
 import { ensureStoreDirs, resolveStorePaths } from '../src/store/paths.js';
 import { SeenStore } from '../src/store/seen.js';
@@ -208,7 +209,7 @@ function createFakeConnector(config: Config, sent: SentMessage[]): BotConnector 
   };
 }
 
-function setup(options: { configOverrides?: Record<string, string>; now?: () => number } = {}) {
+function setup(options: { configOverrides?: Record<string, string>; now?: () => number; topicJudge?: TopicJudge } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'qqbot-disp-'));
   const paths = resolveStorePaths({
     workspacesRoot: join(root, 'ws'),
@@ -277,6 +278,7 @@ function setup(options: { configOverrides?: Record<string, string>; now?: () => 
     paths,
     stats,
     background,
+    ...(options.topicJudge !== undefined ? { topicJudge: options.topicJudge } : {}),
     now: options.now,
   });
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats, now: options.now });
@@ -605,6 +607,57 @@ describe('编排 冷启动回放', () => {
     expect(prompt).toContain('是的，用 docker compose');
     // 当前提问不能重复出现在历史里
     expect(prompt.match(/继续上次那个话题/g)?.length).toBe(1);
+  });
+
+  it('LLM 判定新消息与既有话题无关 → 关闭话题：回收 runtime 且不回放', async () => {
+    const judgeCalls: Array<{ historyLength: number; newMessage: string }> = [];
+    const topicJudge: TopicJudge = async (input) => {
+      judgeCalls.push({ historyLength: input.history.length, newMessage: input.newMessage });
+      return false; // 判定无关
+    };
+    ctx = setup({ topicJudge });
+    ctx.conversations.append('GROUP-1', { role: 'user', speaker: '老王', text: '上周聊过的旧话题', ts: 1 });
+
+    const pending = ctx.orchestrator.handleEvent(makeMessage({ content: '换个话题' }));
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['好']);
+    await pending;
+
+    // 判定器拿到了历史（不含当前消息）与新消息
+    expect(judgeCalls).toEqual([{ historyLength: 1, newMessage: '换个话题' }]);
+    expect(ctx.runtime.prompts[0]!.text).not.toContain('上周聊过的旧话题');
+    // 旧 runtime 被回收（内存里的旧上下文随之丢弃）
+    expect(ctx.pool.drop).toHaveBeenCalledWith('GROUP-1');
+    expect(ctx.orchestrator.snapshotStats().topicResets).toBe(1);
+  });
+
+  it('LLM 判定相关 → 保持上下文（历史照常回放）', async () => {
+    ctx = setup({ topicJudge: async () => true });
+    ctx.conversations.append('GROUP-1', { role: 'user', speaker: '老王', text: '很久以前的话', ts: 1 });
+
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['ok']);
+    await pending;
+
+    expect(ctx.runtime.prompts[0]!.text).toContain('很久以前的话');
+    expect(ctx.orchestrator.snapshotStats().topicResets).toBe(0);
+  });
+
+  it('未注入判定器时不做话题判定（默认行为不变）', async () => {
+    ctx = setup();
+    ctx.conversations.append('GROUP-1', { role: 'user', speaker: '老王', text: '很久以前的话', ts: 1 });
+
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const sessionId = ctx.sessions.peek('GROUP-1')!.currentSessionId;
+    ctx.runtime.completeTurn(sessionId, ['ok']);
+    await pending;
+
+    expect(ctx.runtime.prompts[0]!.text).toContain('很久以前的话');
+    expect(ctx.orchestrator.snapshotStats().topicResets).toBe(0);
   });
 
   it('QQ_REPLAY_TURNS=0 时不回放', async () => {

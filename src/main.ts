@@ -43,6 +43,7 @@ import { SessionCommandRouter } from './pipeline/ingress/session-command.js';
 import type { IngressStage } from './pipeline/ingress/types.js';
 import { Orchestrator } from './pipeline/orchestrator.js';
 import { PipelineStats } from './pipeline/stats.js';
+import { createTopicJudge } from './pipeline/topic-judge.js';
 import { TurnRunner } from './pipeline/turn-runner.js';
 import { ConversationStore } from './store/conversations.js';
 import { SeenStore } from './store/seen.js';
@@ -234,6 +235,20 @@ async function main(): Promise<void> {
     paths,
     stats,
     background,
+    // 话题判定器：不经 DSH 进程的小模型调用（判定失败一律视为相关，见
+    // pipeline/topic-judge.ts）。apiKey 复用 DEEPSEEK_API_KEY（env 必填项）。
+    ...(config.topic.enabled
+      ? {
+          topicJudge: createTopicJudge({
+            apiBase: config.topic.apiBase,
+            apiKey: process.env['DEEPSEEK_API_KEY'] ?? '',
+            model: config.topic.model,
+            timeoutMs: config.topic.timeoutMs,
+            perTurnMaxChars: 500,
+            logger: logger.child({ component: 'topic-judge' }),
+          }),
+        }
+      : {}),
   });
 
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });

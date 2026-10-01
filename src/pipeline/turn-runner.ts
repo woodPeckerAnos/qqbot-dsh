@@ -36,6 +36,7 @@ import type { MessageContext } from './ingress/types.js';
 import { defaultProgressText } from './egress/progress.js';
 import type { BackgroundPusher } from './egress/background.js';
 import type { PipelineStats } from './stats.js';
+import type { TopicJudge } from './topic-judge.js';
 
 export interface TurnRunnerDeps {
   config: Config;
@@ -47,6 +48,11 @@ export interface TurnRunnerDeps {
   stats: PipelineStats;
   /** 后台结果投递器：主动推送（OneBot/官方窗口内）或暂存待下次带出，并持久化 */
   background: BackgroundPusher;
+  /**
+   * 话题判定器（main.ts 用 createTopicJudge 构造；未注入 = 不做话题判定，
+   * 上下文只靠 /new 与 runtime 回收重置）。
+   */
+  topicJudge?: TopicJudge;
   now?: () => number;
 }
 
@@ -110,7 +116,7 @@ export class TurnRunner {
   /** 终态 handler：在准入 stage 的「并发名额 + 每会话串行锁」之内运行。 */
   async runTurn(ctx: MessageContext): Promise<void> {
     const { message, responder, policy, logger } = ctx;
-    const { pool, sessions, paths, stats } = this.deps;
+    const { pool, sessions, paths, stats, conversations, config } = this.deps;
     const conversationKey = message.target.key;
 
     const workspacePath = ensureWorkspace(paths, conversationKey);
@@ -119,6 +125,32 @@ export class TurnRunner {
     let entry: RuntimeEntry | undefined;
 
     try {
+      // 话题判定：新消息与既有话题是否相关由 LLM 判断（不是硬时间间隔——
+      // 话题是否结束是语义判断）。判定为无关 → 关闭话题：回收旧 runtime
+      // （丢掉内存里的旧上下文）并跳过本次冷启动回放。注意记录 stage 已经把
+      // 当前这条消息写进去了，送给判定器的历史要排除它。
+      const judge = this.deps.topicJudge;
+      // /new 已经标记过新话题的不再重复判定（省一次 API 调用）
+      if (judge !== undefined && !this.freshStartMarks.has(conversationKey)) {
+        const history = conversations
+          .readTail(conversationKey, config.topic.contextTurns + 1)
+          .filter(
+            (turn) =>
+              !(turn.role === 'user' && turn.text === message.content && turn.ts === message.ts),
+          );
+        if (history.length > 0) {
+          const related = await judge({ history, newMessage: message.content });
+          if (!related) {
+            stats.topicResets += 1;
+            logger.info('新消息与既有话题无关（LLM 判定），按新话题处理（重置上下文）', {
+              conversation: conversationKey,
+              historyTurns: history.length,
+            });
+            this.freshStartMarks.add(conversationKey);
+            await pool.drop(conversationKey).catch(() => {});
+          }
+        }
+      }
       const freshTopic = this.freshStartMarks.delete(conversationKey);
 
       entry = await pool.acquire(conversationKey, workspacePath);

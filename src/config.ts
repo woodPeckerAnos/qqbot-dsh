@@ -132,6 +132,24 @@ export interface Config {
     runtimeIdleMs: number;
     replayTurns: number;
   };
+  /**
+   * 话题判定：新消息与既有话题是否相关由一个小模型调用判断（不经 DSH 进程，
+   * 见 pipeline/topic-judge.ts）。判定为无关 → 关闭话题（回收 runtime、
+   * 跳过冷启动回放）。判定失败一律视为相关（fail-safe）。
+   * apiKey 复用 DEEPSEEK_API_KEY（env），不在此处。
+   */
+  topic: {
+    /** 总开关（BOT_TOPIC_ENABLED / topic.enabled，默认 true） */
+    enabled: boolean;
+    /** chat completions 基址（BOT_TOPIC_API_BASE / topic.apiBase） */
+    apiBase: string;
+    /** 判定用模型（BOT_TOPIC_MODEL / topic.model），默认与主模型同档的小模型 */
+    model: string;
+    /** 单次判定超时（毫秒） */
+    timeoutMs: number;
+    /** 送给判定器的最近记录条数（不含当前新消息） */
+    contextTurns: number;
+  };
   paths: {
     dshHome: string;
     workspacesRoot: string;
@@ -553,6 +571,13 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       runtimeIdleMs: pickInt(env, 'QQ_RUNTIME_IDLE_MS', poolFile.runtimeIdleMs, 1_800_000, { min: 0, max: 86_400_000 }, 'pool.runtimeIdleMs'),
       replayTurns: pickInt(env, 'QQ_REPLAY_TURNS', poolFile.replayTurns, 12, { min: 0, max: 200 }, 'pool.replayTurns'),
     },
+    topic: {
+      enabled: pickBool(env, 'BOT_TOPIC_ENABLED', file.topic?.enabled, true),
+      apiBase: pickString(env, 'BOT_TOPIC_API_BASE', file.topic?.apiBase, 'https://api.deepseek.com'),
+      model: pickString(env, 'BOT_TOPIC_MODEL', file.topic?.model, 'deepseek-flash'),
+      timeoutMs: pickInt(env, 'BOT_TOPIC_TIMEOUT_MS', file.topic?.timeoutMs, 10_000, { min: 1_000, max: 60_000 }, 'topic.timeoutMs'),
+      contextTurns: pickInt(env, 'BOT_TOPIC_CONTEXT_TURNS', file.topic?.contextTurns, 10, { min: 1, max: 50 }, 'topic.contextTurns'),
+    },
     paths: {
       dshHome: pickString(env, 'DSH_HOME', pathsFile.dshHome, '/data/dsh'),
       workspacesRoot: pickString(env, 'QQ_WORKSPACES_ROOT', pathsFile.workspacesRoot, '/data/workspaces'),
@@ -631,6 +656,12 @@ export function describeConfig(config: Config): Record<string, unknown> {
       profilePatch: config.dsh.profilePatch,
     },
     pool: config.pool,
+    topic: {
+      enabled: config.topic.enabled,
+      model: config.topic.model,
+      timeoutMs: config.topic.timeoutMs,
+      contextTurns: config.topic.contextTurns,
+    },
     paths: config.paths,
     adminCount: config.admins.length,
     attachments: config.attachments,

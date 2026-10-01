@@ -70,6 +70,15 @@ export interface PoolFileConfig {
   replayTurns?: number;
 }
 
+/** 话题判定（LLM 判断新消息与既有话题是否相关，见 pipeline/topic-judge.ts）。 */
+export interface TopicFileConfig {
+  enabled?: boolean;
+  apiBase?: string;
+  model?: string;
+  timeoutMs?: number;
+  contextTurns?: number;
+}
+
 export interface PathsFileConfig {
   dshHome?: string;
   workspacesRoot?: string;
@@ -114,6 +123,7 @@ export interface FileConfig {
   onebot?: OnebotFileConfig;
   dsh?: DshFileConfig;
   pool?: PoolFileConfig;
+  topic?: TopicFileConfig;
   paths?: PathsFileConfig;
   offpeak?: OffpeakFileConfig;
   attachments?: AttachmentsFileConfig;
@@ -189,6 +199,13 @@ const POOL_SPEC: SectionSpec = {
   runtimeIdleMs: 'int',
   replayTurns: 'int',
 };
+const TOPIC_SPEC: SectionSpec = {
+  enabled: 'bool',
+  apiBase: 'string',
+  model: 'string',
+  timeoutMs: 'int',
+  contextTurns: 'int',
+};
 const PATHS_SPEC: SectionSpec = {
   dshHome: 'string',
   workspacesRoot: 'string',
@@ -228,6 +245,7 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'onebot', field: 'onebot', spec: ONEBOT_SPEC },
   { yamlKey: 'dsh', field: 'dsh', spec: DSH_SPEC },
   { yamlKey: 'pool', field: 'pool', spec: POOL_SPEC },
+  { yamlKey: 'topic', field: 'topic', spec: TOPIC_SPEC },
   { yamlKey: 'paths', field: 'paths', spec: PATHS_SPEC },
   { yamlKey: 'offpeak', field: 'offpeak', spec: OFFPEAK_SPEC },
   { yamlKey: 'attachments', field: 'attachments', spec: ATTACHMENTS_SPEC },
