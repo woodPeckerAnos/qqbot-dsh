@@ -350,8 +350,9 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 | 官方 | 附件 CDN 需要鉴权，但 token 取不到 | 日志 `取 access_token 失败`；先修 2.1 |
 | 官方 | 图片格式不在 png/jpeg/webp/gif 内（如 bmp/heic） | 日志"格式不支持内联"，属预期降级 |
 | 官方 | 图片太大 | 提高 `BOT_ATTACHMENT_MAX_BYTES`（默认 8MB） |
-| OneBot | 图片只有本地路径 / `base64://`，容器里取不到 | 日志或消息里出现 `[图片]` 占位；让框架开启"图片以 URL 上报" |
-| OneBot | 框架上报的图片 URL 指向宿主 `127.0.0.1:<port>`，容器访问不到 | 容器内 `curl` 那个 URL 测试；需要让框架用可被容器访问的地址 |
+| OneBot | 图片只有本地路径 / 文件标识（NapCat 有头形态常见） | **已自动回查**：连接器会用 `get_file` / `get_image` 动作经 WS 取字节（base64 或刷新后的 URL），无需配置；仍失败看 debug 日志里 `get_file 回查失败` 的原因 |
+| OneBot | 图片 URL 过期（NapCat 的 URL 约 2 小时过期，报 `url expired`） | **已自动刷新**：GET 失败后同样回退 `get_file`/`get_image` 拿新 URL/base64 |
+| OneBot | 框架上报的图片 URL 指向宿主 `127.0.0.1:<port>`，容器访问不到 | GET 失败后会回退动作回查；若仍失败，确认 NapCat 版本支持 `get_file`（v4.8+） |
 | 两者 | 就想要纯文本 | 设 `BOT_ATTACHMENT_ENABLED=false`，行为回到只有 `[图片]` 占位 |
 
 ### 4.6 长任务把会话卡住 / 后台任务没结果
@@ -361,8 +362,10 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 | 现象 | 先看 | 原因 / 处置 |
 |---|---|---|
-| 会话长时间对新消息无响应 | 日志有没有"后台子代理已启动"；`/metrics` 的 `backgroundStarted` | agent 没把长任务派发给子代理，而是在父轮次里同步跑——只能等 `turnTimeoutMs` 超时回收。加强 persona 纪律（`dsh-profile/cordis.patch.yml`），或调低超时 |
-| 想中途停掉长任务 | — | 直接对机器人说"停掉那个后台任务"，父代理会 `list_agents` + `interrupt_agent`（需会话空闲，即当前没有别的轮次在跑） |
+| 会话长时间对新消息无响应 | 日志有没有"后台子代理已启动"；`/metrics` 的 `backgroundStarted` | agent 没把长任务派发给子代理，而是在父轮次里同步跑——只能等 `turnTimeoutMs` 超时回收，或管理员发 `/stop` 立即中断。persona 已明确拆分标准（复杂/长耗时/多步骤 → 子代理；简单问答直接答） |
+| 排队中的消息有没有丢 | `/metrics` 的 `busyNoticed` | 会话忙时第二条消息会收到"还在处理中"提示并在前一条完成后自动处理；`busyNoticed` 涨 = 提示已发出 |
+| 想中途停掉长任务 | — | 管理员发 `/stop`（强制回收 runtime，在途 turn 与后台子代理一并终止）；或叫机器人"停掉那个后台任务"（agent 侧 `interrupt_agent`，需会话空闲） |
+| 话题结束了 bot 还记着旧事 | `/metrics` 的 `topicResets` | 话题是否结束由小模型判定（`topic` 配置段）：新消息与既有话题无关时自动重置（回收 runtime、不回放历史）。日志里找 `新消息与既有话题无关`；判定失败一律按相关处理（日志有 warn）。管理员也可随时发 `/new` 显式重置 |
 | 后台任务完成了但用户没立刻收到结果 | `/metrics` 的 `backgroundCaptured` / `backgroundPushed` / `backgroundDelivered` | OneBot 与官方"窗口内"会**主动推送**（`backgroundPushed` 涨）；官方**超窗**（群 >5 分钟）推不出去，转暂存，等下一条用户消息带出（`backgroundDelivered` 涨）。`captured` 涨了但 `pushed`/`delivered` 都没涨 = 暂存中、还没有下一条消息（见 DESIGN §13.5） |
 | 后台任务"凭空消失" | 日志有没有"关闭 runtime 将终止其承载的后台子代理" | runtime 被回收/超时终止连带杀了子代理。正常空闲/LRU 回收已豁免有活子代理的进程（DESIGN §13.4），出现这条说明是超时终止或 disposeAll |
 | 重启后暂存的后台结果还在吗 | `stateDir/background-pending.json` | 已捕获成文本、只差投递的结果会持久化，重启后仍能带出；但重启会杀掉**正在跑**的子代理（进程内驻留，救不回） |
@@ -499,7 +502,7 @@ docker system df
 | 10 | 单聊 `msg_type=2`(markdown) 渲染效果 | 与群聊共用 `QQ_MSG_TYPE`；同样默认纯文本 |
 | 11 | 官方多媒体 CDN 是否强制 `Authorization: QQBot <token>` | 实况文档未写死。程序先带 token，仅在 401/403 时裸请求一次兜底，两种形态都能过 |
 | 12 | DS 模型对 image block 的真实支持面 | SDK 协议支持内联图片（`SdkEncodedImageBlock`），但具体模型是否都吃图未逐一实测。看不到图先看 `/metrics` 的 `imagesInlined`/`imagesSkipped`；不支持就设 `BOT_ATTACHMENT_ENABLED=false` |
-| 13 | OneBot 上报的图片 URL 容器可达性 | 框架在宿主时可能上报 `http://127.0.0.1:<port>/...`，容器内不可达。表现为消息里只有 `[图片]` 占位；见 4.5 |
+| 13 | OneBot 上报的图片 URL 容器可达性 | 框架在宿主时可能上报 `http://127.0.0.1:<port>/...`，容器内不可达。**已缓解**：URL 缺失或 GET 失败时会自动用 `get_file`/`get_image` 动作回查（base64 或刷新 URL）；仍失败才退化为 `[图片]` 占位，见 4.5 |
 
 ---
 
