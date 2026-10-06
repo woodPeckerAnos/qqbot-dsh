@@ -192,7 +192,7 @@ export class TurnRunner {
       const promptText = this.buildPrompt(message, conversationKey, session.generation, coldStart);
       // 图片在派发前下载并编码：放在这里（而不是适配器归一化时）是因为
       // 被去重/闸拦掉的消息不该产生网络 IO。
-      const prepared = await this.buildPromptBlocks(ctx, promptText);
+      const prepared = await this.buildPromptBlocks(ctx, promptText, workspacePath);
       entry.replayed = true;
       entry.busy = true;
 
@@ -406,8 +406,9 @@ export class TurnRunner {
   private async buildPromptBlocks(
     ctx: MessageContext,
     text: string,
+    workspacePath: string,
   ): Promise<PreparedPrompt> {
-    const { config, logger, stats, paths } = this.deps;
+    const { config, logger, stats } = this.deps;
     const { enabled, maxImages, maxImageBytes, downloadTimeoutMs } = config.attachments;
     const images = messageImageParts(ctx.message);
     const total = images.length;
@@ -426,7 +427,7 @@ export class TurnRunner {
     // 与图片分开处理：文件的配额、失败语义与渲染形态都不同（见 config.files）。
     const fileOutcome = await ingestFiles({
       parts: messageMediaParts(ctx.message),
-      workspacePath: ensureWorkspace(paths, ctx.message.target.key),
+      workspacePath,
       config: config.attachments.files,
       downloadTimeoutMs,
       // 会话上下文是平台侧取件凭据：OneBot 群文件直链申请必须带群号

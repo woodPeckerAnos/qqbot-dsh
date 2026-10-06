@@ -291,3 +291,57 @@ describe('createDocumentExtractor', () => {
     expect(fake.calls).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 真子进程冒烟：上面全是假 spawn，这里用真 /bin/sh 验证 spawn/stdin/stdout 管道
+// ---------------------------------------------------------------------------
+
+describe('runPdftotext 真子进程', () => {
+  it.skipIf(process.platform === 'win32')(
+    '把 PDF 字节经 stdin 交给子进程，并把 stdout 作为正文',
+    async () => {
+      const { mkdtempSync, writeFileSync, chmodSync, readFileSync, rmSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+
+      const dir = mkdtempSync(join(tmpdir(), 'qqbot-fake-pdftotext-'));
+      const argsFile = join(dir, 'args.txt');
+      const stdinFile = join(dir, 'stdin.bin');
+      const bin = join(dir, 'pdftotext');
+      writeFileSync(
+        bin,
+        [
+          '#!/bin/sh',
+          `printf '%s\\n' "$@" > ${JSON.stringify(argsFile)}`,
+          `cat > ${JSON.stringify(stdinFile)}`,
+          "printf '抽取结果：第一行\\n第二行\\n'",
+          '',
+        ].join('\n'),
+      );
+      chmodSync(bin, 0o755);
+
+      try {
+        const outcome = await runPdftotext(
+          { data: utf8('%PDF-1.4 payload'), maxChars: 1_000, maxPdfPages: 3, timeoutMs: 5_000 },
+          { bin },
+        );
+        expect(outcome.extraction).toEqual({ text: '抽取结果：第一行\n第二行' });
+        // 参数顺序即契约：固定数组、`- -` 表示 stdin→stdout
+        expect(readFileSync(argsFile, 'utf8').trim().split('\n')).toEqual([
+          '-f',
+          '1',
+          '-l',
+          '3',
+          '-layout',
+          '-enc',
+          'UTF-8',
+          '-',
+          '-',
+        ]);
+        expect(readFileSync(stdinFile, 'utf8')).toBe('%PDF-1.4 payload');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+});
