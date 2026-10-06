@@ -32,6 +32,7 @@ import type { BotConnector } from './core/connector.js';
 import { createLogger } from './logger.js';
 import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
 import { RuntimePool } from './dsh/pool.js';
+import { createDocumentExtractor } from './dsh/document.js';
 import { BackgroundPusher } from './pipeline/egress/background.js';
 import { Responder } from './pipeline/egress/responder.js';
 import { AdmissionGate } from './pipeline/ingress/admission.js';
@@ -264,6 +265,12 @@ async function main(): Promise<void> {
           }),
         }
       : {}),
+    // 文档正文抽取：PDF 走 pdftotext 子进程，纯文本类直接解码。
+    // 抽取器缺失（本地开发没装 poppler）时自动降级为"只落盘 + 路径说明"，
+    // 不会让这一轮失败——见 dsh/document.ts。
+    extractDocument: createDocumentExtractor({
+      logger: logger.child({ component: 'document' }),
+    }),
   });
 
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
