@@ -299,13 +299,25 @@ export function extractGroupContent(
 }
 
 /**
- * 把 get_msg 回查到的被引用消息解析成片段（供连接器拼 `quote` 片段）。
+ * 把 get_msg 回查到的被引用消息解析成**完整内容**（含它自己的转发待回查下标）。
+ *
+ * 返回完整 `ExtractedContent` 而不是只有 parts：被引用的消息本身可能是一条
+ * 合并转发，把它的 `forwardRefs` 丢掉会让"引用一条聊天记录"渲染成
+ * `[转发消息]（内容未读入）`——明明有能力查却不查。
+ *
  * 纯函数：`data` 是 get_msg 返回的 `data` 字段。
  */
-export function quotedPartsFromGetMsg(data: unknown, selfId: number): MessagePart[] {
-  if (typeof data !== 'object' || data === null) return [];
+export function quotedContentFromGetMsg(data: unknown, selfId: number): ExtractedContent {
+  if (typeof data !== 'object' || data === null) {
+    return { parts: [], content: '', atSelf: false };
+  }
   const record = data as { message?: OneBotSegment[] | string };
-  return extractMessageContent(record.message, selfId).parts;
+  return extractMessageContent(record.message, selfId);
+}
+
+/** @deprecated 用 quotedContentFromGetMsg（它同时给出嵌套的转发下标） */
+export function quotedPartsFromGetMsg(data: unknown, selfId: number): MessagePart[] {
+  return quotedContentFromGetMsg(data, selfId).parts;
 }
 
 /** 从 get_msg 返回体里取被引用消息的发送者显示名。 */

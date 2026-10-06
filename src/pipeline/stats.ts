@@ -51,13 +51,21 @@ export class PipelineStats {
   imagesInlined = 0;
   /** 读取失败/超限/格式不支持而跳过的图片数（TurnRunner） */
   imagesSkipped = 0;
-  /** 成功展开的转发消息块数（连接器回查 get_forward_msg 成功后） */
+  /**
+   * 成功展开的转发消息块数（连接器回查 get_forward_msg 成功后）。
+   * 只统计**顶层**块——嵌套块的条目会并进父块的渲染文本，两边都计会重复。
+   */
   forwardsExpanded = 0;
-  /** 实际渲染进 content 的转发条目数（连接器；受 maxNodes/maxChars 裁剪后） */
+  /** 实际渲染进 content 的转发条目数（连接器；受 maxNodes/maxChars 裁剪后，同样只算顶层） */
   forwardNodesInlined = 0;
-  /** 回查失败/超时/关闭而未展开的转发块数（连接器，降级为 `[聊天记录]`） */
+  /**
+   * 未能展开的转发块数：回查失败/超时/响应解析不出条目/嵌套层级过深/超出读取上限。
+   *
+   * **不包括"开关关掉"**：那是运维主动关闭，不是失败——把它计进来会让
+   * "关掉功能"看起来像"功能坏了"。关掉时连接器不发任何请求、也不上报。
+   */
   forwardsFailed = 0;
-  /** 成功取到字节的文件数（TurnRunner） */
+  /** 取到字节**并通过体积复核**的文件数（TurnRunner；与 filesSkipped 互斥） */
   filesFetched = 0;
   /** 成功抽取正文的文件数（TurnRunner） */
   filesExtracted = 0;

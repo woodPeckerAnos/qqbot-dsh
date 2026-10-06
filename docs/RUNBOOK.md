@@ -383,16 +383,17 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 | 现象 | 字段 | 原因 | 处置 |
 |---|---|---|---|
-| 转发块只显示 `[聊天记录]` | `forwardsFailed` 增长 | 回查失败/超时/响应解析不出条目 | 看 debug 日志 `get_forward_msg 失败`；确认框架支持该动作（见第 7 节 #14） |
+| 转发块只显示 `[聊天记录]` | `forwardsFailed` 增长 | 回查失败/超时/响应解析不出条目 | 看 debug 日志 `get_forward_msg 失败`；确认框架支持该动作（见第 7 节 #14）。注意**关掉 `BOT_ATTACHMENT_FORWARD_ENABLED` 不计入**这个数（主动关闭不是失败） |
 | 转发块"共 N 条"但只列出前几条 | `forwardNodesInlined` 小于 N | 命中上限（正常降级，不是故障） | 提高 `BOT_ATTACHMENT_FORWARD_MAX_NODES` / `_MAX_CHARS` |
 | 完全不想展开转发 | — | — | `BOT_ATTACHMENT_FORWARD_ENABLED=false`（关掉后**不发任何回查请求**） |
 | 文件"不解析该类型" | `filesSkipped` 增长 | 扩展名不在白名单 | 加进 `BOT_ATTACHMENT_FILE_EXTENSIONS`；Office 三件套本期刻意不解析 |
 | 文件"读取失败" | `filesSkipped` 增长 | 取字节失败（URL 过期 / 直链申请失败 / 框架动作不支持） | 看 debug 日志 `申请直链失败`；确认框架支持 `get_group_file_url`（见 #17） |
 | 文件"没有可提取的文本层" | `filesSavedOnly` 增长 | 扫描版 PDF（无文本层） | 属预期：原文已在 `inbox/`，可以请 agent 用工具处理；OCR 不在范围内 |
 | PDF"未安装解析工具" | 日志 `pdftotext 不在 PATH 中` | 容器外的本地开发环境 | 容器镜像已装 `poppler-utils`；本地 `brew install poppler`。降级不影响主流程 |
-| 文件"未读入"但 `filesFetched` 有值 | `filesSavedOnly` | 解析器不支持该格式 | 与上一条同理：原文已在工作区，agent 可直接读 |
+| 文件"未读入"但 `filesFetched` 有值 | `filesSavedOnly` | 取到字节了但没抽出正文（格式不在解析范围 / 没有文本层） | 原文已在工作区，agent 可直接读。注意 `filesFetched` 与 `filesSkipped` **互斥**（体积复核在计数之前），所以 `fetched - extracted - savedOnly - skipped` 不会为负 |
 | 用户发来的文件被机器人又发回去 | — | `inboxDir` 与 `outboxDir` 配成了同一个名字 | 不可能：配置层直接拒绝同名（启动期报错）。若真出现，检查是否手工往 `outbox/` 里放了文件 |
-| `inbox/` 目录越来越大 | — | 保留策略被关掉或上限过大 | 检查 `BOT_ATTACHMENT_INBOX_RETENTION_DAYS`（默认 7 天）与 `BOT_ATTACHMENT_INBOX_MAX_MB`（默认 200MB）；清理在每轮 turn 开始时做 |
+| `inbox/` 目录越来越大 | — | 保留策略被关掉或上限过大 | 检查 `BOT_ATTACHMENT_INBOX_RETENTION_DAYS`（默认 7 天）与 `BOT_ATTACHMENT_INBOX_MAX_MB`（默认 200MB）。清理只在 `files.enabled && files.saveToInbox` 时每轮 turn 开始做，且只删 `<13 位时间戳>-` 命名的文件——agent 自己放进去的东西不会被删 |
+| 日志出现 `inbox 路径不是目录（符号链接…）` / `inbox 目录不在会话工作区内` | — | agent（可能被注入）把 `<workspace>/inbox` 换成了指向工作区外的符号链接 | 这是**预期拦截**：落盘与清理都会拒绝执行，工作区外的文件不会被误删。排查该会话的 agent 行为即可 |
 
 落地位置：`/data/workspaces/<hash>/inbox/`（文件名形如 `1767225600000-report.pdf`）。
 用户的文件**永远只落在本会话工作区**，另一个群的文件不会出现在这里。
@@ -526,7 +527,8 @@ docker system df
 | 14 | `get_forward_msg` 的入参与响应形状 | 参数名在各实现间不一致（NapCat 用 `id`、go-cqhttp 用 `message_id`），响应可能是 node 段数组、CQ 码字符串数组、或包着 `data` 的形态。程序**一次请求带两个参数**、解析器容忍上述形状，认不出的条目跳过。真机上若转发块始终只显示 `[聊天记录]`，看 debug 日志 `get_forward_msg 失败` 与 `/metrics` 的 `forwardsFailed` |
 | 15 | 官方是否存在聊天记录类 `message_type` | 现行官方文档的接收侧只有 0/3/103，早期代码注释里的 101/102 查无实据。程序对它们做**防御性兼容**（见到就把 `msg_elements` 当转发块渲染）。若官方后续开放转发能力，接缝已留好；在此之前官方侧不作为承诺 |
 | 16 | `pdftotext` 对中文 PDF 的实际抽取质量与 `-layout` 取舍 | `-layout` 保留版式（表格更可读），代价是中文行内会多出对齐空格。若实测发现空格干扰严重，去掉 `-layout` 即可（`src/dsh/document.ts` 的参数数组） |
-| 17 | OneBot 群文件直链申请的实际字段名 | 按 `get_group_file_url{file_id, group}` / `get_private_file_url{file_id}` 申请、读返回里的 `url` 字段，失败退回 `get_file`。真机上若文件始终"读取失败"，看 debug 日志 `申请直链失败` 与返回体字段名 |
+| 17 | OneBot 群文件直链申请的**返回字段** | 入参已与[官方文档](https://doc.napneko.icu/develop/file)核对一致（`get_group_file_url{file_id, group}`、`get_private_file_url{file_id}`）；**返回体里直链的字段名**未见示例，程序读 `url`，取不到就退回 `get_file`。真机上若文件始终"读取失败"，看 debug 日志 `申请直链失败` 与返回体字段名 |
+| 18 | 转发读取预算的取值是否够用 | 除四重配额外还有两道内部闸：单条消息的回查**次数**（`maxNodes + 2`）与回查**总墙钟**（`forward.timeoutMs × 2`）。它们是为"一条 node 里塞几十个转发段"这类扇出准备的。真机上若正常转发被截断成 `[转发消息（超出本次读取上限，未展开）]`，调大 `BOT_ATTACHMENT_FORWARD_TIMEOUT_MS` 或 `_MAX_NODES` |
 
 ---
 

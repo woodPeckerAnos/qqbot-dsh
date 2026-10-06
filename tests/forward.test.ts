@@ -767,3 +767,149 @@ describe('转发读取的资源上限', () => {
     expect(contents.some((content) => content.includes('B 号的聊天记录'))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 顺序性：同一条消息既有引用又有转发（方案 §4 承诺的不变量）
+// ---------------------------------------------------------------------------
+
+describe('引用与转发的合并顺序', () => {
+  let connector: OnebotConnector | undefined;
+  const clients: WebSocket[] = [];
+  afterEach(async () => {
+    for (const ws of clients.splice(0)) ws.close();
+    await connector?.stop();
+    connector = undefined;
+  });
+
+  function quotePlusForwardMessage(messageId: number, quotedId: string, forwardId: string) {
+    return JSON.stringify({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: messageId,
+      group_id: 8888,
+      user_id: 12345,
+      time: 1_700_000_000,
+      message: [
+        { type: 'at', data: { qq: '10000' } },
+        { type: 'reply', data: { id: quotedId } },
+        { type: 'text', data: { text: '看看这个' } },
+        { type: 'forward', data: { id: forwardId } },
+      ],
+      sender: { user_id: 12345, nickname: '小明' },
+    });
+  }
+
+  it('引用在前、转发就地展开：下标不会被前插的引用挤歪', async () => {
+    const { connector: c, events } = makeConnector(0);
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+    const frames = collectFrames(ws);
+
+    ws.send(quotePlusForwardMessage(80, '9001', 'fwd-mix'));
+    await sleep(80);
+
+    // 补全顺序：先就地展开转发（它的下标基于原始 parts），再回查引用
+    const forwardAction = frames.find((frame) => frame['action'] === 'get_forward_msg');
+    expect(forwardAction).toBeDefined();
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: forwardAction!['echo'],
+        data: { messages: ['[CQ:face,id=178] 转发的发言'] },
+      }),
+    );
+    await sleep(80);
+
+    const quoteAction = frames.find((frame) => frame['action'] === 'get_msg');
+    expect(quoteAction).toBeDefined();
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: quoteAction!['echo'],
+        data: { message: [{ type: 'text', data: { text: '被引用的原话' } }], sender: { nickname: '张三' } },
+      }),
+    );
+    await sleep(120);
+
+    expect(contentOf(events)).toBe(
+      [
+        '[引用 张三] 被引用的原话',
+        '看看这个',
+        '[转发消息 共 1 条]',
+        FORWARD_UNTRUSTED_OPEN,
+        '1. [表情] 转发的发言',
+        FORWARD_UNTRUSTED_CLOSE,
+      ].join('\n'),
+    );
+  });
+
+  it('被引用的消息本身是合并转发时，也会被展开（而不是"内容未读入"）', async () => {
+    const { connector: c, events } = makeConnector(0);
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+    const frames = collectFrames(ws);
+
+    // 只带 reply，没有顶层转发
+    ws.send(
+      JSON.stringify({
+        post_type: 'message',
+        message_type: 'group',
+        sub_type: 'normal',
+        self_id: 10000,
+        message_id: 81,
+        group_id: 8888,
+        user_id: 12345,
+        time: 1_700_000_000,
+        message: [
+          { type: 'at', data: { qq: '10000' } },
+          { type: 'reply', data: { id: '9002' } },
+          { type: 'text', data: { text: '这段聊天记录怎么说' } },
+        ],
+        sender: { user_id: 12345, nickname: '小明' },
+      }),
+    );
+    await sleep(80);
+
+    const quoteAction = frames.find((frame) => frame['action'] === 'get_msg');
+    expect(quoteAction).toBeDefined();
+    // 被引用的消息是一条合并转发
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: quoteAction!['echo'],
+        data: {
+          message: [{ type: 'forward', data: { id: 'quoted-fwd' } }],
+          sender: { nickname: '张三' },
+        },
+      }),
+    );
+    await sleep(80);
+
+    const forwardAction = frames.find((frame) => frame['action'] === 'get_forward_msg');
+    expect(forwardAction).toBeDefined();
+    expect((forwardAction!['params'] as { id: string }).id).toBe('quoted-fwd');
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: forwardAction!['echo'],
+        data: { messages: ['被引用的转发内容'] },
+      }),
+    );
+    await sleep(120);
+
+    const content = contentOf(events);
+    expect(content).toContain('[引用 张三]');
+    expect(content).toContain('1. 被引用的转发内容');
+    expect(content).not.toContain('内容未读入');
+  });
+});

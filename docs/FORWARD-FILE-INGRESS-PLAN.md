@@ -419,10 +419,11 @@ attachments:
 ### 10.2 统计（`src/pipeline/stats.ts` + `/metrics`）
 
 ```
-forwardsExpanded      成功展开的转发块数
-forwardNodesInlined   实际送入 prompt 的转发条数
-forwardsFailed        回查失败/超时/超限而降级的转发块数
-filesFetched          成功取到字节的文件数
+forwardsExpanded      成功展开的转发块数（只算顶层块）
+forwardNodesInlined   实际送入 prompt 的转发条数（只算顶层，避免嵌套重复计数）
+forwardsFailed        回查失败/超时/解析不出条目/嵌套过深/超出读取上限的块数
+                      （**不含"开关关掉"**：运维主动关闭不是失败）
+filesFetched          取到字节并通过体积复核的文件数（与 filesSkipped 互斥）
 filesExtracted        成功抽取正文的文件数
 filesSavedOnly        只落盘未解析的文件数
 filesSkipped          因体积/类型/失败而跳过的文件数

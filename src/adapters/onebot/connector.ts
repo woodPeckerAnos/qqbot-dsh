@@ -50,7 +50,7 @@ import {
   onebotGroupTarget,
   parseForwardNodes,
   quotedAuthorFromGetMsg,
-  quotedPartsFromGetMsg,
+  quotedContentFromGetMsg,
   type ForwardRef,
   type NormalizeResult,
 } from './normalize.js';
@@ -579,19 +579,20 @@ export class OnebotConnector implements BotConnector {
     enrichment: { quotedMessageId?: string; forwardRefs?: ForwardRef[] },
   ): Promise<NormalizedMessage> {
     let parts: MessagePart[] = event.parts ?? [];
+    // 预算在整个事件内共享：引用里的转发与消息本身的转发消耗同一份额度
+    const budget = this.newForwardBudget();
 
     if (enrichment.forwardRefs !== undefined && enrichment.forwardRefs.length > 0) {
-      parts = await this.resolveForwardRefs(
-        session,
-        parts,
-        enrichment.forwardRefs,
-        0,
-        this.newForwardBudget(),
-      );
+      parts = await this.resolveForwardRefs(session, parts, enrichment.forwardRefs, 0, budget);
     }
 
     if (enrichment.quotedMessageId !== undefined) {
-      const quote = await this.fetchQuote(session, enrichment.quotedMessageId, event.target.key);
+      const quote = await this.fetchQuote(
+        session,
+        enrichment.quotedMessageId,
+        event.target.key,
+        budget,
+      );
       if (quote !== undefined) parts = [quote, ...parts];
     }
 
@@ -608,14 +609,21 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     quotedMessageId: string,
     conversationKey: string,
+    budget: ForwardBudget,
   ): Promise<MessageQuotePart | undefined> {
     const numericId = Number(quotedMessageId);
     try {
       const data = await this.callAction(session, 'get_msg', {
         message_id: Number.isFinite(numericId) ? numericId : quotedMessageId,
       });
-      const parts = quotedPartsFromGetMsg(data, session.selfId ?? 0);
-      if (parts.length === 0) return undefined;
+      const extracted = quotedContentFromGetMsg(data, session.selfId ?? 0);
+      if (extracted.parts.length === 0) return undefined;
+      // 被引用的消息自己可能是一条合并转发：一并展开（深度从 1 起算，
+      // 因为它已经在"引用"这层结构里了；预算仍与消息本身共享）
+      const parts =
+        extracted.forwardRefs !== undefined && extracted.forwardRefs.length > 0
+          ? await this.resolveForwardRefs(session, extracted.parts, extracted.forwardRefs, 1, budget)
+          : extracted.parts;
       const author = quotedAuthorFromGetMsg(data);
       return {
         type: 'quote',
