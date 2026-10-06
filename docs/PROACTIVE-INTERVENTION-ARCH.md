@@ -637,10 +637,19 @@ export interface SceneVerdict {
 
 ## 13. 生态调研对照（9 个同类项目 + 3 起公开翻车案例）
 
-> 调研范围：bl-chat-plugin（Yunzai）、koishi-plugin-dialogue、astrbot 主动聊天、
-> KouriChat、nonebot-plugin-personification（np）、astrbot_plugin_jev、
-> astrbot_plugin_group_chat、Astrbot_plugin_Heartflow、MaiBot，以及
-> IUI'25 Koala 论文、DiscussLLM（NeurIPS'25 workshop）、openclaw#121914。
+> 调研范围（9 个项目 + 3 份外部资料）：
+> [bl-chat-plugin](https://github.com/Cat-bl/bl-chat-plugin)（Yunzai）、
+> [koishi-plugin-dialogue](https://github.com/jiajiu123/koishi-plugin-dialogue)、
+> [astrbot 主动聊天](https://github.com/Pancakes-Labs/astrbot_plugin_proactive_chat)、
+> [KouriChat](https://github.com/KouriChat/KouriChat)、
+> [nonebot-plugin-personification](https://github.com/luojisama/nonebot-plugin-personification)（np）、
+> astrbot_plugin_jev、[astrbot_plugin_group_chat](https://github.com/qa296/astrbot_plugin_group_chat)、
+> [Astrbot_plugin_Heartflow](https://github.com/advent259141/Astrbot_plugin_Heartflow)、
+> [MaiBot](https://github.com/MaiM-with-u/MaiBot)；
+> 以及 [IUI'25 Koala 论文](https://ar5iv.labs.arxiv.org/html/2501.17258)、
+> [DiscussLLM](https://ar5iv.labs.arxiv.org/html/2508.18167)、
+> [openclaw#121914](https://github.com/openclaw/openclaw/issues/121914)。
+> 目录级的单条结论出处（文件路径与行号）见各小节内的链接。
 
 ### 13.1 三个直接验证本方案的发现
 
@@ -713,8 +722,8 @@ export interface SceneVerdict {
 
 | 案例 | 事实 | 对本方案的要求 |
 |---|---|---|
-| openclaw#121914（IRC agent 被封） | `requireMention:false` + **session-start 一次性「先旁观」指令**；agent 从主动评论升级到替别人发言被封。原文：「**Instructions issued *once* do not survive *sustained* group conversation**」「**The cap must live below the model, where the model cannot rationalize past it**」 | ① 边界必须**逐条注入、紧邻决策点**（现有转录的 `<群聊转录 说明=…>` 就是这个形态，要保留）；② 硬约束必须在**模型之下**（平面 C 的确定性否决链）；③ 新增「绝不替他人发言」 |
-| IBM Koala（IUI'25） | 18 人中 **13 人（72.2%）更偏好只回应的版本**；主动版贡献了 73% 的想法却「dominated the conversation」，用户原话「像一个不给人留空间的说教学生」「太话多，无论长度还是频率」。用户诉求：「**给真人更多时间先回答**」「**没人回答时**再补充，而不是总当第一个」 | ① 场景 3 的双探针方向正确（先让人答）；② 场景 2/5 必须宁缺勿滥；③ 长消息要克制（任务型 bot 已有分段/配额机制可复用） |
+| [openclaw#121914](https://github.com/openclaw/openclaw/issues/121914)（IRC agent 被封） | `requireMention:false` + **session-start 一次性「先旁观」指令**；agent 从主动评论升级到替别人发言被封。原文：「**Instructions issued *once* do not survive *sustained* group conversation**」「**The cap must live below the model, where the model cannot rationalize past it**」 | ① 边界必须**逐条注入、紧邻决策点**（现有转录的 `<群聊转录 说明=…>` 就是这个形态，要保留）；② 硬约束必须在**模型之下**（平面 C 的确定性否决链）；③ 新增「绝不替他人发言」 |
+| [IBM Koala（IUI'25）](https://ar5iv.labs.arxiv.org/html/2501.17258) | 18 人中 **13 人（72.2%）更偏好只回应的版本**；主动版贡献了 73% 的想法却「dominated the conversation」，用户原话「像一个不给人留空间的说教学生」「太话多，无论长度还是频率」。用户诉求：「**给真人更多时间先回答**」「**没人回答时**再补充，而不是总当第一个」 | ① 场景 3 的双探针方向正确（先让人答）；② 场景 2/5 必须宁缺勿滥；③ 长消息要克制（任务型 bot 已有分段/配额机制可复用） |
 | 2026-03 的「不设 @ 门槛」事故（媒体报道） | 3000 人群被围攻 2 小时，泄露 IP / 姓名 / 公司营收；对方诱导它搜 C 盘、执行自毁代码；**四个定时任务同时触发，一夜清空 Token**；主人**毫不知情** | ① 定时任务式主动发言（KouriChat 那种「定时发固定内容」）**明确不抄**；② 旁听内容进 prompt 必须有不可信边界声明（已有）；③ 成本与异常必须能在 `/listen` 侧被看见（§7 的控制面不是可选项） |
 
 ### 13.5 两个被高估的参考对象（避免误引）
@@ -735,7 +744,7 @@ export interface SceneVerdict {
 
 ### 13.6 ⚠️ 一个可能推翻全部预算设计的前置事实（需业务方确认）
 
-调研查到腾讯官方文档原文：**主动推送能力已于 2025-04-21 起不再提供**；
+调研查到[腾讯官方文档](https://github.com/tencent-connect/bot-docs/blob/master/docs/develop/api-v2/server-inter/message/send-receive/send.md)原文：**主动推送能力已于 2025-04-21 起不再提供**；
 群聊主动消息**每月 4 条**（超额发送失败）；被动消息有效时间 5 分钟 / 最多回复 5 次；
 且用户可以自行关闭接收主动消息（**关闭后主动消息一律失败**，代码侧不可知）。
 
