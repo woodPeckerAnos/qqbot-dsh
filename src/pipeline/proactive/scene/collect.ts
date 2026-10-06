@@ -20,7 +20,7 @@ import {
   type SceneId,
   type ScenePrecheckContext,
   type SceneTrigger,
-} from './contract.js';
+} from '../contract.js';
 
 // ---------------------------------------------------------------------------
 // 场景 4 的指代检测（搜集层最"重"的一段本地逻辑）

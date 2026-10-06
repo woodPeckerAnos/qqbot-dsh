@@ -72,15 +72,19 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 `trigger` 只用于**记账与日志**（让 `/metrics` 能回答"哪个场景在说话、
 哪个通道在降级"），平台侧看不到它，也不要用它做任何判定。
 
-## 4. 三层架构（`collect` / `judge` / `veto`）
+## 4. 三层架构（`scene/` / `judge/` / `veto/`）
+
+**先读 [SCENES.md](SCENES.md)**：那里用自然语言写着"当前 bot 会在什么情况下
+主动开口"。本节讲的是这套东西**怎么实现**。
 
 「要不要说话」的判定被拆成三层，**每层只做一件事，且明确不能做另两件事**：
 
 | 层 | 文件 | 做什么 | **绝不能**做什么 |
 |---|---|---|---|
-| ① 搜集 | `collect.ts` | 本地、零成本地找出候选场景；执行全局保险（没人理我就停） | 语义判断、调 LLM、决定谁赢 |
-| ② LLM | `judge.ts` | 对**每个候选**回答"成立吗"（多标签 + 置信度 + 理由 + 证据） | 做优先级/预算裁决、产生候选外的场景 |
-| ③ 否决 | `veto.ts` | 顺序、硬限流、话题预算、wait 采纳 → 唯一的终局 | 读原始消息文本、调 LLM、任何语义判断 |
+| ① 搜集 | `scene/collect.ts` | 本地、零成本地找出候选场景；执行全局保险（没人理我就停） | 语义判断、调 LLM、决定谁赢 |
+| ② LLM | `judge/judge.ts` | 对**每个候选**回答"成立吗"（多标签 + 置信度 + 理由 + 证据） | 做优先级/预算裁决、产生候选外的场景 |
+| ③ 否决 | `veto/veto.ts` | 顺序、硬限流、话题预算、wait 采纳 → 唯一的终局 | 读原始消息文本、调 LLM、任何语义判断 |
+| 投递 | `deliver/speaker.ts` | 唯一出口 + 降级链 + 记账（§6） | 做额度判断（避免两套账） |
 
 **为什么「取第一个」必须在第三层**：它是资源分配（把有限发言机会给谁），
 不是语义判断。写进 prompt 就再也无法参数化顺序、无法离线回放对比不同顺序、
@@ -91,7 +95,10 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 intake ≈ 搜集、evaluate ≈ LLM、speak ≈ 否决。新增判定时先问"这属于哪一层"，
 再决定加到哪条链——详见 AGENT-CONTRACT.md §2.2。
 
-## 5. 5 个介入场景与优先级（`contract.ts` + `collect.ts`）
+## 5. 5 个介入场景与优先级（细节见 [SCENES.md](SCENES.md)）
+
+下表是速查；**每个场景的人话描述、反例与典型对话在 [SCENES.md](SCENES.md)**，
+那份文件是场景的真相源（与代码的一致性由契约测试强制）：
 
 业务方给出的 5 种主动介入场景，**按顺序取第一个命中**：
 
@@ -103,10 +110,10 @@ intake ≈ 搜集、evaluate ≈ LLM、speak ≈ 否决。新增判定时先问"
 | 4 | `scene-2` 持续讨论 | 话题滚动（每 30 条 / 5 分钟） | 能提供能力 / 有可答问题 / 有事实性错误，且有信息增量 |
 | 5 | `scene-5` 兴趣话题 | 话题滚动（同上） | 话题停在"没结论、没人动手"，bot 能补一句能立刻用的结果 |
 
-两条全局纪律（不属任何场景）：
+两条全局纪律（不属任何场景，**对所有场景一律生效**）：
 
 - **「没人理我就停」**：连续 2 次介入后群里毫无回应 → 全体沉默
-  （任何用户发言归零）。见 `collectSceneHits()`。
+  （任何用户发言归零）。见 `scene/collect.ts` 的 `collectCandidates()` 入口。
 - **顺序唯一来源**是 `contract.ts` 的 `SCENE_ORDER`；判据清单按它构造、
   候选按它排序、「取第一个」按它裁决、trace 按它记账——任何地方都不许再写第二份顺序。
   裁决时还可传入 `VetoContext.order` 覆盖它（回放对比用），但覆盖只影响**裁决**，
@@ -115,7 +122,7 @@ intake ≈ 搜集、evaluate ≈ LLM、speak ≈ 否决。新增判定时先问"
 场景顺序、criteria 文本、门槛口径的完整讨论见
 [docs/PROACTIVE-INTERVENTION-ARCH.md](../../../docs/PROACTIVE-INTERVENTION-ARCH.md)（§1 场景翻译、§4 契约）。
 
-## 6. 投放结果的降级链（`speaker.ts`）
+## 6. 投放结果的降级链（`deliver/speaker.ts`）
 
 ```
 disabled（总开关关）→ empty（内容为空）→ unsupported（平台不支持 / 适配器未实现）

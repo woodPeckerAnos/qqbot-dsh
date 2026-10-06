@@ -35,8 +35,8 @@ import type {
   ConversationTarget,
   OutgoingMessage,
   ProactiveRejectReason,
-} from '../../core/connector.js';
-import type { Logger } from '../../logger.js';
+} from '../../../core/connector.js';
+import type { Logger } from '../../../logger.js';
 
 // ---------------------------------------------------------------------------
 // 触发来源

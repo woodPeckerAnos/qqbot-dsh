@@ -25,7 +25,7 @@ import {
   type ProactiveDegradeReason,
   type ProactiveMetrics,
   type ProactiveTrigger,
-} from '../src/pipeline/proactive/speaker.js';
+} from '../src/pipeline/proactive/deliver/speaker.js';
 
 const TARGET: ConversationTarget = {
   platform: 'onebot',

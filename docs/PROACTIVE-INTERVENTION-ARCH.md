@@ -59,6 +59,11 @@ scene-4 指代      → scene-1 续聊追问 → scene-3 无人应答 → scene-
 
 ## 1. 五个场景的架构翻译
 
+> **先看人话版**：这五个场景**当前生效条件**的自然语言说明书在
+> [src/pipeline/proactive/SCENES.md](../src/pipeline/proactive/SCENES.md)。
+> 本节是它的架构翻译（每个场景落在哪个平面、需要什么证据），
+> 两者不一致时以 SCENES.md 为准并立刻修正本文。
+
 把业务语言逐条翻译成架构语言时，必须回答四件事：
 **时机（什么时候判）／预筛（本地能不能先挡掉）／判据（LLM 要什么证据）／
 风险（误报的代价是什么）**。这张表就是整个方案的骨架。
@@ -176,7 +181,7 @@ scene-4 指代      → scene-1 续聊追问 → scene-3 无人应答 → scene-
 将来的定时提醒都共用同一条路径，且天然对官方通道安全（do nothing）。
 
 > 相关文件：`src/core/connector.ts`（能力契约）、
-> `src/pipeline/proactive/speaker.ts`（唯一出口）、
+> `src/pipeline/proactive/deliver/speaker.ts`（唯一出口）、
 > [README.md](../src/pipeline/proactive/README.md)（给人读的说明）、
 > [AGENT-CONTRACT.md](../src/pipeline/proactive/AGENT-CONTRACT.md)（给 agent 读的扩展契约）。
 
@@ -338,14 +343,20 @@ criteria 里枚举**能力域**（查资料 / 跑代码与脚本 / 数据与图�
 
 ```
 src/pipeline/proactive/
-  contract.ts   三层共享契约（唯一接缝）：SceneId / SCENE_ORDER / 触发面 /
-                SceneEvidence / SceneCandidate / SceneVerdict / ProactiveDecision
-  collect.ts    ① 搜集层：场景静态描述 + 本地预筛 + 候选 + 全局保险
-  judge.ts      ② LLM 层：criteria 文案 + prompt 渲染 + 输出契约 + 容错解析
-  veto.ts       ③ 否决层：顺序、额度、预算、wait 采纳 → 唯一终局
-  speaker.ts    投递层：ProactiveSpeaker（§2.1）
+  SCENES.md            当前生效场景的**自然语言真相源**（人话：什么情况下会说、
+                       什么算命中、典型对话、误报代价）——与代码一致性由测试强制
+  contract.ts          三层共享契约（唯一接缝）：SceneId / SCENE_ORDER / 触发面 /
+                       SceneEvidence / SceneCandidate / SceneVerdict / ProactiveDecision
+  scene/collect.ts     ① 搜集层：场景静态描述 + 本地预筛 + 候选 + 全局保险
+  judge/judge.ts       ② LLM 层：criteria 文案 + prompt 渲染 + 输出契约 + 容错解析
+  veto/veto.ts         ③ 否决层：顺序、额度、预算、wait 采纳 → 唯一终局
+  deliver/speaker.ts   投递层：ProactiveSpeaker（§2.1）
   README.md / AGENT-CONTRACT.md
 ```
+
+**为什么物理上也分文件夹**：三层各自有独立的变化节奏（本地门槛 / 判据文案 /
+额度策略），分目录后"能 import 什么"在有 lint 工具时可以直接变成规则，
+而现在至少让越层一眼可见：`veto/` 里出现 `transcript` 或 `fetch` 就是错的。
 
 **三层各自绝不能做的事**（越层是本设计唯一的失败模式）：
 

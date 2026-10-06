@@ -17,7 +17,7 @@ import {
   type SceneEvidence,
   type SceneId,
   type SceneVerdict,
-} from './contract.js';
+} from '../contract.js';
 
 // ---------------------------------------------------------------------------
 // 每个场景的判据正文（自然语言；需求即 prompt）

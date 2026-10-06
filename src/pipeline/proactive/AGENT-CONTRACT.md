@@ -2,12 +2,24 @@
 
 > **读者是另一个 agent（或另一个会话里的我）**。假设你只看到这份文件、
 > 没有看过本项目的历史讨论：照本文做，你的改动就能被接受。
-> 人读版本见 [README.md](README.md)；完整架构讨论见
+> **先读 [SCENES.md](SCENES.md)**——当前生效场景的自然语言说明书。
+> 其余人读版本见 [README.md](README.md)；完整架构讨论见
 > [docs/PROACTIVE-INTERVENTION-ARCH.md](../../../docs/PROACTIVE-INTERVENTION-ARCH.md)。
+
+## 目录
+
+```
+src/pipeline/proactive/
+  SCENES.md            当前生效场景的自然语言真相源（**新增场景第一步**）
+  contract.ts          三层共享契约：SceneId / SCENE_ORDER / 触发面 / 判定 / 终局
+  scene/collect.ts     ① 搜集层    judge/judge.ts  ② LLM 层
+  veto/veto.ts         ③ 否决层    deliver/speaker.ts  投递层
+  README.md / AGENT-CONTRACT.md
+```
 
 ---
 
-## 0. 先读这六条，否则不要动手
+## 0. 先读这七条，否则不要动手
 
 1. **一个概念只有一个家**：主动发言的所有代码在 `src/pipeline/proactive/`；
    平台能力在 `src/core/connector.ts` 的 `BotConnector.proactive?`。
@@ -23,10 +35,14 @@
 5. **顺序唯一来源**：场景顺序只有 `contract.ts` 的 `SCENE_ORDER` 一处定义。
    判据清单、候选排序、裁决、trace 全部由它派生；只在 `VetoContext.order`
    允许为回放对比**覆盖裁决顺序**。新增/调整场景必须同步三处并跑契约测试。
-6. **判定分三层，不许越层**：搜集（`collect.ts`，本地、零 LLM）→ 判据
-   （`judge.ts`，逐场景"成立不成立"）→ 否决（`veto.ts`，顺序与额度的唯一实现）。
+6. **判定分三层，不许越层**：搜集（`scene/collect.ts`，本地、零 LLM）→ 判据
+   （`judge/judge.ts`，逐场景"成立不成立"）→ 否决（`veto/veto.ts`，顺序与额度的唯一实现）。
    越层的典型错误：把"取第一个"写进 prompt、让 veto 读消息文本、
    在 collect 里调 LLM。
+7. **改行为 = 先改人话**：任何"bot 会在什么情况下开口"的变化，先在
+   [SCENES.md](SCENES.md) 里用自然语言写清楚（什么情况下出现 / 什么算命中 /
+   典型对话 / 误报的代价），再去改代码。**先写人话，再写代码**——
+   文档与代码不一致时契约测试会红（「验收20–22」），这是刻意的。
 
 ---
 
@@ -36,9 +52,10 @@
 |---|---|---|
 | 让 bot 在**新的条件下**主动说话（新的判定条件 / 新的场景） | ① 新增**介入规则** | 是（一个规则文件夹 + 一行注册） |
 | 让 bot 在**新的平台上**能主动发言 | ② 实现适配器的 `proactive()` | 是（一个方法） |
-| 调整"什么算命中场景"的**本地门槛** | ③a 改搜集层 | 是（`collect.ts` 的 `precheck` + 契约测试） |
-| 调整**判据文案 / 输出契约** | ③b 改 LLM 层 | 是（`judge.ts`，无需动 prompt 之外的东西） |
-| 调整**顺序 / 额度 / 预算 / wait 策略** | ③c 改否决层 | 是（`veto.ts`，纯函数、可穷举测试） |
+| **新增一个介入场景** | ③0 **先改 `SCENES.md`**（自然语言），再改三层 | 是（见 §5.1） |
+| 调整"什么算命中场景"的**本地门槛** | ③a 改搜集层 | 是（`scene/collect.ts` 的 `precheck` + 契约测试） |
+| 调整**判据文案 / 输出契约** | ③b 改 LLM 层 | 是（`judge/judge.ts`） |
+| 调整**顺序 / 额度 / 预算 / wait 策略** | ③c 改否决层 | 是（`veto/veto.ts`，纯函数、可穷举测试） |
 | 只想改文案 / 阈值 | 配置（`qqbot.yml` / env） | 否 |
 
 ---
@@ -158,22 +175,30 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 
 | 层 | 文件 | 你在这里能改什么 | 不该出现在这里的东西 |
 |---|---|---|---|
-| ① 搜集 | `collect.ts` | `SCENE_DEFINITIONS` 的 `precheck` / `triggers`；`collectCandidates()` 的保险 | LLM 调用、额度判断、"谁赢" |
-| ② LLM | `judge.ts` | `SCENE_1..5_CRITERIA` 文案、`renderJudgeCriteria()`、`parseSceneVerdicts()` 容错 | 优先级/预算、候选之外的场景 |
-| ③ 否决 | `veto.ts` | `VetoPolicy` 默认值、否决顺序、`selectByQuantileBudget()` | 读消息文本、调 LLM、语义判断 |
+| ① 搜集 | `scene/collect.ts` | `SCENE_DEFINITIONS` 的 `precheck` / `triggers`；`collectCandidates()` 的保险 | LLM 调用、额度判断、"谁赢" |
+| ② LLM | `judge/judge.ts` | `SCENE_1..5_CRITERIA` 文案、`renderJudgeCriteria()`、`parseSceneVerdicts()` 容错 | 优先级/预算、候选之外的场景 |
+| ③ 否决 | `veto/veto.ts` | `VetoPolicy` 默认值、否决顺序、`selectByQuantileBudget()` | 读消息文本、调 LLM、语义判断 |
 
-### 5.1 加一个场景（三层都要碰，按顺序做）
+### 5.1 加一个场景（**先写人话，再写代码**）
+
+**第 0 步（不可跳过）：在 [SCENES.md](SCENES.md) 里新增一节自然语言描述**，
+按现有五节的格式交代四件事——① 什么情况下出现；② 什么算命中 / 什么不算（含反例）；
+③ 至少一个**典型对话**例子；④ 误报的代价（这条决定它的优先级与门槛高低）。
+**顺序也是产品决策**：章节顺序 = `SCENE_ORDER` 顺序，先想清楚它排第几。
+
+然后才是代码三处：
 
 1. **`contract.ts`**：`SceneId` 加 `'scene-6'`，并决定它在 `SCENE_ORDER` 里的位置
-   （顺序是产品决策，不要随手放最后——放最后等于它几乎永远轮不到）；
-2. **`collect.ts`**：加一条 `SCENE_DEFINITIONS`（`name` / `triggers` / `precheck`）。
-   **弱信号场景只能绑 `topic-roll`**，绝不绑 `message`——否则"每条消息都判一次"
-   从类型层面就破防了；
-3. **`judge.ts`**：加 `SCENE_6_CRITERIA` 并登记进 `CRITERIA_TEXT`
-   （`SCENE_CRITERIA` 是按 `SCENE_ORDER` 构造的，忘了登记契约测试立刻失败）；
-4. **`veto.ts`**：通常**不用改**——顺序与额度是全场景共用的。
+   （不要随手放最后——放最后等于它几乎永远轮不到）；
+2. **`scene/collect.ts`**：加一条 `SCENE_DEFINITIONS`（`name` / `triggers` / `precheck`）。
+   ⚠️ `name` 必须与 SCENES.md 章节标题里的名字**逐字一致**（契约测试校验）；
+   **弱信号场景只能绑 `topic-roll`**，绝不绑 `message`；
+3. **`judge/judge.ts`**：加 `SCENE_6_CRITERIA` 并登记进 `CRITERIA_TEXT`
+   （`SCENE_CRITERIA` 按 `SCENE_ORDER` 构造，忘了登记契约测试立刻失败）；
+4. **`veto/veto.ts`**：通常**不用改**——顺序与额度是全场景共用的。
    只有"这个场景允许突破话题预算"这类特殊策略才动，且必须写成显式策略；
-5. 跑 `npx vitest run tests/scenes-layers.test.ts`（19 条契约用例）。
+5. 跑 `npx vitest run tests/scenes-layers.test.ts`（22 条契约用例，其中
+   「验收20–22」专门校验 SCENES.md 与代码一致）。
 
 ### 5.2 只改本地门槛（最常见）
 
@@ -225,7 +250,8 @@ git diff                                   # 复核：有没有偷偷改到别�
 - [ ] 我的判定失败时是 `halt`（fail-closed），不是放行
 - [ ] 我没有新增 LLM 调用；需要的语义判据并入了既有 criteria
 - [ ] 新增/修改了参数 → frontmatter、`paramsSpec`、文档三处同步
-- [ ] 新增了场景 → `contract.ts` / `collect.ts` / `judge.ts` 三处同步 + 测试
+- [ ] 新增了场景 → **`SCENES.md` 先写人话** + `contract.ts` / `scene/collect.ts` /
+      `judge/judge.ts` 三处同步 + 测试（「验收20」会检查文档）
 - [ ] 我的改动没有越层（collect 无 LLM、judge 无裁决、veto 无语义）
 - [ ] `REQUIREMENT.md` 的验收标准与 `rule.test.ts` 的「验收N」逐条对应
 - [ ] 我更新的文档：本文 / `README.md` / `docs/PROACTIVE-INTERVENTION-ARCH.md`（按改动范围）
@@ -253,7 +279,8 @@ git diff                                   # 复核：有没有偷偷改到别�
 
 - `BotConnector.proactive` 签名或 `ProactiveResult` 形状 → §4
 - `ProactiveSpeaker` 的降级链或原因枚举 → §1、§6
-- `SCENE_ORDER` / 场景集合 / 触发面 → §5.1
+- `SCENE_ORDER` / 场景集合 / 触发面 / **某个场景的生效条件** → §5.1 **且必须同步 SCENES.md**
+- 目录结构（层与文件的对应） → §0 的目录树、README §4
 - 三层的文件划分或职责边界 → §1、§5
 - `VetoPolicy` 字段或默认值 → §5.4
 - 介入规则的三件套格式或注册位置 → §2

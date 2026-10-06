@@ -10,6 +10,9 @@
  * 否决层不需要消息文本。
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -27,18 +30,21 @@ import {
   detectBotReference,
   getScene,
   scenesForTrigger,
-} from '../src/pipeline/proactive/collect.js';
+} from '../src/pipeline/proactive/scene/collect.js';
 import {
   JUDGE_OUTPUT_CONTRACT,
   SCENE_CRITERIA,
   parseSceneVerdicts,
   renderJudgeCriteria,
-} from '../src/pipeline/proactive/judge.js';
+} from '../src/pipeline/proactive/judge/judge.js';
 import {
   DEFAULT_VETO_POLICY,
   evaluateVeto,
   selectByQuantileBudget,
-} from '../src/pipeline/proactive/veto.js';
+} from '../src/pipeline/proactive/veto/veto.js';
+
+/** 当前生效场景的**自然语言真相源**（人话版说明书）。 */
+const SCENES_DOC = '../src/pipeline/proactive/SCENES.md';
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -399,5 +405,51 @@ describe('③ 否决层：顺序、额度与终局', () => {
       context: vetoContext(),
     };
     expect(JSON.stringify(evaluateVeto(input))).toBe(JSON.stringify(evaluateVeto(input)));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 场景清单与自然语言文档的一致性（维护者约定：先写人话，再写代码）
+// ---------------------------------------------------------------------------
+
+describe('SCENES.md 与代码的一致（契约测试强制）', () => {
+  const doc = readFileSync(fileURLToPath(new URL(SCENES_DOC, import.meta.url)), 'utf8');
+
+  it('验收20：SCENE_ORDER 里每个场景都在自然语言文档里有一节，且描述里带场景名', () => {
+    expect(doc).toContain('当前生效的主动介入场景');
+    for (const [index, id] of SCENE_ORDER.entries()) {
+      const scene = getScene(id);
+      expect(scene).toBeDefined();
+      // 每个生效场景必须有一节标题 "## 场景 N · 名字"
+      const ordinal = id.replace('scene-', '');
+      expect(doc).toContain(`## 场景 ${ordinal} · ${scene?.name}`);
+      // 且给出它排第几（顺序也是文档的一部分）
+      expect(doc).toContain(`| ${index + 1} | **${ordinal} · ${scene?.name}** |`);
+    }
+  });
+
+  it('验收21：文档里描述的场景数与代码一致，不允许多写或少写', () => {
+    const headings = [...doc.matchAll(/^## 场景 (\d+) · /gm)].map((match) => match[1]);
+    expect(headings).toEqual(SCENE_ORDER.map((id) => id.replace('scene-', '')));
+  });
+
+  it('验收22b：SCENES.md 里的相对链接都指向真实存在的文件（文档不许指向不存在的路径）', () => {
+    const links = [...doc.matchAll(/\]\((\.\.?\/[^)]+)\)/g)].map((match) => match[1] as string);
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      const resolved = fileURLToPath(new URL(link, new URL(SCENES_DOC, import.meta.url)));
+      expect(existsSync(resolved), `SCENES.md 链接失效：${link}`).toBe(true);
+    }
+  });
+
+  it('验收22：新增场景的约定写在文档里（先写人话再写代码，且指明要改的三处）', () => {
+    expect(doc).toContain('后续新增场景');
+    for (const file of ['contract.ts', 'collect.ts', 'judge.ts']) {
+      expect(doc).toContain(file);
+    }
+    // 每个新场景必须交代的四件事
+    for (const required of ['什么情况下出现', '什么算命中', '典型对话', '误报的代价']) {
+      expect(doc).toContain(required);
+    }
   });
 });

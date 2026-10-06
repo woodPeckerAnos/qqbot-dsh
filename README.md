@@ -80,7 +80,8 @@ connectors: [onebot]                    # 或 [qq-official, onebot] 并存
 | [docs/DEPLOY.md](docs/DEPLOY.md) | 部署手册：从零到跑通，含沙箱后端验证与调参建议 |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | 排障手册：按症状组织的排查流程 + 未实测项清单 |
 | [docs/PROACTIVE-INTERVENTION-ARCH.md](docs/PROACTIVE-INTERVENTION-ARCH.md) | 主动介入（旁听 / 主动插话）架构方案：5 个业务场景 → 三段式架构、场景顺序与仲裁契约、状态模型、分期实施 |
-| [src/pipeline/proactive/README.md](src/pipeline/proactive/README.md) | 主动发言模块说明（给人读）：平台能力差异怎么收敛、5 个场景与优先级、降级链 |
+| [src/pipeline/proactive/SCENES.md](src/pipeline/proactive/SCENES.md) | **当前生效的主动介入场景（自然语言真相源）**：什么情况下会说、什么算命中、典型对话、明确的红线；新增场景的约定 |
+| [src/pipeline/proactive/README.md](src/pipeline/proactive/README.md) | 主动发言模块说明（给人读）：平台能力差异怎么收敛、三层判定架构、降级链 |
 | [src/pipeline/proactive/AGENT-CONTRACT.md](src/pipeline/proactive/AGENT-CONTRACT.md) | 主动发言扩展契约（给 agent 读）：新增介入规则 / 新增平台 / 改场景表的硬性纪律与自检清单 |
 
 ## 这个项目特别处理了什么问题
@@ -186,7 +187,8 @@ src/core/       接入层契约：BotConnector / 归一化事件 / 内容片段�
 src/adapters/   接入平台：qq-official（官方开放平台）/ onebot（NapCat 等社区框架）
 src/dsh/        DSH 桥接：NDJSON JSON-RPC 客户端 / 子进程监督 / 进程池 / turn 归并 / 图片内联
 src/pipeline/   编排：调度 / 配额与进度 / 分段 / 文本清洗 / 并发原语（全平台共用一条链路）
-src/pipeline/proactive/  主动发言的唯一聚集地：能力出口 speaker.ts + 场景表 scenes.ts + 说明与 agent 契约
+src/pipeline/proactive/  主动发言的唯一聚集地：SCENES.md（场景人话真相源）
+                         + contract.ts + scene/（搜集）judge/（判据）veto/（否决）deliver/（投递）
 src/store/      持久化：对话记录（JSONL）/ 事件去重 / 会话映射 / 路径布局
 dsh-profile/    DSH profile 补丁 + 自动审批桩
 scripts/        容器入口 + 五个验证脚本
