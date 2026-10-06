@@ -51,6 +51,22 @@ export class PipelineStats {
   imagesInlined = 0;
   /** 读取失败/超限/格式不支持而跳过的图片数（TurnRunner） */
   imagesSkipped = 0;
+  /** 成功展开的转发消息块数（连接器回查 get_forward_msg 成功后） */
+  forwardsExpanded = 0;
+  /** 实际渲染进 content 的转发条目数（连接器；受 maxNodes/maxChars 裁剪后） */
+  forwardNodesInlined = 0;
+  /** 回查失败/超时/关闭而未展开的转发块数（连接器，降级为 `[聊天记录]`） */
+  forwardsFailed = 0;
+  /** 成功取到字节的文件数（TurnRunner） */
+  filesFetched = 0;
+  /** 成功抽取正文的文件数（TurnRunner） */
+  filesExtracted = 0;
+  /** 只落盘、未抽取正文的文件数（TurnRunner；类型不支持或解析器不可用） */
+  filesSavedOnly = 0;
+  /** 因关闭/超体积/超出数量/失败而跳过的文件数（TurnRunner / 连接器） */
+  filesSkipped = 0;
+  /** 送入 prompt 的文件正文字符数（TurnRunner） */
+  fileCharsInlined = 0;
   /** 成功发出的回复段数（Responder / 欢迎语） */
   repliesSent = 0;
   /** 成功发出的附件数（Responder；附件消息同时计入 repliesSent） */

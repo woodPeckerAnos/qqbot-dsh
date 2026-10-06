@@ -221,6 +221,62 @@ export interface AttachmentsConfig {
   maxImageBytes: number;
   /** 单张图片下载超时（毫秒） */
   downloadTimeoutMs: number;
+  /** 转发消息块（合并转发 / 聊天记录）的展开配额 */
+  forward: ForwardConfig;
+  /** 文件（PDF 等）的下载与解析配额 */
+  files: FilesConfig;
+}
+
+/**
+ * 转发消息块的配额（见 Config.attachments.forward）。
+ *
+ * 四重上限刻意都保守：一个转发块动辄上百条，全量展开既烧 token 也把真正的问题
+ * 淹掉。超限**不是错误**，是渲染成"仅展开以上条目"的显式说明。
+ */
+export interface ForwardConfig {
+  /** 是否展开转发块（BOT_ATTACHMENT_FORWARD_ENABLED / attachments.forward.enabled） */
+  enabled: boolean;
+  /** 单个转发块最多展开几条 */
+  maxNodes: number;
+  /** 单条发言的字符上限（超出截断，防一条长文吃掉整个预算） */
+  maxNodeChars: number;
+  /** 一个转发块展开后的总字符上限 */
+  maxChars: number;
+  /** 嵌套转发（转发里的转发）最多下钻几层 */
+  maxDepth: number;
+  /** 回查超时（毫秒） */
+  timeoutMs: number;
+}
+
+/**
+ * 文件（PDF 等）的下载与解析配额（见 Config.attachments.files）。
+ *
+ * 与图片配额分开的原因：文件的"读入成本"比图片高一个量级（下载 + 落盘 + 解析
+ * 子进程 + 可能两三万字的正文），共用一套数值会逼着两件事中的一个妥协。
+ */
+export interface FilesConfig {
+  /** 是否下载并解析文件（BOT_ATTACHMENT_FILE_ENABLED / attachments.files.enabled） */
+  enabled: boolean;
+  /** 单条消息最多解析几个文件（超出的只列名字与体积） */
+  maxFiles: number;
+  /** 单文件字节上限；平台声明超限时**不下载** */
+  maxFileBytes: number;
+  /** 抽取文本的字符上限（超出截断并在 prompt 里说明） */
+  maxExtractChars: number;
+  /** PDF 最多读多少页 */
+  maxPdfPages: number;
+  /** 解析子进程超时（毫秒） */
+  extractTimeoutMs: number;
+  /** 是否把原文落到工作区的 inbox 目录（给 agent 自己深挖用） */
+  saveToInbox: boolean;
+  /** 工作区内的 inbox 目录名（必须是纯目录名，见 media.outboxDir 的同款校验） */
+  inboxDir: string;
+  /** inbox 文件保留天数，超期清理（0 = 不清理） */
+  retentionDays: number;
+  /** 单会话 inbox 总字节上限；超出时**删最旧的**而不是拒绝新文件 */
+  maxInboxBytes: number;
+  /** 允许抽取正文的扩展名白名单（小写不带点）；不在名单里的文件不下载 */
+  extractExtensions: string[];
 }
 
 type Env = Record<string, string | undefined>;
@@ -521,6 +577,46 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     mediaImageExtensionsRaw.length > 0 ? mediaImageExtensionsRaw : ['png', 'jpg', 'jpeg', 'gif']
   ).map((ext) => ext.trim().toLowerCase().replace(/^\./, ''));
 
+  // inbox 与 outbox 同款校验、同样的理由：目录名会拼进工作区路径。
+  // 两者语义相反（outbox = 发回用户，inbox = 用户发来的），**绝不可配成同一个名字**
+  // ——那会让用户发来的文件被 egress 立刻回声回去。
+  const attachmentInboxDir = pickString(
+    env,
+    'BOT_ATTACHMENT_INBOX_DIR',
+    attachmentsFile.files?.inboxDir,
+    'inbox',
+  );
+  if (
+    attachmentInboxDir.includes('/') ||
+    attachmentInboxDir.includes('\\') ||
+    attachmentInboxDir === '.' ||
+    attachmentInboxDir === '..'
+  ) {
+    throw new ConfigError(
+      `attachments.files 的 inboxDir 必须是纯目录名（不含路径分隔符），收到 ${JSON.stringify(attachmentInboxDir)}`,
+      ['正确示例：inbox、uploads'],
+    );
+  }
+  if (attachmentInboxDir === mediaOutboxDir) {
+    throw new ConfigError(
+      `attachments.files.inboxDir 与 media.outboxDir 不能同名（都是 ${JSON.stringify(attachmentInboxDir)}）`,
+      [
+        'inbox 放用户发来的文件、outbox 放要发回用户的产物；同名会让用户发来的文件被立刻回发给自己',
+      ],
+    );
+  }
+
+  const attachmentExtensionsRaw = pickList(
+    env,
+    'BOT_ATTACHMENT_FILE_EXTENSIONS',
+    attachmentsFile.files?.extractExtensions,
+  );
+  const attachmentExtensions = (
+    attachmentExtensionsRaw.length > 0
+      ? attachmentExtensionsRaw
+      : ['pdf', 'txt', 'md', 'csv', 'json', 'yaml', 'yml', 'log', 'xml', 'html']
+  ).map((ext) => ext.trim().toLowerCase().replace(/^\./, ''));
+
   return {
     connectors: enabledConnectors,
     admins,
@@ -598,6 +694,37 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       maxImages: pickInt(env, 'BOT_ATTACHMENT_MAX_IMAGES', attachmentsFile.maxImages, 4, { min: 0, max: 20 }, 'attachments.maxImages'),
       maxImageBytes: pickInt(env, 'BOT_ATTACHMENT_MAX_BYTES', attachmentsFile.maxImageBytes, 8 * 1024 * 1024, { min: 1024, max: 200 * 1024 * 1024 }, 'attachments.maxImageBytes'),
       downloadTimeoutMs: pickInt(env, 'BOT_ATTACHMENT_TIMEOUT_MS', attachmentsFile.downloadTimeoutMs, 15_000, { min: 1_000, max: 120_000 }, 'attachments.downloadTimeoutMs'),
+      forward: {
+        enabled: pickBool(env, 'BOT_ATTACHMENT_FORWARD_ENABLED', attachmentsFile.forward?.enabled, true),
+        // 20 条 ≈ 群里一次"爬楼"转发的常见规模；再多模型也读不完，只是烧 token。
+        maxNodes: pickInt(env, 'BOT_ATTACHMENT_FORWARD_MAX_NODES', attachmentsFile.forward?.maxNodes, 20, { min: 1, max: 100 }, 'attachments.forward.maxNodes'),
+        maxNodeChars: pickInt(env, 'BOT_ATTACHMENT_FORWARD_MAX_NODE_CHARS', attachmentsFile.forward?.maxNodeChars, 500, { min: 50, max: 5_000 }, 'attachments.forward.maxNodeChars'),
+        // 总字符上限：4000 字 ≈ 一篇长文，足够读懂"这捆记录在聊什么"。
+        maxChars: pickInt(env, 'BOT_ATTACHMENT_FORWARD_MAX_CHARS', attachmentsFile.forward?.maxChars, 4_000, { min: 200, max: 40_000 }, 'attachments.forward.maxChars'),
+        maxDepth: pickInt(env, 'BOT_ATTACHMENT_FORWARD_MAX_DEPTH', attachmentsFile.forward?.maxDepth, 2, { min: 0, max: 5 }, 'attachments.forward.maxDepth'),
+        timeoutMs: pickInt(env, 'BOT_ATTACHMENT_FORWARD_TIMEOUT_MS', attachmentsFile.forward?.timeoutMs, 10_000, { min: 1_000, max: 60_000 }, 'attachments.forward.timeoutMs'),
+      },
+      files: {
+        enabled: pickBool(env, 'BOT_ATTACHMENT_FILE_ENABLED', attachmentsFile.files?.enabled, true),
+        maxFiles: pickInt(env, 'BOT_ATTACHMENT_FILE_MAX_FILES', attachmentsFile.files?.maxFiles, 2, { min: 0, max: 10 }, 'attachments.files.maxFiles'),
+        // 16MB：够放下常规 PDF/报表，又不至于让下载+落盘+解析把一轮拖垮。
+        maxFileBytes: pickInt(env, 'BOT_ATTACHMENT_FILE_MAX_BYTES', attachmentsFile.files?.maxFileBytes, 16 * 1024 * 1024, { min: 1024, max: 200 * 1024 * 1024 }, 'attachments.files.maxFileBytes'),
+        // 20000 字 ≈ 30 页纯文字 PDF，是"能读懂"与"不撑爆 prompt"的分界。
+        maxExtractChars: pickInt(env, 'BOT_ATTACHMENT_FILE_MAX_CHARS', attachmentsFile.files?.maxExtractChars, 20_000, { min: 200, max: 200_000 }, 'attachments.files.maxExtractChars'),
+        maxPdfPages: pickInt(env, 'BOT_ATTACHMENT_FILE_MAX_PDF_PAGES', attachmentsFile.files?.maxPdfPages, 30, { min: 1, max: 500 }, 'attachments.files.maxPdfPages'),
+        extractTimeoutMs: pickInt(env, 'BOT_ATTACHMENT_FILE_TIMEOUT_MS', attachmentsFile.files?.extractTimeoutMs, 10_000, { min: 1_000, max: 120_000 }, 'attachments.files.extractTimeoutMs'),
+        saveToInbox: pickBool(env, 'BOT_ATTACHMENT_FILE_SAVE', attachmentsFile.files?.saveToInbox, true),
+        inboxDir: attachmentInboxDir,
+        // 0 = 永不清理；默认 7 天，让"上周发的那份 PDF"还找得到。
+        retentionDays: pickInt(env, 'BOT_ATTACHMENT_INBOX_RETENTION_DAYS', attachmentsFile.files?.retentionDays, 7, { min: 0, max: 365 }, 'attachments.files.retentionDays'),
+        // 单会话 200MB 上限；与 media.maxFileMB 一样用 MB —— 这是运维旋钮，
+        // 不需要字节级精度（单文件上限才是安全边界，用字节）。
+        maxInboxBytes:
+          pickInt(env, 'BOT_ATTACHMENT_INBOX_MAX_MB', attachmentsFile.files?.maxInboxMB, 200, { min: 1, max: 5_000 }, 'attachments.files.maxInboxMB') *
+          1024 *
+          1024,
+        extractExtensions: attachmentExtensions,
+      },
     },
     media: {
       enabled: pickBool(env, 'BOT_MEDIA_ENABLED', mediaFile.enabled, true),

@@ -189,12 +189,15 @@ offpeak:
 #     多模态 image block（下载 → 嗅探真实格式 → base64）；
 #   - 引用：官方 message_type=103 的 msg_elements、OneBot reply 段（回查 get_msg）
 #     → 渲染成 `[引用 谁] 内容`，被引用消息里的图片同样会被内联；
+#   - 转发消息块（合并转发 / 聊天记录）：OneBot forward 段回查 get_forward_msg
+#     → 渲染成带条号的逐条发言（谁说了什么一目了然），见下方 forward 子节；
+#   - 文件（PDF / 文本等）：下载 → 原文落工作区 inbox/ → 抽取正文送进模型
+#     （PDF 走 pdftotext），见下方 files 子节；
 #   - 语音：官方给 asr_refer_text 时直接用它的识别文本（本项目不做本地语音识别）；
-#   - 视频/文件/卡片：渲染成 `[视频: x.mp4]` / `[文件: y.zip]` / `[卡片消息 …]`
-#     一行说明，不送字节。
+#   - 视频/卡片：渲染成 `[视频: x.mp4]` / `[卡片消息 …]` 一行说明，不送字节。
 #
-# 注意：图片进 prompt 会消耗额外的 token 与带宽；用本地小模型/纯文本模型时
-# 建议把 enabled 设为 false（关掉后消息仍能收到，只是图片变成 `[图片]` 占位）。
+# 注意：所有这些内容进 prompt 都会消耗额外的 token 与带宽；用本地小模型/纯文本
+# 模型时建议把 enabled 设为 false（关掉后消息仍能收到，只是变成 `[图片]` 占位）。
 attachments:
   # 是否把图片内联送进模型（需要模型支持多模态）
   enabled: true
@@ -205,6 +208,52 @@ attachments:
   maxImageBytes: 8388608
   # 单张图片下载超时（毫秒）；下载失败会降级成文字说明，不影响文字部分回答
   downloadTimeoutMs: 15000
+
+  # 转发消息块（合并转发 / 聊天记录）。env 前缀：BOT_ATTACHMENT_FORWARD_*
+  # 四重上限都刻意保守：一个转发块动辄上百条，全量展开既烧 token 也把真正
+  # 的问题淹掉。**超限不是错误**，是在正文里写一句"仅展开以上条目"。
+  forward:
+    # 是否展开转发块（关掉后只留 `[聊天记录]` 占位）
+    enabled: true
+    # 单个转发块最多展开几条
+    maxNodes: 20
+    # 单条发言的字符上限（超出截断，防一条长文吃掉整个预算）
+    maxNodeChars: 500
+    # 一个转发块展开后的总字符上限
+    maxChars: 4000
+    # 嵌套转发（转发里的转发）最多下钻几层
+    maxDepth: 2
+    # 回查超时（毫秒）
+    timeoutMs: 10000
+
+  # 文件（PDF 等）的下载与解析。env 前缀：BOT_ATTACHMENT_FILE_* / BOT_ATTACHMENT_INBOX_*
+  # 机制（详见 docs/FORWARD-FILE-INGRESS-PLAN.md）：下载 → 原文落到工作区 inbox/
+  # → 抽取正文（PDF 走 pdftotext，纯文本类直读）→ 截断后送进 prompt。
+  # 落盘的意义是让 agent 能回头深挖（"把那份 PDF 的第三页表格给我"）。
+  files:
+    # 是否下载并解析文件
+    enabled: true
+    # 单条消息最多解析几个文件（超出的只列名字与体积）
+    maxFiles: 2
+    # 单文件字节上限；平台声明超限时不下载
+    maxFileBytes: 16777216
+    # 抽取文本的字符上限（超出截断并在 prompt 里说明）
+    maxExtractChars: 20000
+    # PDF 最多读多少页
+    maxPdfPages: 30
+    # 解析子进程超时（毫秒）
+    extractTimeoutMs: 10000
+    # 是否把原文落到工作区 inbox/（关掉后只把抽取的文本送进模型，agent 拿不到原件）
+    saveToInbox: true
+    # 工作区内目录名。**必须与 media.outboxDir 不同名**——outbox 是发回用户的，
+    # 同名会让用户发来的文件被立刻回发给自己（启动期会直接报错拦下）。
+    inboxDir: inbox
+    # inbox 文件保留天数，超期清理（0 = 不清理）
+    retentionDays: 7
+    # 单会话 inbox 总字节上限（MB）。超出时**删最旧的**而不是拒绝新文件。
+    maxInboxMB: 200
+    # 允许抽取正文的扩展名白名单（小写）。不在名单里的文件不下载，只写一行说明。
+    extractExtensions: [pdf, txt, md, csv, json, yaml, yml, log, xml, html]
 
 # --- 富媒体出站（把 agent 生成的文件发给用户）--------------------------------
 # 与平台无关，官方与 OneBot 共用。环境变量前缀：BOT_MEDIA_*

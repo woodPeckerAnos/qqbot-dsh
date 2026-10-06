@@ -105,6 +105,33 @@ export interface AttachmentsFileConfig {
   maxImages?: number;
   maxImageBytes?: number;
   downloadTimeoutMs?: number;
+  forward?: AttachmentsForwardFileConfig;
+  files?: AttachmentsFilesFileConfig;
+}
+
+/** 转发消息块配额（`attachments.forward`）。 */
+export interface AttachmentsForwardFileConfig {
+  enabled?: boolean;
+  maxNodes?: number;
+  maxNodeChars?: number;
+  maxChars?: number;
+  maxDepth?: number;
+  timeoutMs?: number;
+}
+
+/** 文件下载与解析配额（`attachments.files`）。 */
+export interface AttachmentsFilesFileConfig {
+  enabled?: boolean;
+  maxFiles?: number;
+  maxFileBytes?: number;
+  maxExtractChars?: number;
+  maxPdfPages?: number;
+  extractTimeoutMs?: number;
+  saveToInbox?: boolean;
+  inboxDir?: string;
+  retentionDays?: number;
+  maxInboxMB?: number;
+  extractExtensions?: string[];
 }
 
 /** 富媒体出站（agent 产物回发，与平台无关）。 */
@@ -226,6 +253,32 @@ const ATTACHMENTS_SPEC: SectionSpec = {
   maxImageBytes: 'int',
   downloadTimeoutMs: 'int',
 };
+/**
+ * 转发消息块（`attachments.forward`）。与 `attachments` 顶层标量分开：
+ * 键名以 `forward.` / `files.` 开头，启动期校验与报错信息才能指到具体子项。
+ */
+const ATTACHMENTS_FORWARD_SPEC: SectionSpec = {
+  enabled: 'bool',
+  maxNodes: 'int',
+  maxNodeChars: 'int',
+  maxChars: 'int',
+  maxDepth: 'int',
+  timeoutMs: 'int',
+};
+/** 文件解析（`attachments.files`）。 */
+const ATTACHMENTS_FILES_SPEC: SectionSpec = {
+  enabled: 'bool',
+  maxFiles: 'int',
+  maxFileBytes: 'int',
+  maxExtractChars: 'int',
+  maxPdfPages: 'int',
+  extractTimeoutMs: 'int',
+  saveToInbox: 'bool',
+  inboxDir: 'string',
+  retentionDays: 'int',
+  maxInboxMB: 'int',
+  extractExtensions: 'stringList',
+};
 const MEDIA_SPEC: SectionSpec = {
   enabled: 'bool',
   maxFileMB: 'int',
@@ -253,10 +306,21 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'health', field: 'health', spec: HEALTH_SPEC },
 ];
 
+/**
+ * 顶层 section 的嵌套子节：`yamlKey` → 子节名 → 该子节的 spec。
+ *
+ * 用表而不是把条件写进循环：以后再加一层嵌套只改这里一行，循环体永远只做
+ * "读一个 section"这一件事。新增子节时**必须**同时注册，否则该键会被当成
+ * 未知项在启动期直接报错（这是刻意的：静默忽略会变成"改了没生效"的玄学问题）。
+ */
+const NESTED_SECTIONS: Record<string, Record<string, SectionSpec>> = {
+  'qq-official': { c2c: QQ_OFFICIAL_C2C_SPEC },
+  attachments: { forward: ATTACHMENTS_FORWARD_SPEC, files: ATTACHMENTS_FILES_SPEC },
+};
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-
 /** 校验并转换一个标量。`undefined` 表示"没写这一项"。 */
 function coerceScalar(value: unknown, path: string, kind: Kind): unknown {
   if (value === undefined || value === null) return undefined;
@@ -385,8 +449,7 @@ export function parseConfigFileText(text: string, source = DEFAULT_CONFIG_FILE):
     if (value !== undefined) mutable[key] = value;
   }
   for (const { yamlKey, field, spec } of TOP_SECTIONS) {
-    const nested: Record<string, SectionSpec> =
-      yamlKey === 'qq-official' ? { c2c: QQ_OFFICIAL_C2C_SPEC } : {};
+    const nested = NESTED_SECTIONS[yamlKey] ?? {};
     const section = readSection(root[yamlKey], `${source}: ${yamlKey}`, spec, nested);
     if (Object.keys(section).length > 0) mutable[field] = section;
   }

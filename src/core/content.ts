@@ -9,7 +9,9 @@
  */
 
 import type {
+  MessageForwardPart,
   MessageImagePart,
+  MessageMediaPart,
   MessagePart,
   MessageQuotePart,
   NormalizedMessage,
@@ -57,7 +59,30 @@ function renderPart(part: MessagePart): string {
     }
     case 'quote':
       return renderQuote(part);
+    case 'forward':
+      return renderForward(part);
   }
+}
+
+/**
+ * 转发消息块渲染成"标题 + 带条号的逐条发言"。
+ *
+ * 为什么保留条号与发言人：扁平化结果是**对话记录、冷启动回放、话题判定**的唯一
+ * 输入。一旦压成一坨没有边界的文本，模型就分不清"用户在转述别人"还是
+ * "用户自己在说"——这两种情况该给的回答完全不同。
+ */
+function renderForward(part: MessageForwardPart): string {
+  const count = part.nodeCount !== undefined ? `共 ${part.nodeCount} 条` : '';
+  const head = `[转发消息${count !== '' ? ` ${count}` : ''}]`;
+  const nodes: string[] = [];
+  part.parts.forEach((node, index) => {
+    // 单条发言压成一行：多行会把"第几条"的边界冲掉，与 renderQuote 同理
+    const line = flattenParts([node]).replace(/\s*\n\s*/g, ' ').trim();
+    if (line !== '') nodes.push(`${index + 1}. ${line}`);
+  });
+  if (nodes.length === 0) return `${head}（内容未读入）`;
+  const tail = part.truncated === true ? ['（仅展开以上条目，其余未读入）'] : [];
+  return [head, ...nodes, ...tail].join('\n');
 }
 
 /**
@@ -80,21 +105,42 @@ export function partsHaveContent(parts: readonly MessagePart[]): boolean {
 /**
  * 递归收集所有图片片段（含引用消息里的图片）。
  *
+ * **刻意不下钻进 `forward`**：一期不内联转发块里的图片（一个转发块可能带几十张，
+ * 成本失控），只渲染 `[图片]` 标记。真要开这个口子，递归遍历器本身已经支持，
+ * 缺的只是配额策略——见 docs/FORWARD-FILE-INGRESS-PLAN.md §14。
+ *
  * 顺序即"消息里出现的顺序"，上限由调用方裁剪——配额判断属于编排层。
  */
 export function collectImageParts(parts: readonly MessagePart[]): MessageImagePart[] {
-  const images: MessageImagePart[] = [];
+  return collectByType<MessageImagePart>(parts, (part) => part.type === 'image');
+}
+
+/** 递归收集文件/视频类片段（含引用里的；同样不下钻 `forward`，理由同上）。 */
+export function collectMediaParts(parts: readonly MessagePart[]): MessageMediaPart[] {
+  return collectByType<MessageMediaPart>(parts, (part) => part.type === 'media');
+}
+
+function collectByType<T extends MessagePart>(
+  parts: readonly MessagePart[],
+  match: (part: MessagePart) => boolean,
+): T[] {
+  const found: T[] = [];
   const walk = (list: readonly MessagePart[]): void => {
     for (const part of list) {
-      if (part.type === 'image') images.push(part);
+      if (match(part)) found.push(part as T);
       else if (part.type === 'quote') walk(part.parts);
     }
   };
   walk(parts);
-  return images;
+  return found;
 }
 
 /** 消息里的图片片段（含引用里的）。 */
 export function messageImageParts(message: NormalizedMessage): MessageImagePart[] {
   return collectImageParts(messageParts(message));
+}
+
+/** 消息里的文件/视频片段（含引用里的）。 */
+export function messageMediaParts(message: NormalizedMessage): MessageMediaPart[] {
+  return collectMediaParts(messageParts(message));
 }
