@@ -24,7 +24,7 @@ import {
   normalizeOneBotEvent,
   parseForwardNodes,
 } from '../src/adapters/onebot/normalize.js';
-import { flattenParts } from '../src/core/content.js';
+import { flattenParts, FORWARD_UNTRUSTED_CLOSE, FORWARD_UNTRUSTED_OPEN } from '../src/core/content.js';
 import type { ForwardConfig } from '../src/config.js';
 import type { NormalizedEvent, NormalizedMessage } from '../src/core/connector.js';
 import { createNullLogger } from '../src/logger.js';
@@ -303,8 +303,10 @@ describe('转发块回查全回路', () => {
       [
         '帮我总结',
         '[转发消息 共 2 条]',
+        FORWARD_UNTRUSTED_OPEN,
         '1. 张三: 报错了',
         '2. 李四: 升级依赖',
+        FORWARD_UNTRUSTED_CLOSE,
       ].join('\n'),
     );
   });
@@ -491,7 +493,13 @@ describe('官方聊天记录（尽力而为）', () => {
       },
     ]);
     expect(flattenParts(parts)).toBe(
-      ['[转发消息 共 2 条]', '1. 张三: 这个报错怎么解决', '2. member-2: 试试升级依赖'].join('\n'),
+      [
+        '[转发消息 共 2 条]',
+        FORWARD_UNTRUSTED_OPEN,
+        '1. 张三: 这个报错怎么解决',
+        '2. member-2: 试试升级依赖',
+        FORWARD_UNTRUSTED_CLOSE,
+      ].join('\n'),
     );
   });
 

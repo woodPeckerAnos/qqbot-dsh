@@ -7,7 +7,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildMessageParts } from '../src/adapters/qq-official/content.js';
-import { collectImageParts, collectMediaParts, flattenParts, messageImageParts } from '../src/core/content.js';
+import {
+  collectImageParts,
+  collectMediaParts,
+  flattenParts,
+  FORWARD_UNTRUSTED_CLOSE,
+  FORWARD_UNTRUSTED_OPEN,
+  messageImageParts,
+} from '../src/core/content.js';
 import type { MessagePart, NormalizedMessage } from '../src/core/connector.js';
 import { buildImageBlocks, sniffImageMimeType } from '../src/dsh/media.js';
 import { createNullLogger } from '../src/logger.js';
@@ -364,9 +371,11 @@ describe('转发消息块渲染', () => {
     expect(flattenParts(parts)).toBe(
       [
         '[转发消息 共 3 条]',
+        FORWARD_UNTRUSTED_OPEN,
         '1. 张三: 这个报错怎么解决',
         '2. 李四: 试试升级依赖',
         '3. [图片]',
+        FORWARD_UNTRUSTED_CLOSE,
       ].join('\n'),
     );
   });
@@ -376,7 +385,13 @@ describe('转发消息块渲染', () => {
       { type: 'forward', truncated: true, parts: [{ type: 'text', text: '只展开了一条' }] },
     ];
     expect(flattenParts(parts)).toBe(
-      ['[转发消息]', '1. 只展开了一条', '（仅展开以上条目，其余未读入）'].join('\n'),
+      [
+        '[转发消息]',
+        FORWARD_UNTRUSTED_OPEN,
+        '1. 只展开了一条',
+        FORWARD_UNTRUSTED_CLOSE,
+        '（仅展开以上条目，其余未读入）',
+      ].join('\n'),
     );
   });
 
@@ -384,7 +399,9 @@ describe('转发消息块渲染', () => {
     const parts: MessagePart[] = [
       { type: 'forward', parts: [{ type: 'text', text: '第一行\n第二行' }] },
     ];
-    expect(flattenParts(parts)).toBe(['[转发消息]', '1. 第一行 第二行'].join('\n'));
+    expect(flattenParts(parts)).toBe(
+      ['[转发消息]', FORWARD_UNTRUSTED_OPEN, '1. 第一行 第二行', FORWARD_UNTRUSTED_CLOSE].join('\n'),
+    );
   });
 
   it('空转发块渲染成"内容未读入"，不是空白', () => {
@@ -405,8 +422,11 @@ describe('转发消息块渲染', () => {
         ],
       },
     ];
-    // 内层块整体是外层的一条，条号 1；内层自己再编号 1
-    expect(flattenParts(parts)).toBe(['[转发消息 共 1 条]', '1. [转发消息 共 1 条] 1. 内层发言'].join('\n'));
+    // 内层块整体是外层的一条，条号 1；内层自己再编号 1，且带自己的不可信边界
+    const rendered = flattenParts(parts);
+    expect(rendered.split('\n')[0]).toBe('[转发消息 共 1 条]');
+    expect(rendered).toContain('1. [转发消息 共 1 条] <转发内容');
+    expect(rendered).toContain('1. 内层发言 </转发内容>');
   });
 
   it('图片/文件收集刻意不下钻转发块（一期不内联转发里的图）', () => {
