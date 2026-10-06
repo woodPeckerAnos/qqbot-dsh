@@ -1,6 +1,8 @@
 # 转发消息块与文件解析（入站富媒体二期）方案规划
 
-> 状态：**已实现**（分支 `feat/forward-file-ingress`，P0-P4 全部落地，测试通过）。
+> 状态：**已实现并经过一轮独立对抗性审查**（分支 `feat/forward-file-ingress`，
+> P0-P4 全部落地，审查发现的 3 个"必须修"与 9 个"建议修"全部处理，见文末
+> 「审查后的加固」）。
 > 实现后的架构要点已回写 `docs/DESIGN.md` §11.6-11.8；排障入口见 `docs/RUNBOOK.md` §4.7。
 >
 > 关键决策（**已与维护者确认**）：
@@ -24,6 +26,45 @@
 >      `forwardsFailed` 的失败路径，只有"翻译 + 限量"。
 >   3. 转发块里嵌套转发的配额是**外层块共享**（而非每块各自重置），
 >      避免 `maxNodes^maxDepth` 放大。
+
+---
+
+## 0. 审查后的加固（实施后补记）
+
+方案落地后做了一轮独立对抗性审查（只读、不改代码），发现并修掉的问题按严重度：
+
+**会删数据 / 丢消息的三条**（都在降级路径上）：
+
+1. **`cleanupInbox` 缺目录校验 = 越权删除原语**。落盘有 realpath 包含性校验、
+   清理没有，而 `readdir`/`unlink` 都跟随符号链接——agent 把 `<workspace>/inbox`
+   换成指向 `/data/bot` 的链接后，清理会按"超期 + 总量配额"批量删掉**所有会话**的
+   对话记录与去重表（Node 进程权限高于 agent 沙箱）。现在落盘与清理共用
+   `resolveInboxDir`：`lstat` 确认不是符号链接 + realpath 严格落在工作区之内。
+2. **`inboxDir: ""` 绕过"纯目录名"校验**。`pickString` 是
+   `envRaw() ?? fileValue ?? fallback`，而空串不是 nullish，`path.join(ws, '')`
+   恰好等于工作区根 → 用户文件落在工作区根、清理把 `AGENTS.md` 与 agent 产物
+   当垃圾删。`media.outboxDir` 同款洞更早存在（后果是把文件发回给用户）。
+   现在抽 `assertWorkspaceSubdirName` 两处共用，显式拒绝空串。
+3. **补全抛错会静默丢弃这条用户消息**，而日志写着"按原文继续处理"（假的）。
+   现在 `enrichEvent` 外面是 `.catch(() => event)`——"绝不丢消息"成了结构保证；
+   `extractMessageContent` 里 `segment.data ?? {}`、`onFrame` 加 try/catch
+   （顶层帧同步抛错会变成 uncaughtException 掀翻进程）。
+
+**资源与多账号**：嵌套转发扇出无上限（node 里的 forward 段不占条目预算）→ 预算
+增加"回查次数 + 整条消息墙钟"两维；转发缓存键不含账号 → 改为 `selfId:forwardId`；
+文件直链申请用 `pickAnySession` 而非收到消息的连接 → 按会话键走 `pickSession`。
+
+**注入面**：不可信边界能被正文自己伪造（`</转发内容>` / `</文件>` 提前闭合边界），
+文件名零转义就进了标签属性 → 新增 `guardUntrustedText` 与 `displayFileName`。
+
+**统计与生命周期**：关掉文件功能后仍每轮清理 inbox（会删 agent 自己的文件）→
+改为按开关跳过 + 只删本模块命名；`filesFetched`/`filesSkipped` 双重计数、
+文件计数在 build 期落账（与"下载成功 ≠ runtime 收下"矛盾）、`forwardsFailed`
+少算而 `forwardNodesInlined` 重复计数 → 逐条对齐语义。
+
+**官方侧**：关掉 forward 会把内容**整段丢掉**（变空文本用户轮，还会让话题判定
+拿空串误判"无关"而重置上下文）→ 退化成平铺文本（内容随事件已到手，丢掉纯属浪费），
+并对"content 与 parts 皆空"显式丢弃 + 日志。
 
 ---
 
