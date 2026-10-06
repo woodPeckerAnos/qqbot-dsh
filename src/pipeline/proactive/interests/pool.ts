@@ -1,6 +1,25 @@
 /**
  * 兴趣池（场景 5 的配置面）：读取、校验、匹配。
  *
+ * ## 未来会被 role-play 接管（维护者已预告，别把这个形态当成永久形态）
+ *
+ * 后续迭代会加入 **role-play（角色扮演）** 环节，由它**动态设定**兴趣池。
+ * 因此本模块刻意只承担**三件与上游无关的事**：
+ *   1. 校验条目的形状（`InterestEntry`）；
+ *   2. 本地关键词匹配（`match()`）；
+ *   3. 把条目喂给判定 prompt（`list()`）。
+ *
+ * **上游是谁不重要**：文件、role-play 会话、两者合并、甚至"role-play 决定
+ * 主题 + 人审关键词"，都只需要换一个"产出 `InterestEntry[]`"的来源，
+ * 三层判定（`scene/` `judge/` `veto/`）与投递层一行都不用改。
+ *
+ * 给后续 agent 的三条约定：
+ *   - **不要把"兴趣来自 interests.yml"写进判定层或投递层的假设里**；
+ *   - 需要更新时用 `replaceEntries()`（保持对象身份，调用方持有的引用继续有效），
+ *     不要重建一个同名类或另起一套池；
+ *   - role-play 产出的条目**仍然必须过本文件的校验**（id 唯一、关键词 ≥2 字、
+ *     条数上限）——"动态"不等于"免检"。
+ *
  * ## 为什么是"关键词表"而不是"让 LLM 自己想兴趣"
  *
  * 兴趣池是**人审过的清单**：整份内容会进 prompt，命中才进判定。
@@ -47,8 +66,8 @@ export interface InterestMatch {
 }
 
 export class InterestPool {
-  private readonly entries: readonly InterestEntry[];
-  private readonly enabled: boolean;
+  private entries: readonly InterestEntry[];
+  private enabled: boolean;
 
   constructor(entries: readonly InterestEntry[], enabled = true) {
     this.entries = entries;
@@ -59,9 +78,29 @@ export class InterestPool {
     return this.entries.length;
   }
 
-  /** 供 prompt / 控制面展示（顺序即文件顺序，人工可预期）。 */
+  /** 供 prompt / 控制面展示（顺序即来源顺序，人工可预期）。 */
   list(): readonly InterestEntry[] {
     return this.entries;
+  }
+
+  /**
+   * 原地替换条目（**未来 role-play 动态设定兴趣池的接缝**）。
+   *
+   * 用"原地替换"而不是"新建池"：调用方（`buildSceneEvidence` 的组装处、
+   * health 快照）持有的是同一个对象引用，换池不该让它们看到旧数据。
+   */
+  replaceEntries(entries: readonly InterestEntry[]): void {
+    this.entries = entries;
+  }
+
+  /** 运行期开关（role-play 会话结束时可以整体停用，而不必清空条目）。 */
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+  }
+
+  /** 当前是否启用（health / 控制面展示用）。 */
+  get isEnabled(): boolean {
+    return this.enabled;
   }
 
   /**

@@ -101,6 +101,25 @@ describe('兴趣池：匹配', () => {
     ]);
   });
 
+  it('验收8b：replaceEntries / setEnabled 是 role-play 动态设定兴趣池的接缝', () => {
+    const live = parseInterestPool(GOOD, 'test.yml');
+    const holder = live; // 调用方持有引用（health 快照、buildSceneEvidence 的组装处）
+    live.replaceEntries([
+      { id: 'roleplay', topic: '角色扮演主题', keywords: ['剧本', '设定'] },
+    ]);
+    // 原地替换：老引用立刻看到新内容，不需要重新装配
+    expect(holder.size).toBe(1);
+    expect(holder.matchIds('这个剧本怎么写')).toEqual(['roleplay']);
+    expect(holder.matchIds('这个折线图怎么画')).toEqual([]);
+    // 运行期整体停用（role-play 会话结束时用），条目保留
+    live.setEnabled(false);
+    expect(live.isEnabled).toBe(false);
+    expect(live.matchIds('这个剧本怎么写')).toEqual([]);
+    expect(live.size).toBe(1);
+    live.setEnabled(true);
+    expect(live.matchIds('这个剧本怎么写')).toEqual(['roleplay']);
+  });
+
   it('验收8：空文本 / 空池 / 停用 → 恒为空（场景 5 不触发）', () => {
     expect(pool.matchIds('   ')).toEqual([]);
     expect(EMPTY_INTEREST_POOL.matchIds('折线图')).toEqual([]);

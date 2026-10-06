@@ -162,6 +162,12 @@ bot ：这个报错是因为 requests 没装，先 pip install requests
 
 ### 怎么给这个场景加兴趣条目
 
+> ⚠️ **这个形态是过渡态**：后续迭代会加入 **role-play（角色扮演）** 环节，
+> 兴趣池将由 role-play **动态设定**。届时"手写 interests.yml"会退化成
+> 可选的人审 / 兜底手段，而**场景 5 的判据与门槛不变**。
+> 所以下面这套"加条目"的方法在 role-play 上线后依然成立，
+> 只是条目的**来源**多了一条（甚至主要来自 role-play）。
+
 兴趣池是一份**人审过的清单文件**（关键词匹配在本地完成、零成本；命中之后
 才进判定）。三步：
 
@@ -196,6 +202,16 @@ bot ：这个报错是因为 requests 没装，先 pip install requests
   （`VetoPolicy.maxPerTopic`），写进兴趣池会形成两套账；
 - **临时停用**：`qqbot.yml` 的 `proactive.interestsEnabled: false` 或整份停用
   `proactive.enabled: false`。
+
+**给后续做 role-play 的人（也是给 agent 的约定）**：
+
+- 兴趣池的**上游是可替换的**：`InterestPool` 只管"校验形状 + 本地匹配 +
+  喂给判定"，不关心条目从哪来。role-play 要做的只是产出 `InterestEntry[]`
+  并调 `replaceEntries()`（原地替换，调用方引用继续有效）；
+- **动态 ≠ 免检**：role-play 生成的条目仍要过同一套校验
+  （id 唯一、关键词 ≥2 字、条数上限）——否则"动态"会变成"不可解释"；
+- **不要把"兴趣来自 interests.yml"写进 `scene/` `judge/` `veto/` 的任何假设**：
+  那一天这三层不该有任何改动。
 
 ---
 

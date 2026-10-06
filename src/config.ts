@@ -202,7 +202,11 @@ export interface Config {
     enabled: boolean;
     /** 兴趣池总开关（BOT_PROACTIVE_INTERESTS / proactive.interestsEnabled，默认 true） */
     interestsEnabled: boolean;
-    /** 兴趣池文件路径（QQ_INTERESTS_FILE / proactive.interestsFile，默认 ./interests.yml） */
+    /**
+     * 兴趣池文件路径（QQ_INTERESTS_FILE / proactive.interestsFile，默认 ./interests.yml）。
+     * 这是**过渡期的上游**：后续 role-play 迭代会动态设定兴趣池，
+     * 届时它是"人审 / 兜底来源"，判定层与投递层不受影响。
+     */
     interestsFile: string;
     /** 兴趣池是否真的读到了文件（health / 排障用：false + enabled = 配置指错了） */
     interestsLoaded: boolean;

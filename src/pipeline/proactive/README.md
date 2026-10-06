@@ -148,6 +148,10 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 然后按字段加——完整说明见 [interests/SCENES.md](interests/SCENES.md) 的
 「怎么给这个场景加兴趣条目」，样例的注释里有每条规则的由来。
 
+> 兴趣池的**上游是可替换的**：后续会由 role-play 动态设定（维护者已预告），
+> 届时只是多了一个条目来源，`scene/` `judge/` `veto/` 三层不做改动。
+> 接缝见 `interests/pool.ts` 的 `replaceEntries()`。
+
 ⚠️ **不要为主动发言另立一个并列开关**：两个开关会让人无法回答"为什么它不说话"。
 `ProactiveSpeaker` 之所以仍持有 `enabled`，只是为了让"关闭"这件事也能被记账
 （`disabled` 降级），而不是让每个调用方在外部写 `if (enabled)` 分支。
