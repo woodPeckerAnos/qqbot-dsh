@@ -16,7 +16,7 @@
  *   4. criteria 是自然语言，需求即 prompt（沿用 P0 方案 §5.6）；实施 S1 时
  *      它应来自各场景文件夹的 REQUIREMENT.md，这里只是逐字草案。
  *
- * 实施路径（S1，见方案 §8）：本文件被 src/intervention/scenes/registry.ts
+ * 实施路径（S1，见方案 §8）：本文件被 src/pipeline/proactive/scenes/registry.ts
  * 取代，每个场景拆成一个文件夹（REQUIREMENT.md + scene.ts + scene.test.ts）。
  */
 

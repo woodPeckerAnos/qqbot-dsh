@@ -7,7 +7,7 @@
  *   - 场景 4 的指代预筛（别名 vs 泛称 + 动作词；@ 了 bot 不算）；
  *   - 仲裁输出的解析容错（未知场景 / 非法 decision / 置信度越界一律安全降级）。
  *
- * 实施 S1 时本文件随 `src/intervention/scenes/registry.ts` 一起迁移。
+ * 实施 S1 时本文件随 `src/pipeline/proactive/scenes/registry.ts` 一起迁移。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -25,7 +25,7 @@ import {
   sortSceneIds,
   type SceneId,
   type ScenePrecheckContext,
-} from '../src/intervention/scenes.js';
+} from '../src/pipeline/proactive/scenes.js';
 
 function makeContext(overrides: Partial<ScenePrecheckContext> = {}): ScenePrecheckContext {
   return {

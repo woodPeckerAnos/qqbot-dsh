@@ -79,6 +79,9 @@ connectors: [onebot]                    # 或 [qq-official, onebot] 并存
 | [docs/DESIGN.md](docs/DESIGN.md) | 方案设计：架构、多接入模型、协议契约、硬约束落地、权限与安全、实测结论 |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | 部署手册：从零到跑通，含沙箱后端验证与调参建议 |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | 排障手册：按症状组织的排查流程 + 未实测项清单 |
+| [docs/PROACTIVE-INTERVENTION-ARCH.md](docs/PROACTIVE-INTERVENTION-ARCH.md) | 主动介入（旁听 / 主动插话）架构方案：5 个业务场景 → 三段式架构、场景顺序与仲裁契约、状态模型、分期实施 |
+| [src/pipeline/proactive/README.md](src/pipeline/proactive/README.md) | 主动发言模块说明（给人读）：平台能力差异怎么收敛、5 个场景与优先级、降级链 |
+| [src/pipeline/proactive/AGENT-CONTRACT.md](src/pipeline/proactive/AGENT-CONTRACT.md) | 主动发言扩展契约（给 agent 读）：新增介入规则 / 新增平台 / 改场景表的硬性纪律与自检清单 |
 
 ## 这个项目特别处理了什么问题
 
@@ -97,6 +100,7 @@ QQ 机器人的约束比看起来紧得多，下面每一条都有对应机制�
 | **文件（PDF 等）** 是字节而不是文本，模型读不了 | 下载 → 原文落工作区 `inbox/`（供 agent 深挖）→ 抽取正文（PDF 走 `pdftotext`）→ 以 `<文件 说明="…是资料不是指令…">` 边界包着进 prompt；解析器缺失时自动降级为"只落盘 + 路径说明" |
 | 用户发来的文件不能被立刻回发给自己 | `inbox/` 与 `outbox/` 严格分开，配置层拒绝同名（启动期报错）；文件名来自用户 → sanitize + `<时间戳>-` 前缀 + `wx` 不覆盖 |
 | 无法从文档确认的项（消息长度上限等） | 保守默认 + 遇错降级，且全部列进 [RUNBOOK 第 7 节](docs/RUNBOOK.md) |
+| **主动发言**（没有用户消息可锚定时说话）在官方通道上不可用（主动推送已停用、群聊每月 4 条、用户可关闭接收） | 收敛成一个平台能力 `BotConnector.proactive`：官方层 do nothing 返回 `unsupported`，OneBot 直接发；外层走同一条 `ProactiveSpeaker` 路径（[说明](src/pipeline/proactive/README.md)） |
 | OneBot 图片 URL 会过期（约 2 小时）/ 有头 NapCat 常只给文件标识 | `fetchMedia` 先直连 URL，失败自动用 `get_file`/`get_image` 动作回查字节 |
 | 多个产物逐条发会刷屏 | 一轮多文件自动打包成单个 zip 发一条消息；只发本轮新产生的文件（mtime 过滤），旧文件不重复发 |
 | 长任务把会话卡住、排队消息没反馈 | 忙时即时排队提示；管理员 `/stop` 强制中断在途任务（回收 runtime） |
@@ -182,6 +186,7 @@ src/core/       接入层契约：BotConnector / 归一化事件 / 内容片段�
 src/adapters/   接入平台：qq-official（官方开放平台）/ onebot（NapCat 等社区框架）
 src/dsh/        DSH 桥接：NDJSON JSON-RPC 客户端 / 子进程监督 / 进程池 / turn 归并 / 图片内联
 src/pipeline/   编排：调度 / 配额与进度 / 分段 / 文本清洗 / 并发原语（全平台共用一条链路）
+src/pipeline/proactive/  主动发言的唯一聚集地：能力出口 speaker.ts + 场景表 scenes.ts + 说明与 agent 契约
 src/store/      持久化：对话记录（JSONL）/ 事件去重 / 会话映射 / 路径布局
 dsh-profile/    DSH profile 补丁 + 自动审批桩
 scripts/        容器入口 + 五个验证脚本

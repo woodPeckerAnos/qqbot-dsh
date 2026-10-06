@@ -305,6 +305,22 @@ export interface BotConnector {
   /** 发送一条回复。平台专有的请求体构造在适配器内部完成。 */
   reply(ctx: ReplyContext, out: OutgoingMessage): Promise<void>;
   /**
+   * 【主动发言能力】在没有用户消息可锚定时，往会话里发一条 bot 自己发起的话。
+   *
+   * 这是**唯一**的平台能力差异点，且差异只允许通过返回值表达：
+   *   - OneBot（社区协议）：直接发，返回 `{ ok: true }`；
+   *   - 官方 QQ：主动推送受限（文档载明主动推送自 2025-04-21 起不再提供、
+   *     群聊主动消息每月 4 条，且用户可关闭接收），实现**什么都不做**并返回
+   *     `{ ok: false, reason: 'unsupported' }`（或 'quota'）。
+   *
+   * 纪律（与 fetchMedia 一致）：
+   *   - 永不抛错表达"平台不支持"，一律用返回值表达——否则外层逻辑会被迫
+   *     为每个平台写 try/catch 分支；
+   *   - 缺省（未实现）= 返回 `unsupported`，与"官方层 do nothing"同义；
+   *   - 额度策略**不在适配器里判断**，适配器只如实表达结果（'quota' / 'rate-limit'）。
+   */
+  proactive?(target: ConversationTarget, out: OutgoingMessage): Promise<ProactiveResult>;
+  /**
    * 取平台侧附件的字节（图片/语音等）。
    *
    * 存在的理由是"鉴权差异"：官方 QQ 的多媒体 CDN 需要 `Authorization: QQBot <token>`，
@@ -316,6 +332,26 @@ export interface BotConnector {
    */
   fetchMedia?(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined>;
 }
+
+/**
+ * 一次主动发言的投放结果。
+ *
+ * `retryable` 表达"下次还有机会"，交给上层决定是否补投；主动发言的场景里
+ * 补投通常没有意义（话题已经翻篇），所以上层默认记为降级而不是重试。
+ */
+export type ProactiveResult =
+  | { ok: true }
+  | { ok: false; reason: ProactiveRejectReason; detail?: string; retryable: boolean };
+
+export type ProactiveRejectReason =
+  /** 平台不提供主动推送能力（官方通道的默认实现） */
+  | 'unsupported'
+  /** 平台侧额度用尽（官方：每群每月 4 条） */
+  | 'quota'
+  /** 平台侧限频（子频道每秒条数、风控等） */
+  | 'rate-limit'
+  /** 鉴权 / 网络 / 未知故障 */
+  | 'error';
 
 // ---------------------------------------------------------------------------
 // 回复

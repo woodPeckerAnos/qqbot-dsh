@@ -17,9 +17,11 @@ import type {
   ConversationKind,
   MediaBytes,
   MediaFetchOptions,
+  ConversationTarget,
   NormalizedEvent,
   OutgoingAttachment,
   OutgoingMessage,
+  ProactiveResult,
   RemoteMedia,
   ReplyContext,
   ReplyPolicy,
@@ -163,6 +165,30 @@ export class QqOfficialConnector implements BotConnector {
       return;
     }
     await this.api.sendGroupMessage(ctx.target.id, body);
+  }
+
+  /**
+   * 【主动发言能力】官方通道的主动推送**不是我们能选的**：
+   *   - 官方文档载明「主动推送能力于 2025-04-21 起不再提供」；
+   *   - 群聊主动消息每月 4 条，单聊同；子频道另有每天 20 条/每秒 5 条；
+   *   - 用户还可以在客户端关闭「接收主动消息」，关闭后主动消息一律发送失败。
+   *
+   * 因此这个方法的实现就是**什么都不做**（do nothing），用返回值如实告诉外层
+   * 「这个平台没有主动发言能力」。这不是占位符，而是**定稿的保守行为**：
+   * 一旦官方开放能力，只需要在这里补一次 api.sendGroupMessage/sendUserMessage
+   * 调用（不带 msg_id / event_id），外层逻辑一行都不用改。
+   *
+   * 刻意不抛错、不 warn 刷日志：外层已经按 unsupported 记降级计数，
+   * 这里再打日志只会让"官方通道每次介入都刷一条告警"。
+   */
+  async proactive(target: ConversationTarget, _out: OutgoingMessage): Promise<ProactiveResult> {
+    return {
+      ok: false,
+      reason: 'unsupported',
+      detail:
+        '官方通道不提供主动推送（2025-04-21 起停用；群聊主动消息每月 4 条且用户可关闭接收）',
+      retryable: false,
+    };
   }
 
   /**

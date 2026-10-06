@@ -26,6 +26,7 @@ import type {
   BotConnector,
   ConnectorHealth,
   ConversationKind,
+  ConversationTarget,
   MediaBytes,
   MediaFetchOptions,
   MessageForwardPart,
@@ -35,6 +36,7 @@ import type {
   NormalizedMessage,
   OutgoingAttachment,
   OutgoingMessage,
+  ProactiveResult,
   RemoteMedia,
   ReplyContext,
   ReplyPolicy,
@@ -305,6 +307,33 @@ export class OnebotConnector implements BotConnector {
     }
     for (const attachment of attachments) {
       await this.sendAttachment(session, ctx, attachment);
+    }
+  }
+
+  /**
+   * 【主动发言能力】OneBot 没有"被动窗口/主动额度"概念：任何时刻都能往群里发。
+   * 所以这里只需把"没有 msg_id 可锚定"这件事表达成一次普通发送——
+   * 复用 sendText，只是自造一个主动语义的 ReplyContext（seq 用 0）。
+   *
+   * 外层（pipeline/proactive）对两个平台走的是同一条逻辑，分支只在这里。
+   */
+  async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<ProactiveResult> {
+    // ReplyContext 只多一个 seq：主动发言没有"针对哪条用户消息"的概念，
+    // seq 固定 0 表示"不属于任何一条被动回复账本"。
+    const ctx: ReplyContext = { target, seq: 0, kind: 'final' };
+    try {
+      await this.reply(ctx, out);
+      this.options.logger.debug('OneBot 主动发言已发送', {
+        conversation: target.key,
+        length: out.text.length,
+        attachments: out.attachments?.length ?? 0,
+      });
+      return { ok: true };
+    } catch (error) {
+      // 与 reply 不同：主动发言的失败不该打断任何调用方流程，用返回值表达。
+      const detail = error instanceof Error ? error.message : String(error);
+      this.options.logger.warn('OneBot 主动发言失败', { conversation: target.key, detail });
+      return { ok: false, reason: 'error', detail, retryable: true };
     }
   }
 

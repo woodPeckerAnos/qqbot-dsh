@@ -147,11 +147,38 @@ scene-4 指代      → scene-1 续聊追问 → scene-3 无人应答 → scene-
 | A 触发 | `intake` 链 + `RuleVerdict.defer` + watcher 的定时器 | 新增场景预筛规则与「话题滚动」调度器；**不改**链式短路契约 |
 | B 仲裁 | `evaluate` 链的 `20-semantic-gate` | 输出契约加字段；判定标准从常量 `criteria` 变为**有序场景清单** |
 | C 硬约束 | `speak` 链（30/31/32/33） | 仅新增「每话题一次」台账判据；其余不改 |
+| C 投递 | `orchestrator.runIntervention` → 准入 try → TurnRunner → Responder | 已在**适配器层**统一主动发言能力（§2.1，已完成）；官方层 do nothing，外层一条逻辑 |
 
 **为什么仲裁必须是一次调用而不是五次**：五次调用不仅成本 ×5，而且会引入
 **跨调用的顺序不可复现**（并发完成顺序决定谁先返回）。一次调用里由
 **prompt 内的固定顺序**决定胜负，是唯一能在「同时命中」时保证确定性、
 且能被离线回放复现的做法。这也顺带解决了成本问题。
+
+### 2.1 平面 C 的最后一跳：投递走「适配器能力 + 一条外层逻辑」（已实现）
+
+平面 C 全过之后，介入 turn 要真正把话发出去。这一步**不能**走被动回复
+（`reply(ctx, out)`）——主动发言没有用户消息可锚定，而官方通道恰恰在这里有
+硬约束（主动推送 2025-04-21 起停用、群聊每月 4 条、用户可关闭接收）。
+
+架构决策（已实现，见 `src/pipeline/proactive/`）：
+
+- **能力差异只收敛在一处**：`BotConnector.proactive?(target, out)`。
+  OneBot 直接发；**官方层 do nothing**，返回
+  `{ ok: false, reason: 'unsupported' }`（而不是抛错或静默吞掉）；
+- **外层逻辑完全一致**：`ProactiveSpeaker.deliver()` 是唯一出口，平台分支
+  不在外层出现——调用方只写一次调用，官方通道的差异全部落在返回值里；
+- **降级链有序且必须记账**：`disabled → empty → unsupported → quota →
+  rate-limit → error`，每次降级都进指标。否则"官方通道不发言"在现场会
+  表现成"bot 坏了"；
+- **永不抛错、绝不重试、禁排队**：主动发言补投没有意义（话题已经翻篇）。
+
+这条接缝的**收益**超出了介入本身：进群问候、运维命令触发的发言、
+将来的定时提醒都共用同一条路径，且天然对官方通道安全（do nothing）。
+
+> 相关文件：`src/core/connector.ts`（能力契约）、
+> `src/pipeline/proactive/speaker.ts`（唯一出口）、
+> [README.md](../src/pipeline/proactive/README.md)（给人读的说明）、
+> [AGENT-CONTRACT.md](../src/pipeline/proactive/AGENT-CONTRACT.md)（给 agent 读的扩展契约）。
 
 ---
 
@@ -309,7 +336,7 @@ criteria 里枚举**能力域**（查资料 / 跑代码与脚本 / 数据与图�
 场景也做成文件夹——因为它同样满足「需求即真相源」：
 
 ```
-src/intervention/scenes/
+src/pipeline/proactive/scenes/
   SCENES.md              # 场景清单与顺序的自然语言描述（与 registry 一致性由测试校验）
   scene-1-continuation/  # REQUIREMENT.md（含 criteria 段）+ scene.ts
   scene-2-ongoing-discussion/
@@ -323,7 +350,7 @@ src/intervention/scenes/
 **criteria 片段**（自然语言，进 prompt）。判定与发言决策都在仲裁层，
 场景文件里不出现阈值硬编码之外的逻辑。
 
-### 4.2 契约（接缝代码见 `src/intervention/scenes.ts`，本分支仅作草案）
+### 4.2 契约（接缝代码见 `src/pipeline/proactive/scenes.ts`，本分支仅作草案）
 
 ```ts
 export type SceneId = 'scene-1' | 'scene-2' | 'scene-3' | 'scene-4' | 'scene-5';
@@ -787,7 +814,7 @@ export interface SceneVerdict {
 
 ## 15. 附：本文档与实现的一致性纪律
 
-- `src/intervention/scenes.ts` 是本方案的**接缝草案**（常量 + 类型 + 纯函数），
+- `src/pipeline/proactive/scenes.ts` 是本方案的**接缝草案**（常量 + 类型 + 纯函数），
   在实施 S1 时必须被真正的 `scenes/registry.ts` 取代或改写；
   它现在不参与任何运行时路径（`main.ts` 未 import，测试不引用）。
 - 场景顺序、触发平面、门槛口径若发生变更，本文件、`SCENES.md`、
@@ -801,10 +828,14 @@ export interface SceneVerdict {
 1. **场景顺序 = `4 → 1 → 3 → 2 → 5`**（§11.1 的方案 A 被采纳）。
    含义：被点到名字（指代）最优先；其次是刚聊过的延续；再次是时效最紧的
    无人应答；然后是最需克制的持续讨论；最后是最容易饿死的兴趣 / 性格话题。
-   `src/intervention/scenes.ts` 的 `SCENE_ORDER` 与之一致，测试锁定。
+   `src/pipeline/proactive/scenes.ts` 的 `SCENE_ORDER` 与之一致，测试锁定。
 2. **仲裁形态 = 单次调用（多分类 + 决策）**（§11.2 的方案 A 被采纳）。
    一次 LLM 调用同时产出「命中场景 + 是否发言 + 置信度 + 理由 + 可选
    evidence / directive」，不做两段式、不做每场景独立调用。
+3. **主动发言能力统一放在适配器层**（§2.1，已完成）：官方通道当前不提供，
+   就在官方层 **do nothing**（返回 `unsupported`），外层逻辑保持一致；
+   相关代码聚集在 `src/pipeline/proactive/`，并配一份给人读的说明
+   （`README.md`）与一份给 agent 读的扩展契约（`AGENT-CONTRACT.md`）。
 
 仍然开放、**未**拍板的：§11.3（分位数预算是否进 S4）、§11.4（兴趣池维护形态）、
 §11.5（话题聚簇是否接受启发式）、§11.6（探针间隔）、§11.7（谁有权调阈值）、
