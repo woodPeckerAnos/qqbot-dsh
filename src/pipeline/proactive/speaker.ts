@@ -152,7 +152,15 @@ export interface ProactiveSpeakerOptions {
    * 由组装层按会话键路由，本模块不持有平台对象。
    */
   connectorFor: (target: ConversationTarget) => BotConnector | undefined;
-  /** 全局开关（默认关；由配置注入，见 config 的 proactive.enabled） */
+  /**
+   * 主动发言总开关（默认关，fail-closed）。
+   *
+   * ⚠️ 组装纪律：这个值**应当直接来自介入层的开关**（`intervention.enabled`，
+   * 它已经是默认关 + 群白名单 + 谷时段的那套闸），不要另立一个并列配置——
+   * 两个开关会让人无法回答"为什么它不说话"。
+   * 本类之所以仍然持有它，是为了让"关闭"这件事也能被记账（`disabled` 降级），
+   * 而不是让调用方在外部写 `if (enabled)` 分支。
+   */
   enabled: boolean;
   metrics?: ProactiveMetrics;
   logger: Logger;

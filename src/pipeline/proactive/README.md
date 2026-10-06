@@ -107,7 +107,11 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
-| `proactive.enabled` | `false` | 主动发言总开关（fail-closed）；与介入层的开关相互独立 |
+| `intervention.enabled` | `false` | 介入层总开关（默认关、群白名单、谷时段）。**主动发言复用它** |
+
+⚠️ **不要为主动发言另立一个并列开关**：两个开关会让人无法回答"为什么它不说话"。
+`ProactiveSpeaker` 之所以仍持有 `enabled`，只是为了让"关闭"这件事也能被记账
+（`disabled` 降级），而不是让每个调用方在外部写 `if (enabled)` 分支。
 
 观测（接到 health / `/metrics` 上）：
 
