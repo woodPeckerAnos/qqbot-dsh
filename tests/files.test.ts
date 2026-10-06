@@ -717,6 +717,44 @@ describe('OneBot 文件取字节', () => {
     expect([...(await fetchPromise)!.data]).toEqual([7, 7, 7]);
   });
 
+  it('文件同时有 url 与 fileId 时优先刷新直链（过期 url 可能是 HTTP 200 的提示页）', async () => {
+    // 上报的 url 返回一页 HTML（NapCat 普通文件链接过期后的典型形态），
+    // 若先信它就会把 HTML 当成 PDF 存下来再"解析失败"
+    const stale = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html>url expired</html>');
+    });
+    servers.push(stale);
+    await new Promise<void>((resolve) => stale.listen(0, '127.0.0.1', () => resolve()));
+    const staleAddress = stale.address();
+    const stalePort = typeof staleAddress === 'object' && staleAddress !== null ? staleAddress.port : 0;
+
+    const fresh = await serveBytes(new Uint8Array([0x25, 0x50, 0x44, 0x46]));
+    const c = makeConnector(0);
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+
+    const fetchPromise = c.fetchMedia(
+      {
+        kind: 'file',
+        fileId: 'fid-9',
+        context: { groupId: '8888' },
+        url: `http://127.0.0.1:${stalePort}/a.pdf`,
+      },
+      { maxBytes: 1024, timeoutMs: 3_000 },
+    );
+    const action = await new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    // 第一个动作就是申请直链，而不是先去 GET 那个已过期的 url
+    expect(action['action']).toBe('get_group_file_url');
+    ws.send(JSON.stringify({ status: 'ok', retcode: 0, echo: action['echo'], data: { url: fresh } }));
+
+    expect([...(await fetchPromise)!.data]).toEqual([0x25, 0x50, 0x44, 0x46]);
+  });
+
   it('缺会话上下文时不猜群号，直接走 get_file', async () => {
     const c = makeConnector(0);
     connector = c;

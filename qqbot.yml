@@ -253,7 +253,9 @@ attachments:
     retentionDays: 7
     # 单会话 inbox 总字节上限（MB）。超出时**删最旧的**而不是拒绝新文件。
     maxInboxMB: 200
-    # 允许抽取正文的扩展名白名单（小写）。不在名单里的文件不下载，只写一行说明。
+    # 允许抽取正文的扩展名白名单（小写）。不在名单里的文件**不下载**，只写一行说明。
+    # 不建议把 sh / py / exe 这类可执行文件加进来：落盘位置是 agent 的工作区，
+    # 而 agent 有执行能力——"用户发来的脚本被 agent 顺手跑一下"是没必要开的口子。
     extractExtensions: [pdf, txt, md, csv, json, yaml, yml, log, xml, html]
 
 # --- 富媒体出站（把 agent 生成的文件发给用户）--------------------------------

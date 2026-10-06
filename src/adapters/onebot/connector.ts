@@ -110,9 +110,16 @@ class OnebotActionError extends Error {
   }
 }
 
-/** 转发块回查缓存的容量与存活时间。 */
+/** 转发块回查缓存的容量、存活时间与单条体积上限。 */
 const FORWARD_CACHE_MAX = 64;
 const FORWARD_CACHE_TTL_MS = 5 * 60_000;
+/**
+ * 单条缓存的最大序列化体积。
+ *
+ * 64 条 × 每条几 MB 的响应足以把内存顶起来（一个转发块本身可以是几百条消息），
+ * 而超大的响应重复利用的概率本来就低——超过就不缓存，本次照常返回。
+ */
+const FORWARD_CACHE_MAX_ENTRY_BYTES = 256 * 1024;
 
 /**
  * 一条消息的转发读取预算。
@@ -128,6 +135,15 @@ const FORWARD_CACHE_TTL_MS = 5 * 60_000;
  *   - `expiresAt`：整条消息回查的总墙钟上限。每次回查最长 timeoutMs，只限次数
  *     不限时间的话最坏情况仍会把这个连接上的队列堵上几分钟。
  */
+/** 粗估一个已解析 JSON 载荷的序列化体积（只用于决定要不要缓存）。 */
+function estimateSize(data: unknown): number {
+  try {
+    return JSON.stringify(data)?.length ?? 0;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
 interface ForwardBudget {
   nodesLeft: number;
   charsLeft: number;
@@ -794,7 +810,9 @@ export class OnebotConnector implements BotConnector {
         timeoutMs !== undefined
           ? await this.callAction(session, 'get_forward_msg', params, timeoutMs)
           : await this.callAction(session, 'get_forward_msg', params);
-      this.forwardCache.set(cacheKey, { at: now, data });
+      if (estimateSize(data) <= FORWARD_CACHE_MAX_ENTRY_BYTES) {
+        this.forwardCache.set(cacheKey, { at: now, data });
+      }
       while (this.forwardCache.size > FORWARD_CACHE_MAX) {
         const oldest = this.forwardCache.keys().next();
         if (oldest.done === true) break;
@@ -924,23 +942,34 @@ export class OnebotConnector implements BotConnector {
    * 任何一步失败都返回 undefined（由编排层降级成文字说明），绝不抛错打断整轮。
    */
   async fetchMedia(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined> {
-    if (media.url !== undefined) {
+    // 图片与视频：上报的 url 是可靠快路径（过期了再由动作刷新），照旧先试它
+    if (media.kind !== 'file' && media.url !== undefined) {
       const direct = await this.httpGet(media.url, options);
       if (direct !== undefined) return direct;
     }
-    if (media.fileId === undefined) return undefined;
+    if (media.fileId === undefined) {
+      return media.url !== undefined ? this.httpGet(media.url, options) : undefined;
+    }
 
     // **必须用收到这条消息的那个连接**：会话上下文里的群号要发给确实在该群里的
     // 账号（多连接下 pickAnySession 可能选错号——轻则申请失败、重则用错凭据）。
     // 群/私聊会话键的构造归 normalize.ts 所有，这里复用它的函数而不是自己拼串。
     const session = this.pickSessionForMedia(media);
-    if (session === undefined) return undefined;
+    if (session === undefined) {
+      return media.url !== undefined ? this.httpGet(media.url, options) : undefined;
+    }
 
-    // 文件与图片的取件路径不同：NapCat 明确说明"非视频/图片/音频的普通文件，
-    // 其链接受下载次数影响"，所以要先重新申请直链，再退回通用 get_file。
+    // 文件与图片的取件路径不同，且**顺序也要反过来**：NapCat 明确说明"非视频/
+    // 图片/音频的普通文件，其链接受下载次数影响"。上报的 url 可能是已过期但仍
+    // 返回 HTTP 200 的提示页——那样会把一页 HTML 当成 PDF 存下来再"解析失败"，
+    // 而不是刷新直链。所以有 file_id + 会话上下文时以动作申请到的直链为准。
     if (media.kind === 'file') {
       const refreshed = await this.fetchViaFileUrl(session, media, options);
       if (refreshed !== undefined) return refreshed;
+      if (media.url !== undefined) {
+        const direct = await this.httpGet(media.url, options);
+        if (direct !== undefined) return direct;
+      }
       return this.fetchViaFileAction(session, 'get_file', media.fileId, options);
     }
 

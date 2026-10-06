@@ -121,6 +121,20 @@ export function readPlainText(data: Uint8Array, maxChars: number): DocumentExtra
   return { text: normalized };
 }
 
+/**
+ * 按 UTF-16 码元长度截断，但不切出落单的代理对。
+ *
+ * 说不清"字符"的两种口径（我们按码元、pdftotext 的页数上限按页）不如就地防一手：
+ * 切在 emoji / 生僻字中间会产出一个无效的半字符，下游再编码时变成 U+FFFD。
+ */
+function clipAtCodePoint(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const clipped = text.slice(0, maxChars);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  // 高代理（0xD800-0xDBFF）结尾 = 后半截被切掉了
+  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+}
+
 function decodeText(data: Uint8Array): string | undefined {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(data);
@@ -210,17 +224,20 @@ export function runPdftotext(
     timer.unref?.();
 
     child.stdout?.on('data', (chunk: Buffer) => {
-      if (truncated) return;
+      // settled：kill 之后子进程仍可能吐最后一两块数据，别再往 chunks 里堆
+      if (settled || truncated) return;
       // 只留预算内的字节：一段超长输出不该先把内存吃光再判断超限
       const remaining = maxBytes - bytes;
-      if (chunk.length >= remaining) {
-        chunks.push(chunk.subarray(0, remaining));
+      if (chunk.length > remaining) {
+        if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
         bytes = maxBytes;
         // 超过字符上限就停手：剩下的内容既不会用上，也没必要读进内存
         truncated = true;
         kill();
         return;
       }
+      // 恰好等于预算不算超限：只有**超过**才截断（否则正好卡在边界上的输出
+      // 会被误判成截断，还丢掉 totalChars）
       chunks.push(chunk);
       bytes += chunk.length;
     });
@@ -240,7 +257,7 @@ export function runPdftotext(
     child.on('close', (code: number | null) => {
       const text = Buffer.concat(chunks).toString('utf8');
       if (truncated) {
-        const clipped = text.slice(0, input.maxChars);
+        const clipped = clipAtCodePoint(text, input.maxChars);
         finish(
           clipped.trim() === ''
             ? { extraction: { reason: '没有从该 PDF 提取到文本' } }
@@ -262,7 +279,7 @@ export function runPdftotext(
       if (normalized.length > input.maxChars) {
         finish({
           extraction: {
-            text: normalized.slice(0, input.maxChars),
+            text: clipAtCodePoint(normalized, input.maxChars),
             truncated: true,
             totalChars: normalized.length,
           },
