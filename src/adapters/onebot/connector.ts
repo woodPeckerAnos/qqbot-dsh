@@ -28,6 +28,8 @@ import type {
   ConversationKind,
   MediaBytes,
   MediaFetchOptions,
+  MessageForwardPart,
+  MessagePart,
   MessageQuotePart,
   NormalizedEvent,
   NormalizedMessage,
@@ -38,13 +40,16 @@ import type {
   ReplyPolicy,
 } from '../../core/connector.js';
 import { flattenParts } from '../../core/content.js';
+import type { ForwardConfig } from '../../config.js';
 import type { Logger } from '../../logger.js';
 import { normalizeWhitespace, stripControlChars, toPlainText } from '../../pipeline/markdown.js';
 import {
   normalizeOneBotEvent,
   ONEBOT_PLATFORM,
+  parseForwardNodes,
   quotedAuthorFromGetMsg,
   quotedPartsFromGetMsg,
+  type ForwardRef,
   type NormalizeResult,
 } from './normalize.js';
 import type { OneBotActionResponse, OneBotEvent } from './types.js';
@@ -66,6 +71,18 @@ export interface OnebotConnectorOptions {
    *   - `path`：只传绝对路径，要求 bot 与框架同机同文件系统（省 33% 体积）。
    */
   fileTransport?: 'base64' | 'path';
+  /**
+   * 转发消息块（合并转发 / 聊天记录）的展开配额（config.attachments.forward）。
+   * 缺省或 `enabled: false` 时不做任何回查，行为退回 `[聊天记录]` 占位。
+   */
+  forward?: ForwardConfig;
+  /**
+   * 转发块回查结果上报（用于 /metrics 计数）。
+   *
+   * 用回调而不是 import PipelineStats：接入层不认识编排层的统计对象，
+   * 这条边界与"编排层不 import adapters/*"是对称的。
+   */
+  onForward?: (info: { ok: boolean; nodes: number }) => void;
   logger: Logger;
   /** 动作响应等待超时（毫秒） */
   actionTimeoutMs?: number;
@@ -91,6 +108,21 @@ class OnebotActionError extends Error {
   }
 }
 
+/** 转发块回查缓存的容量与存活时间。 */
+const FORWARD_CACHE_MAX = 64;
+const FORWARD_CACHE_TTL_MS = 5 * 60_000;
+
+/**
+ * 一个顶层转发块的读取预算（节点数 + 字符数）。
+ *
+ * 做成可变的共享对象而不是参数：嵌套转发的递归展开要**共同**消耗外层预算，
+ * 否则"20 条 × 嵌套 20 条"会把总读取量放大成平方级。
+ */
+interface ForwardBudget {
+  nodesLeft: number;
+  charsLeft: number;
+}
+
 export class OnebotConnector implements BotConnector {
   readonly platform = ONEBOT_PLATFORM;
 
@@ -109,6 +141,8 @@ export class OnebotConnector implements BotConnector {
    * 保证补全后的事件顺序与到达顺序一致——否则一条被引用消息可能插到后一条消息之后。
    */
   private readonly sessionQueues = new WeakMap<Session, Promise<void>>();
+  /** 转发块原始响应的 LRU + TTL 缓存（键为平台侧 forward id） */
+  private readonly forwardCache = new Map<string, { at: number; data: unknown }>();
   private startedAt = 0;
   private stopping = false;
 
@@ -399,14 +433,22 @@ export class OnebotConnector implements BotConnector {
         const target = result.event.target;
         if (target !== undefined) this.conversationSessions.set(target.key, session);
 
-        // 引用消息（reply 段）只带消息 id，内容要回查 get_msg 才能拿到。
+        // 引用（reply 段）与转发块（forward 段）都只有 id，内容要回查才能拿到。
         // 回查是异步的，而 emit 的顺序会影响"同一会话里哪条消息先进入 turn"，
         // 所以按会话排队，保证补全前后的事件顺序与到达顺序一致。
-        if (result.quotedMessageId !== undefined && isMessage(result.event)) {
+        const hasQuote = result.quotedMessageId !== undefined;
+        const hasForward = (result.forwardRefs?.length ?? 0) > 0;
+        if ((hasQuote || hasForward) && isMessage(result.event)) {
           const event = result.event;
-          const quotedMessageId = result.quotedMessageId;
           this.enqueue(session, async () => {
-            this.emit(await this.withQuotedContent(session, event, quotedMessageId));
+            this.emit(
+              await this.enrichEvent(session, event, {
+                ...(result.quotedMessageId !== undefined
+                  ? { quotedMessageId: result.quotedMessageId }
+                  : {}),
+                ...(result.forwardRefs !== undefined ? { forwardRefs: result.forwardRefs } : {}),
+              }),
+            );
           });
           return;
         }
@@ -468,7 +510,7 @@ export class OnebotConnector implements BotConnector {
   }
 
   // -------------------------------------------------------------------------
-  // 引用消息补全（reply 段 → get_msg 回查）
+  // 引用 / 转发的异步补全
   // -------------------------------------------------------------------------
 
   /** 按会话串行执行异步补全，保持事件顺序。 */
@@ -483,39 +525,242 @@ export class OnebotConnector implements BotConnector {
   }
 
   /**
-   * 用 get_msg 回查被引用的消息，把内容并成 `quote` 片段。
+   * 把一条消息的引用与转发补全成最终片段，并重算 `content`。
+   *
+   * 顺序刻意是**先转发后引用**：`forwardRefs[].index` 指的是 `event.parts` 里的
+   * 下标，先把它们就地替换掉，再把引用片段插到最前面，下标才不会错位。
+   * 渲染结果因此是"引用在前、本条正文（含转发块）在后"，与人的阅读顺序一致。
+   *
+   * 任何一步失败都只降级、绝不丢这条消息（与既有引用回查同样的纪律）。
+   */
+  private async enrichEvent(
+    session: Session,
+    event: NormalizedMessage,
+    enrichment: { quotedMessageId?: string; forwardRefs?: ForwardRef[] },
+  ): Promise<NormalizedMessage> {
+    let parts: MessagePart[] = event.parts ?? [];
+
+    if (enrichment.forwardRefs !== undefined && enrichment.forwardRefs.length > 0) {
+      parts = await this.resolveForwardRefs(
+        session,
+        parts,
+        enrichment.forwardRefs,
+        0,
+        this.newForwardBudget(),
+      );
+    }
+
+    if (enrichment.quotedMessageId !== undefined) {
+      const quote = await this.fetchQuote(session, enrichment.quotedMessageId, event.target.key);
+      if (quote !== undefined) parts = [quote, ...parts];
+    }
+
+    return { ...event, parts, content: flattenParts(parts) };
+  }
+
+  /**
+   * 用 get_msg 回查被引用的消息，拼成 `quote` 片段。
    *
    * 失败一律降级：拿不到引用内容就按原消息处理（并记 warn），
    * 绝不因为"引用查不到"把用户这条消息丢掉。
    */
-  private async withQuotedContent(
+  private async fetchQuote(
     session: Session,
-    event: NormalizedMessage,
     quotedMessageId: string,
-  ): Promise<NormalizedMessage> {
+    conversationKey: string,
+  ): Promise<MessageQuotePart | undefined> {
     const numericId = Number(quotedMessageId);
     try {
       const data = await this.callAction(session, 'get_msg', {
         message_id: Number.isFinite(numericId) ? numericId : quotedMessageId,
       });
       const parts = quotedPartsFromGetMsg(data, session.selfId ?? 0);
-      if (parts.length === 0) return event;
+      if (parts.length === 0) return undefined;
       const author = quotedAuthorFromGetMsg(data);
-      const quote: MessageQuotePart = {
+      return {
         type: 'quote',
         ...(author !== undefined ? { author } : {}),
         parts,
       };
-      const merged = [quote, ...(event.parts ?? [])];
-      return { ...event, parts: merged, content: flattenParts(merged) };
     } catch (error) {
       this.options.logger.warn('回查引用消息失败（按未引用处理）', {
         quotedMessageId,
-        conversation: event.target.key,
+        conversation: conversationKey,
         error: error instanceof Error ? error.message : String(error),
       });
-      return event;
+      return undefined;
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // 转发消息块（forward 段 → get_forward_msg 回查）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 就地把 `parts` 里的转发占位片段换成展开结果。
+   *
+   * 替换而非插入：归一化阶段已经把占位片段放在正确的位置（下标记在 ForwardRef 里），
+   * 这样"转发块出现在消息的第几段"这个信息不会在补全后丢失。
+   */
+  private async resolveForwardRefs(
+    session: Session,
+    parts: readonly MessagePart[],
+    refs: readonly ForwardRef[],
+    depth: number,
+    budget: ForwardBudget,
+  ): Promise<MessagePart[]> {
+    const resolved = [...parts];
+    for (const ref of refs) {
+      const placeholder = resolved[ref.index];
+      if (placeholder === undefined || placeholder.type !== 'forward') continue;
+      resolved[ref.index] = await this.expandForward(session, ref.id, depth, budget);
+    }
+    return resolved;
+  }
+
+  /**
+   * 展开一个转发块。
+   *
+   * 每个**顶层**转发块一份预算（`newForwardBudget`），嵌套块共用外层预算——
+   * "这个块最多读 20 条"是维护者能理解、能预测的语义；按块各自重置会让
+   * 嵌套转发把总量放大成 maxNodes^depth。
+   */
+  private async expandForward(
+    session: Session,
+    forwardId: string,
+    depth: number,
+    budget: ForwardBudget,
+  ): Promise<MessagePart> {
+    const config = this.options.forward;
+    // 关掉 / 没配：保持既有行为（`[聊天记录]`），不做任何网络请求
+    if (config === undefined || !config.enabled) return { type: 'text', text: '[聊天记录]' };
+    if (depth >= config.maxDepth) {
+      return { type: 'text', text: '[转发消息（嵌套层级过深，未展开）]' };
+    }
+    if (budget.nodesLeft <= 0 || budget.charsLeft <= 0) {
+      return { type: 'text', text: '[转发消息（超出本次读取上限，未展开）]' };
+    }
+
+    const data = await this.getForwardData(session, forwardId);
+    if (data === undefined) {
+      this.options.onForward?.({ ok: false, nodes: 0 });
+      this.options.logger.warn('回查转发消息失败（降级为 [聊天记录]）', { forwardId });
+      return { type: 'text', text: '[聊天记录]' };
+    }
+    const nodes = parseForwardNodes(data, session.selfId ?? 0);
+    if (nodes.length === 0) {
+      this.options.onForward?.({ ok: false, nodes: 0 });
+      return { type: 'text', text: '[聊天记录]' };
+    }
+
+    const outParts: MessagePart[] = [];
+    let truncated = nodes.length > budget.nodesLeft;
+    for (const node of nodes) {
+      if (budget.nodesLeft <= 0) {
+        truncated = true;
+        break;
+      }
+      budget.nodesLeft -= 1;
+
+      // 嵌套转发：先就地展开，再整体压平成这一条发言的文本
+      let nodeParts = node.parts;
+      if (node.forwardRefs !== undefined && node.forwardRefs.length > 0) {
+        nodeParts = await this.resolveForwardRefs(session, nodeParts, node.forwardRefs, depth + 1, budget);
+      }
+
+      let text = flattenParts(nodeParts).replace(/\s*\n\s*/g, ' ').trim();
+      if (text === '') continue;
+      if (text.length > config.maxNodeChars) {
+        text = `${text.slice(0, config.maxNodeChars)}…`;
+      }
+      if (text.length > budget.charsLeft) {
+        truncated = true;
+        break;
+      }
+      budget.charsLeft -= text.length;
+
+      // 每条发言一个 text 片段（发言人前缀烘进去）：渲染层按"一个元素 = 一条"编号
+      outParts.push({ type: 'text', text: node.author !== undefined ? `${node.author}: ${text}` : text });
+    }
+
+    const part: MessageForwardPart = {
+      type: 'forward',
+      nodeCount: nodes.length,
+      ...(truncated ? { truncated: true } : {}),
+      parts: outParts,
+    };
+    this.options.onForward?.({ ok: true, nodes: outParts.length });
+    this.options.logger.debug('转发块已展开', {
+      forwardId,
+      declared: nodes.length,
+      expanded: outParts.length,
+      truncated,
+    });
+    return part;
+  }
+
+  /**
+   * 取 get_forward_msg 的原始响应，带 LRU + TTL 缓存。
+   *
+   * 同一条转发在群里被反复转是常态（"你看看这个"），缓存把重复成本降为 0。
+   * 缓存的是**原始响应**而不是解析结果：解析很便宜，而且每次解析都会产出
+   * 一份独立的嵌套引用下标，复用解析结果反而容易在下标上出岔子。
+   */
+  private async getForwardData(session: Session, forwardId: string): Promise<unknown | undefined> {
+    const now = this.now();
+    const cached = this.forwardCache.get(forwardId);
+    if (cached !== undefined) {
+      if (now - cached.at < FORWARD_CACHE_TTL_MS) {
+        // 命中即刷新插入顺序（Map 的迭代顺序即 LRU 顺序）
+        this.forwardCache.delete(forwardId);
+        this.forwardCache.set(forwardId, cached);
+        return cached.data;
+      }
+      this.forwardCache.delete(forwardId);
+    }
+
+    // 参数名在实现之间不一致：NapCat 用 id，go-cqhttp 用 message_id。
+    // 一次请求同时带上两个，避免"先试一个再试另一个"把失败路径的延迟翻倍。
+    const numericId = Number(forwardId);
+    const params: Record<string, unknown> = {
+      id: forwardId,
+      message_id: Number.isFinite(numericId) ? numericId : forwardId,
+    };
+
+    const timeoutMs = this.options.forward?.timeoutMs;
+    try {
+      const data =
+        timeoutMs !== undefined
+          ? await this.callAction(session, 'get_forward_msg', params, timeoutMs)
+          : await this.callAction(session, 'get_forward_msg', params);
+      this.forwardCache.set(forwardId, { at: now, data });
+      while (this.forwardCache.size > FORWARD_CACHE_MAX) {
+        const oldest = this.forwardCache.keys().next();
+        if (oldest.done === true) break;
+        this.forwardCache.delete(oldest.value);
+      }
+      return data;
+    } catch (error) {
+      this.options.logger.debug('get_forward_msg 失败', {
+        forwardId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * 一个顶层转发块的读取预算。
+   *
+   * 字符预算按 `maxChars` 计；同时给一个比它宽松的节点数兜底，防止
+   * "每条发言都极短"时把 maxNodes 之外的条目也吞进来。
+   */
+  private newForwardBudget(): ForwardBudget {
+    const config = this.options.forward;
+    return {
+      nodesLeft: config?.maxNodes ?? 0,
+      charsLeft: config?.maxChars ?? 0,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -540,6 +785,7 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     action: string,
     params: Record<string, unknown>,
+    timeoutMs?: number,
   ): Promise<unknown> {
     if (session.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new OnebotActionError('连接不可用（非 OPEN 状态）'));
@@ -549,7 +795,7 @@ export class OnebotConnector implements BotConnector {
       const timer = setTimeout(() => {
         this.pending.delete(echo);
         reject(new OnebotActionError(`动作 ${action} 等待响应超时`));
-      }, this.options.actionTimeoutMs ?? 15_000);
+      }, timeoutMs ?? this.options.actionTimeoutMs ?? 15_000);
       timer.unref?.();
       this.pending.set(echo, { session, resolve, reject, timer });
       session.socket.send(JSON.stringify({ action, params, echo }), (error) => {

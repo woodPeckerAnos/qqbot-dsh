@@ -51,6 +51,8 @@ export type NormalizeResult =
       event: NormalizedEvent;
       /** 群/私聊消息引用了某条消息时为该消息 id（连接器据此回查引用内容） */
       quotedMessageId?: string;
+      /** 消息里的转发块（连接器据此回查 get_forward_msg，见 ForwardRef） */
+      forwardRefs?: ForwardRef[];
     }
   | { type: 'friend-request'; flag: string; userId: number }
   | { type: 'group-invite'; flag: string; groupId: number; userId: number }
@@ -67,6 +69,28 @@ export interface ExtractedContent {
   atSelf: boolean;
   /** `reply` 段引用的消息 id */
   quotedMessageId?: string;
+  /**
+   * 待回查的转发块：`index` 是它在 `parts` 里的位置（占位片段），
+   * `id` 是 get_forward_msg 的入参。
+   *
+   * 为什么不在归一化时就把内容取回来：这里是纯函数（无 IO，单测友好），
+   * 回查属于连接器的职责（与 `reply` 段的 get_msg 回查同构）。
+   */
+  forwardRefs?: ForwardRef[];
+}
+
+/** 转发块占位片段在 parts 中的位置 + 平台侧 id */
+export interface ForwardRef {
+  index: number;
+  id: string;
+}
+
+/** 转发块里的一条发言（已解析成片段，可能自己还带转发/引用） */
+export interface ForwardNode {
+  author?: string;
+  parts: MessagePart[];
+  /** 该条发言内部的嵌套转发（相对 `parts` 的下标）；没有嵌套时不写 */
+  forwardRefs?: ForwardRef[];
 }
 
 function asString(value: unknown): string | undefined {
@@ -133,6 +157,7 @@ export function extractMessageContent(
   const parts: MessagePart[] = [];
   let atSelf = false;
   let quotedMessageId: string | undefined;
+  const forwardRefs: ForwardRef[] = [];
 
   for (const segment of segments) {
     switch (segment.type) {
@@ -217,9 +242,19 @@ export function extractMessageContent(
       case 'face':
         parts.push({ type: 'text', text: '[表情]' });
         break;
-      case 'forward':
-        parts.push({ type: 'text', text: '[聊天记录]' });
+      case 'forward': {
+        // 合并转发：段里只有 id，内容要回查 get_forward_msg（连接器负责）。
+        // 这里放一个占位片段并记下它的下标，回查成功后原地替换；失败则换成
+        // `[聊天记录]`（保持"以前是什么样，失败后还是什么样"）。
+        const id = asString(segment.data['id']) ?? asString(segment.data['message_id']);
+        if (id === undefined) {
+          parts.push({ type: 'text', text: '[聊天记录]' });
+          break;
+        }
+        forwardRefs.push({ index: parts.length, id });
+        parts.push({ type: 'forward', parts: [] });
         break;
+      }
       case 'json':
       case 'xml':
         parts.push({ type: 'text', text: '[卡片消息]' });
@@ -236,6 +271,7 @@ export function extractMessageContent(
     content,
     atSelf,
     ...(quotedMessageId !== undefined ? { quotedMessageId } : {}),
+    ...(forwardRefs.length > 0 ? { forwardRefs } : {}),
   };
 }
 
@@ -267,6 +303,95 @@ export function quotedAuthorFromGetMsg(data: unknown): string | undefined {
   const sender = (data as { sender?: { card?: string; nickname?: string } }).sender;
   const card = asString(sender?.card);
   return card ?? asString(sender?.nickname);
+}
+
+// ---------------------------------------------------------------------------
+// 合并转发（get_forward_msg）
+// ---------------------------------------------------------------------------
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 从响应里取出"逐条发言"的数组。
+ *
+ * 已知形状（必须都容忍，见 docs/FORWARD-FILE-INGRESS-PLAN.md §3.1）：
+ *   - `{ messages: [...] }`（连接器已解包 `data`，最常见）；
+ *   - `{ data: { messages: [...] } }`（调用方直接把整个响应体给进来）；
+ *   - 整个数组（已解包）。
+ *
+ * 递归只跟 `data` 一层层剥，带深度上限——防畸形载荷用嵌套对象把栈打穿。
+ */
+function forwardListOf(data: unknown, depth = 0): unknown[] {
+  if (Array.isArray(data)) return data;
+  if (!isRecord(data) || depth > 3) return [];
+  for (const key of ['messages', 'message', 'nodes']) {
+    const value = data[key];
+    if (Array.isArray(value)) return value;
+  }
+  const nested = data['data'];
+  return isRecord(nested) ? forwardListOf(nested, depth + 1) : [];
+}
+
+/** 把一条 node 里的 `message` / `content` 字段交给常规解析（它自己可能是 CQ 码字符串）。 */
+function forwardNodeOf(item: unknown, selfId: number): ForwardNode | undefined {
+  // 形状 A：整条就是一个 CQ 码字符串（go-cqhttp 的 messages 是字符串数组）
+  if (typeof item === 'string') {
+    const extracted = extractMessageContent(item, selfId);
+    if (extracted.parts.length === 0) return undefined;
+    return withForwardRefs({ parts: extracted.parts }, extracted.forwardRefs);
+  }
+  if (!isRecord(item)) return undefined;
+
+  // 形状 B：`{ type:'node', data:{...} }`——内容在 data 里
+  const data = item['type'] === 'node' && isRecord(item['data']) ? item['data'] : item;
+  const sender = isRecord(data['sender']) ? data['sender'] : undefined;
+  const author =
+    asString(data['nickname']) ??
+    asString(data['card']) ??
+    asString(data['name']) ??
+    asString(sender?.['card']) ??
+    asString(sender?.['nickname']) ??
+    asString(data['user_id']);
+
+  // 内容可能在 message（消息段数组）或 content（NapCat node 的字段）里；
+  // extractMessageContent 同时接受数组与 CQ 码字符串。
+  const payload = data['message'] ?? data['content'];
+  const extracted = extractMessageContent(
+    payload as OneBotSegment[] | string | undefined,
+    selfId,
+  );
+
+  if (extracted.parts.length === 0) {
+    if (author === undefined) return undefined;
+    // 只有发言人的空条目：至少留下"某人发了一条读不到的内容"
+    return { author, parts: [{ type: 'text', text: '[内容未读入]' }] };
+  }
+  return withForwardRefs(
+    { ...(author !== undefined ? { author } : {}), parts: extracted.parts },
+    extracted.forwardRefs,
+  );
+}
+
+function withForwardRefs(node: ForwardNode, refs: ForwardRef[] | undefined): ForwardNode {
+  return refs !== undefined && refs.length > 0 ? { ...node, forwardRefs: refs } : node;
+}
+
+/**
+ * `get_forward_msg` 的响应 → 逐条发言（纯函数，便于单测）。
+ *
+ * 任何不认识的条目都**跳过**而不是抛错：一条解析不了的转发不该让用户这条消息
+ * 消失（与引用回查同样的降级纪律）。返回空数组表示"这个转发块读不出来"，
+ * 由连接器换成 `[聊天记录]`。
+ */
+export function parseForwardNodes(data: unknown, selfId: number): ForwardNode[] {
+  const nodes: ForwardNode[] = [];
+  for (const item of forwardListOf(data)) {
+    const node = forwardNodeOf(item, selfId);
+    if (node !== undefined) nodes.push(node);
+  }
+  return nodes;
 }
 
 /**
@@ -334,6 +459,7 @@ function normalizeMessage(raw: OneBotEvent, now: () => number): NormalizeResult 
       ...(extracted.quotedMessageId !== undefined
         ? { quotedMessageId: extracted.quotedMessageId }
         : {}),
+      ...(extracted.forwardRefs !== undefined ? { forwardRefs: extracted.forwardRefs } : {}),
     };
   }
 
@@ -361,6 +487,7 @@ function normalizeMessage(raw: OneBotEvent, now: () => number): NormalizeResult 
       ...(extracted.quotedMessageId !== undefined
         ? { quotedMessageId: extracted.quotedMessageId }
         : {}),
+      ...(extracted.forwardRefs !== undefined ? { forwardRefs: extracted.forwardRefs } : {}),
     };
   }
 

@@ -67,6 +67,7 @@ function buildConnector(
   name: string,
   config: Config,
   logger: ReturnType<typeof createLogger>,
+  stats: PipelineStats,
 ): BotConnector {
   if (name === QQ_OFFICIAL_PLATFORM) {
     return new QqOfficialConnector({
@@ -106,6 +107,16 @@ function buildConnector(
     autoAcceptFriend: config.onebot.autoAcceptFriend,
     autoAcceptGroupInvite: config.onebot.autoAcceptGroupInvite,
     fileTransport: config.onebot.fileTransport,
+    forward: config.attachments.forward,
+    // 转发块回查结果计入 /metrics（接入层不认识 PipelineStats，只回调）
+    onForward: ({ ok, nodes }) => {
+      if (ok) {
+        stats.forwardsExpanded += 1;
+        stats.forwardNodesInlined += nodes;
+      } else {
+        stats.forwardsFailed += 1;
+      }
+    },
     replyPolicy: {
       maxChars: config.onebot.maxChars,
       maxRepliesPerMsg: config.onebot.maxRepliesPerMsg,
@@ -162,9 +173,13 @@ async function main(): Promise<void> {
   const sessions = new SessionStore({ paths, logger });
 
   // --- 接入层（按配置建连接器，可多个并存） ----------------------------------
+  // stats 提前到这里：连接器需要上报转发块回查结果（onForward 回调），
+  // 而它是编排层与接入层之间唯一的"计数"通道。放在最前面也让它成为
+  // 整条装配链上第一个可观测对象。
+  const stats = new PipelineStats();
   const connectors = new Map<string, BotConnector>();
   for (const name of config.connectors) {
-    connectors.set(name, buildConnector(name, config, logger));
+    connectors.set(name, buildConnector(name, config, logger, stats));
   }
 
   // --- DSH runtime 池 --------------------------------------------------------
@@ -191,7 +206,7 @@ async function main(): Promise<void> {
   // Ingress 顺序即架构约束：去重 → /offpeak 命令 → 谷时段闸 → 记录 → 准入
   // （命令先于闸：管理员要能在峰时段关闸；闸先于记录与名额：被拦消息不写
   // 对话记录、不占并发。详见 src/pipeline/ingress/types.ts）。
-  const stats = new PipelineStats();
+  // stats 在"接入层"就已创建（连接器要用它上报转发块回查结果），这里不再新建。
 
   // 谷时段闸服务：生效配置 = env 默认 + 运行期覆盖（持久化在 stateDir，
   // 由管理员 /offpeak 命令热切换，下一条消息即生效）。
