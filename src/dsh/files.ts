@@ -249,9 +249,16 @@ async function ingestOne(
   const text = extraction?.text?.trim() ?? '';
   if (text === '') {
     result.savedOnly += 1;
-    const reason = extraction?.reason ?? '本服务不解析这类格式';
+    // 三种"没有正文"要分清楚：解析器说得出原因 / 没注入解析器 / 类型不归解析器管。
+    // 混成一句话会让排障时误以为"解析失败"，实际可能只是格式不在范围内。
+    const reason =
+      extraction?.reason ??
+      (options.extract === undefined ? '本服务未启用文档解析' : '本服务不解析这类格式');
     if (saved !== undefined) {
       return `${label}（${reason}）；原文已保存到 ${saved.relPath}，需要时我可以用工具读取`;
+    }
+    if (!config.saveToInbox) {
+      return `${label}（${reason}；原文未落盘：attachments.files.saveToInbox 已关闭）`;
     }
     return `${label}（${reason}，且未能保存原文）`;
   }

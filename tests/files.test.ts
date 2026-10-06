@@ -283,6 +283,34 @@ describe('ingestFiles', () => {
     expect(note).toContain('原文已保存到');
   });
 
+  it('关闭落盘时说明"未落盘是配置"，而不是含糊的"未能保存"', async () => {
+    const result = await ingestFiles({
+      parts: [filePart()],
+      workspacePath: tempWorkspace(),
+      config: { ...FILES_CONFIG, saveToInbox: false },
+      downloadTimeoutMs: 1_000,
+      fetchMedia: async () => ({ data: PDF_BYTES }),
+      extract: async () => ({ reason: '该文件没有可提取的文本层' }),
+      logger,
+    });
+    expect(result.savedOnly).toBe(1);
+    const note = result.notes.join('\n');
+    expect(note).toContain('saveToInbox 已关闭');
+    expect(note).not.toContain('未能保存原文');
+  });
+
+  it('没有注入解析器时措辞不误导成"解析失败"', async () => {
+    const result = await ingestFiles({
+      parts: [filePart()],
+      workspacePath: tempWorkspace(),
+      config: FILES_CONFIG,
+      downloadTimeoutMs: 1_000,
+      fetchMedia: async () => ({ data: PDF_BYTES }),
+      logger,
+    });
+    expect(result.notes.join('\n')).toContain('未启用文档解析');
+  });
+
   it('白名单外的类型根本不下载', async () => {
     let called = false;
     const result = await ingestFiles({
