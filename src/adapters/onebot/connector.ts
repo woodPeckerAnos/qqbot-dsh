@@ -634,7 +634,9 @@ export class OnebotConnector implements BotConnector {
     const config = this.options.forward;
     // 关掉 / 没配：保持既有行为（`[聊天记录]`），不做任何网络请求
     if (config === undefined || !config.enabled) return { type: 'text', text: '[聊天记录]' };
-    if (depth >= config.maxDepth) {
+    // `depth` 只统计**嵌套**层数：最外层恒为 0 且永远展开，maxDepth=0 表示
+    // "只展开最外层"而不是"什么都不展开"（后者会让这个取值毫无意义）。
+    if (depth > config.maxDepth) {
       return { type: 'text', text: '[转发消息（嵌套层级过深，未展开）]' };
     }
     if (budget.nodesLeft <= 0 || budget.charsLeft <= 0) {

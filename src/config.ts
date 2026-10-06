@@ -242,7 +242,7 @@ export interface ForwardConfig {
   maxNodeChars: number;
   /** 一个转发块展开后的总字符上限 */
   maxChars: number;
-  /** 嵌套转发（转发里的转发）最多下钻几层 */
+  /** 最多再下钻几层嵌套转发（0 = 只展开最外层，最外层永远展开） */
   maxDepth: number;
   /** 回查超时（毫秒） */
   timeoutMs: number;

@@ -564,3 +564,59 @@ describe('官方聊天记录（尽力而为）', () => {
     });
   });
 });
+
+describe('转发块嵌套深度', () => {
+  let connector: OnebotConnector | undefined;
+  const clients: WebSocket[] = [];
+  afterEach(async () => {
+    for (const ws of clients.splice(0)) ws.close();
+    await connector?.stop();
+    connector = undefined;
+  });
+
+  it('maxDepth=0 只展开最外层，嵌套层退化成占位（而不是整个不展开）', async () => {
+    const { connector: c, events } = makeConnector(0, {
+      forward: { ...FORWARD_CONFIG, maxDepth: 0 },
+    });
+    connector = c;
+    await connector.start();
+    const address = (c as unknown as { server: { address: () => { port: number } } })
+      .server.address();
+    const ws = await connectClient(address.port);
+    clients.push(ws);
+
+    // 外层转发：一条发言里再嵌一个转发
+    ws.send(groupForwardMessage(60, 'outer'));
+    const outer = await new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    expect(outer['action']).toBe('get_forward_msg');
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: outer['echo'],
+        data: {
+          messages: [
+            {
+              type: 'node',
+              data: {
+                nickname: '张三',
+                content: [
+                  { type: 'text', data: { text: '你看这个' } },
+                  { type: 'forward', data: { id: 'inner' } },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    );
+    await sleep(150);
+    const content = contentOf(events);
+    // 外层照常展开
+    expect(content).toContain('1. 张三: 你看这个');
+    // 嵌套层没有回查（只应有一次 get_forward_msg），退化成占位
+    expect(content).toContain('嵌套层级过深');
+  });
+});
