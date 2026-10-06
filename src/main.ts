@@ -96,6 +96,16 @@ function buildConnector(
         turnTimeoutMs: config.qq.turnTimeoutMs,
         passiveWindowMs: QQ_C2C_PASSIVE_WINDOW_MS,
       },
+      forward: config.attachments.forward,
+      // 转发块展开结果计入 /metrics（与 OneBot 侧同一套计数）
+      onForward: ({ ok, nodes }) => {
+        if (ok) {
+          stats.forwardsExpanded += 1;
+          stats.forwardNodesInlined += nodes;
+        } else {
+          stats.forwardsFailed += 1;
+        }
+      },
       logger: logger.child({ component: `connector:${name}` }),
     });
   }

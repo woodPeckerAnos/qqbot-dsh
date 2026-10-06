@@ -18,11 +18,13 @@ import {
   OnebotConnector,
   type OnebotConnectorOptions,
 } from '../src/adapters/onebot/connector.js';
+import { buildMessageParts } from '../src/adapters/qq-official/content.js';
 import {
   extractMessageContent,
   normalizeOneBotEvent,
   parseForwardNodes,
 } from '../src/adapters/onebot/normalize.js';
+import { flattenParts } from '../src/core/content.js';
 import type { ForwardConfig } from '../src/config.js';
 import type { NormalizedEvent, NormalizedMessage } from '../src/core/connector.js';
 import { createNullLogger } from '../src/logger.js';
@@ -463,5 +465,94 @@ describe('转发块回查全回路', () => {
       { ok: false, nodes: 0 },
     ]);
     expect(events.filter((e) => e.kind === 'group-at-message')).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 官方侧：聊天记录形态的 msg_elements → forward 片段（不需要回查）
+// ---------------------------------------------------------------------------
+
+describe('官方聊天记录（尽力而为）', () => {
+  const elements = [
+    { author: { username: '张三' }, content: '这个报错怎么解决' },
+    { author: { id: 'member-2' }, content: '试试升级依赖' },
+  ];
+
+  it('非引用语义的 msg_elements 渲染成带条号与发言人的转发块', () => {
+    const parts = buildMessageParts({ message_type: 102, msg_elements: elements });
+    expect(parts).toEqual([
+      {
+        type: 'forward',
+        nodeCount: 2,
+        parts: [
+          { type: 'text', text: '张三: 这个报错怎么解决' },
+          { type: 'text', text: 'member-2: 试试升级依赖' },
+        ],
+      },
+    ]);
+    expect(flattenParts(parts)).toBe(
+      ['[转发消息 共 2 条]', '1. 张三: 这个报错怎么解决', '2. member-2: 试试升级依赖'].join('\n'),
+    );
+  });
+
+  it('message_type=103 仍是引用，不会被当成转发块', () => {
+    const parts = buildMessageParts({ message_type: 103, msg_elements: elements });
+    expect(parts[0]!.type).toBe('quote');
+    expect(parts.some((part) => part.type === 'forward')).toBe(false);
+  });
+
+  it('按配额截断并留尾注', () => {
+    const many = Array.from({ length: 5 }, (_, index) => ({ content: `第${index + 1}条` }));
+    const parts = buildMessageParts(
+      { message_type: 102, msg_elements: many },
+      {
+        forward: {
+          enabled: true,
+          maxNodes: 2,
+          maxNodeChars: 500,
+          maxChars: 4_000,
+          maxDepth: 2,
+          timeoutMs: 10_000,
+        },
+      },
+    );
+    expect(parts[0]).toMatchObject({ type: 'forward', nodeCount: 5, truncated: true });
+    const content = flattenParts(parts);
+    expect(content).toContain('1. 第1条');
+    expect(content).toContain('2. 第2条');
+    expect(content).not.toContain('第3条');
+    expect(content).toContain('（仅展开以上条目，其余未读入）');
+  });
+
+  it('关闭转发展开后 msg_elements 不再进正文（只剩本条文本）', () => {
+    const parts = buildMessageParts(
+      { message_type: 102, content: '看看这个', msg_elements: elements },
+      {
+        forward: {
+          enabled: false,
+          maxNodes: 20,
+          maxNodeChars: 500,
+          maxChars: 4_000,
+          maxDepth: 2,
+          timeoutMs: 10_000,
+        },
+      },
+    );
+    expect(parts).toEqual([{ type: 'text', text: '看看这个' }]);
+  });
+
+  it('文件附件产出 media 片段（后续由摄取层下载解析）', () => {
+    const parts = buildMessageParts({
+      message_type: 0,
+      content: '看下这个',
+      attachments: [{ content_type: 'file', url: 'https://cdn.example.com/a.pdf', filename: 'a.pdf', size: 2048 }],
+    });
+    expect(parts).toContainEqual({
+      type: 'media',
+      mediaKind: 'file',
+      url: 'https://cdn.example.com/a.pdf',
+      filename: 'a.pdf',
+      sizeBytes: 2048,
+    });
   });
 });
