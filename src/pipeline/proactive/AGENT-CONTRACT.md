@@ -7,7 +7,7 @@
 
 ---
 
-## 0. 先读这五条，否则不要动手
+## 0. 先读这六条，否则不要动手
 
 1. **一个概念只有一个家**：主动发言的所有代码在 `src/pipeline/proactive/`；
    平台能力在 `src/core/connector.ts` 的 `BotConnector.proactive?`。
@@ -20,18 +20,25 @@
    适配器与本模块都不做额度判断，只如实报告结果。
    同理**不要新增并列的开关**：`ProactiveSpeaker.enabled` 应当直接来自
    `intervention.enabled`，另立一个会让人无法回答"为什么它不说话"。
-5. **顺序唯一来源**：场景顺序只有 `SCENE_ORDER` 一处定义。新增/调整场景必须
-   同时改 `scenes.ts` 与 `SCENES` 的自然语言描述（若已拆分），并跑契约测试。
+5. **顺序唯一来源**：场景顺序只有 `contract.ts` 的 `SCENE_ORDER` 一处定义。
+   判据清单、候选排序、裁决、trace 全部由它派生；只在 `VetoContext.order`
+   允许为回放对比**覆盖裁决顺序**。新增/调整场景必须同步三处并跑契约测试。
+6. **判定分三层，不许越层**：搜集（`collect.ts`，本地、零 LLM）→ 判据
+   （`judge.ts`，逐场景"成立不成立"）→ 否决（`veto.ts`，顺序与额度的唯一实现）。
+   越层的典型错误：把"取第一个"写进 prompt、让 veto 读消息文本、
+   在 collect 里调 LLM。
 
 ---
 
-## 1. 三条改动路径：先判断你要做哪一种
+## 1. 五条改动路径：先判断你要做哪一种
 
 | 你想做的事 | 走哪条路 | 需要改代码吗 |
 |---|---|---|
 | 让 bot 在**新的条件下**主动说话（新的判定条件 / 新的场景） | ① 新增**介入规则** | 是（一个规则文件夹 + 一行注册） |
 | 让 bot 在**新的平台上**能主动发言 | ② 实现适配器的 `proactive()` | 是（一个方法） |
-| 调整"什么算命中场景"的**顺序或门槛** | ③ 改场景表 | 是（`scenes.ts` + 契约测试） |
+| 调整"什么算命中场景"的**本地门槛** | ③a 改搜集层 | 是（`collect.ts` 的 `precheck` + 契约测试） |
+| 调整**判据文案 / 输出契约** | ③b 改 LLM 层 | 是（`judge.ts`，无需动 prompt 之外的东西） |
+| 调整**顺序 / 额度 / 预算 / wait 策略** | ③c 改否决层 | 是（`veto.ts`，纯函数、可穷举测试） |
 | 只想改文案 / 阈值 | 配置（`qqbot.yml` / env） | 否 |
 
 ---
@@ -145,17 +152,60 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 
 ---
 
-## 5. 路径 ③：改场景表（`scenes.ts`）
+## 5. 路径 ③：改场景（三层各改各的）
 
-必须同时满足：
+三层文件与职责（**先定位你改的是哪一层，再动手**）：
 
-1. `SCENE_ORDER` 与 `SCENE_DEFINITIONS` 里的 `order` 一致
-   （`order = SCENE_ORDER.indexOf(id)`），契约测试会校验；
-2. 每个场景声明 `triggers`：**弱信号场景（2/5 这类）只能绑 `topic-roll`**，
-   绝不能绑 `message`——否则"每条消息都判一次兴趣话题"从类型层面就破防了；
-3. `precheck` 必须是纯函数、返回 `undefined` 表示"本次不参与"，**不得否决别人**；
-4. 全局保险（如"没人理我就停"）放在 `collectSceneHits()` 里，不放进任何场景；
-5. 跑 `npx vitest run tests/scenes.test.ts`（12 条契约用例）。
+| 层 | 文件 | 你在这里能改什么 | 不该出现在这里的东西 |
+|---|---|---|---|
+| ① 搜集 | `collect.ts` | `SCENE_DEFINITIONS` 的 `precheck` / `triggers`；`collectCandidates()` 的保险 | LLM 调用、额度判断、"谁赢" |
+| ② LLM | `judge.ts` | `SCENE_1..5_CRITERIA` 文案、`renderJudgeCriteria()`、`parseSceneVerdicts()` 容错 | 优先级/预算、候选之外的场景 |
+| ③ 否决 | `veto.ts` | `VetoPolicy` 默认值、否决顺序、`selectByQuantileBudget()` | 读消息文本、调 LLM、语义判断 |
+
+### 5.1 加一个场景（三层都要碰，按顺序做）
+
+1. **`contract.ts`**：`SceneId` 加 `'scene-6'`，并决定它在 `SCENE_ORDER` 里的位置
+   （顺序是产品决策，不要随手放最后——放最后等于它几乎永远轮不到）；
+2. **`collect.ts`**：加一条 `SCENE_DEFINITIONS`（`name` / `triggers` / `precheck`）。
+   **弱信号场景只能绑 `topic-roll`**，绝不绑 `message`——否则"每条消息都判一次"
+   从类型层面就破防了；
+3. **`judge.ts`**：加 `SCENE_6_CRITERIA` 并登记进 `CRITERIA_TEXT`
+   （`SCENE_CRITERIA` 是按 `SCENE_ORDER` 构造的，忘了登记契约测试立刻失败）；
+4. **`veto.ts`**：通常**不用改**——顺序与额度是全场景共用的。
+   只有"这个场景允许突破话题预算"这类特殊策略才动，且必须写成显式策略；
+5. 跑 `npx vitest run tests/scenes-layers.test.ts`（19 条契约用例）。
+
+### 5.2 只改本地门槛（最常见）
+
+只动 `collect.ts` 的 `precheck`。纪律：
+
+- **纯函数**：返回 `undefined` 表示"本次不参与"，**不得否决别人**；
+- 宁漏不误报：预筛放宽的代价只是多一次 LLM 调用（还有判据复核），
+  预筛收紧的代价是**永久漏掉**真实机会；
+- 全局保险（"没人理我就停"）放在 `collectCandidates()` 的入口，
+  **不放进任何场景**——没人理是会话级事实，写进某个场景别的场景就能绕过它。
+
+### 5.3 只改判据文案
+
+只动 `judge.ts` 的 criteria 常量。纪律：
+
+- 改动要能回答"这条新判据在回放数据上会怎么表现"（所以先有 §4 的回放再调文案）；
+- **不要把顺序/预算写进 prompt**——那是 §5.4 的事；
+- 输出契约（`JUDGE_OUTPUT_CONTRACT`）改动要同步 `parseSceneVerdicts()` 的容错；
+- 未知场景标签一律**丢弃该项**，不要整条降级为 silent（一个幻觉标签不该毁掉
+  其余正确判定）；整条不可解析才返回 `undefined`。
+
+### 5.4 改顺序 / 额度 / 预算
+
+只动 `veto.ts`（纯函数，可以穷举测试）：
+
+- 「取第一个」就是 `evaluateVeto()` 里按 `SCENE_ORDER` 排序后取首个——
+  换顺序只需要改 `contract.ts` 的 `SCENE_ORDER`，或为回放对比传
+  `VetoContext.order`；
+- 新增额度约束时，**只收紧不放宽**，并加进 `VETO_REASON_ORDER`（排查顺序）
+  与对应单测；
+- 分位数预算默认关闭（`quantileBudget: false`）：它依赖 `sceneRates`
+  回放统计，没数据时开启等于用先验值赌运气。
 
 ---
 
@@ -175,7 +225,8 @@ git diff                                   # 复核：有没有偷偷改到别�
 - [ ] 我的判定失败时是 `halt`（fail-closed），不是放行
 - [ ] 我没有新增 LLM 调用；需要的语义判据并入了既有 criteria
 - [ ] 新增/修改了参数 → frontmatter、`paramsSpec`、文档三处同步
-- [ ] 新增了场景 → `SCENE_ORDER`、criteria、测试三处同步
+- [ ] 新增了场景 → `contract.ts` / `collect.ts` / `judge.ts` 三处同步 + 测试
+- [ ] 我的改动没有越层（collect 无 LLM、judge 无裁决、veto 无语义）
 - [ ] `REQUIREMENT.md` 的验收标准与 `rule.test.ts` 的「验收N」逐条对应
 - [ ] 我更新的文档：本文 / `README.md` / `docs/PROACTIVE-INTERVENTION-ARCH.md`（按改动范围）
 
@@ -202,6 +253,8 @@ git diff                                   # 复核：有没有偷偷改到别�
 
 - `BotConnector.proactive` 签名或 `ProactiveResult` 形状 → §4
 - `ProactiveSpeaker` 的降级链或原因枚举 → §1、§6
-- `SCENE_ORDER` / 场景集合 / 触发面 → §5
+- `SCENE_ORDER` / 场景集合 / 触发面 → §5.1
+- 三层的文件划分或职责边界 → §1、§5
+- `VetoPolicy` 字段或默认值 → §5.4
 - 介入规则的三件套格式或注册位置 → §2
 - 已知坑被修掉 → §7（把该行删掉，并说明修在哪）

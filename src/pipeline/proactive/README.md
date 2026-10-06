@@ -17,7 +17,10 @@ src/core/connector.ts        BotConnector.proactive?()   ← 唯一的平台能�
         ▼  ProactiveResult { ok } | { ok:false, reason, detail?, retryable }
 src/pipeline/proactive/
   speaker.ts     ProactiveSpeaker.deliver() ← 主动发言的唯一出口（永不抛错、绝不重试）
-  scenes.ts      5 个介入场景的类型 / 顺序 / 本地预筛（能力层的调用方之一）
+  contract.ts    三层共享契约：场景 id / 顺序 / 触发面 / 证据 / 候选 / 判定 / 终局
+  collect.ts     ① 搜集层：本地预筛与候选（零 LLM 成本）
+  judge.ts       ② LLM 层：逐场景"成立不成立"+ 容错解析
+  veto.ts        ③ 否决层：顺序、额度、终局（**「取第一个」在这里落地**）
   README.md      本文（给人读）
   AGENT-CONTRACT.md  给 agent 读的扩展契约（新增规则 / 新增平台）
 ```
@@ -69,7 +72,26 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 `trigger` 只用于**记账与日志**（让 `/metrics` 能回答"哪个场景在说话、
 哪个通道在降级"），平台侧看不到它，也不要用它做任何判定。
 
-## 4. 5 个介入场景与优先级（`scenes.ts`）
+## 4. 三层架构（`collect` / `judge` / `veto`）
+
+「要不要说话」的判定被拆成三层，**每层只做一件事，且明确不能做另两件事**：
+
+| 层 | 文件 | 做什么 | **绝不能**做什么 |
+|---|---|---|---|
+| ① 搜集 | `collect.ts` | 本地、零成本地找出候选场景；执行全局保险（没人理我就停） | 语义判断、调 LLM、决定谁赢 |
+| ② LLM | `judge.ts` | 对**每个候选**回答"成立吗"（多标签 + 置信度 + 理由 + 证据） | 做优先级/预算裁决、产生候选外的场景 |
+| ③ 否决 | `veto.ts` | 顺序、硬限流、话题预算、wait 采纳 → 唯一的终局 | 读原始消息文本、调 LLM、任何语义判断 |
+
+**为什么「取第一个」必须在第三层**：它是资源分配（把有限发言机会给谁），
+不是语义判断。写进 prompt 就再也无法参数化顺序、无法离线回放对比不同顺序、
+也无法单测"同时命中谁赢"。所以 LLM 只回答"每个场景成立不成立"，
+**谁赢由代码算**（`evaluateVeto()` 里的一行 `reduce`）。
+
+这也是介入层四条规则链（intake / evaluate / speak）的自然归位：
+intake ≈ 搜集、evaluate ≈ LLM、speak ≈ 否决。新增判定时先问"这属于哪一层"，
+再决定加到哪条链——详见 AGENT-CONTRACT.md §2.2。
+
+## 5. 5 个介入场景与优先级（`contract.ts` + `collect.ts`）
 
 业务方给出的 5 种主动介入场景，**按顺序取第一个命中**：
 
@@ -85,13 +107,15 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 
 - **「没人理我就停」**：连续 2 次介入后群里毫无回应 → 全体沉默
   （任何用户发言归零）。见 `collectSceneHits()`。
-- **顺序唯一来源**是 `SCENE_ORDER`；prompt 渲染、trace、「取第一个」都读它，
-  任何地方都不许再写第二份顺序。
+- **顺序唯一来源**是 `contract.ts` 的 `SCENE_ORDER`；判据清单按它构造、
+  候选按它排序、「取第一个」按它裁决、trace 按它记账——任何地方都不许再写第二份顺序。
+  裁决时还可传入 `VetoContext.order` 覆盖它（回放对比用），但覆盖只影响**裁决**，
+  不影响任何判据。
 
 场景顺序、criteria 文本、门槛口径的完整讨论见
 [docs/PROACTIVE-INTERVENTION-ARCH.md](../../../docs/PROACTIVE-INTERVENTION-ARCH.md)（§1 场景翻译、§4 契约）。
 
-## 5. 投放结果的降级链（`speaker.ts`）
+## 6. 投放结果的降级链（`speaker.ts`）
 
 ```
 disabled（总开关关）→ empty（内容为空）→ unsupported（平台不支持 / 适配器未实现）
@@ -103,7 +127,7 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 - **既不重试也不排队**：主动发言补投在业务上没有意义（话题已经翻篇）；
 - **永不抛错**：`deliver()` 的返回值就是全部信息，调用方不需要 try/catch。
 
-## 6. 配置与观测
+## 7. 配置与观测
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
@@ -120,7 +144,7 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 - 按 `trigger` 的送达计数、按 `reason` 的降级计数（顺序见
   `PROACTIVE_DEGRADE_ORDER`，同时是排查顺序）。
 
-## 7. 边界：这个模块**不**做什么
+## 8. 边界：这个模块**不**做什么
 
 - 不做节流/预算/限流（属于会话层的 speak 链，两处都做会形成两套账）；
 - 不做内容生成（属于 agent turn）；

@@ -142,11 +142,11 @@ scene-4 指代      → scene-1 续聊追问 → scene-3 无人应答 → scene-
 
 三平面划分的三个好处，正好对应现有实现的三处接缝：
 
-| 平面 | 现有接缝 | 本方案的动作 |
-|---|---|---|
-| A 触发 | `intake` 链 + `RuleVerdict.defer` + watcher 的定时器 | 新增场景预筛规则与「话题滚动」调度器；**不改**链式短路契约 |
-| B 仲裁 | `evaluate` 链的 `20-semantic-gate` | 输出契约加字段；判定标准从常量 `criteria` 变为**有序场景清单** |
-| C 硬约束 | `speak` 链（30/31/32/33） | 仅新增「每话题一次」台账判据；其余不改 |
+| 平面 | 现有接缝 | 本方案的动作 | 三层的对应 |
+|---|---|---|---|
+| A 触发 | `intake` 链 + `RuleVerdict.defer` + watcher 的定时器 | 新增场景预筛规则与「话题滚动」调度器；**不改**链式短路契约 | ① 搜集层（`collect.ts`） |
+| B 仲裁 | `evaluate` 链的 `20-semantic-gate` | 输出从"一个场景 + 一个决定"改为**逐场景成立判定**；判定标准从常量 `criteria` 变为**候选场景清单** | ② LLM 层（`judge.ts`） |
+| C 硬约束 | `speak` 链（30/31/32/33） | 顺序、额度、预算、wait 采纳全部集中到这里；**「取第一个」在此落地** | ③ 否决层（`veto.ts`） |
 | C 投递 | `orchestrator.runIntervention` → 准入 try → TurnRunner → Responder | 已在**适配器层**统一主动发言能力（§2.1，已完成）；官方层 do nothing，外层一条逻辑 |
 
 **为什么仲裁必须是一次调用而不是五次**：五次调用不仅成本 ×5，而且会引入
@@ -328,82 +328,94 @@ criteria 里枚举**能力域**（查资料 / 跑代码与脚本 / 数据与图�
 
 ---
 
-## 4. 场景注册表与仲裁契约
+## 4. 三层判定架构与契约
 
-### 4.1 目录形态：场景与规则同构
+### 4.1 目录形态：按**三层**切，而不是按场景切
 
-沿用「规则 = 文件夹（REQUIREMENT.md + rule.ts + rule.test.ts）」的既有纪律，
-场景也做成文件夹——因为它同样满足「需求即真相源」：
+~~按场景一个文件夹~~ 曾是本方案的初稿；**已改为按判定层切**（维护者决策）。
+理由：真正会独立变化的是**层的职责**（本地门槛 / 判据文案 / 额度策略），
+而不是场景本身；按场景切会让"加一条额度约束"变成改 5 个文件夹。
 
 ```
-src/pipeline/proactive/scenes/
-  SCENES.md              # 场景清单与顺序的自然语言描述（与 registry 一致性由测试校验）
-  scene-1-continuation/  # REQUIREMENT.md（含 criteria 段）+ scene.ts
-  scene-2-ongoing-discussion/
-  scene-3-unanswered-question/
-  scene-4-bot-reference/
-  scene-5-interest-topics/
-  registry.ts            # 按 order 装配，唯一 import 各场景的地方
+src/pipeline/proactive/
+  contract.ts   三层共享契约（唯一接缝）：SceneId / SCENE_ORDER / 触发面 /
+                SceneEvidence / SceneCandidate / SceneVerdict / ProactiveDecision
+  collect.ts    ① 搜集层：场景静态描述 + 本地预筛 + 候选 + 全局保险
+  judge.ts      ② LLM 层：criteria 文案 + prompt 渲染 + 输出契约 + 容错解析
+  veto.ts       ③ 否决层：顺序、额度、预算、wait 采纳 → 唯一终局
+  speaker.ts    投递层：ProactiveSpeaker（§2.1）
+  README.md / AGENT-CONTRACT.md
 ```
 
-`scene.ts` 只提供两样东西：**预筛谓词**（本地、纯函数）与
-**criteria 片段**（自然语言，进 prompt）。判定与发言决策都在仲裁层，
-场景文件里不出现阈值硬编码之外的逻辑。
+**三层各自绝不能做的事**（越层是本设计唯一的失败模式）：
 
-### 4.2 契约（接缝代码见 `src/pipeline/proactive/scenes.ts`，本分支仅作草案）
+| 层 | 做什么 | 绝不能做什么 |
+|---|---|---|
+| ① 搜集 `collect.ts` | 本地零成本找候选；执行全局保险 | 语义判断、调 LLM、决定谁赢 |
+| ② LLM `judge.ts` | 对**每个候选**回答"成立吗"（多标签 + 置信度 + 理由 + 证据） | 做优先级/预算裁决；产生候选外的场景 |
+| ③ 否决 `veto.ts` | 顺序、硬限流、话题预算、wait 采纳 → 终局 | 读原始消息文本、调 LLM、任何语义判断 |
+
+### 4.2 契约，以及**一处据三层拆分修正的设计**
+
+初稿让 LLM 一次输出 `{scenario, decision}`（"哪个场景 + 要不要说"）。
+三层拆分后**必须改**：LLM 只输出**逐场景的成立判定**，谁赢由代码算。
 
 ```ts
-export type SceneId = 'scene-1' | 'scene-2' | 'scene-3' | 'scene-4' | 'scene-5';
-
-export interface SceneDefinition {
-  id: SceneId;
-  order: number;             // 越小越优先；「取第一个」= order 最小
-  name: string;              // 短名，进日志与 /listen scenes
-  enabled: boolean;
-  triggers: SceneTrigger[];  // 'message' | 'question-probe' | 'topic-roll' | 'speak-followup'
-  criteria: string;          // 进 LLM prompt 的自然语言段（来自 REQUIREMENT.md）
-  precheck?(ctx: ScenePrecheckContext): SceneHit | undefined;  // 本地预筛，纯函数
-}
-
+// ② 层输出（模型侧）：逐场景多标签，不做选择
 export interface SceneVerdict {
-  scenario: SceneId;
-  decision: 'speak' | 'wait' | 'silent';
-  confidence: number;        // 0..1，进 trace 与预算（低置信不让过）
+  scene: SceneId;
+  satisfied: boolean;
+  confidence: number;      // 用于预算与排序，不用于放行
   reason: string;
-  alsoMatched?: SceneId[];   // 同时命中的其他场景（调序依据）
-  evidence?: string;         // 场景 2/3：被纠错的原文或那个没人答的问题
-  directive?: string;        // 交给介入 turn 的「该说什么」的要点
+  evidence?: string;       // 场景 1/2 的被纠错原文；场景 3 的问题原文
+  directive?: string;      // 交给介入 turn 的「该说什么」要点
+  suggestsWait?: boolean;  // 只提建议，是否采纳由 ③ 层决定
 }
+
+// ③ 层输出（代码侧）：唯一的终局
+export type ProactiveDecision =
+  | { action: 'speak'; scene: SceneId; confidence: number; reason: string;
+      evidence?: string; directive?: string; alsoMatched: SceneId[] }
+  | { action: 'wait'; scene: SceneId; delayMs: number; reason: string }
+  | { action: 'silent'; reason: VetoReason; detail?: string };
 ```
 
-三个设计要点：
+**为什么必须这样改**（这是三层拆分带来的最大收益）：
 
-1. **`precheck` 是纯函数且可返回 undefined**——它只做「这个场景有没有
-   可能成立」的廉价判断（别名命中、窗口内、台账非空）。它**不否决**其他场景，
-   只决定「本次仲裁要不要把这个场景写进清单」。
-2. **`triggers` 把「时机」编码进了场景定义**——场景 2/5 永远不在
-   `message` 触发下出现，从根上避免「每条消息都判一次兴趣话题」。
-3. **`order` 是全局唯一的顺序来源**，registry 按它装配，prompt 按它渲染，
-   trace 按它记账。测试只需断言 registry 有序且与 SCENES.md 一致
-   （与现有 `index.ts` ↔ `CHAIN.md` 的一致性测试同构）。
-4. **全局保险不进场景判据**：接缝里提供一个统一入口 `collectSceneHits()`，
-   它做两件全球一致的事——只跑该触发面下的场景，以及**「没人理我就停」**
-   （`unansweredStreak ≥ 2` 时全体沉默，任何用户发言归零）。
-   这类「会话级事实」绝不能写进某个场景的 `precheck`，否则场景之间会互相
-   绕过（§3.0 同一条纪律的延伸）。
+1. **「取第一个」是策略不是语义**——它是资源分配。写进 prompt 之后，
+   顺序就无法参数化，也就无法用回放数据**离线对比"换个顺序会怎样"**
+   （§11.1 的调序决策本来就需要这个）；现在它只是 `SCENE_ORDER` 一次改动，
+   甚至可以在裁决时用 `VetoContext.order` 覆盖来做 A/B。
+2. **分位数预算（§13.2）需要概率而不是标签**——`selectByQuantileBudget()`
+   要拿"每个场景的置信度 × 估算命中率"排序算阈值；prompt 里五选一之后，
+   这些分数根本不存在。这也是当初把 §13.2 排到 S4 的技术原因。
+3. **可单测**：`evaluateVeto()` 是纯函数，"同时命中谁赢""额度用尽怎么办"
+   全部可以穷举断言（`tests/scenes-layers.test.ts` 有 19 条用例），
+   而"prompt 里写没写对顺序"只能靠真实模型碰运气。
+4. **容错粒度更细**：模型给了一个幻觉场景标签，只丢那一项，
+   其余判定照用；旧设计里标签不合法就整条降级为 silent。
+
+代价：输出体积从"一个场景 + 一个决定"变成"每个候选一幕"。
+候选通常 1–3 个（`collect.ts` 已经用触发面和预筛压过），
+多出来的几十个 token 远比上面四条收益便宜。
 
 ### 4.3 场景各自的判定权威（不同场景，不同门槛）
 
-「取第一个」只解决冲突，不解决「凭什么是它」。每个场景的 speak 门槛应当
-**显式写在自己的 criteria 里**，且**风险越高门槛越高**：
+「取第一个」只解决冲突，不解决「凭什么是它」。每个场景的**成立门槛**应当
+**显式写在自己的 criteria 里**（② 层的唯一产物），且**风险越高门槛越高**：
 
-| 场景 | speak 门槛（写进 criteria 的要点） |
+| 场景 | ② 层的成立门槛（写进 criteria 的要点） |
 |---|---|
-| 4 指代 | 明确指出是「在对 bot 说」而非「在议论 bot」；若只是提及 bot 的名字但话题不需要 bot → silent |
-| 1 续聊 | 与 bot 上一条发言同一话题，且**尚无人（含提问者自己）解决**；只是继续闲聊 → silent |
-| 3 无人应答 | 问题仍未被回答 + 问题在能力域内 + 已静默足够久；**若群里有人正在回应 → wait** |
-| 2 持续讨论 | 三个判据至少一个成立（可提供能力 / 有可答问题 / 有事实性错误）**且** bot 的话有信息增量；纯观点碰撞、情绪话题 → silent |
-| 5 兴趣 / 性格 | 话题停在**没有结论或没人动手**处，且 bot 能补一句可立即使用的结果；每话题至多 1 次 → 超过即 silent |
+| 4 指代 | 成立 = 明确是「在对 bot 说」而非「在议论 bot」；只是提及 bot 的名字但话题不需要 bot → 不成立 |
+| 1 续聊 | 成立 = 与 bot 上一条发言同一话题，且**尚无人（含提问者自己）解决**；只是继续闲聊 → 不成立 |
+| 3 无人应答 | 成立 = 问题仍未被回答 + 在能力域内 + 已静默足够久；**若有人正在回应 → 不成立 + `suggestsWait`** |
+| 2 持续讨论 | 成立 = 三判据至少一个成立（可提供能力 / 有可答问题 / 有事实性错误）**且**有信息增量；纯观点碰撞、情绪话题 → 不成立 |
+| 5 兴趣 / 性格 | 成立 = 话题停在**没有结论或没人动手**处，且 bot 能补一句可立即使用的结果 |
+
+「每话题至多 1 次」这类**额度**约束不写在 criteria 里——它是 ③ 层的事
+（`VetoPolicy.maxPerTopic`）；写进 prompt 会让额度无法配置、无法回放对比。
+同理，`suggestsWait` 只是模型的**建议**，是否真的等待由 ③ 层按
+`maxWaitRetries` 决定。
 
 ### 4.4 事实性错误要区分「可确证」与「观点分歧」
 
@@ -814,12 +826,13 @@ export interface SceneVerdict {
 
 ## 15. 附：本文档与实现的一致性纪律
 
-- `src/pipeline/proactive/scenes.ts` 是本方案的**接缝草案**（常量 + 类型 + 纯函数），
-  在实施 S1 时必须被真正的 `scenes/registry.ts` 取代或改写；
-  它现在不参与任何运行时路径（`main.ts` 未 import，测试不引用）。
-- 场景顺序、触发平面、门槛口径若发生变更，本文件、`SCENES.md`、
-  `registry.ts` 三处必须同一次提交更新（沿用 P0 方案「REQUIREMENT.md ↔ rule.ts
-  ↔ 测试」三处一致性的纪律）。
+- 三层的接缝代码（`contract.ts` / `collect.ts` / `judge.ts` / `veto.ts`）是
+  **纯函数草案**：类型、顺序、预筛、判据文案、否决规则都已就位，但**尚未接入
+  运行时**（`main.ts` 未 import；介入 turn 的合成与 speak 链仍待 S1 落地）。
+- 三层职责边界、顺序与门槛口径若发生变更，本文件、
+  `src/pipeline/proactive/README.md`（§4/§5）与
+  `AGENT-CONTRACT.md`（§5）必须**同一次提交**更新（沿用 P0 方案
+  「REQUIREMENT.md ↔ rule.ts ↔ 测试」三处一致性的纪律）。
 
 ## 16. 已确认的维护者决策（2026-09-30）
 
@@ -828,7 +841,7 @@ export interface SceneVerdict {
 1. **场景顺序 = `4 → 1 → 3 → 2 → 5`**（§11.1 的方案 A 被采纳）。
    含义：被点到名字（指代）最优先；其次是刚聊过的延续；再次是时效最紧的
    无人应答；然后是最需克制的持续讨论；最后是最容易饿死的兴趣 / 性格话题。
-   `src/pipeline/proactive/scenes.ts` 的 `SCENE_ORDER` 与之一致，测试锁定。
+   `src/pipeline/proactive/contract.ts` 的 `SCENE_ORDER` 与之一致，测试锁定。
 2. **仲裁形态 = 单次调用（多分类 + 决策）**（§11.2 的方案 A 被采纳）。
    一次 LLM 调用同时产出「命中场景 + 是否发言 + 置信度 + 理由 + 可选
    evidence / directive」，不做两段式、不做每场景独立调用。
