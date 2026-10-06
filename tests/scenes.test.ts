@@ -15,12 +15,14 @@ import { describe, expect, it } from 'vitest';
 import {
   SCENE_ORDER,
   SCENE_REGISTRY,
+  collectSceneHits,
   detectBotReference,
   getScene,
   parseSceneVerdict,
   renderSceneCriteria,
   scenesForTrigger,
   selectScene,
+  sortSceneIds,
   type SceneId,
   type ScenePrecheckContext,
 } from '../src/intervention/scenes.js';
@@ -178,5 +180,36 @@ describe('仲裁输出契约', () => {
     expect(order1).toBeGreaterThan(order4);
     expect(text).not.toContain('scene-2');
     expect(text).toContain('（本地未命中）');
+  });
+});
+
+describe('全局保险与预筛收集', () => {
+  it('验收11：没人理我就停——连续未回应达上限时所有场景一律不参与仲裁', () => {
+    const noisy = {
+      recentHumanCount: 3,
+      recentMessageCount: 6,
+      matchedInterestIds: ['plotting'],
+      inBotTopicWindow: true,
+      lastBotSpeakAt: 999_000,
+      pendingQuestionCount: 1,
+    };
+    // 未达上限：按触发面命中（message 面命中场景 1，不含场景 2/5）
+    const onMessage = collectSceneHits('message', makeContext(noisy));
+    expect([...onMessage.keys()]).toEqual(['scene-1']);
+    const onRoll = collectSceneHits('topic-roll', makeContext(noisy));
+    expect([...onRoll.keys()]).toEqual(['scene-2', 'scene-5']);
+    // 达上限：全体沉默（保险优先于任何场景判据）
+    const muted = makeContext({ ...noisy, unansweredStreak: 2 });
+    expect(collectSceneHits('message', muted).size).toBe(0);
+    expect(collectSceneHits('topic-roll', muted).size).toBe(0);
+    expect(collectSceneHits('question-probe', muted).size).toBe(0);
+  });
+
+  it('验收12：命中集合的顺序即全局场景顺序（可直接喂给 criteria 渲染）', () => {
+    const hits = collectSceneHits(
+      'topic-roll',
+      makeContext({ recentHumanCount: 2, recentMessageCount: 4, matchedInterestIds: ['x'] }),
+    );
+    expect([...hits.keys()]).toEqual(sortSceneIds([...hits.keys()]));
   });
 });

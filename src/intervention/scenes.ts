@@ -99,6 +99,12 @@ export interface ScenePrecheckContext {
   readonly inBotTopicWindow?: boolean;
   /** 问题台账里该会话挂起的问题数（场景 3 在地板上用；探针触发时另走 question-probe） */
   readonly pendingQuestionCount?: number;
+  /**
+   * 连续「介入后无人回应」的次数（任何用户发言即归零）。
+   * 达到配置上限时**所有场景一律不参与仲裁**——「没人理我就停」是全局保险，
+   * 不是某个场景的判据（生态对照：astrbot 主动聊天的 unanswered 计数，默认 2）。
+   */
+  readonly unansweredStreak?: number;
   /** 本轮旁听窗口内的消息条数与人头数（场景 2 的活跃度预筛） */
   readonly recentMessageCount?: number;
   readonly recentHumanCount?: number;
@@ -362,6 +368,20 @@ export const SCENE_REGISTRY: readonly SceneDefinition[] = [...SCENE_DEFINITIONS]
   (left, right) => left.order - right.order,
 );
 
+/**
+ * 「没人理我就停」的全局保险：连续若干次介入后群里毫无回应 → 所有场景一起沉默
+ * （任何用户发言即归零）。它刻意**不是**某个场景的判据——没人理是会话级事实，
+ * 不该由某个场景独自承担（生态对照：astrbot 主动聊天的 `unanswered_count`）。
+ */
+export const DEFAULT_MAX_UNANSWERED_STREAK = 2;
+
+export function isMutedByNoResponse(
+  ctx: ScenePrecheckContext,
+  maxStreak: number = DEFAULT_MAX_UNANSWERED_STREAK,
+): boolean {
+  return (ctx.unansweredStreak ?? 0) >= maxStreak;
+}
+
 export function getScene(id: SceneId): SceneDefinition | undefined {
   return SCENE_REGISTRY.find((scene) => scene.id === id);
 }
@@ -393,6 +413,28 @@ export function selectScene(hits: readonly SceneId[]): {
   return winner === undefined
     ? { alsoMatched: [] }
     : { winner, alsoMatched: sorted.slice(1) };
+}
+
+/**
+ * 统一入口：按触发来源收集本地预筛命中。
+ *
+ * 这里集中两件**全局**的事，任何场景都不必自己重复：
+ *   1. 「没人理我就停」保险（§9 / 生态对照 astrbot）——命中即全体沉默；
+ *   2. 只跑该触发面下的场景（场景 2/5 永远不会被每条消息惊动）。
+ * 返回的 Map 顺序即 `SCENE_ORDER`，可直接喂给 `renderSceneCriteria`。
+ */
+export function collectSceneHits(
+  trigger: SceneTrigger,
+  ctx: ScenePrecheckContext,
+  maxUnansweredStreak: number = DEFAULT_MAX_UNANSWERED_STREAK,
+): Map<SceneId, SceneHit> {
+  const hits = new Map<SceneId, SceneHit>();
+  if (isMutedByNoResponse(ctx, maxUnansweredStreak)) return hits;
+  for (const scene of scenesForTrigger(trigger)) {
+    const hit = scene.precheck?.(ctx);
+    if (hit !== undefined) hits.set(scene.id, hit);
+  }
+  return hits;
 }
 
 // ---------------------------------------------------------------------------
