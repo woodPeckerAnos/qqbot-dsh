@@ -285,7 +285,14 @@ export function buildMessageParts(
   // 这件事在 prompt 里显式可见（注入面的边界，见 docs/FORWARD-FILE-INGRESS-PLAN.md §9）。
   if (body.message_type !== MessageType.QUOTE && body.msg_elements !== undefined) {
     const forward = forwardPartFromElements(body.msg_elements, options);
-    if (forward !== undefined) parts.push(forward);
+    if (forward !== undefined) {
+      parts.push(forward);
+    } else {
+      // 开关关掉（或配额为 0）时**不能什么都不 push**：官方的内容随事件一起推来，
+      // 丢掉它这条消息就变成空文本（OneBot 那边至少还有 [聊天记录] 占位——
+      // 差别在于官方不需要回查，内容已经在手，丢掉纯属浪费）。退化成原来的平铺渲染。
+      parts.push(...partsFromElements(body.msg_elements));
+    }
   }
 
   const mentions = partFromMentions(body.mentions);

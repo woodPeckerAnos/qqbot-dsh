@@ -386,6 +386,19 @@ export class QqGateway implements QqEventSource {
     return parts;
   }
 
+  /**
+   * 一条消息"什么都没解析出来"时不要 emit。
+   *
+   * 空 parts 会变成一条**空文本用户轮**：进对话记录、派发 `[群成员 X] `、
+   * 还让话题判定拿空字符串去判（很可能判成"无关"从而顺手重置上下文）。
+   * 与其把噪声灌进会话历史，不如明确丢弃并留一条 debug。
+   */
+  private isEmptyMessage(parts: readonly MessagePart[], type: string): boolean {
+    if (parts.length > 0) return false;
+    this.options.logger.debug('消息没有任何可读内容，已丢弃', { type });
+    return true;
+  }
+
   private emitMessageEvents(payload: GatewayPayload, type: string): void {
     const d = (payload.d ?? {}) as Record<string, unknown>;
 
@@ -400,6 +413,7 @@ export class QqGateway implements QqEventSource {
       // 富媒体/引用/卡片统一翻译成片段：content 是它的可读扁平形态（进对话记录、
       // 进日志、也是命令匹配对象），parts 供 TurnRunner 组装多模态 prompt。
       const parts = this.buildParts(d);
+      if (this.isEmptyMessage(parts, type)) return;
       this.emit({
         kind: 'group-at-message',
         target: groupTarget(groupOpenid),
@@ -432,6 +446,7 @@ export class QqGateway implements QqEventSource {
         return;
       }
       const parts = this.buildParts(d);
+      if (this.isEmptyMessage(parts, type)) return;
       this.emit({
         kind: 'c2c-message',
         target: c2cTarget(userOpenid),

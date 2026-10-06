@@ -232,18 +232,24 @@ function collectFrames(ws: WebSocket): Array<Record<string, unknown>> {
 }
 
 /** 构造一条 @机器人 + 转发块 的群消息 */
-function groupForwardMessage(messageId: number, forwardId: string, extra: unknown[] = []) {
+function groupForwardMessage(
+  messageId: number,
+  forwardId: string,
+  extra: unknown[] = [],
+  options: { groupId?: number; selfId?: number } = {},
+) {
   return JSON.stringify({
     post_type: 'message',
     message_type: 'group',
     sub_type: 'normal',
-    self_id: 10000,
+    self_id: options.selfId ?? 10000,
     message_id: messageId,
-    group_id: 8888,
+    group_id: options.groupId ?? 8888,
     user_id: 12345,
     time: 1_700_000_000,
     message: [
-      { type: 'at', data: { qq: '10000' } },
+      // @ 的 qq 必须等于本账号 self_id，否则 atSelf 判定不通过
+      { type: 'at', data: { qq: String(options.selfId ?? 10000) } },
       ...extra,
       { type: 'forward', data: { id: forwardId } },
     ],
@@ -532,21 +538,32 @@ describe('官方聊天记录（尽力而为）', () => {
     expect(content).toContain('（仅展开以上条目，其余未读入）');
   });
 
-  it('关闭转发展开后 msg_elements 不再进正文（只剩本条文本）', () => {
+  it('关闭转发展开后退化成平铺文本，绝不把已有内容丢掉', () => {
+    const disabled = {
+      forward: {
+        enabled: false,
+        maxNodes: 20,
+        maxNodeChars: 500,
+        maxChars: 4_000,
+        maxDepth: 2,
+        timeoutMs: 10_000,
+      },
+    };
     const parts = buildMessageParts(
       { message_type: 102, content: '看看这个', msg_elements: elements },
-      {
-        forward: {
-          enabled: false,
-          maxNodes: 20,
-          maxNodeChars: 500,
-          maxChars: 4_000,
-          maxDepth: 2,
-          timeoutMs: 10_000,
-        },
-      },
+      disabled,
     );
-    expect(parts).toEqual([{ type: 'text', text: '看看这个' }]);
+    expect(parts).toEqual([
+      { type: 'text', text: '看看这个' },
+      { type: 'text', text: '这个报错怎么解决' },
+      { type: 'text', text: '试试升级依赖' },
+    ]);
+
+    // 关键回归：只有 msg_elements、没有 content 的消息，关掉转发展开也必须留下内容。
+    // 否则 parts 为空 → content 为空 → 记录一条空文本用户轮、topic judge 拿空串判定
+    // （很可能判成"无关"而顺手重置上下文）。
+    const onlyRecord = buildMessageParts({ message_type: 102, msg_elements: elements }, disabled);
+    expect(flattenParts(onlyRecord)).toBe('这个报错怎么解决\n试试升级依赖');
   });
 
   it('文件附件产出 media 片段（后续由摄取层下载解析）', () => {
@@ -618,5 +635,135 @@ describe('转发块嵌套深度', () => {
     expect(content).toContain('1. 张三: 你看这个');
     // 嵌套层没有回查（只应有一次 get_forward_msg），退化成占位
     expect(content).toContain('嵌套层级过深');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 资源上限（对抗性审查 S2/S3）
+// ---------------------------------------------------------------------------
+
+describe('转发读取的资源上限', () => {
+  let connector: OnebotConnector | undefined;
+  const clients: WebSocket[] = [];
+  afterEach(async () => {
+    for (const ws of clients.splice(0)) ws.close();
+    await connector?.stop();
+    connector = undefined;
+  });
+
+  it('嵌套扇出有上限：一条 node 里塞多个 forward 段不会放大出无限次回查', async () => {
+    const { connector: c, events } = makeConnector(0, {
+      // timeoutMs 调小，让超时的嵌套回查快速走完；预算随之变小
+      forward: { ...FORWARD_CONFIG, maxNodes: 2, timeoutMs: 150 },
+    });
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+    const frames = collectFrames(ws);
+
+    ws.send(groupForwardMessage(70, 'outer'));
+    await sleep(60);
+    const outer = frames.find((frame) => frame['action'] === 'get_forward_msg');
+    expect(outer).toBeDefined();
+
+    // 外层只返回一条 node，但这条 node 里塞了 6 个转发段
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: outer!['echo'],
+        data: {
+          messages: [
+            {
+              type: 'node',
+              data: {
+                nickname: '张三',
+                content: [
+                  { type: 'text', data: { text: '看这些' } },
+                  ...Array.from({ length: 6 }, (_, index) => ({
+                    type: 'forward',
+                    data: { id: `inner-${index}` },
+                  })),
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    );
+    // 等嵌套回查全部超时收尾
+    await sleep(1_200);
+
+    const lookups = frames.filter((frame) => frame['action'] === 'get_forward_msg');
+    // 上限 = maxNodes + 2；没有这道闸时这里会有 1 + 6 次串行回查、每次最长 timeoutMs
+    expect(lookups.length).toBeLessThanOrEqual(2 + 2);
+    expect(lookups.length).toBeGreaterThan(1);
+    // 扇出被截断，但这条用户消息照样投递
+    expect(events.filter((e) => e.kind === 'group-at-message')).toHaveLength(1);
+  });
+
+  it('转发缓存按账号隔离：两个账号的同名 forward id 不会串内容', async () => {
+    const { connector: c, events } = makeConnector(0);
+    connector = c;
+    await c.start();
+
+    const wsA = await connectClient(portOf(c));
+    clients.push(wsA);
+    const wsB = new WebSocket(`ws://127.0.0.1:${portOf(c)}/onebot/v11/ws`, {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+    await new Promise<void>((resolve, reject) => {
+      wsB.once('open', () => resolve());
+      wsB.once('error', reject);
+    });
+    clients.push(wsB);
+    wsB.send(
+      JSON.stringify({
+        post_type: 'meta_event',
+        meta_event_type: 'lifecycle',
+        sub_type: 'connect',
+        self_id: 20000,
+        time: 0,
+      }),
+    );
+    const framesA = collectFrames(wsA);
+    const framesB = collectFrames(wsB);
+
+    // 两个账号收到**同一个** forward id（多账号下消息 id 撞号是常态）
+    wsA.send(groupForwardMessage(71, 'same-id', [], { groupId: 8888, selfId: 10000 }));
+    wsB.send(groupForwardMessage(72, 'same-id', [], { groupId: 9999, selfId: 20000 }));
+    await sleep(120);
+
+    const actionA = framesA.find((frame) => frame['action'] === 'get_forward_msg');
+    const actionB = framesB.find((frame) => frame['action'] === 'get_forward_msg');
+    // 两边都必须各自回查——缓存命中就意味着把 A 号的内容显示给了 B 号
+    expect(actionA).toBeDefined();
+    expect(actionB).toBeDefined();
+
+    wsA.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: actionA!['echo'],
+        data: { messages: ['A 号的聊天记录'] },
+      }),
+    );
+    wsB.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: actionB!['echo'],
+        data: { messages: ['B 号的聊天记录'] },
+      }),
+    );
+    await sleep(150);
+
+    const contents = events
+      .filter((e): e is NormalizedMessage => e.kind === 'group-at-message')
+      .map((e) => e.content);
+    expect(contents).toHaveLength(2);
+    expect(contents.some((content) => content.includes('A 号的聊天记录'))).toBe(true);
+    expect(contents.some((content) => content.includes('B 号的聊天记录'))).toBe(true);
   });
 });

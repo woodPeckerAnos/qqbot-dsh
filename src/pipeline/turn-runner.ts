@@ -19,7 +19,7 @@
 import type { Config } from '../config.js';
 import type { MediaBytes, MediaFetchOptions, RemoteMedia } from '../core/connector.js';
 import { messageImageParts, messageMediaParts } from '../core/content.js';
-import { ingestFiles, type DocumentExtractor } from '../dsh/files.js';
+import { ingestFiles, type DocumentExtractor, type FileIngestResult } from '../dsh/files.js';
 import { buildImageBlocks } from '../dsh/media.js';
 import type { RuntimeEntry, RuntimePool } from '../dsh/pool.js';
 import type {
@@ -66,14 +66,23 @@ export interface TurnRunnerDeps {
   now?: () => number;
 }
 
-/** 已组装好、待派发的 prompt（含图片记账，供准入失败时回退与统计）。 */
+/** 已组装好、待派发的 prompt（含图片与文件的记账，供准入失败时回退与统计）。 */
 interface PreparedPrompt {
   blocks: PromptContentBlock[];
   /** 这条消息里一共认出几张图 */
   totalImages: number;
   /** 其中成功编码成 image block 的张数 */
   inlinedImages: number;
+  /**
+   * 文件摄取的计数。刻意与图片一样**只在这里记账、到 dispatchPrompt 才落数**：
+   * 抽取成功不等于 runtime 收下了（见 dispatchPrompt 的准入失败回退），
+   * 在 build 期就加会让完全失败的轮次虚报 fileCharsInlined。
+   */
+  files: FileIngestCounts;
 }
+
+/** 文件摄取的计数（ingestFiles 的结果去掉 notes） */
+type FileIngestCounts = Omit<FileIngestResult, 'notes'>;
 
 export class TurnRunner {
   /**
@@ -135,15 +144,18 @@ export class TurnRunner {
     let entry: RuntimeEntry | undefined;
 
     // inbox 清理（超期删除 + 总量配额）：turn 一开始做，且只在准入之后——
-    // 被闸拦掉的消息不该产生任何文件系统副作用。全程 best-effort，
-    // 失败只记 warn，绝不影响这一轮回答。
-    await cleanupInbox({
-      workspacePath,
-      inboxDir: config.attachments.files.inboxDir,
-      retentionDays: config.attachments.files.retentionDays,
-      maxBytes: config.attachments.files.maxInboxBytes,
-      logger,
-    });
+    // 被闸拦掉的消息不该产生任何文件系统副作用。全程 best-effort，失败只记 warn。
+    // 只在"确实在用 inbox"时做：关掉文件读取后还每轮扫一遍目录，会把 agent 自己
+    // 放进 inbox 的东西按保留期删掉（它没有任何理由知道那是我们的目录）。
+    if (config.attachments.files.enabled && config.attachments.files.saveToInbox) {
+      await cleanupInbox({
+        workspacePath,
+        inboxDir: config.attachments.files.inboxDir,
+        retentionDays: config.attachments.files.retentionDays,
+        maxBytes: config.attachments.files.maxInboxBytes,
+        logger,
+      });
+    }
 
     try {
       // 话题判定：新消息与既有话题是否相关由 LLM 判断（不是硬时间间隔——
@@ -408,7 +420,7 @@ export class TurnRunner {
     text: string,
     workspacePath: string,
   ): Promise<PreparedPrompt> {
-    const { config, logger, stats } = this.deps;
+    const { config, logger } = this.deps;
     const { enabled, maxImages, maxImageBytes, downloadTimeoutMs } = config.attachments;
     const images = messageImageParts(ctx.message);
     const total = images.length;
@@ -442,11 +454,6 @@ export class TurnRunner {
       logger,
     });
     notes.push(...fileOutcome.notes);
-    stats.filesFetched += fileOutcome.fetched;
-    stats.filesExtracted += fileOutcome.extracted;
-    stats.filesSavedOnly += fileOutcome.savedOnly;
-    stats.filesSkipped += fileOutcome.skipped;
-    stats.fileCharsInlined += fileOutcome.charsInlined;
 
     // --- 图片：内联成多模态 image block -------------------------------------
     let inlined = 0;
@@ -479,6 +486,13 @@ export class TurnRunner {
       blocks: [{ type: 'text', text: finalText }, ...blocks],
       totalImages: total,
       inlinedImages: inlined,
+      files: {
+        fetched: fileOutcome.fetched,
+        extracted: fileOutcome.extracted,
+        savedOnly: fileOutcome.savedOnly,
+        skipped: fileOutcome.skipped,
+        charsInlined: fileOutcome.charsInlined,
+      },
     };
   }
 
@@ -514,10 +528,23 @@ export class TurnRunner {
         },
       ]);
       stats.imagesSkipped += prepared.inlinedImages;
+      // 回退用的是同一个文本块，文件正文照旧送达，所以计数照落
+      this.commitFileStats(prepared.files);
       return;
     }
     stats.imagesInlined += prepared.inlinedImages;
     stats.imagesSkipped += Math.max(0, prepared.totalImages - prepared.inlinedImages);
+    this.commitFileStats(prepared.files);
+  }
+
+  /** 文件计数落账：runtime 确实收下了这一轮 prompt 之后才调。 */
+  private commitFileStats(files: FileIngestCounts): void {
+    const { stats } = this.deps;
+    stats.filesFetched += files.fetched;
+    stats.filesExtracted += files.extracted;
+    stats.filesSavedOnly += files.savedOnly;
+    stats.filesSkipped += files.skipped;
+    stats.fileCharsInlined += files.charsInlined;
   }
 
   private elapsedSince(startedAt: number): number {

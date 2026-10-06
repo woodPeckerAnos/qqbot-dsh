@@ -46,6 +46,8 @@ import { normalizeWhitespace, stripControlChars, toPlainText } from '../../pipel
 import {
   normalizeOneBotEvent,
   ONEBOT_PLATFORM,
+  onebotC2cTarget,
+  onebotGroupTarget,
   parseForwardNodes,
   quotedAuthorFromGetMsg,
   quotedPartsFromGetMsg,
@@ -113,14 +115,24 @@ const FORWARD_CACHE_MAX = 64;
 const FORWARD_CACHE_TTL_MS = 5 * 60_000;
 
 /**
- * 一个顶层转发块的读取预算（节点数 + 字符数）。
+ * 一条消息的转发读取预算。
  *
  * 做成可变的共享对象而不是参数：嵌套转发的递归展开要**共同**消耗外层预算，
  * 否则"20 条 × 嵌套 20 条"会把总读取量放大成平方级。
+ *
+ * 三个维度都要有上限，缺一不可：
+ *   - `nodesLeft`：渲染进正文的条目数（直接决定 prompt 体积）；
+ *   - `lookupsLeft`：**发起多少次回查**。这是与 nodesLeft 独立的一维：一条 node
+ *     内部可以塞任意多个 `forward` 段，而它们不占条目预算——只按条目计费的话，
+ *     一条消息能放大出几十次串行往返；
+ *   - `expiresAt`：整条消息回查的总墙钟上限。每次回查最长 timeoutMs，只限次数
+ *     不限时间的话最坏情况仍会把这个连接上的队列堵上几分钟。
  */
 interface ForwardBudget {
   nodesLeft: number;
   charsLeft: number;
+  lookupsLeft: number;
+  expiresAt: number;
 }
 
 export class OnebotConnector implements BotConnector {
@@ -420,8 +432,18 @@ export class OnebotConnector implements BotConnector {
     }
 
     session.lastEventAt = this.now();
-    const result = normalizeOneBotEvent(payload as unknown as OneBotEvent, () => this.now());
-    this.handleNormalized(session, result);
+    // 这一层 try 是进程级的保险：onFrame 是 ws 的 'message' 监听器，从这里抛出的
+    // 异常会变成 uncaughtException（掀翻整个进程），而不是像补全路径那样落进
+    // promise 的 catch。一条畸形帧最多丢弃一条消息，绝不该让机器人下线。
+    try {
+      const result = normalizeOneBotEvent(payload as unknown as OneBotEvent, () => this.now());
+      this.handleNormalized(session, result);
+    } catch (error) {
+      this.options.logger.warn('OneBot 事件处理抛错（该帧已丢弃）', {
+        postType: payload['post_type'],
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private handleNormalized(session: Session, result: NormalizeResult): void {
@@ -435,20 +457,30 @@ export class OnebotConnector implements BotConnector {
 
         // 引用（reply 段）与转发块（forward 段）都只有 id，内容要回查才能拿到。
         // 回查是异步的，而 emit 的顺序会影响"同一会话里哪条消息先进入 turn"，
-        // 所以按会话排队，保证补全前后的事件顺序与到达顺序一致。
+        // 所以按连接排队，保证补全前后的事件顺序与到达顺序一致。
+        //
+        // `enrichEvent` 外面这层 `.catch(() => event)` 是**结构性的"绝不丢消息"**：
+        // 补全涉及网络、外部回调（onForward）与第三方响应解析，任何一处抛错都不该
+        // 让用户这条消息凭空消失（没有回复、没有记录、没有日志里的人话）。
+        // 降级成"按未补全的原文处理"即可——这与既有引用回查的纪律一致。
         const hasQuote = result.quotedMessageId !== undefined;
         const hasForward = (result.forwardRefs?.length ?? 0) > 0;
         if ((hasQuote || hasForward) && isMessage(result.event)) {
           const event = result.event;
           this.enqueue(session, async () => {
-            this.emit(
-              await this.enrichEvent(session, event, {
-                ...(result.quotedMessageId !== undefined
-                  ? { quotedMessageId: result.quotedMessageId }
-                  : {}),
-                ...(result.forwardRefs !== undefined ? { forwardRefs: result.forwardRefs } : {}),
-              }),
-            );
+            const enriched = await this.enrichEvent(session, event, {
+              ...(result.quotedMessageId !== undefined
+                ? { quotedMessageId: result.quotedMessageId }
+                : {}),
+              ...(result.forwardRefs !== undefined ? { forwardRefs: result.forwardRefs } : {}),
+            }).catch((error: unknown) => {
+              this.options.logger.warn('引用/转发补全失败，按原文继续处理', {
+                conversation: event.target.key,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              return event;
+            });
+            this.emit(enriched);
           });
           return;
         }
@@ -513,11 +545,19 @@ export class OnebotConnector implements BotConnector {
   // 引用 / 转发的异步补全
   // -------------------------------------------------------------------------
 
-  /** 按会话串行执行异步补全，保持事件顺序。 */
+  /**
+   * 按连接串行执行异步补全，保持事件顺序。
+   *
+   * 注意这里的 catch 是**队列完整性**的兜底，不是消息的兜底：走到这里说明
+   * 任务自身抛错（正常情况下补全失败已在 handleNormalized 里就地降级并照常
+   * emit）。所以文案不能说"该条消息按原文继续处理"——那是骗人的，排障时会被
+   * 它带偏。真要让"绝不丢消息"成为结构保证，靠的是调用点不把 emit 放进可能
+   * 抛错的路径里（见 handleNormalized 的 .catch(() => event)）。
+   */
   private enqueue(session: Session, task: () => Promise<void>): void {
     const previous = this.sessionQueues.get(session) ?? Promise.resolve();
     const next = previous.then(task, task).catch((error: unknown) => {
-      this.options.logger.warn('OneBot 事件补全失败（该条消息按原文继续处理）', {
+      this.options.logger.warn('OneBot 事件补全任务失败（该条消息可能未被投递）', {
         error: error instanceof Error ? error.message : String(error),
       });
     });
@@ -637,21 +677,29 @@ export class OnebotConnector implements BotConnector {
     // `depth` 只统计**嵌套**层数：最外层恒为 0 且永远展开，maxDepth=0 表示
     // "只展开最外层"而不是"什么都不展开"（后者会让这个取值毫无意义）。
     if (depth > config.maxDepth) {
+      this.reportForward(depth, { ok: false, nodes: 0 });
       return { type: 'text', text: '[转发消息（嵌套层级过深，未展开）]' };
     }
     if (budget.nodesLeft <= 0 || budget.charsLeft <= 0) {
+      this.reportForward(depth, { ok: false, nodes: 0 });
       return { type: 'text', text: '[转发消息（超出本次读取上限，未展开）]' };
     }
+    // 回查次数与总耗时是独立于条目数的两道闸（见 ForwardBudget 的说明）
+    if (budget.lookupsLeft <= 0 || this.now() >= budget.expiresAt) {
+      this.reportForward(depth, { ok: false, nodes: 0 });
+      return { type: 'text', text: '[转发消息（超出本次读取上限，未展开）]' };
+    }
+    budget.lookupsLeft -= 1;
 
     const data = await this.getForwardData(session, forwardId);
     if (data === undefined) {
-      this.options.onForward?.({ ok: false, nodes: 0 });
+      this.reportForward(depth, { ok: false, nodes: 0 });
       this.options.logger.warn('回查转发消息失败（降级为 [聊天记录]）', { forwardId });
       return { type: 'text', text: '[聊天记录]' };
     }
     const nodes = parseForwardNodes(data, session.selfId ?? 0);
     if (nodes.length === 0) {
-      this.options.onForward?.({ ok: false, nodes: 0 });
+      this.reportForward(depth, { ok: false, nodes: 0 });
       return { type: 'text', text: '[聊天记录]' };
     }
 
@@ -691,7 +739,7 @@ export class OnebotConnector implements BotConnector {
       ...(truncated ? { truncated: true } : {}),
       parts: outParts,
     };
-    this.options.onForward?.({ ok: true, nodes: outParts.length });
+    this.reportForward(depth, { ok: true, nodes: outParts.length });
     this.options.logger.debug('转发块已展开', {
       forwardId,
       declared: nodes.length,
@@ -710,15 +758,18 @@ export class OnebotConnector implements BotConnector {
    */
   private async getForwardData(session: Session, forwardId: string): Promise<unknown | undefined> {
     const now = this.now();
-    const cached = this.forwardCache.get(forwardId);
+    // 缓存键必须带账号：forward id 多数实现里就是消息 id（数字），两个 QQ 账号
+    // 撞号是常态；只按 id 缓存会让 B 号群里显示 A 号的转发内容。
+    const cacheKey = `${session.selfId ?? '?'}:${forwardId}`;
+    const cached = this.forwardCache.get(cacheKey);
     if (cached !== undefined) {
       if (now - cached.at < FORWARD_CACHE_TTL_MS) {
         // 命中即刷新插入顺序（Map 的迭代顺序即 LRU 顺序）
-        this.forwardCache.delete(forwardId);
-        this.forwardCache.set(forwardId, cached);
+        this.forwardCache.delete(cacheKey);
+        this.forwardCache.set(cacheKey, cached);
         return cached.data;
       }
-      this.forwardCache.delete(forwardId);
+      this.forwardCache.delete(cacheKey);
     }
 
     // 参数名在实现之间不一致：NapCat 用 id，go-cqhttp 用 message_id。
@@ -735,7 +786,7 @@ export class OnebotConnector implements BotConnector {
         timeoutMs !== undefined
           ? await this.callAction(session, 'get_forward_msg', params, timeoutMs)
           : await this.callAction(session, 'get_forward_msg', params);
-      this.forwardCache.set(forwardId, { at: now, data });
+      this.forwardCache.set(cacheKey, { at: now, data });
       while (this.forwardCache.size > FORWARD_CACHE_MAX) {
         const oldest = this.forwardCache.keys().next();
         if (oldest.done === true) break;
@@ -752,16 +803,25 @@ export class OnebotConnector implements BotConnector {
   }
 
   /**
-   * 一个顶层转发块的读取预算。
+   * 一条消息的转发读取预算（**每条消息一份**，多个转发段共享）。
    *
-   * 字符预算按 `maxChars` 计；同时给一个比它宽松的节点数兜底，防止
-   * "每条发言都极短"时把 maxNodes 之外的条目也吞进来。
+   * 共享而不是每段一份：一条消息里出现两个转发段时，读者看到的仍是同一轮上下文，
+   * 没有理由给它双倍预算；共享也让"一次用户消息最多读多少"这件事可预测。
    */
   private newForwardBudget(): ForwardBudget {
     const config = this.options.forward;
+    const maxNodes = config?.maxNodes ?? 0;
+    // 回查次数按条目数给额度（+2 给嵌套），再按 maxDepth 收一次上限：
+    // 一条 node 里的 forward 段不占条目预算，这一维就是为它准备的。
+    const maxLookups = maxNodes + 2;
+    const timeoutMs = config?.timeoutMs ?? 10_000;
     return {
-      nodesLeft: config?.maxNodes ?? 0,
+      nodesLeft: maxNodes,
       charsLeft: config?.maxChars ?? 0,
+      lookupsLeft: maxLookups,
+      // 整条消息的回查墙钟上限：按"两次回查的量级"给。它同时是对
+      // "每连接串行队列被一条恶意消息堵住"的兜底（另见 ForwardBudget 注释）。
+      expiresAt: this.now() + timeoutMs * 2,
     };
   }
 
@@ -862,19 +922,68 @@ export class OnebotConnector implements BotConnector {
     }
     if (media.fileId === undefined) return undefined;
 
+    // **必须用收到这条消息的那个连接**：会话上下文里的群号要发给确实在该群里的
+    // 账号（多连接下 pickAnySession 可能选错号——轻则申请失败、重则用错凭据）。
+    // 群/私聊会话键的构造归 normalize.ts 所有，这里复用它的函数而不是自己拼串。
+    const session = this.pickSessionForMedia(media);
+    if (session === undefined) return undefined;
+
     // 文件与图片的取件路径不同：NapCat 明确说明"非视频/图片/音频的普通文件，
     // 其链接受下载次数影响"，所以要先重新申请直链，再退回通用 get_file。
     if (media.kind === 'file') {
-      const refreshed = await this.fetchViaFileUrl(media, options);
+      const refreshed = await this.fetchViaFileUrl(session, media, options);
       if (refreshed !== undefined) return refreshed;
-      return this.fetchViaFileAction('get_file', media.fileId, options);
+      return this.fetchViaFileAction(session, 'get_file', media.fileId, options);
     }
 
     // get_file：NapCat 扩展动作（file_id 或 file 二选一），可能直接给 base64。
-    const viaGetFile = await this.fetchViaFileAction('get_file', media.fileId, options);
+    const viaGetFile = await this.fetchViaFileAction(session, 'get_file', media.fileId, options);
     if (viaGetFile !== undefined) return viaGetFile;
     // get_image：OneBot 标准动作，NapCat 返回刷新后的 url 或本地路径。
-    return this.fetchViaFileAction('get_image', media.fileId, options);
+    return this.fetchViaFileAction(session, 'get_image', media.fileId, options);
+  }
+
+  /**
+   * 上报转发展开结果。
+   *
+   * 两条纪律：
+   *   - **回调抛错绝不能影响消息处理**：onForward 是外部注入的统计钩子，
+   *     它出问题不该让用户这条消息消失（历史上这类"钩子吃掉主流程"的错最难查）。
+   *   - **只上报顶层块**：嵌套块的条目随后会并进父块的渲染文本，两边都报会让
+   *     `forwardNodesInlined` 重复计数，而 RUNBOOK 拿它当诊断依据。
+   */
+  private reportForward(depth: number, info: { ok: boolean; nodes: number }): void {
+    if (depth !== 0) return;
+    try {
+      this.options.onForward?.(info);
+    } catch (error) {
+      this.options.logger.debug('onForward 回调抛错（已忽略）', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * 按会话上下文挑连接：群文件对应 `ob11:g<群号>`，私聊文件对应 `ob11:u<QQ号>`。
+   * 上下文的键由 normalize.ts 的 target 构造函数给出（并保持两者一致）。
+   * `pickSession` 自身有"退到任意已就绪连接"的兜底，所以这里不会抛错。
+   */
+  private pickSessionForMedia(media: RemoteMedia): Session | undefined {
+    const groupId = media.context?.groupId;
+    const userId = media.context?.userId;
+    const key =
+      groupId !== undefined
+        ? onebotGroupTarget(groupId).key
+        : userId !== undefined
+          ? onebotC2cTarget(userId).key
+          : undefined;
+    // 一个连接都没有时 pickSession/pickAnySession 会抛错；fetchMedia 的契约是
+    // "失败返回 undefined，绝不抛错打断整轮"，所以在这里就把它收住。
+    try {
+      return key !== undefined ? this.pickSession(key) : this.pickAnySession();
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -884,6 +993,7 @@ export class OnebotConnector implements BotConnector {
    * 申请直链。拿不到直链一律返回 undefined，由调用方决定降级。
    */
   private async fetchViaFileUrl(
+    session: Session,
     media: RemoteMedia,
     options: MediaFetchOptions,
   ): Promise<MediaBytes | undefined> {
@@ -895,13 +1005,6 @@ export class OnebotConnector implements BotConnector {
     const action = groupId !== undefined ? 'get_group_file_url' : 'get_private_file_url';
     const params =
       groupId !== undefined ? { file_id: fileId, group: groupId } : { file_id: fileId };
-
-    let session: Session;
-    try {
-      session = this.pickAnySession();
-    } catch {
-      return undefined;
-    }
 
     try {
       const result = await this.callAction(session, action, params);
@@ -921,16 +1024,11 @@ export class OnebotConnector implements BotConnector {
 
   /** 经 get_file / get_image 回查取字节；动作不支持或返回不可用时返回 undefined。 */
   private async fetchViaFileAction(
+    session: Session,
     action: 'get_file' | 'get_image',
     fileId: string,
     options: MediaFetchOptions,
   ): Promise<MediaBytes | undefined> {
-    let session: Session;
-    try {
-      session = this.pickAnySession();
-    } catch {
-      return undefined;
-    }
     let data: Record<string, unknown>;
     try {
       // file_id 与 file 在实现之间二选一（NapCat 文档：任意一个用于标记文件），

@@ -160,19 +160,23 @@ export function extractMessageContent(
   const forwardRefs: ForwardRef[] = [];
 
   for (const segment of segments) {
+    // `data` 在类型上必填、运行期零校验：框架与 get_forward_msg 的响应都可能给出
+    // `{"type":"text"}` 这种缺 data 的段。归一化是**唯一**把不可信外部结构翻成内部
+    // 结构的入口，这里崩掉等于整条消息（顶层路径还会掀翻进程，见 onFrame 的 try）。
+    const data = segment.data ?? {};
     switch (segment.type) {
       case 'text': {
-        const text = asString(segment.data['text']);
+        const text = asString(data['text']);
         if (text !== undefined) parts.push({ type: 'text', text });
         break;
       }
       case 'at': {
-        const qq = asString(segment.data['qq']) ?? '';
+        const qq = asString(data['qq']) ?? '';
         if (qq === String(selfId)) {
           atSelf = true;
           break;
         }
-        const name = asString(segment.data['name']) ?? (qq !== '' ? qq : undefined);
+        const name = asString(data['name']) ?? (qq !== '' ? qq : undefined);
         if (name !== undefined) parts.push({ type: 'text', text: `@${name}` });
         break;
       }
@@ -182,7 +186,7 @@ export function extractMessageContent(
         // 文件标识（OneBot image 段的 file 原值）：可能是本地路径 / 内部 id /
         // base64://。base64 形式的图片字节已经在上报里，但可能极大（ws 帧），
         // 且 MIME 未知，不值得内联；其余形态留给 fetchMedia 回查。
-        const rawFile = asString(segment.data['file']);
+        const rawFile = asString(data['file']);
         const fileId =
           rawFile !== undefined && !rawFile.startsWith('base64://') && httpUrl(rawFile) === undefined
             ? rawFile
@@ -196,7 +200,7 @@ export function extractMessageContent(
         if (url !== undefined) image.url = url;
         if (fileId !== undefined) image.fileId = fileId;
         // 文件名只用于渲染 [图片: xxx]：base64 内联与 file:// 本地路径都不是名字
-        const filename = asString(segment.data['file']);
+        const filename = asString(data['file']);
         if (
           filename !== undefined &&
           !filename.startsWith('base64://') &&
@@ -209,40 +213,40 @@ export function extractMessageContent(
       }
       case 'record': {
         const voice: MessageVoicePart = { type: 'voice' };
-        const url = httpUrl(segment.data['url']) ?? httpUrl(segment.data['file']);
+        const url = httpUrl(data['url']) ?? httpUrl(data['file']);
         if (url !== undefined) voice.url = url;
-        const filename = asString(segment.data['file']);
+        const filename = asString(data['file']);
         if (filename !== undefined && !filename.startsWith('base64://')) voice.filename = filename;
         parts.push(voice);
         break;
       }
       case 'video': {
         const media: MessageMediaPart = { type: 'media', mediaKind: 'video' };
-        const url = httpUrl(segment.data['url']) ?? httpUrl(segment.data['file']);
+        const url = httpUrl(data['url']) ?? httpUrl(data['file']);
         if (url !== undefined) media.url = url;
-        const filename = asString(segment.data['file']);
+        const filename = asString(data['file']);
         if (filename !== undefined && !filename.startsWith('base64://')) media.filename = filename;
         parts.push(media);
         break;
       }
       case 'file': {
         const media: MessageMediaPart = { type: 'media', mediaKind: 'file' };
-        const url = httpUrl(segment.data['url']);
+        const url = httpUrl(data['url']);
         if (url !== undefined) media.url = url;
         // 文件标识：NapCat 的普通文件链接受**下载次数限制**，上报里的 url 一旦
         // 失效就要靠它重新申请直链（get_group_file_url / get_private_file_url）。
         // file_id 是标准字段；file 是回退（可能是本地路径，取不到就自然降级）。
-        const rawFile = asString(segment.data['file_id']) ?? asString(segment.data['file']);
+        const rawFile = asString(data['file_id']) ?? asString(data['file']);
         if (rawFile !== undefined && !rawFile.startsWith('base64://')) media.fileId = rawFile;
-        const filename = asString(segment.data['name']) ?? asString(segment.data['file']);
+        const filename = asString(data['name']) ?? asString(data['file']);
         if (filename !== undefined && !filename.startsWith('base64://')) media.filename = filename;
-        const size = Number(segment.data['size'] ?? segment.data['file_size']);
+        const size = Number(data['size'] ?? data['file_size']);
         if (Number.isFinite(size) && size > 0) media.sizeBytes = size;
         parts.push(media);
         break;
       }
       case 'reply': {
-        const id = asString(segment.data['id']);
+        const id = asString(data['id']);
         if (id !== undefined) quotedMessageId = id;
         break;
       }
@@ -253,7 +257,7 @@ export function extractMessageContent(
         // 合并转发：段里只有 id，内容要回查 get_forward_msg（连接器负责）。
         // 这里放一个占位片段并记下它的下标，回查成功后原地替换；失败则换成
         // `[聊天记录]`（保持"以前是什么样，失败后还是什么样"）。
-        const id = asString(segment.data['id']) ?? asString(segment.data['message_id']);
+        const id = asString(data['id']) ?? asString(data['message_id']);
         if (id === undefined) {
           parts.push({ type: 'text', text: '[聊天记录]' });
           break;

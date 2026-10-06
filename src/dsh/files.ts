@@ -206,12 +206,16 @@ async function ingestOne(
     result.skipped += 1;
     return `${label}（读取失败，未读入）`;
   }
-  result.fetched += 1;
 
+  // 体积复核放在计数**之前**：`filesFetched` 的语义是"取到并通过复核、进入处理"，
+  // 与 filesSkipped 互斥。两个计数器都加会让
+  // `fetched - extracted - savedOnly - skipped` 变成负数，而 RUNBOOK 正是靠这几个
+  // 数"按步定位"的（平台声明体积不可信，这条路径真实可达）。
   if (bytes.data.byteLength > config.maxFileBytes) {
     result.skipped += 1;
     return `${label}（实际体积超过 ${formatBytes(config.maxFileBytes)} 上限，未读取）`;
   }
+  result.fetched += 1;
 
   // 先落盘再抽取：抽取可能超时/崩溃，而"原文已在工作区"是更硬的成果
   let saved;
