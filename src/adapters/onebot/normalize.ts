@@ -229,8 +229,15 @@ export function extractMessageContent(
         const media: MessageMediaPart = { type: 'media', mediaKind: 'file' };
         const url = httpUrl(segment.data['url']);
         if (url !== undefined) media.url = url;
+        // 文件标识：NapCat 的普通文件链接受**下载次数限制**，上报里的 url 一旦
+        // 失效就要靠它重新申请直链（get_group_file_url / get_private_file_url）。
+        // file_id 是标准字段；file 是回退（可能是本地路径，取不到就自然降级）。
+        const rawFile = asString(segment.data['file_id']) ?? asString(segment.data['file']);
+        if (rawFile !== undefined && !rawFile.startsWith('base64://')) media.fileId = rawFile;
         const filename = asString(segment.data['name']) ?? asString(segment.data['file']);
         if (filename !== undefined && !filename.startsWith('base64://')) media.filename = filename;
+        const size = Number(segment.data['size'] ?? segment.data['file_size']);
+        if (Number.isFinite(size) && size > 0) media.sizeBytes = size;
         parts.push(media);
         break;
       }

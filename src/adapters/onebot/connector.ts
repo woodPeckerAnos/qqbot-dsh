@@ -860,11 +860,61 @@ export class OnebotConnector implements BotConnector {
     }
     if (media.fileId === undefined) return undefined;
 
+    // 文件与图片的取件路径不同：NapCat 明确说明"非视频/图片/音频的普通文件，
+    // 其链接受下载次数影响"，所以要先重新申请直链，再退回通用 get_file。
+    if (media.kind === 'file') {
+      const refreshed = await this.fetchViaFileUrl(media, options);
+      if (refreshed !== undefined) return refreshed;
+      return this.fetchViaFileAction('get_file', media.fileId, options);
+    }
+
     // get_file：NapCat 扩展动作（file_id 或 file 二选一），可能直接给 base64。
     const viaGetFile = await this.fetchViaFileAction('get_file', media.fileId, options);
     if (viaGetFile !== undefined) return viaGetFile;
     // get_image：OneBot 标准动作，NapCat 返回刷新后的 url 或本地路径。
     return this.fetchViaFileAction('get_image', media.fileId, options);
+  }
+
+  /**
+   * 重新申请文件直链：群文件必须带 `group`，私聊文件只要 `file_id`。
+   *
+   * 缺会话上下文（拿不到群号）时**不猜**——宁可退回 get_file，也不要对错误的群
+   * 申请直链。拿不到直链一律返回 undefined，由调用方决定降级。
+   */
+  private async fetchViaFileUrl(
+    media: RemoteMedia,
+    options: MediaFetchOptions,
+  ): Promise<MediaBytes | undefined> {
+    const fileId = media.fileId;
+    if (fileId === undefined) return undefined;
+
+    const groupId = media.context?.groupId;
+    if (groupId === undefined && media.context?.userId === undefined) return undefined;
+    const action = groupId !== undefined ? 'get_group_file_url' : 'get_private_file_url';
+    const params =
+      groupId !== undefined ? { file_id: fileId, group: groupId } : { file_id: fileId };
+
+    let session: Session;
+    try {
+      session = this.pickAnySession();
+    } catch {
+      return undefined;
+    }
+
+    try {
+      const result = await this.callAction(session, action, params);
+      if (typeof result !== 'object' || result === null) return undefined;
+      const url = (result as Record<string, unknown>)['url'];
+      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return undefined;
+      return await this.httpGet(url, options);
+    } catch (error) {
+      this.options.logger.debug(`${action} 申请直链失败（退回 get_file）`, {
+        fileId,
+        groupId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
   }
 
   /** 经 get_file / get_image 回查取字节；动作不支持或返回不可用时返回 undefined。 */
@@ -881,7 +931,9 @@ export class OnebotConnector implements BotConnector {
     }
     let data: Record<string, unknown>;
     try {
-      const result = await this.callAction(session, action, { file: fileId });
+      // file_id 与 file 在实现之间二选一（NapCat 文档：任意一个用于标记文件），
+      // 一次都带上比"先试一个再试另一个"少一次失败往返。
+      const result = await this.callAction(session, action, { file: fileId, file_id: fileId });
       if (typeof result !== 'object' || result === null) return undefined;
       data = result as Record<string, unknown>;
     } catch (error) {
