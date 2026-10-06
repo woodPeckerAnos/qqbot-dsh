@@ -51,6 +51,8 @@ export type NormalizeResult =
       event: NormalizedEvent;
       /** 群/私聊消息引用了某条消息时为该消息 id（连接器据此回查引用内容） */
       quotedMessageId?: string;
+      /** 消息里的转发块（连接器据此回查 get_forward_msg，见 ForwardRef） */
+      forwardRefs?: ForwardRef[];
     }
   | { type: 'friend-request'; flag: string; userId: number }
   | { type: 'group-invite'; flag: string; groupId: number; userId: number }
@@ -67,6 +69,28 @@ export interface ExtractedContent {
   atSelf: boolean;
   /** `reply` 段引用的消息 id */
   quotedMessageId?: string;
+  /**
+   * 待回查的转发块：`index` 是它在 `parts` 里的位置（占位片段），
+   * `id` 是 get_forward_msg 的入参。
+   *
+   * 为什么不在归一化时就把内容取回来：这里是纯函数（无 IO，单测友好），
+   * 回查属于连接器的职责（与 `reply` 段的 get_msg 回查同构）。
+   */
+  forwardRefs?: ForwardRef[];
+}
+
+/** 转发块占位片段在 parts 中的位置 + 平台侧 id */
+export interface ForwardRef {
+  index: number;
+  id: string;
+}
+
+/** 转发块里的一条发言（已解析成片段，可能自己还带转发/引用） */
+export interface ForwardNode {
+  author?: string;
+  parts: MessagePart[];
+  /** 该条发言内部的嵌套转发（相对 `parts` 的下标）；没有嵌套时不写 */
+  forwardRefs?: ForwardRef[];
 }
 
 function asString(value: unknown): string | undefined {
@@ -133,21 +157,26 @@ export function extractMessageContent(
   const parts: MessagePart[] = [];
   let atSelf = false;
   let quotedMessageId: string | undefined;
+  const forwardRefs: ForwardRef[] = [];
 
   for (const segment of segments) {
+    // `data` 在类型上必填、运行期零校验：框架与 get_forward_msg 的响应都可能给出
+    // `{"type":"text"}` 这种缺 data 的段。归一化是**唯一**把不可信外部结构翻成内部
+    // 结构的入口，这里崩掉等于整条消息（顶层路径还会掀翻进程，见 onFrame 的 try）。
+    const data = segment.data ?? {};
     switch (segment.type) {
       case 'text': {
-        const text = asString(segment.data['text']);
+        const text = asString(data['text']);
         if (text !== undefined) parts.push({ type: 'text', text });
         break;
       }
       case 'at': {
-        const qq = asString(segment.data['qq']) ?? '';
+        const qq = asString(data['qq']) ?? '';
         if (qq === String(selfId)) {
           atSelf = true;
           break;
         }
-        const name = asString(segment.data['name']) ?? (qq !== '' ? qq : undefined);
+        const name = asString(data['name']) ?? (qq !== '' ? qq : undefined);
         if (name !== undefined) parts.push({ type: 'text', text: `@${name}` });
         break;
       }
@@ -157,7 +186,7 @@ export function extractMessageContent(
         // 文件标识（OneBot image 段的 file 原值）：可能是本地路径 / 内部 id /
         // base64://。base64 形式的图片字节已经在上报里，但可能极大（ws 帧），
         // 且 MIME 未知，不值得内联；其余形态留给 fetchMedia 回查。
-        const rawFile = asString(segment.data['file']);
+        const rawFile = asString(data['file']);
         const fileId =
           rawFile !== undefined && !rawFile.startsWith('base64://') && httpUrl(rawFile) === undefined
             ? rawFile
@@ -171,7 +200,7 @@ export function extractMessageContent(
         if (url !== undefined) image.url = url;
         if (fileId !== undefined) image.fileId = fileId;
         // 文件名只用于渲染 [图片: xxx]：base64 内联与 file:// 本地路径都不是名字
-        const filename = asString(segment.data['file']);
+        const filename = asString(data['file']);
         if (
           filename !== undefined &&
           !filename.startsWith('base64://') &&
@@ -184,42 +213,59 @@ export function extractMessageContent(
       }
       case 'record': {
         const voice: MessageVoicePart = { type: 'voice' };
-        const url = httpUrl(segment.data['url']) ?? httpUrl(segment.data['file']);
+        const url = httpUrl(data['url']) ?? httpUrl(data['file']);
         if (url !== undefined) voice.url = url;
-        const filename = asString(segment.data['file']);
+        const filename = asString(data['file']);
         if (filename !== undefined && !filename.startsWith('base64://')) voice.filename = filename;
         parts.push(voice);
         break;
       }
       case 'video': {
         const media: MessageMediaPart = { type: 'media', mediaKind: 'video' };
-        const url = httpUrl(segment.data['url']) ?? httpUrl(segment.data['file']);
+        const url = httpUrl(data['url']) ?? httpUrl(data['file']);
         if (url !== undefined) media.url = url;
-        const filename = asString(segment.data['file']);
+        const filename = asString(data['file']);
         if (filename !== undefined && !filename.startsWith('base64://')) media.filename = filename;
         parts.push(media);
         break;
       }
       case 'file': {
         const media: MessageMediaPart = { type: 'media', mediaKind: 'file' };
-        const url = httpUrl(segment.data['url']);
+        const url = httpUrl(data['url']);
         if (url !== undefined) media.url = url;
-        const filename = asString(segment.data['name']) ?? asString(segment.data['file']);
+        // 文件标识：NapCat 的普通文件链接受**下载次数限制**，上报里的 url 一旦
+        // 失效就要靠它重新申请直链（get_group_file_url / get_private_file_url）。
+        // file_id 是标准字段；file 是回退（可能是本地路径，取不到就自然降级）。
+        const rawFile = asString(data['file_id']) ?? asString(data['file']);
+        if (rawFile !== undefined && !rawFile.startsWith('base64://')) media.fileId = rawFile;
+        const filename = asString(data['name']) ?? asString(data['file']);
         if (filename !== undefined && !filename.startsWith('base64://')) media.filename = filename;
+        const size = Number(data['size'] ?? data['file_size']);
+        if (Number.isFinite(size) && size > 0) media.sizeBytes = size;
         parts.push(media);
         break;
       }
       case 'reply': {
-        const id = asString(segment.data['id']);
+        const id = asString(data['id']);
         if (id !== undefined) quotedMessageId = id;
         break;
       }
       case 'face':
         parts.push({ type: 'text', text: '[表情]' });
         break;
-      case 'forward':
-        parts.push({ type: 'text', text: '[聊天记录]' });
+      case 'forward': {
+        // 合并转发：段里只有 id，内容要回查 get_forward_msg（连接器负责）。
+        // 这里放一个占位片段并记下它的下标，回查成功后原地替换；失败则换成
+        // `[聊天记录]`（保持"以前是什么样，失败后还是什么样"）。
+        const id = asString(data['id']) ?? asString(data['message_id']);
+        if (id === undefined) {
+          parts.push({ type: 'text', text: '[聊天记录]' });
+          break;
+        }
+        forwardRefs.push({ index: parts.length, id });
+        parts.push({ type: 'forward', parts: [] });
         break;
+      }
       case 'json':
       case 'xml':
         parts.push({ type: 'text', text: '[卡片消息]' });
@@ -236,6 +282,7 @@ export function extractMessageContent(
     content,
     atSelf,
     ...(quotedMessageId !== undefined ? { quotedMessageId } : {}),
+    ...(forwardRefs.length > 0 ? { forwardRefs } : {}),
   };
 }
 
@@ -252,13 +299,25 @@ export function extractGroupContent(
 }
 
 /**
- * 把 get_msg 回查到的被引用消息解析成片段（供连接器拼 `quote` 片段）。
+ * 把 get_msg 回查到的被引用消息解析成**完整内容**（含它自己的转发待回查下标）。
+ *
+ * 返回完整 `ExtractedContent` 而不是只有 parts：被引用的消息本身可能是一条
+ * 合并转发，把它的 `forwardRefs` 丢掉会让"引用一条聊天记录"渲染成
+ * `[转发消息]（内容未读入）`——明明有能力查却不查。
+ *
  * 纯函数：`data` 是 get_msg 返回的 `data` 字段。
  */
-export function quotedPartsFromGetMsg(data: unknown, selfId: number): MessagePart[] {
-  if (typeof data !== 'object' || data === null) return [];
+export function quotedContentFromGetMsg(data: unknown, selfId: number): ExtractedContent {
+  if (typeof data !== 'object' || data === null) {
+    return { parts: [], content: '', atSelf: false };
+  }
   const record = data as { message?: OneBotSegment[] | string };
-  return extractMessageContent(record.message, selfId).parts;
+  return extractMessageContent(record.message, selfId);
+}
+
+/** @deprecated 用 quotedContentFromGetMsg（它同时给出嵌套的转发下标） */
+export function quotedPartsFromGetMsg(data: unknown, selfId: number): MessagePart[] {
+  return quotedContentFromGetMsg(data, selfId).parts;
 }
 
 /** 从 get_msg 返回体里取被引用消息的发送者显示名。 */
@@ -267,6 +326,95 @@ export function quotedAuthorFromGetMsg(data: unknown): string | undefined {
   const sender = (data as { sender?: { card?: string; nickname?: string } }).sender;
   const card = asString(sender?.card);
   return card ?? asString(sender?.nickname);
+}
+
+// ---------------------------------------------------------------------------
+// 合并转发（get_forward_msg）
+// ---------------------------------------------------------------------------
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 从响应里取出"逐条发言"的数组。
+ *
+ * 已知形状（必须都容忍，见 docs/FORWARD-FILE-INGRESS-PLAN.md §3.1）：
+ *   - `{ messages: [...] }`（连接器已解包 `data`，最常见）；
+ *   - `{ data: { messages: [...] } }`（调用方直接把整个响应体给进来）；
+ *   - 整个数组（已解包）。
+ *
+ * 递归只跟 `data` 一层层剥，带深度上限——防畸形载荷用嵌套对象把栈打穿。
+ */
+function forwardListOf(data: unknown, depth = 0): unknown[] {
+  if (Array.isArray(data)) return data;
+  if (!isRecord(data) || depth > 3) return [];
+  for (const key of ['messages', 'message', 'nodes']) {
+    const value = data[key];
+    if (Array.isArray(value)) return value;
+  }
+  const nested = data['data'];
+  return isRecord(nested) ? forwardListOf(nested, depth + 1) : [];
+}
+
+/** 把一条 node 里的 `message` / `content` 字段交给常规解析（它自己可能是 CQ 码字符串）。 */
+function forwardNodeOf(item: unknown, selfId: number): ForwardNode | undefined {
+  // 形状 A：整条就是一个 CQ 码字符串（go-cqhttp 的 messages 是字符串数组）
+  if (typeof item === 'string') {
+    const extracted = extractMessageContent(item, selfId);
+    if (extracted.parts.length === 0) return undefined;
+    return withForwardRefs({ parts: extracted.parts }, extracted.forwardRefs);
+  }
+  if (!isRecord(item)) return undefined;
+
+  // 形状 B：`{ type:'node', data:{...} }`——内容在 data 里
+  const data = item['type'] === 'node' && isRecord(item['data']) ? item['data'] : item;
+  const sender = isRecord(data['sender']) ? data['sender'] : undefined;
+  const author =
+    asString(data['nickname']) ??
+    asString(data['card']) ??
+    asString(data['name']) ??
+    asString(sender?.['card']) ??
+    asString(sender?.['nickname']) ??
+    asString(data['user_id']);
+
+  // 内容可能在 message（消息段数组）或 content（NapCat node 的字段）里；
+  // extractMessageContent 同时接受数组与 CQ 码字符串。
+  const payload = data['message'] ?? data['content'];
+  const extracted = extractMessageContent(
+    payload as OneBotSegment[] | string | undefined,
+    selfId,
+  );
+
+  if (extracted.parts.length === 0) {
+    if (author === undefined) return undefined;
+    // 只有发言人的空条目：至少留下"某人发了一条读不到的内容"
+    return { author, parts: [{ type: 'text', text: '[内容未读入]' }] };
+  }
+  return withForwardRefs(
+    { ...(author !== undefined ? { author } : {}), parts: extracted.parts },
+    extracted.forwardRefs,
+  );
+}
+
+function withForwardRefs(node: ForwardNode, refs: ForwardRef[] | undefined): ForwardNode {
+  return refs !== undefined && refs.length > 0 ? { ...node, forwardRefs: refs } : node;
+}
+
+/**
+ * `get_forward_msg` 的响应 → 逐条发言（纯函数，便于单测）。
+ *
+ * 任何不认识的条目都**跳过**而不是抛错：一条解析不了的转发不该让用户这条消息
+ * 消失（与引用回查同样的降级纪律）。返回空数组表示"这个转发块读不出来"，
+ * 由连接器换成 `[聊天记录]`。
+ */
+export function parseForwardNodes(data: unknown, selfId: number): ForwardNode[] {
+  const nodes: ForwardNode[] = [];
+  for (const item of forwardListOf(data)) {
+    const node = forwardNodeOf(item, selfId);
+    if (node !== undefined) nodes.push(node);
+  }
+  return nodes;
 }
 
 /**
@@ -334,6 +482,7 @@ function normalizeMessage(raw: OneBotEvent, now: () => number): NormalizeResult 
       ...(extracted.quotedMessageId !== undefined
         ? { quotedMessageId: extracted.quotedMessageId }
         : {}),
+      ...(extracted.forwardRefs !== undefined ? { forwardRefs: extracted.forwardRefs } : {}),
     };
   }
 
@@ -361,6 +510,7 @@ function normalizeMessage(raw: OneBotEvent, now: () => number): NormalizeResult 
       ...(extracted.quotedMessageId !== undefined
         ? { quotedMessageId: extracted.quotedMessageId }
         : {}),
+      ...(extracted.forwardRefs !== undefined ? { forwardRefs: extracted.forwardRefs } : {}),
     };
   }
 

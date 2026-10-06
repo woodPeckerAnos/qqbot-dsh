@@ -17,7 +17,9 @@
  */
 
 import type { Config } from '../config.js';
-import { messageImageParts } from '../core/content.js';
+import type { MediaBytes, MediaFetchOptions, RemoteMedia } from '../core/connector.js';
+import { messageImageParts, messageMediaParts } from '../core/content.js';
+import { ingestFiles, type DocumentExtractor, type FileIngestResult } from '../dsh/files.js';
 import { buildImageBlocks } from '../dsh/media.js';
 import type { RuntimeEntry, RuntimePool } from '../dsh/pool.js';
 import type {
@@ -29,6 +31,7 @@ import { TurnAccumulator, type TurnOutcome } from '../dsh/turns.js';
 import type { Logger } from '../logger.js';
 import type { ConversationStore } from '../store/conversations.js';
 import { renderReplay } from '../store/conversations.js';
+import { cleanupInbox } from '../store/inbox.js';
 import type { SessionStore } from '../store/sessions.js';
 import { ensureWorkspace, type StorePaths } from '../store/paths.js';
 import { waitUntil } from './concurrency.js';
@@ -53,17 +56,33 @@ export interface TurnRunnerDeps {
    * 上下文只靠 /new 与 runtime 回收重置）。
    */
   topicJudge?: TopicJudge;
+  /**
+   * 文档文本抽取器（main.ts 注入 dsh/document.ts 的实现；缺省 = 只落盘不解析）。
+   *
+   * 做成注入而不是直接 import 的原因：单元测试必须全离线、且不依赖宿主上
+   * 有没有装 pdftotext（见 CI 的"单测不触网、不起子进程"约束）。
+   */
+  extractDocument?: DocumentExtractor;
   now?: () => number;
 }
 
-/** 已组装好、待派发的 prompt（含图片记账，供准入失败时回退与统计）。 */
+/** 已组装好、待派发的 prompt（含图片与文件的记账，供准入失败时回退与统计）。 */
 interface PreparedPrompt {
   blocks: PromptContentBlock[];
   /** 这条消息里一共认出几张图 */
   totalImages: number;
   /** 其中成功编码成 image block 的张数 */
   inlinedImages: number;
+  /**
+   * 文件摄取的计数。刻意与图片一样**只在这里记账、到 dispatchPrompt 才落数**：
+   * 抽取成功不等于 runtime 收下了（见 dispatchPrompt 的准入失败回退），
+   * 在 build 期就加会让完全失败的轮次虚报 fileCharsInlined。
+   */
+  files: FileIngestCounts;
 }
+
+/** 文件摄取的计数（ingestFiles 的结果去掉 notes） */
+type FileIngestCounts = Omit<FileIngestResult, 'notes'>;
 
 export class TurnRunner {
   /**
@@ -124,6 +143,20 @@ export class TurnRunner {
     let accumulator = new TurnAccumulator('pending');
     let entry: RuntimeEntry | undefined;
 
+    // inbox 清理（超期删除 + 总量配额）：turn 一开始做，且只在准入之后——
+    // 被闸拦掉的消息不该产生任何文件系统副作用。全程 best-effort，失败只记 warn。
+    // 只在"确实在用 inbox"时做：关掉文件读取后还每轮扫一遍目录，会把 agent 自己
+    // 放进 inbox 的东西按保留期删掉（它没有任何理由知道那是我们的目录）。
+    if (config.attachments.files.enabled && config.attachments.files.saveToInbox) {
+      await cleanupInbox({
+        workspacePath,
+        inboxDir: config.attachments.files.inboxDir,
+        retentionDays: config.attachments.files.retentionDays,
+        maxBytes: config.attachments.files.maxInboxBytes,
+        logger,
+      });
+    }
+
     try {
       // 话题判定：新消息与既有话题是否相关由 LLM 判断（不是硬时间间隔——
       // 话题是否结束是语义判断）。判定为无关 → 关闭话题：回收旧 runtime
@@ -171,7 +204,7 @@ export class TurnRunner {
       const promptText = this.buildPrompt(message, conversationKey, session.generation, coldStart);
       // 图片在派发前下载并编码：放在这里（而不是适配器归一化时）是因为
       // 被去重/闸拦掉的消息不该产生网络 IO。
-      const prepared = await this.buildPromptBlocks(ctx, promptText);
+      const prepared = await this.buildPromptBlocks(ctx, promptText, workspacePath);
       entry.replayed = true;
       entry.busy = true;
 
@@ -371,60 +404,96 @@ export class TurnRunner {
   }
 
   /**
-   * 组装派发给 runtime 的 prompt content blocks：一个文本块（正文 + 附件说明）
-   * 加若干图片块。
+   * 组装派发给 runtime 的 prompt content blocks：一个文本块（正文 + 图片/文件
+   * 说明与抽取正文）加若干图片块。
    *
    * 设计取舍：
-   *   - 图片读不进来**不**是错误：降级成一行文字说明，文字部分照常回答。
-   *     群里发张 HEIC 图就整轮失败，比看不到图更糟；
-   *   - 关闭富媒体时也显式说一句"有 N 张图未读入"，否则模型会以为用户什么都没发。
+   *   - 图片/文件读不进来**不**是错误：降级成一行文字说明，文字部分照常回答。
+   *     群里发张 HEIC 图或一个加密 PDF 就整轮失败，比看不到内容更糟；
+   *   - 关闭富媒体时也显式说一句"有 N 张图 / N 个文件未读入"，否则模型会以为
+   *     用户什么都没发。
    *   - 统计只在这里**记账**、在 dispatchPrompt 里落数：因为"下载成功"不等于
    *     "runtime 收下了"（见 dispatchPrompt 的准入失败回退）。
    */
   private async buildPromptBlocks(
     ctx: MessageContext,
     text: string,
+    workspacePath: string,
   ): Promise<PreparedPrompt> {
     const { config, logger } = this.deps;
     const { enabled, maxImages, maxImageBytes, downloadTimeoutMs } = config.attachments;
     const images = messageImageParts(ctx.message);
     const total = images.length;
+    const notes: string[] = [];
+    const blocks: PromptContentBlock[] = [];
 
-    if (total === 0) {
-      return { blocks: [{ type: 'text', text }], totalImages: 0, inlinedImages: 0 };
-    }
+    // 平台侧取字节：官方需要 access_token，OneBot 可能要动作回查。
+    // 绑定 this，避免把方法当自由函数传出去后丢上下文。
+    const fetchMedia =
+      ctx.connector.fetchMedia !== undefined
+        ? (media: RemoteMedia, options: MediaFetchOptions) =>
+            ctx.connector.fetchMedia!.call(ctx.connector, media, options)
+        : undefined;
 
-    if (!enabled || maxImages <= 0) {
-      return {
-        blocks: [
-          {
-            type: 'text',
-            text: `${text}\n（本服务已关闭图片读取，这条消息里的 ${total} 张图片未读入）`,
-          },
-        ],
-        totalImages: total,
-        inlinedImages: 0,
-      };
-    }
-
-    const fetchMedia = ctx.connector.fetchMedia;
-    const { blocks, notes } = await buildImageBlocks(images, {
-      maxImages,
-      maxBytes: maxImageBytes,
-      timeoutMs: downloadTimeoutMs,
-      ...(fetchMedia !== undefined
-        ? { fetchMedia: (media, options) => fetchMedia.call(ctx.connector, media, options) }
+    // --- 文件：下载 → 落 inbox →（可选）抽取正文 ---------------------------
+    // 与图片分开处理：文件的配额、失败语义与渲染形态都不同（见 config.files）。
+    const fileOutcome = await ingestFiles({
+      parts: messageMediaParts(ctx.message),
+      workspacePath,
+      config: config.attachments.files,
+      downloadTimeoutMs,
+      // 会话上下文是平台侧取件凭据：OneBot 群文件直链申请必须带群号
+      context:
+        ctx.message.target.kind === 'group'
+          ? { groupId: ctx.message.target.id }
+          : { userId: ctx.message.target.id },
+      ...(fetchMedia !== undefined ? { fetchMedia } : {}),
+      ...(this.deps.extractDocument !== undefined
+        ? { extract: this.deps.extractDocument }
         : {}),
       logger,
     });
+    notes.push(...fileOutcome.notes);
 
-    const inlined = blocks.length;
-    if (notes.length > 0) {
-      logger.info('部分图片未能读入，已降级为文字说明', { notes, inlined, total });
+    // --- 图片：内联成多模态 image block -------------------------------------
+    let inlined = 0;
+    if (total > 0) {
+      if (!enabled || maxImages <= 0) {
+        notes.push(`（本服务已关闭图片读取，这条消息里的 ${total} 张图片未读入）`);
+      } else {
+        const result = await buildImageBlocks(images, {
+          maxImages,
+          maxBytes: maxImageBytes,
+          timeoutMs: downloadTimeoutMs,
+          ...(fetchMedia !== undefined ? { fetchMedia } : {}),
+          logger,
+        });
+        blocks.push(...result.blocks);
+        notes.push(...result.notes);
+        inlined = result.blocks.length;
+        if (result.notes.length > 0) {
+          logger.info('部分图片未能读入，已降级为文字说明', {
+            notes: result.notes,
+            inlined,
+            total,
+          });
+        }
+      }
     }
 
     const finalText = notes.length > 0 ? `${text}\n${notes.join('\n')}` : text;
-    return { blocks: [{ type: 'text', text: finalText }, ...blocks], totalImages: total, inlinedImages: inlined };
+    return {
+      blocks: [{ type: 'text', text: finalText }, ...blocks],
+      totalImages: total,
+      inlinedImages: inlined,
+      files: {
+        fetched: fileOutcome.fetched,
+        extracted: fileOutcome.extracted,
+        savedOnly: fileOutcome.savedOnly,
+        skipped: fileOutcome.skipped,
+        charsInlined: fileOutcome.charsInlined,
+      },
+    };
   }
 
   /**
@@ -459,10 +528,23 @@ export class TurnRunner {
         },
       ]);
       stats.imagesSkipped += prepared.inlinedImages;
+      // 回退用的是同一个文本块，文件正文照旧送达，所以计数照落
+      this.commitFileStats(prepared.files);
       return;
     }
     stats.imagesInlined += prepared.inlinedImages;
     stats.imagesSkipped += Math.max(0, prepared.totalImages - prepared.inlinedImages);
+    this.commitFileStats(prepared.files);
+  }
+
+  /** 文件计数落账：runtime 确实收下了这一轮 prompt 之后才调。 */
+  private commitFileStats(files: FileIngestCounts): void {
+    const { stats } = this.deps;
+    stats.filesFetched += files.fetched;
+    stats.filesExtracted += files.extracted;
+    stats.filesSavedOnly += files.savedOnly;
+    stats.filesSkipped += files.skipped;
+    stats.fileCharsInlined += files.charsInlined;
   }
 
   private elapsedSince(startedAt: number): number {

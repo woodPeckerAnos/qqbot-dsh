@@ -51,6 +51,30 @@ export class PipelineStats {
   imagesInlined = 0;
   /** 读取失败/超限/格式不支持而跳过的图片数（TurnRunner） */
   imagesSkipped = 0;
+  /**
+   * 成功展开的转发消息块数（连接器回查 get_forward_msg 成功后）。
+   * 只统计**顶层**块——嵌套块的条目会并进父块的渲染文本，两边都计会重复。
+   */
+  forwardsExpanded = 0;
+  /** 实际渲染进 content 的转发条目数（连接器；受 maxNodes/maxChars 裁剪后，同样只算顶层） */
+  forwardNodesInlined = 0;
+  /**
+   * 未能展开的转发块数：回查失败/超时/响应解析不出条目/嵌套层级过深/超出读取上限。
+   *
+   * **不包括"开关关掉"**：那是运维主动关闭，不是失败——把它计进来会让
+   * "关掉功能"看起来像"功能坏了"。关掉时连接器不发任何请求、也不上报。
+   */
+  forwardsFailed = 0;
+  /** 取到字节**并通过体积复核**的文件数（TurnRunner；与 filesSkipped 互斥） */
+  filesFetched = 0;
+  /** 成功抽取正文的文件数（TurnRunner） */
+  filesExtracted = 0;
+  /** 只落盘、未抽取正文的文件数（TurnRunner；类型不支持或解析器不可用） */
+  filesSavedOnly = 0;
+  /** 因关闭/超体积/超出数量/失败而跳过的文件数（TurnRunner / 连接器） */
+  filesSkipped = 0;
+  /** 送入 prompt 的文件正文字符数（TurnRunner） */
+  fileCharsInlined = 0;
   /** 成功发出的回复段数（Responder / 欢迎语） */
   repliesSent = 0;
   /** 成功发出的附件数（Responder；附件消息同时计入 repliesSent） */

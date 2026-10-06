@@ -25,6 +25,11 @@ FROM node:24-bookworm-slim AS runtime
 # 缺了它，bash 工具在 workspace-write 下无法执行，DSH 会请求提权到
 # danger-full-access，A 方案的"工作区边界"就名存实亡。
 # 见 docs/DESIGN.md 第 6 节与 scripts/verify-sandbox.mjs。
+#
+# poppler-utils 提供 pdftotext：用户发来的 PDF 要抽正文（见 dsh/document.ts）。
+# 刻意走系统包而不是 npm 的纯 JS PDF 库——部署形态只有 Docker，且 poppler 对
+# 中文/畸形/加密 PDF 的健壮性远好于纯 JS 方案；缺失时机器人自动降级为
+# 「只把原文落进 inbox/ 并告知路径」，不会让这一轮失败。
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       tini \
@@ -33,6 +38,7 @@ RUN apt-get update \
       git \
       ripgrep \
       python3 \
+      poppler-utils \
       procps \
       curl \
  && rm -rf /var/lib/apt/lists/*

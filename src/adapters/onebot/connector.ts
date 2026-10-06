@@ -28,6 +28,8 @@ import type {
   ConversationKind,
   MediaBytes,
   MediaFetchOptions,
+  MessageForwardPart,
+  MessagePart,
   MessageQuotePart,
   NormalizedEvent,
   NormalizedMessage,
@@ -38,13 +40,18 @@ import type {
   ReplyPolicy,
 } from '../../core/connector.js';
 import { flattenParts } from '../../core/content.js';
+import type { ForwardConfig } from '../../config.js';
 import type { Logger } from '../../logger.js';
 import { normalizeWhitespace, stripControlChars, toPlainText } from '../../pipeline/markdown.js';
 import {
   normalizeOneBotEvent,
   ONEBOT_PLATFORM,
+  onebotC2cTarget,
+  onebotGroupTarget,
+  parseForwardNodes,
   quotedAuthorFromGetMsg,
-  quotedPartsFromGetMsg,
+  quotedContentFromGetMsg,
+  type ForwardRef,
   type NormalizeResult,
 } from './normalize.js';
 import type { OneBotActionResponse, OneBotEvent } from './types.js';
@@ -66,6 +73,18 @@ export interface OnebotConnectorOptions {
    *   - `path`：只传绝对路径，要求 bot 与框架同机同文件系统（省 33% 体积）。
    */
   fileTransport?: 'base64' | 'path';
+  /**
+   * 转发消息块（合并转发 / 聊天记录）的展开配额（config.attachments.forward）。
+   * 缺省或 `enabled: false` 时不做任何回查，行为退回 `[聊天记录]` 占位。
+   */
+  forward?: ForwardConfig;
+  /**
+   * 转发块回查结果上报（用于 /metrics 计数）。
+   *
+   * 用回调而不是 import PipelineStats：接入层不认识编排层的统计对象，
+   * 这条边界与"编排层不 import adapters/*"是对称的。
+   */
+  onForward?: (info: { ok: boolean; nodes: number }) => void;
   logger: Logger;
   /** 动作响应等待超时（毫秒） */
   actionTimeoutMs?: number;
@@ -91,6 +110,47 @@ class OnebotActionError extends Error {
   }
 }
 
+/** 转发块回查缓存的容量、存活时间与单条体积上限。 */
+const FORWARD_CACHE_MAX = 64;
+const FORWARD_CACHE_TTL_MS = 5 * 60_000;
+/**
+ * 单条缓存的最大序列化体积。
+ *
+ * 64 条 × 每条几 MB 的响应足以把内存顶起来（一个转发块本身可以是几百条消息），
+ * 而超大的响应重复利用的概率本来就低——超过就不缓存，本次照常返回。
+ */
+const FORWARD_CACHE_MAX_ENTRY_BYTES = 256 * 1024;
+
+/**
+ * 一条消息的转发读取预算。
+ *
+ * 做成可变的共享对象而不是参数：嵌套转发的递归展开要**共同**消耗外层预算，
+ * 否则"20 条 × 嵌套 20 条"会把总读取量放大成平方级。
+ *
+ * 三个维度都要有上限，缺一不可：
+ *   - `nodesLeft`：渲染进正文的条目数（直接决定 prompt 体积）；
+ *   - `lookupsLeft`：**发起多少次回查**。这是与 nodesLeft 独立的一维：一条 node
+ *     内部可以塞任意多个 `forward` 段，而它们不占条目预算——只按条目计费的话，
+ *     一条消息能放大出几十次串行往返；
+ *   - `expiresAt`：整条消息回查的总墙钟上限。每次回查最长 timeoutMs，只限次数
+ *     不限时间的话最坏情况仍会把这个连接上的队列堵上几分钟。
+ */
+/** 粗估一个已解析 JSON 载荷的序列化体积（只用于决定要不要缓存）。 */
+function estimateSize(data: unknown): number {
+  try {
+    return JSON.stringify(data)?.length ?? 0;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+interface ForwardBudget {
+  nodesLeft: number;
+  charsLeft: number;
+  lookupsLeft: number;
+  expiresAt: number;
+}
+
 export class OnebotConnector implements BotConnector {
   readonly platform = ONEBOT_PLATFORM;
 
@@ -109,6 +169,8 @@ export class OnebotConnector implements BotConnector {
    * 保证补全后的事件顺序与到达顺序一致——否则一条被引用消息可能插到后一条消息之后。
    */
   private readonly sessionQueues = new WeakMap<Session, Promise<void>>();
+  /** 转发块原始响应的 LRU + TTL 缓存（键为平台侧 forward id） */
+  private readonly forwardCache = new Map<string, { at: number; data: unknown }>();
   private startedAt = 0;
   private stopping = false;
 
@@ -386,8 +448,18 @@ export class OnebotConnector implements BotConnector {
     }
 
     session.lastEventAt = this.now();
-    const result = normalizeOneBotEvent(payload as unknown as OneBotEvent, () => this.now());
-    this.handleNormalized(session, result);
+    // 这一层 try 是进程级的保险：onFrame 是 ws 的 'message' 监听器，从这里抛出的
+    // 异常会变成 uncaughtException（掀翻整个进程），而不是像补全路径那样落进
+    // promise 的 catch。一条畸形帧最多丢弃一条消息，绝不该让机器人下线。
+    try {
+      const result = normalizeOneBotEvent(payload as unknown as OneBotEvent, () => this.now());
+      this.handleNormalized(session, result);
+    } catch (error) {
+      this.options.logger.warn('OneBot 事件处理抛错（该帧已丢弃）', {
+        postType: payload['post_type'],
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private handleNormalized(session: Session, result: NormalizeResult): void {
@@ -399,14 +471,32 @@ export class OnebotConnector implements BotConnector {
         const target = result.event.target;
         if (target !== undefined) this.conversationSessions.set(target.key, session);
 
-        // 引用消息（reply 段）只带消息 id，内容要回查 get_msg 才能拿到。
+        // 引用（reply 段）与转发块（forward 段）都只有 id，内容要回查才能拿到。
         // 回查是异步的，而 emit 的顺序会影响"同一会话里哪条消息先进入 turn"，
-        // 所以按会话排队，保证补全前后的事件顺序与到达顺序一致。
-        if (result.quotedMessageId !== undefined && isMessage(result.event)) {
+        // 所以按连接排队，保证补全前后的事件顺序与到达顺序一致。
+        //
+        // `enrichEvent` 外面这层 `.catch(() => event)` 是**结构性的"绝不丢消息"**：
+        // 补全涉及网络、外部回调（onForward）与第三方响应解析，任何一处抛错都不该
+        // 让用户这条消息凭空消失（没有回复、没有记录、没有日志里的人话）。
+        // 降级成"按未补全的原文处理"即可——这与既有引用回查的纪律一致。
+        const hasQuote = result.quotedMessageId !== undefined;
+        const hasForward = (result.forwardRefs?.length ?? 0) > 0;
+        if ((hasQuote || hasForward) && isMessage(result.event)) {
           const event = result.event;
-          const quotedMessageId = result.quotedMessageId;
           this.enqueue(session, async () => {
-            this.emit(await this.withQuotedContent(session, event, quotedMessageId));
+            const enriched = await this.enrichEvent(session, event, {
+              ...(result.quotedMessageId !== undefined
+                ? { quotedMessageId: result.quotedMessageId }
+                : {}),
+              ...(result.forwardRefs !== undefined ? { forwardRefs: result.forwardRefs } : {}),
+            }).catch((error: unknown) => {
+              this.options.logger.warn('引用/转发补全失败，按原文继续处理', {
+                conversation: event.target.key,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              return event;
+            });
+            this.emit(enriched);
           });
           return;
         }
@@ -468,14 +558,22 @@ export class OnebotConnector implements BotConnector {
   }
 
   // -------------------------------------------------------------------------
-  // 引用消息补全（reply 段 → get_msg 回查）
+  // 引用 / 转发的异步补全
   // -------------------------------------------------------------------------
 
-  /** 按会话串行执行异步补全，保持事件顺序。 */
+  /**
+   * 按连接串行执行异步补全，保持事件顺序。
+   *
+   * 注意这里的 catch 是**队列完整性**的兜底，不是消息的兜底：走到这里说明
+   * 任务自身抛错（正常情况下补全失败已在 handleNormalized 里就地降级并照常
+   * emit）。所以文案不能说"该条消息按原文继续处理"——那是骗人的，排障时会被
+   * 它带偏。真要让"绝不丢消息"成为结构保证，靠的是调用点不把 emit 放进可能
+   * 抛错的路径里（见 handleNormalized 的 .catch(() => event)）。
+   */
   private enqueue(session: Session, task: () => Promise<void>): void {
     const previous = this.sessionQueues.get(session) ?? Promise.resolve();
     const next = previous.then(task, task).catch((error: unknown) => {
-      this.options.logger.warn('OneBot 事件补全失败（该条消息按原文继续处理）', {
+      this.options.logger.warn('OneBot 事件补全任务失败（该条消息可能未被投递）', {
         error: error instanceof Error ? error.message : String(error),
       });
     });
@@ -483,39 +581,274 @@ export class OnebotConnector implements BotConnector {
   }
 
   /**
-   * 用 get_msg 回查被引用的消息，把内容并成 `quote` 片段。
+   * 把一条消息的引用与转发补全成最终片段，并重算 `content`。
+   *
+   * 顺序刻意是**先转发后引用**：`forwardRefs[].index` 指的是 `event.parts` 里的
+   * 下标，先把它们就地替换掉，再把引用片段插到最前面，下标才不会错位。
+   * 渲染结果因此是"引用在前、本条正文（含转发块）在后"，与人的阅读顺序一致。
+   *
+   * 任何一步失败都只降级、绝不丢这条消息（与既有引用回查同样的纪律）。
+   */
+  private async enrichEvent(
+    session: Session,
+    event: NormalizedMessage,
+    enrichment: { quotedMessageId?: string; forwardRefs?: ForwardRef[] },
+  ): Promise<NormalizedMessage> {
+    let parts: MessagePart[] = event.parts ?? [];
+    // 预算在整个事件内共享：引用里的转发与消息本身的转发消耗同一份额度
+    const budget = this.newForwardBudget();
+
+    if (enrichment.forwardRefs !== undefined && enrichment.forwardRefs.length > 0) {
+      parts = await this.resolveForwardRefs(session, parts, enrichment.forwardRefs, 0, budget);
+    }
+
+    if (enrichment.quotedMessageId !== undefined) {
+      const quote = await this.fetchQuote(
+        session,
+        enrichment.quotedMessageId,
+        event.target.key,
+        budget,
+      );
+      if (quote !== undefined) parts = [quote, ...parts];
+    }
+
+    return { ...event, parts, content: flattenParts(parts) };
+  }
+
+  /**
+   * 用 get_msg 回查被引用的消息，拼成 `quote` 片段。
    *
    * 失败一律降级：拿不到引用内容就按原消息处理（并记 warn），
    * 绝不因为"引用查不到"把用户这条消息丢掉。
    */
-  private async withQuotedContent(
+  private async fetchQuote(
     session: Session,
-    event: NormalizedMessage,
     quotedMessageId: string,
-  ): Promise<NormalizedMessage> {
+    conversationKey: string,
+    budget: ForwardBudget,
+  ): Promise<MessageQuotePart | undefined> {
     const numericId = Number(quotedMessageId);
     try {
       const data = await this.callAction(session, 'get_msg', {
         message_id: Number.isFinite(numericId) ? numericId : quotedMessageId,
       });
-      const parts = quotedPartsFromGetMsg(data, session.selfId ?? 0);
-      if (parts.length === 0) return event;
+      const extracted = quotedContentFromGetMsg(data, session.selfId ?? 0);
+      if (extracted.parts.length === 0) return undefined;
+      // 被引用的消息自己可能是一条合并转发：一并展开（深度从 1 起算，
+      // 因为它已经在"引用"这层结构里了；预算仍与消息本身共享）
+      const parts =
+        extracted.forwardRefs !== undefined && extracted.forwardRefs.length > 0
+          ? await this.resolveForwardRefs(session, extracted.parts, extracted.forwardRefs, 1, budget)
+          : extracted.parts;
       const author = quotedAuthorFromGetMsg(data);
-      const quote: MessageQuotePart = {
+      return {
         type: 'quote',
         ...(author !== undefined ? { author } : {}),
         parts,
       };
-      const merged = [quote, ...(event.parts ?? [])];
-      return { ...event, parts: merged, content: flattenParts(merged) };
     } catch (error) {
       this.options.logger.warn('回查引用消息失败（按未引用处理）', {
         quotedMessageId,
-        conversation: event.target.key,
+        conversation: conversationKey,
         error: error instanceof Error ? error.message : String(error),
       });
-      return event;
+      return undefined;
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // 转发消息块（forward 段 → get_forward_msg 回查）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 就地把 `parts` 里的转发占位片段换成展开结果。
+   *
+   * 替换而非插入：归一化阶段已经把占位片段放在正确的位置（下标记在 ForwardRef 里），
+   * 这样"转发块出现在消息的第几段"这个信息不会在补全后丢失。
+   */
+  private async resolveForwardRefs(
+    session: Session,
+    parts: readonly MessagePart[],
+    refs: readonly ForwardRef[],
+    depth: number,
+    budget: ForwardBudget,
+  ): Promise<MessagePart[]> {
+    const resolved = [...parts];
+    for (const ref of refs) {
+      const placeholder = resolved[ref.index];
+      if (placeholder === undefined || placeholder.type !== 'forward') continue;
+      resolved[ref.index] = await this.expandForward(session, ref.id, depth, budget);
+    }
+    return resolved;
+  }
+
+  /**
+   * 展开一个转发块。
+   *
+   * 每个**顶层**转发块一份预算（`newForwardBudget`），嵌套块共用外层预算——
+   * "这个块最多读 20 条"是维护者能理解、能预测的语义；按块各自重置会让
+   * 嵌套转发把总量放大成 maxNodes^depth。
+   */
+  private async expandForward(
+    session: Session,
+    forwardId: string,
+    depth: number,
+    budget: ForwardBudget,
+  ): Promise<MessagePart> {
+    const config = this.options.forward;
+    // 关掉 / 没配：保持既有行为（`[聊天记录]`），不做任何网络请求
+    if (config === undefined || !config.enabled) return { type: 'text', text: '[聊天记录]' };
+    // `depth` 只统计**嵌套**层数：最外层恒为 0 且永远展开，maxDepth=0 表示
+    // "只展开最外层"而不是"什么都不展开"（后者会让这个取值毫无意义）。
+    if (depth > config.maxDepth) {
+      this.reportForward(depth, { ok: false, nodes: 0 });
+      return { type: 'text', text: '[转发消息（嵌套层级过深，未展开）]' };
+    }
+    if (budget.nodesLeft <= 0 || budget.charsLeft <= 0) {
+      this.reportForward(depth, { ok: false, nodes: 0 });
+      return { type: 'text', text: '[转发消息（超出本次读取上限，未展开）]' };
+    }
+    // 回查次数与总耗时是独立于条目数的两道闸（见 ForwardBudget 的说明）
+    if (budget.lookupsLeft <= 0 || this.now() >= budget.expiresAt) {
+      this.reportForward(depth, { ok: false, nodes: 0 });
+      return { type: 'text', text: '[转发消息（超出本次读取上限，未展开）]' };
+    }
+    budget.lookupsLeft -= 1;
+
+    const data = await this.getForwardData(session, forwardId);
+    if (data === undefined) {
+      this.reportForward(depth, { ok: false, nodes: 0 });
+      this.options.logger.warn('回查转发消息失败（降级为 [聊天记录]）', { forwardId });
+      return { type: 'text', text: '[聊天记录]' };
+    }
+    const nodes = parseForwardNodes(data, session.selfId ?? 0);
+    if (nodes.length === 0) {
+      this.reportForward(depth, { ok: false, nodes: 0 });
+      return { type: 'text', text: '[聊天记录]' };
+    }
+
+    const outParts: MessagePart[] = [];
+    let truncated = nodes.length > budget.nodesLeft;
+    for (const node of nodes) {
+      if (budget.nodesLeft <= 0) {
+        truncated = true;
+        break;
+      }
+      budget.nodesLeft -= 1;
+
+      // 嵌套转发：先就地展开，再整体压平成这一条发言的文本
+      let nodeParts = node.parts;
+      if (node.forwardRefs !== undefined && node.forwardRefs.length > 0) {
+        nodeParts = await this.resolveForwardRefs(session, nodeParts, node.forwardRefs, depth + 1, budget);
+      }
+
+      let text = flattenParts(nodeParts).replace(/\s*\n\s*/g, ' ').trim();
+      if (text === '') continue;
+      if (text.length > config.maxNodeChars) {
+        text = `${text.slice(0, config.maxNodeChars)}…`;
+      }
+      if (text.length > budget.charsLeft) {
+        truncated = true;
+        break;
+      }
+      budget.charsLeft -= text.length;
+
+      // 每条发言一个 text 片段（发言人前缀烘进去）：渲染层按"一个元素 = 一条"编号
+      outParts.push({ type: 'text', text: node.author !== undefined ? `${node.author}: ${text}` : text });
+    }
+
+    const part: MessageForwardPart = {
+      type: 'forward',
+      nodeCount: nodes.length,
+      ...(truncated ? { truncated: true } : {}),
+      parts: outParts,
+    };
+    this.reportForward(depth, { ok: true, nodes: outParts.length });
+    this.options.logger.debug('转发块已展开', {
+      forwardId,
+      declared: nodes.length,
+      expanded: outParts.length,
+      truncated,
+    });
+    return part;
+  }
+
+  /**
+   * 取 get_forward_msg 的原始响应，带 LRU + TTL 缓存。
+   *
+   * 同一条转发在群里被反复转是常态（"你看看这个"），缓存把重复成本降为 0。
+   * 缓存的是**原始响应**而不是解析结果：解析很便宜，而且每次解析都会产出
+   * 一份独立的嵌套引用下标，复用解析结果反而容易在下标上出岔子。
+   */
+  private async getForwardData(session: Session, forwardId: string): Promise<unknown | undefined> {
+    const now = this.now();
+    // 缓存键必须带账号：forward id 多数实现里就是消息 id（数字），两个 QQ 账号
+    // 撞号是常态；只按 id 缓存会让 B 号群里显示 A 号的转发内容。
+    const cacheKey = `${session.selfId ?? '?'}:${forwardId}`;
+    const cached = this.forwardCache.get(cacheKey);
+    if (cached !== undefined) {
+      if (now - cached.at < FORWARD_CACHE_TTL_MS) {
+        // 命中即刷新插入顺序（Map 的迭代顺序即 LRU 顺序）
+        this.forwardCache.delete(cacheKey);
+        this.forwardCache.set(cacheKey, cached);
+        return cached.data;
+      }
+      this.forwardCache.delete(cacheKey);
+    }
+
+    // 参数名在实现之间不一致：NapCat 用 id，go-cqhttp 用 message_id。
+    // 一次请求同时带上两个，避免"先试一个再试另一个"把失败路径的延迟翻倍。
+    const numericId = Number(forwardId);
+    const params: Record<string, unknown> = {
+      id: forwardId,
+      message_id: Number.isFinite(numericId) ? numericId : forwardId,
+    };
+
+    const timeoutMs = this.options.forward?.timeoutMs;
+    try {
+      const data =
+        timeoutMs !== undefined
+          ? await this.callAction(session, 'get_forward_msg', params, timeoutMs)
+          : await this.callAction(session, 'get_forward_msg', params);
+      if (estimateSize(data) <= FORWARD_CACHE_MAX_ENTRY_BYTES) {
+        this.forwardCache.set(cacheKey, { at: now, data });
+      }
+      while (this.forwardCache.size > FORWARD_CACHE_MAX) {
+        const oldest = this.forwardCache.keys().next();
+        if (oldest.done === true) break;
+        this.forwardCache.delete(oldest.value);
+      }
+      return data;
+    } catch (error) {
+      this.options.logger.debug('get_forward_msg 失败', {
+        forwardId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * 一条消息的转发读取预算（**每条消息一份**，多个转发段共享）。
+   *
+   * 共享而不是每段一份：一条消息里出现两个转发段时，读者看到的仍是同一轮上下文，
+   * 没有理由给它双倍预算；共享也让"一次用户消息最多读多少"这件事可预测。
+   */
+  private newForwardBudget(): ForwardBudget {
+    const config = this.options.forward;
+    const maxNodes = config?.maxNodes ?? 0;
+    // 回查次数按条目数给额度（+2 给嵌套），再按 maxDepth 收一次上限：
+    // 一条 node 里的 forward 段不占条目预算，这一维就是为它准备的。
+    const maxLookups = maxNodes + 2;
+    const timeoutMs = config?.timeoutMs ?? 10_000;
+    return {
+      nodesLeft: maxNodes,
+      charsLeft: config?.maxChars ?? 0,
+      lookupsLeft: maxLookups,
+      // 整条消息的回查墙钟上限：按"两次回查的量级"给。它同时是对
+      // "每连接串行队列被一条恶意消息堵住"的兜底（另见 ForwardBudget 注释）。
+      expiresAt: this.now() + timeoutMs * 2,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -540,6 +873,7 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     action: string,
     params: Record<string, unknown>,
+    timeoutMs?: number,
   ): Promise<unknown> {
     if (session.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new OnebotActionError('连接不可用（非 OPEN 状态）'));
@@ -549,7 +883,7 @@ export class OnebotConnector implements BotConnector {
       const timer = setTimeout(() => {
         this.pending.delete(echo);
         reject(new OnebotActionError(`动作 ${action} 等待响应超时`));
-      }, this.options.actionTimeoutMs ?? 15_000);
+      }, timeoutMs ?? this.options.actionTimeoutMs ?? 15_000);
       timer.unref?.();
       this.pending.set(echo, { session, resolve, reject, timer });
       session.socket.send(JSON.stringify({ action, params, echo }), (error) => {
@@ -608,34 +942,135 @@ export class OnebotConnector implements BotConnector {
    * 任何一步失败都返回 undefined（由编排层降级成文字说明），绝不抛错打断整轮。
    */
   async fetchMedia(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined> {
-    if (media.url !== undefined) {
+    // 图片与视频：上报的 url 是可靠快路径（过期了再由动作刷新），照旧先试它
+    if (media.kind !== 'file' && media.url !== undefined) {
       const direct = await this.httpGet(media.url, options);
       if (direct !== undefined) return direct;
     }
-    if (media.fileId === undefined) return undefined;
+    if (media.fileId === undefined) {
+      return media.url !== undefined ? this.httpGet(media.url, options) : undefined;
+    }
+
+    // **必须用收到这条消息的那个连接**：会话上下文里的群号要发给确实在该群里的
+    // 账号（多连接下 pickAnySession 可能选错号——轻则申请失败、重则用错凭据）。
+    // 群/私聊会话键的构造归 normalize.ts 所有，这里复用它的函数而不是自己拼串。
+    const session = this.pickSessionForMedia(media);
+    if (session === undefined) {
+      return media.url !== undefined ? this.httpGet(media.url, options) : undefined;
+    }
+
+    // 文件与图片的取件路径不同，且**顺序也要反过来**：NapCat 明确说明"非视频/
+    // 图片/音频的普通文件，其链接受下载次数影响"。上报的 url 可能是已过期但仍
+    // 返回 HTTP 200 的提示页——那样会把一页 HTML 当成 PDF 存下来再"解析失败"，
+    // 而不是刷新直链。所以有 file_id + 会话上下文时以动作申请到的直链为准。
+    if (media.kind === 'file') {
+      const refreshed = await this.fetchViaFileUrl(session, media, options);
+      if (refreshed !== undefined) return refreshed;
+      if (media.url !== undefined) {
+        const direct = await this.httpGet(media.url, options);
+        if (direct !== undefined) return direct;
+      }
+      return this.fetchViaFileAction(session, 'get_file', media.fileId, options);
+    }
 
     // get_file：NapCat 扩展动作（file_id 或 file 二选一），可能直接给 base64。
-    const viaGetFile = await this.fetchViaFileAction('get_file', media.fileId, options);
+    const viaGetFile = await this.fetchViaFileAction(session, 'get_file', media.fileId, options);
     if (viaGetFile !== undefined) return viaGetFile;
     // get_image：OneBot 标准动作，NapCat 返回刷新后的 url 或本地路径。
-    return this.fetchViaFileAction('get_image', media.fileId, options);
+    return this.fetchViaFileAction(session, 'get_image', media.fileId, options);
+  }
+
+  /**
+   * 上报转发展开结果。
+   *
+   * 两条纪律：
+   *   - **回调抛错绝不能影响消息处理**：onForward 是外部注入的统计钩子，
+   *     它出问题不该让用户这条消息消失（历史上这类"钩子吃掉主流程"的错最难查）。
+   *   - **只上报顶层块**：嵌套块的条目随后会并进父块的渲染文本，两边都报会让
+   *     `forwardNodesInlined` 重复计数，而 RUNBOOK 拿它当诊断依据。
+   */
+  private reportForward(depth: number, info: { ok: boolean; nodes: number }): void {
+    if (depth !== 0) return;
+    try {
+      this.options.onForward?.(info);
+    } catch (error) {
+      this.options.logger.debug('onForward 回调抛错（已忽略）', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * 按会话上下文挑连接：群文件对应 `ob11:g<群号>`，私聊文件对应 `ob11:u<QQ号>`。
+   * 上下文的键由 normalize.ts 的 target 构造函数给出（并保持两者一致）。
+   * `pickSession` 自身有"退到任意已就绪连接"的兜底，所以这里不会抛错。
+   */
+  private pickSessionForMedia(media: RemoteMedia): Session | undefined {
+    const groupId = media.context?.groupId;
+    const userId = media.context?.userId;
+    const key =
+      groupId !== undefined
+        ? onebotGroupTarget(groupId).key
+        : userId !== undefined
+          ? onebotC2cTarget(userId).key
+          : undefined;
+    // 一个连接都没有时 pickSession/pickAnySession 会抛错；fetchMedia 的契约是
+    // "失败返回 undefined，绝不抛错打断整轮"，所以在这里就把它收住。
+    try {
+      return key !== undefined ? this.pickSession(key) : this.pickAnySession();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 重新申请文件直链：群文件必须带 `group`，私聊文件只要 `file_id`。
+   *
+   * 缺会话上下文（拿不到群号）时**不猜**——宁可退回 get_file，也不要对错误的群
+   * 申请直链。拿不到直链一律返回 undefined，由调用方决定降级。
+   */
+  private async fetchViaFileUrl(
+    session: Session,
+    media: RemoteMedia,
+    options: MediaFetchOptions,
+  ): Promise<MediaBytes | undefined> {
+    const fileId = media.fileId;
+    if (fileId === undefined) return undefined;
+
+    const groupId = media.context?.groupId;
+    if (groupId === undefined && media.context?.userId === undefined) return undefined;
+    const action = groupId !== undefined ? 'get_group_file_url' : 'get_private_file_url';
+    const params =
+      groupId !== undefined ? { file_id: fileId, group: groupId } : { file_id: fileId };
+
+    try {
+      const result = await this.callAction(session, action, params);
+      if (typeof result !== 'object' || result === null) return undefined;
+      const url = (result as Record<string, unknown>)['url'];
+      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return undefined;
+      return await this.httpGet(url, options);
+    } catch (error) {
+      this.options.logger.debug(`${action} 申请直链失败（退回 get_file）`, {
+        fileId,
+        groupId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
   }
 
   /** 经 get_file / get_image 回查取字节；动作不支持或返回不可用时返回 undefined。 */
   private async fetchViaFileAction(
+    session: Session,
     action: 'get_file' | 'get_image',
     fileId: string,
     options: MediaFetchOptions,
   ): Promise<MediaBytes | undefined> {
-    let session: Session;
-    try {
-      session = this.pickAnySession();
-    } catch {
-      return undefined;
-    }
     let data: Record<string, unknown>;
     try {
-      const result = await this.callAction(session, action, { file: fileId });
+      // file_id 与 file 在实现之间二选一（NapCat 文档：任意一个用于标记文件），
+      // 一次都带上比"先试一个再试另一个"少一次失败往返。
+      const result = await this.callAction(session, action, { file: fileId, file_id: fileId });
       if (typeof result !== 'object' || result === null) return undefined;
       data = result as Record<string, unknown>;
     } catch (error) {

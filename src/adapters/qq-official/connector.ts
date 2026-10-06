@@ -24,6 +24,7 @@ import type {
   ReplyContext,
   ReplyPolicy,
 } from '../../core/connector.js';
+import type { ForwardConfig } from '../../config.js';
 import type { Logger } from '../../logger.js';
 import { QqApi } from './api.js';
 import {
@@ -54,6 +55,14 @@ export interface QqOfficialConnectorOptions {
   /** 回复策略：群聊与单聊分开（官方单聊上限低于群聊） */
   groupPolicy: ReplyPolicy;
   c2cPolicy: ReplyPolicy;
+  /**
+   * 转发块（聊天记录形态的 msg_elements）展开配额（config.attachments.forward）。
+   * 官方接收侧只定义了 0/3/103 三种 message_type，转发能力按"尽力而为 + 实测"
+   * 定位，见 docs/FORWARD-FILE-INGRESS-PLAN.md §3.2。
+   */
+  forward?: ForwardConfig;
+  /** 转发块展开结果上报（/metrics 计数） */
+  onForward?: (info: { ok: boolean; nodes: number }) => void;
   logger: Logger;
   /** 测试注入 */
   webSocketFactory?: WebSocketFactory;
@@ -89,6 +98,8 @@ export class QqOfficialConnector implements BotConnector {
       ...(options.webSocketFactory !== undefined
         ? { webSocketFactory: options.webSocketFactory }
         : {}),
+      ...(options.forward !== undefined ? { forward: options.forward } : {}),
+      ...(options.onForward !== undefined ? { onForward: options.onForward } : {}),
     });
   }
 

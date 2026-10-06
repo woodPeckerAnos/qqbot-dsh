@@ -57,7 +57,12 @@ export interface ConversationTarget {
  * 关键设计：
  *   - 片段里**只放引用信息**（url / 文本），不放字节。下载字节是 IO，放在 turn 期
  *     做（见 dsh/media.ts），这样被闸拦掉的消息不会白白下载图片；
- *   - `quote` 是递归结构：引用消息自己也可能带图片（官方 msg_elements 支持嵌套）。
+ *   - `quote` 是递归结构：引用消息自己也可能带图片（官方 msg_elements 支持嵌套）；
+ *   - `forward` 同样是递归结构（转发块里还能再转发），但它的展开是**连接器期**做
+ *     的（见 adapters/onebot/connector.ts）：转发内容必须进 `content`，否则对话记录、
+ *     冷启动回放、话题判定、命令匹配会集体失明（详见 docs/FORWARD-FILE-INGRESS-PLAN.md §4）。
+ *     这不是"字节提前下载"——它取的是文本，且有三道闸（触发前置、LRU 缓存、四重上限）
+ *     把代价压回；字节仍然一律等 turn 期。
  */
 export interface MessageTextPart {
   type: 'text';
@@ -100,13 +105,41 @@ export interface MessageVoicePart {
   filename?: string;
 }
 
-/** 其他附件：视频 / 文件等。模型不吃这些，渲染成一行文字说明。 */
+/** 其他附件：视频 / 文件等。视频等渲染成一行文字说明；文件会被下载解析（见 §10）。 */
 export interface MessageMediaPart {
   type: 'media';
   mediaKind: 'video' | 'file' | 'unknown';
   url?: string;
+  /**
+   * 平台侧文件标识（OneBot `file` 段的 `file_id` / `file` 原值）。
+   *
+   * 为什么必要：NapCat 的普通文件链接**受下载次数限制**，上报里的 url 一旦失效
+   * 就要靠这个 id 重新申请直链（`get_group_file_url` / `get_private_file_url`）。
+   * 与图片同构：url 是快路径，fileId 是可靠路径。
+   */
+  fileId?: string;
   filename?: string;
   sizeBytes?: number;
+}
+
+/**
+ * 转发消息块（合并转发 / 聊天记录）：**一捆**别人的发言。
+ *
+ * 为什么不复用 `MessageQuotePart`：引用是"我回复的那一条"，转发是"别人聊天记录
+ * 的一捆"。两者在模型眼里是完全不同的东西——引用是对话的直接上下文，转发是要被
+ * 审阅的资料。混用会让前缀渲染（`[引用 谁]`）与后续的话题判定都出现语义错位。
+ *
+ * `parts` 是递归的（转发里还能再转发），遍历一律受调用方的深度与条数上限约束。
+ */
+export interface MessageForwardPart {
+  type: 'forward';
+  /** 转发块标题（平台给出时才有；多数实现不给，不要为它额外发请求） */
+  title?: string;
+  /** 平台侧声明的总条数；未知时不写（渲染成"共 ? 条"很别扭，不如不写） */
+  nodeCount?: number;
+  /** 是否因条数/字符/深度上限被截断（渲染时在尾部显式说明） */
+  truncated?: boolean;
+  parts: MessagePart[];
 }
 
 /**
@@ -127,10 +160,28 @@ export type MessagePart =
   | MessageImagePart
   | MessageVoicePart
   | MessageMediaPart
-  | MessageQuotePart;
+  | MessageQuotePart
+  | MessageForwardPart;
 
 /** 需要平台侧取字节的远端媒体（fetchMedia 的入参） */
 export interface RemoteMedia {
+  /**
+   * 取字节的策略差异（默认 `image`，兼容既有调用方）。
+   *
+   * 图片与文件的取件路径在平台上完全不同：图片走 `get_image` / `get_file`，
+   * 而群文件必须走 `get_group_file_url`（见 fetchMedia 的实现说明）。
+   * 与其让适配器去猜，不如由调用方明说。
+   */
+  kind?: 'image' | 'file' | 'voice';
+  /**
+   * 会话上下文：平台侧取件的**寻址凭据**。
+   *
+   * OneBot 的群文件直链申请必须带群号（`get_group_file_url` 的 `group` 参数），
+   * 私聊文件只需 file_id。它看着不像"平台无关"的字段，但和 url 同级——
+   * 没有它就取不到这个字节。替代方案是让连接器自己维护"这个 fileId 属于哪个群"
+   * 的跨请求状态表，比多两个可选字段糟得多。
+   */
+  context?: { groupId?: string; userId?: string };
   /** http/https 下载地址；可能缺失（见 MessageImagePart.url） */
   url?: string;
   /** 平台侧文件标识；url 缺失或过期时适配器用它回查 */

@@ -230,3 +230,19 @@ describe('loadConfigFile', () => {
     expect(() => parseConfigFileText(text, 'qqbot.yml')).not.toThrow();
   });
 });
+
+describe('嵌套子节的未知键', () => {
+  it('attachments 下未注册的子节在解析期直接报错', () => {
+    // NESTED_SECTIONS 的重构把"子节必须注册"变成了表驱动——这条守住它：
+    // 少注册一个子节，该键会被当成未知项，而不是静默忽略（"改了没生效"最难查）。
+    expect(() => parseConfigFileText('attachments:\n  forward2:\n    maxNodes: 3\n')).toThrow(
+      ConfigError,
+    );
+    expect(() => parseConfigFileText('attachments:\n  files:\n    noSuchKey: 1\n')).toThrow(
+      ConfigError,
+    );
+    // 已注册的子节正常通过
+    const file = parseConfigFileText('attachments:\n  forward:\n    maxNodes: 3\n');
+    expect(file.attachments?.forward?.maxNodes).toBe(3);
+  });
+});

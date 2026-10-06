@@ -34,7 +34,105 @@ describe('loadConfig', () => {
       maxImages: 4,
       maxImageBytes: 8 * 1024 * 1024,
       downloadTimeoutMs: 15_000,
+      forward: {
+        enabled: true,
+        maxNodes: 20,
+        maxNodeChars: 500,
+        maxChars: 4_000,
+        maxDepth: 2,
+        timeoutMs: 10_000,
+      },
+      files: {
+        enabled: true,
+        maxFiles: 2,
+        maxFileBytes: 16 * 1024 * 1024,
+        maxExtractChars: 20_000,
+        maxPdfPages: 30,
+        extractTimeoutMs: 10_000,
+        saveToInbox: true,
+        inboxDir: 'inbox',
+        retentionDays: 7,
+        maxInboxBytes: 200 * 1024 * 1024,
+        extractExtensions: ['pdf', 'txt', 'md', 'csv', 'json', 'yaml', 'yml', 'log', 'xml', 'html'],
+      },
     });
+  });
+
+  it('转发块与文件的配额可被 env 与配置文件覆盖', () => {
+    const fromEnv = loadConfig({
+      ...baseEnv,
+      BOT_ATTACHMENT_FORWARD_ENABLED: 'false',
+      BOT_ATTACHMENT_FORWARD_MAX_NODES: '5',
+      BOT_ATTACHMENT_FORWARD_MAX_DEPTH: '0',
+      BOT_ATTACHMENT_FILE_MAX_FILES: '0',
+      BOT_ATTACHMENT_FILE_SAVE: 'false',
+      BOT_ATTACHMENT_INBOX_DIR: 'uploads',
+      BOT_ATTACHMENT_INBOX_MAX_MB: '10',
+      BOT_ATTACHMENT_FILE_EXTENSIONS: 'pdf,docx',
+    });
+    expect(fromEnv.attachments.forward).toMatchObject({
+      enabled: false,
+      maxNodes: 5,
+      maxDepth: 0,
+    });
+    expect(fromEnv.attachments.files).toMatchObject({
+      maxFiles: 0,
+      saveToInbox: false,
+      inboxDir: 'uploads',
+      maxInboxBytes: 10 * 1024 * 1024,
+      extractExtensions: ['pdf', 'docx'],
+    });
+
+    const fromFile = loadConfig(baseEnv, {
+      attachments: {
+        forward: { maxChars: 1_000 },
+        files: { maxPdfPages: 5, extractExtensions: ['PDF', '.TXT'] },
+      },
+    });
+    expect(fromFile.attachments.forward.maxChars).toBe(1_000);
+    // 扩展名归一化：大写去掉、前导点去掉
+    expect(fromFile.attachments.files.extractExtensions).toEqual(['pdf', 'txt']);
+    expect(fromFile.attachments.files.maxPdfPages).toBe(5);
+
+    expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_FORWARD_MAX_NODES: '0' })).toThrow(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_FILE_MAX_CHARS: '10' })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('会拼进工作区路径的目录名：空串 / 分隔符 / 点目录一律启动期拒绝', () => {
+    // 空串是 YAML 里最常见的"改配置忘了填"：'' 不是 nullish，会一路穿过
+    // `?? fallback`，而 path.join(ws, '') 恰好等于工作区根——落盘落在工作区根、
+    // 清理把 AGENTS.md 与 agent 产物当垃圾删。outboxDir 同理（且会把文件发回用户）。
+    // 配置文件里的空串是真正的洞：'' 不是 nullish，会穿过 `?? fallback`
+    expect(() =>
+      loadConfig(baseEnv, { attachments: { files: { inboxDir: '' } } }),
+    ).toThrow(ConfigError);
+    expect(() => loadConfig(baseEnv, { media: { outboxDir: '' } })).toThrow(ConfigError);
+    // env 里的纯空白视同"没设"（envRaw 会 trim），回落到默认值——这是既有语义
+    expect(loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: '   ' }).attachments.files.inboxDir).toBe(
+      'inbox',
+    );
+    expect(loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: '   ' }).media.outboxDir).toBe('outbox');
+    expect(() => loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: 'a/b' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: '.' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: '..' })).toThrow(ConfigError);
+  });
+
+  it('inboxDir 必须是纯目录名，且不能与 media.outboxDir 同名', () => {
+    // 同名的后果：用户发来的文件被 egress 立刻回发给自己
+    expect(() =>
+      loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: 'outbox' }),
+    ).toThrow(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: 'a/b' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: '..' })).toThrow(ConfigError);
+    // 改名后同名冲突随之消失
+    expect(
+      loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: 'outbox', BOT_MEDIA_OUTBOX_DIR: 'deliverables' })
+        .attachments.files.inboxDir,
+    ).toBe('outbox');
   });
 
   it('富媒体参数可被 env 与配置文件覆盖，越界值在启动期被拒', () => {
