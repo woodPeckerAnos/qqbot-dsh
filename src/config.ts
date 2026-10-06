@@ -24,7 +24,7 @@ import { Intent, DEFAULT_INTENTS, describeIntents } from './adapters/qq-official
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import { ConfigError } from './config-error.js';
-import type { FileConfig } from './config-file.js';
+import type { FileConfig, ProactiveFileConfig } from './config-file.js';
 import {
   formatWindows,
   isValidDateString,
@@ -190,6 +190,30 @@ export interface Config {
   media: MediaConfig;
   health: {
     port: number;
+  };
+  /**
+   * 主动发言（旁听 → 判定 → 主动开口）的配置面。
+   *
+   * 场景清单与判据见 `src/pipeline/proactive/interests/SCENES.md`；
+   * 兴趣池文件（场景 5）另存，见 `proactive.interestsFile`。
+   * 注意：`enabled` 是**主动发言的总开关**，缺省 false（fail-closed）。
+   */
+  proactive: {
+    enabled: boolean;
+    /** 兴趣池总开关（BOT_PROACTIVE_INTERESTS / proactive.interestsEnabled，默认 true） */
+    interestsEnabled: boolean;
+    /** 兴趣池文件路径（QQ_INTERESTS_FILE / proactive.interestsFile，默认 ./interests.yml） */
+    interestsFile: string;
+    /** 兴趣池是否真的读到了文件（health / 排障用：false + enabled = 配置指错了） */
+    interestsLoaded: boolean;
+    /** 兴趣池条目数（health 用） */
+    interestsCount: number;
+    /** bot 在本群的别名（BOT_BOT_ALIASES / proactive.botAliases），场景 4 指代检测用 */
+    botAliases: string[];
+    /** 话题滚动周期（条）：每多少条旁听消息收敛一次，场景 2/5 的入口 */
+    topicRollMessages: number;
+    /** 话题滚动周期（毫秒）：无仲裁时的兜底收敛间隔 */
+    topicRollMs: number;
   };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
@@ -397,6 +421,61 @@ function pickEnum<T extends string>(
     return fileValue as T;
   }
   return fallback;
+}
+
+/**
+ * 主动发言配置（`Config.proactive`）。
+ *
+ * 这里**只做配置合并与形状校验**：兴趣池文件的内容校验归
+ * `pipeline/proactive/interests/pool.ts`（它有自己的 schema 与报错文案），
+ * 由组装层在需要时读取——本函数不碰磁盘。
+ *
+ * 默认值刻意保守：
+ *   - `enabled` 缺省 **false**（fail-closed，不配就不主动开口）；
+ *   - `topicRollMessages` 30（比既有采样口径 `evaluateEvery=6` 更保守：
+ *     弱信号场景每 30 条才有一次机会，见架构方案 §6 的成本模型）；
+ *   - `topicRollMs` 5 分钟（消息少但话题在延续时的兜底收敛）。
+ */
+function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): Config['proactive'] {
+  const aliases = pickList(env, 'BOT_BOT_ALIASES', file?.botAliases);
+  if (aliases.length > 5) {
+    throw new ConfigError(`bot 别名最多 5 个，收到 ${aliases.length} 个`, [
+      'BOT_BOT_ALIASES / proactive.botAliases；别名会进判定 prompt，太多会稀释判据',
+    ]);
+  }
+  for (const alias of aliases) {
+    if (alias.length < 2) {
+      throw new ConfigError(`bot 别名「${alias}」太短（少于 2 字）`, [
+        '单字别名会在群里到处误命中（例如"助"），宁可用完整叫法',
+      ]);
+    }
+  }
+
+  return {
+    enabled: pickBool(env, 'BOT_PROACTIVE_ENABLED', file?.enabled, false),
+    interestsEnabled: pickBool(env, 'BOT_PROACTIVE_INTERESTS', file?.interestsEnabled, true),
+    interestsFile: pickString(env, 'QQ_INTERESTS_FILE', file?.interestsFile, 'interests.yml'),
+    // 真实取值由组装层读文件后回填（见 main.ts）；配置层只知道路径。
+    interestsLoaded: false,
+    interestsCount: 0,
+    botAliases: aliases,
+    topicRollMessages: pickInt(
+      env,
+      'BOT_TOPIC_ROLL_MESSAGES',
+      file?.topicRollMessages,
+      30,
+      { min: 3, max: 500 },
+      'proactive.topicRollMessages',
+    ),
+    topicRollMs: pickInt(
+      env,
+      'BOT_TOPIC_ROLL_MS',
+      file?.topicRollMs,
+      300_000,
+      { min: 10_000, max: 3_600_000 },
+      'proactive.topicRollMs',
+    ),
+  };
 }
 
 /** 列表：env 用逗号分隔，配置文件用 YAML 数组；env 非空时以 env 为准。 */
@@ -758,6 +837,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     health: {
       port: pickInt(env, 'QQ_HEALTH_PORT', file.health?.port, 8080, { min: 0, max: 65_535 }, 'health.port'),
     },
+    proactive: buildProactiveConfig(env, file.proactive),
     logLevel: pickEnum(env, 'QQ_LOG_LEVEL', file.logLevel, ['debug', 'info', 'warn', 'error'] as const, 'info', 'logLevel'),
   };
 }
@@ -809,6 +889,20 @@ export function describeConfig(config: Config): Record<string, unknown> {
     },
     paths: config.paths,
     adminCount: config.admins.length,
+    proactive: {
+      enabled: config.proactive.enabled,
+      interests: {
+        enabled: config.proactive.interestsEnabled,
+        file: config.proactive.interestsFile,
+        loaded: config.proactive.interestsLoaded,
+        count: config.proactive.interestsCount,
+      },
+      botAliases: config.proactive.botAliases,
+      topicRoll: {
+        messages: config.proactive.topicRollMessages,
+        ms: config.proactive.topicRollMs,
+      },
+    },
     attachments: config.attachments,
     media: {
       enabled: config.media.enabled,

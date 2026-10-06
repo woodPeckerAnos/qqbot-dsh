@@ -11,6 +11,7 @@
  * `precheck` 里：没人理是会话级事实，写进某个场景会让别的场景绕过它。
  */
 
+import type { InterestPool } from '../interests/pool.js';
 import {
   sceneOrder,
   type SceneCandidate,
@@ -160,6 +161,34 @@ export function getScene(id: SceneId): SceneDefinition | undefined {
 /** 某触发面下参与的场景（弱信号场景因此不会被每条消息惊动）。 */
 export function scenesForTrigger(trigger: SceneTrigger): readonly SceneDefinition[] {
   return SCENE_REGISTRY.filter((scene) => scene.triggers.includes(trigger));
+}
+
+// ---------------------------------------------------------------------------
+// 组装：把"会自动填"的字段填好（避免调用方传一个恒为空的列表）
+// ---------------------------------------------------------------------------
+
+/**
+ * 组装一次评估的证据：把**能从运行时自动得到**的两个字段填好——
+ *   - `matchedInterestIds`：用兴趣池匹配本轮文本（命中才进判定，省 LLM 调用）；
+ *   - `botAliases`：来自配置，指代检测用。
+ *
+ * 存在的理由：这两个字段曾经是调用方手填的，而"手填"在实践中的结果是
+ * **永远是空列表**——场景 5 于是永远不会触发，而且没有任何报错。
+ * 现在它们由本函数从「兴趣池 + 配置」推导，调用方不需要（也不应该）知道细节。
+ */
+export function buildSceneEvidence(input: {
+  evidence: Omit<SceneEvidence, 'matchedInterestIds' | 'botAliases'>;
+  interests?: InterestPool;
+  botAliases?: readonly string[];
+  /** 匹配用的文本（缺省取本轮消息文本） */
+  text?: string;
+}): SceneEvidence {
+  const text = input.text ?? input.evidence.message?.text ?? '';
+  return {
+    ...input.evidence,
+    botAliases: input.botAliases ?? [],
+    matchedInterestIds: input.interests?.matchIds(text) ?? [],
+  };
 }
 
 // ---------------------------------------------------------------------------

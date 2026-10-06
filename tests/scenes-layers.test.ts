@@ -26,6 +26,7 @@ import {
 } from '../src/pipeline/proactive/contract.js';
 import {
   SCENE_REGISTRY,
+  buildSceneEvidence,
   collectCandidates,
   detectBotReference,
   getScene,
@@ -37,6 +38,7 @@ import {
   parseSceneVerdicts,
   renderJudgeCriteria,
 } from '../src/pipeline/proactive/judge/judge.js';
+import { parseInterestPool } from '../src/pipeline/proactive/interests/pool.js';
 import {
   DEFAULT_VETO_POLICY,
   evaluateVeto,
@@ -44,7 +46,7 @@ import {
 } from '../src/pipeline/proactive/veto/veto.js';
 
 /** 当前生效场景的**自然语言真相源**（人话版说明书）。 */
-const SCENES_DOC = '../src/pipeline/proactive/SCENES.md';
+const SCENES_DOC = '../src/pipeline/proactive/interests/SCENES.md';
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -188,6 +190,47 @@ describe('① 搜集层：本地、只判断可能、不做裁决', () => {
     expect(
       scene5?.precheck?.({ ...evidence({ matchedInterestIds: ['plotting'] }), scene: 'scene-5' }),
     ).toBeDefined();
+  });
+
+  it('验收7b：buildSceneEvidence 自动填兴趣命中与别名（避免"手填恒为空"的静默失效）', () => {
+    const pool = parseInterestPool(
+      'interests:\n  - {id: plotting, topic: 画图, keywords: [折线图]}',
+      'test.yml',
+    );
+    const built = buildSceneEvidence({
+      evidence: {
+        convKey: 'ob11:g1',
+        trigger: 'topic-roll',
+        now: 1,
+        message: { text: '这个折线图怎么画' },
+        inBotTopicWindow: false,
+        recentMessageCount: 4,
+        recentHumanCount: 1,
+        pendingQuestionCount: 0,
+        unansweredStreak: 0,
+      },
+      interests: pool,
+      botAliases: ['小助手'],
+    });
+    expect(built.matchedInterestIds).toEqual(['plotting']);
+    expect(built.botAliases).toEqual(['小助手']);
+    // 场景 5 因此真的能进判定
+    expect(collectCandidates(built).map((item) => item.scene)).toEqual(['scene-5']);
+    // 没配兴趣池 / 没配别名时是空数组（场景 5 不触发，属预期）
+    const bare = buildSceneEvidence({
+      evidence: {
+        convKey: 'ob11:g1',
+        trigger: 'topic-roll',
+        now: 1,
+        inBotTopicWindow: false,
+        recentMessageCount: 9,
+        recentHumanCount: 3,
+        pendingQuestionCount: 0,
+        unansweredStreak: 0,
+      },
+    });
+    expect(bare.matchedInterestIds).toEqual([]);
+    expect(bare.botAliases).toEqual([]);
   });
 
   it('验收7：估算权重优先取回放统计，缺省退化为先验', () => {

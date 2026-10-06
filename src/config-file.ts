@@ -99,6 +99,25 @@ export interface HealthFileConfig {
   port?: number;
 }
 
+/**
+ * 主动发言的配置面（`proactive:` 段）。
+ *
+ * `interests` 是**场景 5 兴趣池**：整份内容会进 prompt，因此文件本身另存
+ * （`proactive.interestsFile`），不塞进本配置文件——它有自己的 schema 与校验
+ * （见 `pipeline/proactive/interests/pool.ts`）。
+ */
+export interface ProactiveFileConfig {
+  enabled?: boolean;
+  interestsEnabled?: boolean;
+  interestsFile?: string;
+  /** bot 在本群的别名（场景 4 指代检测用），如 ["小助手", "助手酱"] */
+  botAliases?: string[];
+  /** 话题滚动周期：每多少条旁听消息收敛一次（场景 2/5 的入口） */
+  topicRollMessages?: number;
+  /** 话题滚动周期：多少毫秒无仲裁则收敛一次 */
+  topicRollMs?: number;
+}
+
 /** 富媒体输入配额（与平台无关，官方/OneBot 共用）。 */
 export interface AttachmentsFileConfig {
   enabled?: boolean;
@@ -156,6 +175,7 @@ export interface FileConfig {
   attachments?: AttachmentsFileConfig;
   media?: MediaFileConfig;
   health?: HealthFileConfig;
+  proactive?: ProactiveFileConfig;
   logLevel?: string;
 }
 
@@ -247,6 +267,14 @@ const OFFPEAK_SPEC: SectionSpec = {
   holidays: 'stringList',
 };
 const HEALTH_SPEC: SectionSpec = { port: 'int' };
+const PROACTIVE_SPEC: SectionSpec = {
+  enabled: 'bool',
+  interestsEnabled: 'bool',
+  interestsFile: 'string',
+  botAliases: 'stringList',
+  topicRollMessages: 'int',
+  topicRollMs: 'int',
+};
 const ATTACHMENTS_SPEC: SectionSpec = {
   enabled: 'bool',
   maxImages: 'int',
@@ -304,6 +332,7 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'attachments', field: 'attachments', spec: ATTACHMENTS_SPEC },
   { yamlKey: 'media', field: 'media', spec: MEDIA_SPEC },
   { yamlKey: 'health', field: 'health', spec: HEALTH_SPEC },
+  { yamlKey: 'proactive', field: 'proactive', spec: PROACTIVE_SPEC },
 ];
 
 /**

@@ -283,6 +283,25 @@ media:
 
 # --- 健康检查 ----------------------------------------------------------------
 # /healthz + /metrics；容器 HEALTHCHECK 探这个端口（compose 里未映射到宿主）
+# --- 主动发言（旁听 → 判定 → 主动开口）---------------------------------------
+# 环境变量前缀：BOT_PROACTIVE_* / QQ_INTERESTS_FILE
+#
+# 当前生效的场景清单与判据见 src/pipeline/proactive/interests/SCENES.md
+# （那份文件是场景的自然语言真相源；新增场景请先改它再改代码）。
+proactive:
+  enabled: false          # 总开关，默认关（fail-closed：不配就不主动开口）
+  # 兴趣池（场景 5）：整份内容会进判定 prompt，因此单独成文件、有独立 schema。
+  # 文件不存在 = 空池（合法，场景 5 不触发）；文件存在但格式错 = 启动期报错。
+  interestsEnabled: true
+  interestsFile: interests.yml
+  # bot 在本群的别名（场景 4 指代检测用）。留空 = 只认"机器人/助手"这类泛称
+  # 且必须与请求词同现，误命中率更低。
+  botAliases: []
+  # 话题滚动周期（场景 2/5 的入口）：每多少条旁听消息、或多久没仲裁，
+  # 收敛一次交给判定。默认比既有采样口径保守（宁缺勿滥）。
+  topicRollMessages: 30
+  topicRollMs: 300000
+
 health:
   port: 8080
 

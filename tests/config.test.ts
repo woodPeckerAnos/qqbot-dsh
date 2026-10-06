@@ -153,6 +153,62 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_BYTES: '10' })).toThrow(ConfigError);
   });
 
+  it('主动发言：默认关（fail-closed），兴趣池路径与滚动周期可被 env / 文件覆盖', () => {
+    const bare = loadConfig(baseEnv);
+    expect(bare.proactive.enabled).toBe(false);
+    expect(bare.proactive.interestsEnabled).toBe(true);
+    expect(bare.proactive.interestsFile).toBe('interests.yml');
+    expect(bare.proactive.botAliases).toEqual([]);
+    expect(bare.proactive.topicRollMessages).toBe(30);
+    expect(bare.proactive.topicRollMs).toBe(300_000);
+    // 配置层不读磁盘：是否读到文件由组装层回填
+    expect(bare.proactive.interestsLoaded).toBe(false);
+
+    const fromFile = loadConfig(baseEnv, {
+      proactive: {
+        enabled: true,
+        interestsFile: '/etc/bot/interests.yml',
+        botAliases: ['小助手'],
+        topicRollMessages: 50,
+        topicRollMs: 60_000,
+      },
+    });
+    expect(fromFile.proactive).toMatchObject({
+      enabled: true,
+      interestsFile: '/etc/bot/interests.yml',
+      botAliases: ['小助手'],
+      topicRollMessages: 50,
+      topicRollMs: 60_000,
+    });
+
+    const fromEnv = loadConfig({
+      ...baseEnv,
+      QQ_INTERESTS_FILE: '/tmp/i.yml',
+      BOT_BOT_ALIASES: '小助手,助手酱',
+      BOT_TOPIC_ROLL_MESSAGES: '12',
+    });
+    expect(fromEnv.proactive).toMatchObject({
+      interestsFile: '/tmp/i.yml',
+      botAliases: ['小助手', '助手酱'],
+      topicRollMessages: 12,
+    });
+  });
+
+  it('主动发言：别名太短或太多、滚动周期越界都在启动期被拒（安静故障要拦住）', () => {
+    expect(() => loadConfig({ ...baseEnv, BOT_BOT_ALIASES: '助' })).toThrowError(ConfigError);
+    expect(() =>
+      loadConfig({ ...baseEnv, BOT_BOT_ALIASES: 'a1,a2,a3,a4,a5,a6' }),
+    ).toThrowError(/最多 5 个/);
+    expect(() => loadConfig({ ...baseEnv, BOT_TOPIC_ROLL_MESSAGES: '1' })).toThrowError(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_TOPIC_ROLL_MS: '100' })).toThrowError(ConfigError);
+    // 描述摘要把兴趣池状态暴露出来（排障第一眼要看的就是它）
+    const described = describeConfig(loadConfig(baseEnv)) as {
+      proactive: { enabled: boolean; interests: { count: number } };
+    };
+    expect(described.proactive.enabled).toBe(false);
+    expect(described.proactive.interests.count).toBe(0);
+  });
+
   it('缺少必填项时报错并给出修复提示', () => {
     expect(() => loadConfig({ QQ_APP_ID: 'a' })).toThrow(ConfigError);
     try {

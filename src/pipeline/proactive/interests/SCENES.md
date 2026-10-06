@@ -14,7 +14,7 @@
 >
 > **状态**：场景的判定三层已就位（纯函数 + 契约测试），但**尚未接入运行时**
 > ——介入 turn 的合成与 speak 链接线属实施期 S1。当前部署的 bot 只在被 @ 时回复。
-> 分期见 [docs/PROACTIVE-INTERVENTION-ARCH.md](../../../docs/PROACTIVE-INTERVENTION-ARCH.md) §8。
+> 分期见 [docs/PROACTIVE-INTERVENTION-ARCH.md](../../../../docs/PROACTIVE-INTERVENTION-ARCH.md) §8。
 
 ---
 
@@ -160,6 +160,43 @@ bot ：这个报错是因为 requests 没装，先 pip install requests
 张三：今天天气真好啊                              ← 不命中（没命中兴趣池）
 ```
 
+### 怎么给这个场景加兴趣条目
+
+兴趣池是一份**人审过的清单文件**（关键词匹配在本地完成、零成本；命中之后
+才进判定）。三步：
+
+1. 把样例复制成配置文件：
+
+   ```bash
+   cp src/pipeline/proactive/interests/interests.yml.example interests.yml
+   ```
+
+2. 按下面的字段加条目（完整注释见
+   [interests.yml.example](interests.yml.example)）：
+
+   ```yaml
+   interests:
+     - id: plotting                 # 必填，文件内唯一，英文小写
+       topic: 数据可视化 / 画图      # 必填，一句话说明"这是聊什么"（进 prompt）
+       keywords: [画图, 折线图, matplotlib]   # 必填，字符串包含匹配，至少两个词
+       why: 我有 matplotlib 与文件出站能力，可以直接给图   # 选填（进 prompt）
+       note: 只给结论，不要先讲原理                        # 选填（进 prompt）
+   ```
+
+3. 填错不用猜：**文件不存在 = 兴趣池为空（合法，场景 5 不触发）**；
+   **文件存在但格式错 = 启动期报错**，并会指出是第几条、哪个字段
+   （id 重复、关键词少于 2 字、超过 20 条都会拦）。
+
+几条实践经验：
+
+- **关键词宁准勿宽**：太短的词会误命中（"图"会命中"图书馆"），
+  所以校验直接拒绝单字关键词；
+- **关键词越准越省钱**：命中才进判定，命中越少白花的调用越少；
+- **每话题最多说几次不在这里**——那是否决层的统一额度
+  （`VetoPolicy.maxPerTopic`），写进兴趣池会形成两套账；
+- **临时停用**：`qqbot.yml` 的 `proactive.interestsEnabled: false` 或整份停用
+  `proactive.enabled: false`。
+
 ---
 
 ## 全局闸门（不属于任何场景，对所有场景一律生效）
@@ -175,7 +212,7 @@ bot ：这个报错是因为 requests 没装，先 pip install requests
 6. **平台能力**：社区协议通道（OneBot）可以直接发；**官方通道目前不支持主动
    发言**（官方主动推送 2025-04-21 起停用，群聊主动消息每月 4 条，用户还可自行
    关闭接收）——在官方通道上，以上场景全部"判定照跑、发言降级"，
-   这是预期行为而不是故障（见 [README.md](README.md) §1）。
+   这是预期行为而不是故障（见 [README.md](../README.md) §1）。
 
 ---
 
@@ -199,6 +236,9 @@ bot ：这个报错是因为 requests 没装，先 pip install requests
 2. **什么算命中、什么不算命中**（判据，人话，含反例）；
 3. **至少一个典型对话例子**（用群里真实说话的样子，不要用抽象描述）；
 4. **误报的代价是什么**（这条决定它的优先级与门槛高低）。
+
+若新场景需要自己的配置面（像场景 5 的兴趣池那样），同样先在本文档写清
+"维护者怎么加条目、写错了会怎样"，再去做配置文件与校验。
 
 然后再去改三处代码（缺一处契约测试就红）：
 

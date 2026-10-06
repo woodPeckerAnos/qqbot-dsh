@@ -2,7 +2,7 @@
 
 > **读者是另一个 agent（或另一个会话里的我）**。假设你只看到这份文件、
 > 没有看过本项目的历史讨论：照本文做，你的改动就能被接受。
-> **先读 [SCENES.md](SCENES.md)**——当前生效场景的自然语言说明书。
+> **先读 [SCENES.md](interests/SCENES.md)**——当前生效场景的自然语言说明书。
 > 其余人读版本见 [README.md](README.md)；完整架构讨论见
 > [docs/PROACTIVE-INTERVENTION-ARCH.md](../../../docs/PROACTIVE-INTERVENTION-ARCH.md)。
 
@@ -10,7 +10,8 @@
 
 ```
 src/pipeline/proactive/
-  SCENES.md            当前生效场景的自然语言真相源（**新增场景第一步**）
+  interests/SCENES.md  当前生效场景的自然语言真相源（**新增场景第一步**）
+  interests/interests.yml.example  兴趣池样例（照它写 interests.yml）
   contract.ts          三层共享契约：SceneId / SCENE_ORDER / 触发面 / 判定 / 终局
   scene/collect.ts     ① 搜集层    judge/judge.ts  ② LLM 层
   veto/veto.ts         ③ 否决层    deliver/speaker.ts  投递层
@@ -40,7 +41,7 @@ src/pipeline/proactive/
    越层的典型错误：把"取第一个"写进 prompt、让 veto 读消息文本、
    在 collect 里调 LLM。
 7. **改行为 = 先改人话**：任何"bot 会在什么情况下开口"的变化，先在
-   [SCENES.md](SCENES.md) 里用自然语言写清楚（什么情况下出现 / 什么算命中 /
+   [SCENES.md](interests/SCENES.md) 里用自然语言写清楚（什么情况下出现 / 什么算命中 /
    典型对话 / 误报的代价），再去改代码。**先写人话，再写代码**——
    文档与代码不一致时契约测试会红（「验收20–22」），这是刻意的。
 
@@ -173,6 +174,12 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 
 三层文件与职责（**先定位你改的是哪一层，再动手**）：
 
+**兴趣池（场景 5 的配置面）**：`interests/pool.ts` 负责读取 + 校验 + 匹配，
+样例见 `interests/interests.yml.example`，维护者说明在 `interests/SCENES.md`。
+调用方**不要手填** `SceneEvidence.matchedInterestIds`/`botAliases`——用
+`scene/collect.ts` 的 `buildSceneEvidence()` 从池与配置推导（手填在本项目里
+真实发生过一次"永远空列表、场景永不触发、零报错"的静默故障）。
+
 | 层 | 文件 | 你在这里能改什么 | 不该出现在这里的东西 |
 |---|---|---|---|
 | ① 搜集 | `scene/collect.ts` | `SCENE_DEFINITIONS` 的 `precheck` / `triggers`；`collectCandidates()` 的保险 | LLM 调用、额度判断、"谁赢" |
@@ -181,7 +188,7 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 
 ### 5.1 加一个场景（**先写人话，再写代码**）
 
-**第 0 步（不可跳过）：在 [SCENES.md](SCENES.md) 里新增一节自然语言描述**，
+**第 0 步（不可跳过）：在 [SCENES.md](interests/SCENES.md) 里新增一节自然语言描述**，
 按现有五节的格式交代四件事——① 什么情况下出现；② 什么算命中 / 什么不算（含反例）；
 ③ 至少一个**典型对话**例子；④ 误报的代价（这条决定它的优先级与门槛高低）。
 **顺序也是产品决策**：章节顺序 = `SCENE_ORDER` 顺序，先想清楚它排第几。
@@ -269,6 +276,7 @@ git diff                                   # 复核：有没有偷偷改到别�
 | 拿 `interventionsDroppedInFlight` 做统计 | 该字段不存在 | 用 `interventionsDroppedBusy` + 规则 32 的 halt 计数 |
 | 照 P0 方案文档配 `inflight-merge.maxMessages` | 实际参数名是 `maxPending` / `maxAgeMs`，写错**静默无效** | 以代码为准；新增参数时三处同步 |
 | 以为 `/listen` 命令存在 | 控制面完全没做（`setRuntimeEnabled()` 无调用点） | 需要控制面就先实现，不要假设 |
+| 让调用方手填 `matchedInterestIds` / `botAliases` | 手填的结果是**永远空列表**：场景 5 永不触发，且没有任何报错 | 用 `buildSceneEvidence()` 从兴趣池与配置推导（见下） |
 | 在转录里找不到 bot 自己刚说的话 | 旁听缓冲只收非 @ 消息，bot 的 @ 回复不进缓冲 | 场景 1 的判定需要 `<bot最近发言>` 块（见架构方案 §3.6） |
 
 ---

@@ -74,7 +74,7 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 
 ## 4. 三层架构（`scene/` / `judge/` / `veto/`）
 
-**先读 [SCENES.md](SCENES.md)**：那里用自然语言写着"当前 bot 会在什么情况下
+**先读 [SCENES.md](interests/SCENES.md)**：那里用自然语言写着"当前 bot 会在什么情况下
 主动开口"。本节讲的是这套东西**怎么实现**。
 
 「要不要说话」的判定被拆成三层，**每层只做一件事，且明确不能做另两件事**：
@@ -95,9 +95,9 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 intake ≈ 搜集、evaluate ≈ LLM、speak ≈ 否决。新增判定时先问"这属于哪一层"，
 再决定加到哪条链——详见 AGENT-CONTRACT.md §2.2。
 
-## 5. 5 个介入场景与优先级（细节见 [SCENES.md](SCENES.md)）
+## 5. 5 个介入场景与优先级（细节见 [SCENES.md](interests/SCENES.md)）
 
-下表是速查；**每个场景的人话描述、反例与典型对话在 [SCENES.md](SCENES.md)**，
+下表是速查；**每个场景的人话描述、反例与典型对话在 [SCENES.md](interests/SCENES.md)**，
 那份文件是场景的真相源（与代码的一致性由契约测试强制）：
 
 业务方给出的 5 种主动介入场景，**按顺序取第一个命中**：
@@ -136,9 +136,17 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 
 ## 7. 配置与观测
 
-| 配置 | 默认 | 说明 |
+| 配置（`qqbot.yml` 的 `proactive:` 段） | 默认 | 说明 |
 |---|---|---|
 | `intervention.enabled` | `false` | 介入层总开关（默认关、群白名单、谷时段）。**主动发言复用它** |
+| `proactive.interestsEnabled` | `true` | 兴趣池总开关（场景 5） |
+| `proactive.interestsFile` | `interests.yml` | 兴趣池文件路径（`QQ_INTERESTS_FILE` 可覆盖）。**不存在 = 空池**，格式错 = 启动报错 |
+| `proactive.botAliases` | `[]` | bot 在本群的别名（场景 4 指代检测）；至少 2 字、最多 5 个 |
+| `proactive.topicRollMessages` / `topicRollMs` | `30` / `300000` | 话题滚动周期（场景 2/5 的入口；消息数或时间先到者） |
+
+**给场景 5 加兴趣条目**：`cp src/pipeline/proactive/interests/interests.yml.example interests.yml`
+然后按字段加——完整说明见 [interests/SCENES.md](interests/SCENES.md) 的
+「怎么给这个场景加兴趣条目」，样例的注释里有每条规则的由来。
 
 ⚠️ **不要为主动发言另立一个并列开关**：两个开关会让人无法回答"为什么它不说话"。
 `ProactiveSpeaker` 之所以仍持有 `enabled`，只是为了让"关闭"这件事也能被记账
@@ -149,7 +157,10 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 - `capability(target)` → `ready` / `unsupported` / `no-connector`：
   **部署后第一件该看的事**——官方通道上它必然是 `unsupported`，这不是故障；
 - 按 `trigger` 的送达计数、按 `reason` 的降级计数（顺序见
-  `PROACTIVE_DEGRADE_ORDER`，同时是排查顺序）。
+  `PROACTIVE_DEGRADE_ORDER`，同时是排查顺序）；
+- 启动摘要里会显示兴趣池的 `loaded` / `count`（`describeConfig`）：
+  **`interestsEnabled: true` + `loaded: false` 就是"路径配错了"**，
+  这是场景 5 不触发时第一个该看的地方。
 
 ## 8. 边界：这个模块**不**做什么
 
