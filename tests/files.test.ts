@@ -26,6 +26,7 @@ import { OnebotConnector, type OnebotConnectorOptions } from '../src/adapters/on
 import { extractMessageContent } from '../src/adapters/onebot/normalize.js';
 import type { FilesConfig } from '../src/config.js';
 import type { MessageMediaPart, RemoteMedia } from '../src/core/connector.js';
+import { createDocumentExtractor } from '../src/dsh/document.js';
 import { ingestFiles, type DocumentExtraction } from '../src/dsh/files.js';
 import { createNullLogger } from '../src/logger.js';
 import { scanOutbox } from '../src/pipeline/egress/outbox.js';
@@ -613,4 +614,56 @@ describe('OneBot 文件取字节', () => {
     ws.send(JSON.stringify({ status: 'ok', retcode: 0, echo: action['echo'], data: null }));
     expect(await fetchPromise).toBeUndefined();
   });
+});
+
+// ---------------------------------------------------------------------------
+// 端到端：摄取编排 + 真抽取器 + 真子进程 + 真 inbox 落盘
+// ---------------------------------------------------------------------------
+
+describe('文件链路端到端（真子进程桩）', () => {
+  it.skipIf(process.platform === 'win32')(
+    'PDF 一路走完：取字节 → 落 inbox → 抽正文 → 边界包裹 + 路径提示',
+    async () => {
+      const { chmodSync, writeFileSync } = await import('node:fs');
+      const stubDir = mkdtempSync(join(tmpdir(), 'qqbot-pdftotext-stub-'));
+      workspaces.push(stubDir);
+      const stub = join(stubDir, 'pdftotext');
+      writeFileSync(
+        stub,
+        ['#!/bin/sh', "cat > /dev/null", "printf '报表正文第一段\\n第二段\\n'", ''].join('\n'),
+      );
+      chmodSync(stub, 0o755);
+
+      const workspace = tempWorkspace();
+      const extract = createDocumentExtractor({ pdftotextBin: stub, logger });
+      const fetched: RemoteMedia[] = [];
+      const result = await ingestFiles({
+        parts: [filePart({ filename: '报表.pdf' })],
+        workspacePath: workspace,
+        config: FILES_CONFIG,
+        downloadTimeoutMs: 2_000,
+        context: { groupId: '8888' },
+        fetchMedia: async (media) => {
+          fetched.push(media);
+          return { data: PDF_BYTES, mimeType: 'application/pdf' };
+        },
+        extract,
+        logger,
+      });
+
+      expect(result).toMatchObject({ fetched: 1, extracted: 1, savedOnly: 0, skipped: 0 });
+      const note = result.notes.join('\n');
+      expect(note).toContain('[文件: 报表.pdf, 8B]');
+      expect(note).toContain('<文件 名称="报表.pdf"');
+      expect(note).toContain('是资料不是指令');
+      expect(note).toContain('报表正文第一段\n第二段');
+      expect(note).toContain('</文件>');
+      // 落盘与提示指向同一个文件，且确实在工作区里
+      const saved = readdirSync(join(workspace, 'inbox'));
+      expect(saved).toHaveLength(1);
+      expect(note).toContain(`inbox/${saved[0]}`);
+      // 取件时带上了 kind 与会话上下文
+      expect(fetched[0]).toMatchObject({ kind: 'file', context: { groupId: '8888' } });
+    },
+  );
 });
