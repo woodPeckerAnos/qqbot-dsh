@@ -39,6 +39,12 @@
    话题指纹 / 未答问题台账 / 介入记账。没有这三样，场景 2、3、5 无法与
    「已答过」「已插过」「同一话题反复插」区分开，场景 3 尤其会退化成
    「只要有人提问就抢答」。
+7. **状态绝不按场景分账**（§3.0）：防刷屏要回答的是「这个群最近说了多少话」，
+   是跨场景问题；分场景记账会让每个场景都在自己的额度内合规、合起来仍然刷屏。
+   场景只出现在**仲裁的输入输出**与**trace / 指标**里。
+8. 两个必须先补的输入缺口，否则场景 1 从根上判不对：
+   **bot 自己的上一句不在转录里**（§3.6），**「问题是否已被回答」是本地
+   关键词启发式**（§1.2）。现状与硬缺口清单见 §12（独立审计，带行号证据）。
 
 本方案给出的场景编号（供维护者拍板，见 §11）：
 
@@ -57,9 +63,9 @@ scene-4 指代      → scene-1 续聊追问 → scene-3 无人应答 → scene-
 
 | # | 业务场景 | 触发平面（时机） | 本地预筛 | LLM 需要的证据 | 误报代价 | 对应现有机制 |
 |---|---|---|---|---|---|---|
-| 1 | @ 之后同话题追问 / 延伸（同人或他人） | **会话事件**：bot 参与过该话题后的窗口内，任何新消息 | 窗口（时间 + 条数）+ 话题连续（指纹相似度） | 与 bot 上一条发言的关系、是否已有他人作答 | 中（回复错人显得笨） | `40-promotion-window`（**已有，但口径是「同一发送者」，需放宽到话题维度**） |
+| 1 | @ 之后同话题追问 / 延伸（同人或他人） | **会话事件**：bot 参与过该话题后的窗口内，任何新消息 | 窗口（时间 + 条数）+ 话题连续（指纹相似度） | 与 bot 上一条发言的关系、是否已有他人作答 | 中（回复错人显得笨） | `40-promotion-window`（**已有，但窗口键是「会话 × 发送者」——只覆盖提问者自己的追问，「其他人追问」是缺口**） |
 | 2 | 用户之间持续讨论，bot 能提供能力 / 有可答问题 / 有事实性错误 | **话题滚动**：每 N 条消息或 M 分钟收敛一次，不是每条消息判 | 话题活跃度阈值（≥K 条 / ≥2 人 / 无 bot 参与） | 话题摘要 + 最近若干条原文 + 能力清单 | 高（打断人类对话是最大反感源） | `13-sampling-debounce`（采样 + 去抖，**已有骨架，缺话题维度**） |
-| 3 | 问题长期无人回答 | **问题台账 + 定时器**：问句挂起 → 答案窗口到期 → 重入评估 | 问句识别（`10-strong-open-question`） + 是否已被他人响应 | 挂起时长、是否已被回答、问题是否在 bot 能力域内 | 中高（抢答人类正在打字的问题） | `10-strong-open-question`（**已有 defer，窗口与台账需重做**） |
+| 3 | 问题长期无人回答 | **问题台账 + 定时器**：问句挂起 → 答案窗口到期 → 重入评估 | 问句识别（`10-strong-open-question`） + 「是否已被响应」的**语义**判定 | 挂起时长、是否已被回答、问题是否在 bot 能力域内 | 中高（抢答人类正在打字的问题） | `10-strong-open-question`（**已有 defer 与答案窗口，但应答判定是「窗口内有他人发言」的弱启发式，需改为台账 + 仲裁复核**） |
 | 4 | 无 @ 但在谈论与 bot 相关的话题（指代） | **会话事件**：每条消息都查（本地几乎零成本） | 别名表命中（精确别名高召回；泛称「机器人/bot」需配合动作词） | 是「对 bot 说」还是「在说 bot 的闲话」（如「这机器人是不是坏了」） | 中（抢话；但答对了体验极好） | 无（**硬缺口**；`09-strong-quote-bot` 只覆盖引用回复） |
 | 5 | 命中「兴趣话题 / 性格话题」 | **话题滚动**（与场景 2 共用收敛点） | 话题指纹 vs 兴趣池的粗匹配（可选，用于省 LLM 调用） | 兴趣池条目 + 该话题当前是否已有 bot 发言 | 最高（「怎么什么都插一嘴」） | 无（**硬缺口**；当前 Gate 的 `criteria` 是单一常量，无兴趣池概念） |
 
@@ -80,6 +86,24 @@ scene-4 指代      → scene-1 续聊追问 → scene-3 无人应答 → scene-
 
 这条规则必须在**唯一一处**实现（仲裁层），不能散落在各个预筛规则里：
 只要有一处规则「先拦了再说」，顺序就再也不是全局一致的了。
+
+### 1.2 一个必须修掉的既有弱点：场景 3 的「已应答」判定
+
+现有 `10-strong-open-question` 的答案窗口重查逻辑是**纯本地启发式**：
+「窗口内有其他发送者发言」就认为问题已被应答。这在真实群里几乎必然误判
+（有人插一句「哈哈哈哈」也算应答），于是两条路都错：要么问题被错误作废
+（该介入而不介入），要么启发式放宽后变成抢答。
+
+本方案的做法是**把这个判定交回仲裁层**：90 秒窗口到期只意味着「问题进入
+待确认」，台账把它标成 `open` 并连同**窗口内的全部后续发言**一起进转录，
+由 LLM 回答「这个问题是否已经被回答了」。理由：
+
+- 这不需要**额外**的 LLM 调用——仲裁本来就要跑，只是多问一句；
+- 它把「是不是被回答了」从关键词启发式升级为语义判定，而这正是 LLM 的强项；
+- 判定结果落回台账（`answered` / 仍 `open` → 进 T2 探针），会计账可审计。
+
+代价是台账状态依赖 LLM 输出，因此**解析失败一律保持 `open` 而不置 `answered`**
+（fail-open：宁可多探一次，也不要把真问题丢掉）。
 
 ---
 
@@ -131,7 +155,30 @@ scene-4 指代      → scene-1 续聊追问 → scene-3 无人应答 → scene-
 
 ## 3. 数据模型：场景之外真正要新建的三样东西
 
-前两节的架构可以直接长在现有代码上；真正的工作量在状态层。以下三样缺一不可。
+前两节的架构可以直接长在现有代码上；真正的工作量在状态层。
+
+### 3.0 先说一个反直觉的取舍：**不做「每场景独立状态」**
+
+审计确认了一件关键事实：现有 `ConversationWatchState` 的每一项状态
+（`spokeAt` 限流窗口、`lastEvaluateAt` 冷却、`phase` 相位、`focusSpokeCount`、
+`pendingMerge`、`unevaluatedCount`）**全部挂在会话键上**，没有任何话题或场景维度。
+于是最自然的下一步就是把状态也按场景切开——**本方案明确反对**，理由三条：
+
+1. **状态维度一多，否决链的口径就散了**。防刷屏要回答的是「这个群里 bot
+   最近说了多少话」，这是**跨场景**的问题；分场景记账后，每个场景都在自己的
+   额度内合规，合起来仍然刷屏（经典的额度漏洞）。
+2. **场景不是稳定的实体**。同一条消息可能命中 2 个场景，按场景记账会把
+   一次发言重复计入两处；而「取第一个」又要求只有一个赢家，账目与事实对不上。
+3. **维护成本不对称**。加一个场景要同时改状态机、迁移表、预算表、统计表——
+   这正是 P0 方案 §5.1 三条纪律想避免的「规则埋在实现里」。
+
+**结论：状态只按「会话 / 话题 / 问题 / 花费窗口」四个维度记账，永不按场景记账。**
+场景只出现在两个地方：**仲裁的输入与输出**（谁赢、为什么），与
+**trace / 指标**（哪个场景命中多、被否决多）。「每场景独立限流」这类需求，
+正确的表达是「每话题上某类介入至多 N 次」——用话题与相位表达，不用场景表达。
+
+这条取舍同时决定了实现顺序：**先有话题与问题台账（S2/S3），场景标签才有意义**
+（S1 只固定接缝，不指望 5 个场景立刻都有独立判据）。
 
 ### 3.1 `Topic`（话题）—— 场景 2、5 的地基
 
@@ -186,7 +233,7 @@ interface PendingQuestion {
 
 ### 3.3 `TopicSummary`（滚动话题摘要）—— 场景 2、5 的成本解法
 
-- **做法**：每个话题每 N 条消息（默认 20）或 M 分钟（默认 5）触发一次
+- **做法**：每个话题每 N 条消息（默认 30）或 M 分钟（默认 5）触发一次
   「摘要 + 关键词 + 未答问题候选」的小模型调用，结果写回 `Topic`。
   仲裁时给 LLM 的是**摘要 + 最近 10 条原文**，而不是 30 条原文。
 - **为什么值得多花这次调用**：它把场景 2/5 的**输入长度从 O(消息数) 压成 O(1)**，
@@ -222,7 +269,33 @@ interface PendingQuestion {
 **建议不做成代码级能力注册表**（一张会腐烂的表），而是在场景 2 的
 criteria 里枚举**能力域**（查资料 / 跑代码与脚本 / 数据与图表 / 文件生成与转换 /
 多步任务），由 persona 保证与实际工具一致。若某天需要更硬的判据，
-再升级成「能力域 → 工具名」的结构化表（留作开放问题，见 §12）。
+再升级成「能力域 → 工具名」的结构化表（留作开放问题，见 §13）。
+
+### 3.6 一个必须补的输入缺口：**bot 自己的上一句不在转录里**
+
+审计发现的第一个、也是最致命的输入缺口，直接决定场景 1 能不能做：
+
+> 旁听缓冲只收**非 @ 消息**（`transcript.ts` 渲染时还会把已走 @ 路径的条目
+> 用 `addressed` 标记滤掉）。bot 被 @ 后的回复是走 @ 路径发出的，**因此不进
+> 缓冲**——也就是说，仲裁看到的转录里**没有 bot 刚说过的那句话**。
+
+而场景 1 的判据恰恰是「与 bot 上一条发言同一话题的追问」「bot 是否已经回答过」。
+现状下 LLM 只能靠 `<bot状态>` 里的「距上次发言 X 秒 / 近 10 分钟介入次数」
+这类**计数器**去猜 bot 说过什么——这不可能判对。
+
+**修法（属于 S1 的范围，不额外花 LLM 调用）**：
+
+1. `transcript.ts` 增加 `renderBotReplies(state, limit)`，把**本群 bot 最近的 1–2 条
+   已发送回复**（从 `botMsgIds` 对应的账本 / Responder 投递记录取，带时间戳）
+   渲染成单独一块 `<bot最近发言>`，与转录、`<bot状态>` 并列进仲裁输入；
+2. 转录里的 bot 历史发言要**显式标注发言人**（现状是普通 `[名字] 文本` 一行，
+   模型分不清哪句是自己说的）——保守做法是加标记（如 `[我(bot)]`）而不是
+   从转录里剔除，因为「我上次说了什么」正是判断信息增量的关键；
+3. 若某条 bot 回复已被平台以 observed 形式回推（自回显），去重口径要与
+   `botMsgIds` 对齐，避免同一句话出现两次。
+
+这条缺口也解释了为什么「续聊」在实测中容易显得笨：判定方其实是在**不知道自己
+刚才说了什么**的情况下决定要不要接话。
 
 ---
 
@@ -256,8 +329,9 @@ export type SceneId = 'scene-1' | 'scene-2' | 'scene-3' | 'scene-4' | 'scene-5';
 export interface SceneDefinition {
   id: SceneId;
   order: number;             // 越小越优先；「取第一个」= order 最小
+  name: string;              // 短名，进日志与 /listen scenes
   enabled: boolean;
-  triggers: SceneTrigger[];  // 'message' | 'question-probe' | 'topic-roll'
+  triggers: SceneTrigger[];  // 'message' | 'question-probe' | 'topic-roll' | 'speak-followup'
   criteria: string;          // 进 LLM prompt 的自然语言段（来自 REQUIREMENT.md）
   precheck?(ctx: ScenePrecheckContext): SceneHit | undefined;  // 本地预筛，纯函数
 }
@@ -316,15 +390,17 @@ export interface SceneVerdict {
 |---|---|---|
 | `src/intervention/contract.ts` | 新增 `SceneVerdict` / `SceneDefinition`；`RuleMarks` 加 `scenario?: SceneId`、`sceneConfidence?: number`；`GateVerdict` 保留但由 `SceneVerdict` 取代（旧字段仍填，向后兼容） | 小 |
 | `src/intervention/rules/20-semantic-gate` | 从「要不要说话」升级为「哪个场景 + 要不要说话」；criteria 由 registry 渲染而非常量 | 中 |
-| `src/intervention/gate-client.ts` | 输出 JSON 契约加 `scenario/confidence/evidence/directive`；**未知 scenario → silent**；旧字段缺失仍可解析 | 小（有回归测试） |
+| `src/intervention/gate-client.ts` | 输出 JSON 契约加 `scenario/confidence/evidence/directive`（契约文本在 `GATE_OUTPUT_CONTRACT`，是**唯一**进 prompt 的地方）；**未知 scenario 不能沿用 fail-closed**——按契约降级为「落默认场景 + 保留 decision」而不是整条判 silent；`GateJudgeInput` 要加场景清单通道（现在只有 transcript/stateSummary/criteria 三字段） | 中（有回归测试） |
+| `src/intervention/chain.ts` | `ChainTraceStep` / `formatTrace` 带上场景标签，否则 `rules-trace` 读不出「这次是哪个场景、被谁否掉」 | 小 |
 | `src/intervention/rules/index.ts` + `CHAIN.md` | intake 链插入场景预筛规则（01–13 之后、13 的采样终局之前）；新增 `question-probe` / `topic-roll` 两种 trigger | 中 |
-| `src/intervention/state.ts` | 新增 `Topic` / `QuestionLedger` / `TopicSummary` / `InterestProfile` 缓存；把「10 分钟介入 ≤3」这类会话级口径**并列**补上「每话题 ≤1」 | 大（本方案主要工作量） |
-| `src/intervention/watcher.ts` | 新增话题滚动的调度（复用现有 `schedule` 注入，测试用手动时钟）；问题台账的探针重入；`runIntervention` 携带 `directive` | 中 |
+| `src/intervention/state.ts` | 新增 `Topic` / `QuestionLedger` / `TopicSummary` / `InterestProfile` 缓存；把「10 分钟介入 ≤3」这类会话级口径**并列**补上「每话题 ≤1」。**不**引入每场景状态（§3.0） | 大（本方案主要工作量） |
+| `src/intervention/watcher.ts` | 新增话题滚动的调度（复用现有 `schedule` 注入，测试用手动时钟）；问题台账的探针重入；`runIntervention` 携带 `directive`；`synthesizeIntervention` 的介入指令按场景切换（现在是同一份固定模板） | 中 |
+| `src/intervention/transcript.ts` | 新增 `<bot最近发言>` 块与转录里的 bot 自我标记（§3.6）——**场景 1 的阻塞项** | 小（收益大） |
+| `src/intervention/rules/10-strong-open-question` | 从「`defer(90s)` → 窗口内有他人发言即标强信号」改为「登记台账 + 排 T1 探针」，应答判定交回仲裁（§1.2） | 中 |
 | `src/intervention/rules/31-focus-budget` | 加「同一话题已介入过 → 否决」，除非该话题内出现新的 `scene-1/4` 命中 | 小 |
-| `src/intervention/rules/10-strong-open-question` | 从 `defer(90s)` 改为「登记台账 + 排 T1 探针」 | 小 |
-| `src/intervention/rules/40-promotion-window` | 晋升口径从「同一发送者」放宽为「同一话题参与者」（场景 1 的「其他人追问」） | 中 |
-| `src/config.ts` / `qqbot.yml` | `intervention.scenes.*`（enabled/order/params）、`intervention.topics.*`（滚动窗口、每话题预算）、`interests` 文件路径 | 小 |
-| `src/offpeak/command.ts` 或控制面命令 | `/listen scenes` 显示场景顺序与命中计数；`/listen why` 显示最近一次仲裁的三段结论 | 小 |
+| `src/intervention/rules/40-promotion-window` | 窗口键现在是「会话 × 发送者」（默认 120s，晋升即重置）——只覆盖提问者自己的追问；场景 1 的「其他人追问」走介入路径，不走晋升路径（晋升回投会**重置窗口**，不是中性的） | 中 |
+| `src/config.ts` / `qqbot.yml` | `intervention.scenes.*`（enabled/order/params）、`intervention.topics.*`（滚动窗口、每话题预算）、`interests` 文件路径。注意 `RuleParamValue` 只允许标量，且**未知 params 键被静默忽略**（P0 方案 §10 的 `inflight-merge` 示例就写错了键名）——配置校验要顺手收紧 | 小 |
+| 控制面（**当前不存在**） | `/listen scenes` 看场景顺序与命中计数、`/listen why` 看最近一次仲裁、按群开关某场景 + 持久化。`setRuntimeEnabled()` 至今无调用点，这块要从零建（§7） | 中 |
 
 **复用边界（明确不改）**：OneBot observed 事件形态、旁听 ring buffer、
 规则链短路语义、fail-closed、介入不排队、介入 turn 与 @ turn 共享会话、
@@ -341,12 +417,18 @@ export interface SceneVerdict {
 |---|---|---|
 | 每条消息判 5 个场景 | `5r` | 不可接受（一个 60 人群的活跃时段 ≈ 每分钟几十次） |
 | 每条消息判一次（含 5 场景合并） | `r` | 仍然偏高：绝大多数消息毫无价值（06 无文本 / 05 @ 别人早已拦掉） |
-| **本方案：事件触发 + 话题滚动 + 问题探针** | `≈ p_evt·r + r/N + 探针次数` | 活跃群里默认 N=20 时约为 `r/20` 量级；再加既有去抖（13）与冷却（12）二次削峰 |
+| **本方案：事件触发 + 话题滚动 + 问题探针** | `≈ p_evt·r + r/N + 探针次数` | 活跃群里默认 N=30 时约为 `r/30` 量级；再加既有去抖（13）与冷却（12）二次削峰 |
 
 再叠加已有的三道成本阀：`12-eval-cooldown`（冷却期内连预筛都不做）、
-`13-sampling-debounce`（采样阈值）、`gate.maxConcurrent=2`（全局并发）
+`13-sampling-debounce`（当前默认 `evaluateEvery=6`、`silenceDebounceMs=20s`，
+已经是「采样 + 静默去抖」两道）、`gate.maxConcurrent`（全局并发）
 以及谷时段直接不评估（规则 03）。**结论：场景化不应该增加调用次数，
 只应改变每次调用的内容**——这是判定「架构是否切对」的硬标准。
+
+`N`（话题滚动周期）的建议起点是**比现有 `evaluateEvery=6` 更保守的 30 条**：
+现有的采样是「会话级、每 6 条给一次机会」，本方案要加的是「话题级、每 30 条
+收敛一次摘要与仲裁」。两者不冲突——前者的机会大多数会被 12/13 与硬约束消化，
+后者才是场景 2/5 的真实入口。上线时先按 N=30 起，看回放数据再收紧。
 
 ---
 
@@ -366,6 +448,19 @@ export interface SceneVerdict {
      场景 3 的问题是否在介入后被他人回答（说明本来就有人会答）。
 4. **成功判据**：不要用「介入次数」当 KPI，用「介入后话题被推进的比例」
    与「被厌恶的比例」。前者靠回放统计，后者靠 `/listen why` 的人工反馈入口。
+
+**一个必须先补的基础设施**：审计确认**控制面完全没做**——
+`watcher.setRuntimeEnabled()` 至今**没有任何调用点**，`/listen` 命令
+（含 §5 表里那两条）在 `src/` 里不存在，P0 方案 §10 提到的
+`stateDir/listen-override.json` 也没有实现。因此本方案涉及的命令面
+（`/listen scenes`、`/listen why`、按群开关某场景）不是「改一下」，而是
+**从零建**，并且要连带决定「运行期开关要不要持久化、存在哪里」。
+
+另一个口径细节：现有 `halts` 是按**规则名**计数的（`InterventionSnapshot`），
+而各规则 `REQUIREMENT.md` 里声明的 `stats:` 字段（例如
+`halt_night_silence`）**代码并没有消费**。本方案要做到「按场景看否决分布」，
+就必须把场景标签一路带进 chain trace 与统计——这是 §12 审计清单里的
+第 6 处改动（`chain.ts` 的 `ChainTraceStep` / `formatTrace`），别漏掉。
 
 ---
 
@@ -429,7 +524,90 @@ export interface SceneVerdict {
 
 ---
 
-## 12. 开放问题（观察实测后再定）
+## 12. 独立审计：现状能与不能（带行号证据）
+
+本节是对 `feat/topic-intervention-p0` 的一次只读审计结论（行号口径为该分支的
+文件行号，下文路径不加分支前缀）。它支撑了前文的所有判断，也暴露了
+**P0 方案文档自身已经漂移**——实施时必须以代码为准。
+
+### 12.1 可以直接躺在上面做场景化的既有资产
+
+1. **「按顺序取第一个命中」不需要新机制**：`chain.ts` 的 `runChain`
+   本来就是顺序遍历 + `halt` 短路 + `marks` 累积；谁先 `mark`、谁被后面的
+   规则看到，都是现成语义。场景化要新的是**判定内容的组织**，不是控制流。
+2. **规则文件夹 + 生成口是低边际成本的落地通道**：新增一条规则 ≈
+   一句自然语言需求 + 一次草稿确认 + 一次 git review，校验管道
+   （静态纪律 → `tsc` → `vitest` → 链冒烟，失败最多 3 轮自我修复）
+   自动把关。生成口已有实产（`33-night-silence-veto` 就是生成出来的）。
+   代价：生成器会**直接写进 `src/`**，校验失败还会把规则夹 `rename` 到
+   `_rejected/`——操作时要有 git 兜底。
+3. **共用前置层齐全**：去重（`04`）、两档冷却（`12`：60s / 强信号 15s）、
+   两档硬限流（`07` + `30`：10 分钟 3 次、1 小时 8 次）、相位与焦点预算（`31`）、
+   夜间静默（`33`）、准入 try（`32`）、开关 / 白名单 / 谷时段（`01`/`02`/`03`）
+   全部与场景无关，可原样作为「所有场景共用前置层」。
+4. **投递链路可承载场景化载荷**：`synthesizeIntervention` 的 prompt 文本是
+   可替换的，`NormalizedMessage.origin` 已经在 `core/connector.ts` 里定义了
+   `'user' | 'continuation' | 'intervention'`，`turn-runner` 已经按
+   `origin === 'intervention'` 三分支（跳过冷启动回放 / 跳过媒体块 / 跳过进度回执）。
+5. **准入的「绝不排队」语义**已经实现：`AdmissionGate.tryRunExclusive` +
+   非阻塞的 `Semaphore.tryAcquire` / `KeyedMutex.tryRun`，被拒即放弃并计
+   `interventionsDroppedBusy`。
+
+### 12.2 硬缺口（不是「再加一条规则」能解决的）
+
+| # | 缺口 | 证据 | 本方案在哪解决 |
+|---|---|---|---|
+| 1 | **状态只有会话维度**，没有话题 / 问题维度 | `state.ts` 的字段全部挂在会话键上（缓冲、`spokeAt`、`lastEvaluateAt`、`phase`、`focusSpokeCount`） | §3.1–3.3 新增话题与台账；§3.0 明确**不**做每场景状态 |
+| 2 | **场景标签通道不存在** | `GateVerdict` 只有 `{decision, reason}`；`parseGateVerdict` 只认三元 decision；`RuleMarks` 无场景位；trace 无场景位 | §4.2 契约 + §5 的 8 处改动（含 `chain.ts`，最易漏） |
+| 3 | **没有「多候选取第一个」的仲裁表达** | `RuleVerdict` 只有 `pass/mark/defer/halt`，链只有层内短路 | §4.2 `selectScene`（唯一实现）+ 契约测试 |
+| 4 | **没有每话题预算** | 只有全局焦点预算与会话限流；`spokeAt` 只记介入次数，无话题归属 | §3.1 的 `Topic.botSpeaks` + §5 的 `31-focus-budget` 改动 |
+| 5 | **仲裁看不到 bot 自己说了什么** | 旁听缓冲只收非 @ 消息、转录还会滤掉 `addressed` 条目；bot 的 @ 回复因此不在转录里，`<bot状态>` 只有计数器 | §3.6（场景 1 的阻塞项） |
+| 6 | **限流与统计不分来源、不分场景** | `origin` 止步于 `turn-runner`（不传 Responder）；`spokeAt` 与 @ 路径各记一套、互不相干；`halts` 按规则名而非场景；`REQUIREMENT.md` 里的 `stats:` 字段**代码未消费** | §7 指标 + §5 的 `chain.ts` 改动 |
+| 7 | **控制面完全没做** | `setRuntimeEnabled()` **无任何调用点**；`/listen` 在 `src/` 里不存在；P0 方案提到的 `listen-override.json` 不存在 | §5 最后一行、§7 的说明（从零建） |
+| 8 | **合成 turn 无场景化载荷** | `synthesizeIntervention` 是同一份固定指令模板；`NormalizedMessage` 无场景字段 | §4.2 的 `directive` + §5 的 `watcher.ts` 改动 |
+| 9 | **相位机与会话强耦合** | 相位与 `focusSpokeCount` 都是会话级 | §3.0 明确不做每场景相位（沿用会话级 + 每话题预算补足） |
+
+### 12.3 实施前必须先认下的既有行为（容易踩的坑）
+
+1. **相位迁移发生在「投递成功之后」**，不是「speak 链全过」
+   （`watcher.ts:598-606`）：准入被拒时 `spokeAt` 与相位都不动。
+   新增的每话题记账必须挂在**同一个成功点**上，否则账目会与事实不符。
+2. **晋升会重置续聊窗口**（`watcher.ts:349-353`）——「其他人的追问走晋升路径」
+   不是一个中性选择，它会让提问者的窗口被续命。场景 1 的其他人追问因此
+   走**介入路径**（§5 已按此写）。
+3. **「介入 ≠ 被 @」在记账层面已经成立**：`spokeAt` 只记主动介入，
+   @ 回复既不进 `spokeAt` 也不计介入类统计——场景优先级不能拿
+   「@ 路径不受限」当突破限流的类比理由。
+4. **`defer` 的代价不只在等待**：`10-strong-open-question` 重入时的
+   「是否已被应答」判定是纯本地启发式（窗口内有他人发言即算应答），
+   这是 §1.2 要修的目标；同时注意**消息在 `defer` 时就已经进缓冲**
+   （`watcher.ts:451`），台账改造不要重复入缓冲（`pushEntry` 有幂等保护，但别依赖它兜错）。
+5. **转录有三条硬约束**：`addressed` 条目被滤除、`slice(-limit)` 取最近
+   （默认 30 条）、正文超 `maxChars=4000` 从**头部**截断。话题摘要若不控制
+   长度，会把更早的原文挤掉。
+6. **FADING 相位的真实语义**是「采样阈值减半」（`13` 号规则），
+   不是「停止评估」；`07` 号规则拦的是**限流窗口**，与相位无关。
+
+### 12.4 记录在案的文档漂移（P0 方案 vs 代码，实施时以代码为准）
+
+| P0 方案的表述 | 代码事实 |
+|---|---|
+| §5.4 / §9.3：`COLD ──speak 链全过──▶ FOCUS` | 投递成功后才迁移（`watcher.ts:598-601`） |
+| §5.4：silent → 「记 `lastGateNoActionAt`，进冷却」 | 无此字段；冷却记 `lastEvaluateAt`，且**进入 evaluate 就记**，不是判 silent 才记 |
+| §5.5：相位事件有 `spoke / gate-silent / rate-limit-hit / timer-expired` 四种 | 只有**三种**；期满回 cold 是惰性归一化，不是事件 |
+| §9.5：计数 `interventionsDroppedBusy/InFlight` | 只有 `interventionsDroppedBusy`；`inFlight` 的拒绝是 `32` 号规则的 halt |
+| §10：`inflight-merge` 的 `maxMessages/maxWaitMs` | 实际参数名是 `maxPending/maxAgeMs`——照文档覆盖会**静默无效**（未知 params 键不报错） |
+| §10：`/listen` 运行期覆盖持久化到 `listen-override.json` | 完全没有实现 |
+| §5.7：`scripts/gen-rule.mjs`；import 白名单「contract 与纯工具模块」 | 实际是 `scripts/gen-rule.ts`；白名单**只允许** `../../contract.js` |
+| 文首状态块：「规则文件夹 ×19」「P3-3 生成口实产待做」 | 实际 20 个规则夹；生成口已实产（`33-night-silence-veto`） |
+| §14 第 4 条：冷群补偿仍是开放问题 | 属实，且它正是场景 2/5 的缺口之一（`armDebounce` 是「有消息后静默才评估」，不是「群里安静时主动找话」） |
+
+**结论**：本方案不修改 P0 实现，但要求实施时顺手修掉上表（尤其
+`maxMessages/maxWaitMs` 这类**静默失效**的配置示例），并同步这份漂移表。
+
+---
+
+## 13. 开放问题（观察实测后再定）
 
 - 话题指纹的具体算法（关键词交集阈值 / 是否需要本地小模型）需要真实群聊转录
   才能定标；当前只能给出可替换的接口。
@@ -444,7 +622,7 @@ export interface SceneVerdict {
 
 ---
 
-## 附：本文档与实现的一致性纪律
+## 14. 附：本文档与实现的一致性纪律
 
 - `src/intervention/scenes.ts` 是本方案的**接缝草案**（常量 + 类型 + 纯函数），
   在实施 S1 时必须被真正的 `scenes/registry.ts` 取代或改写；
