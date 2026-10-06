@@ -18,7 +18,7 @@
  *   - 清理与配额一律 best-effort：失败只记 warn，绝不影响本轮回答。
  */
 
-import { mkdir, open, readdir, realpath, stat, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, realpath, stat, unlink } from 'node:fs/promises';
 import { extname, join, sep } from 'node:path';
 
 import type { Logger } from '../logger.js';
@@ -29,6 +29,11 @@ const FALLBACK_NAME = 'file';
 const MAX_NAME_LENGTH = 80;
 /** 同名冲突时的再试次数 */
 const SAVE_ATTEMPTS = 3;
+/**
+ * 本模块落盘文件的命名形态（`<毫秒时间戳>-<名字>`）。
+ * 清理只认它——前缀即来源标记，避免误删 agent 自己放进 inbox 的文件。
+ */
+const INBOX_FILE_PATTERN = /^\d{10,}-/;
 
 /**
  * 把平台给的文件名洗成"只能落在 inbox 里的一个普通文件名"。
@@ -84,6 +89,59 @@ export interface SavedInboxFile {
  * 时间戳前缀有两个作用：目录内按名字排序即按时间排序；同一秒内同名文件靠
  * `-N` 后缀与 `wx` 标志退让。
  */
+/**
+ * 把 inbox 目录解析成"确实位于会话工作区之内的真实目录"，否则返回 undefined。
+ *
+ * 这是本模块**唯一**的目录入口，落盘与清理共用（两处各写一遍正是下面这个漏洞的
+ * 成因）。三条硬约束，缺一不可：
+ *
+ *   1. 目录必须是**真实目录**而不是符号链接。仅做 realpath 包含性校验是不够的：
+ *      `realpath()` 会把符号链接解析到目标，若目标是工作区外的目录，
+ *      `startsWith(workspace)` 就挡不住了——而工作区正是 agent 可写的 cwd，
+ *      把 `inbox` 换成指向 `/data/bot` 的链接是它力所能及的事。
+ *      一旦走到清理逻辑（按时间与总量删文件），这就成了**越权删除原语**：
+ *      删掉的是所有会话的对话记录与去重表。
+ *   2. 解析后的真实路径必须严格落在工作区**之内**（不是工作区本身）——
+ *      目录名为空串时 `join(ws, '')` 等于工作区根，清理会删掉 `AGENTS.md`
+ *      与 agent 自己的产物。配置层已拒绝空串，这里是结构性兜底。
+ *   3. 目标不能是工作区之外（符号链接指向外部时，realpath 结果会露馅）。
+ */
+async function resolveInboxDir(
+  workspacePath: string,
+  inboxDir: string,
+  logger: Logger,
+): Promise<string | undefined> {
+  const dir = join(workspacePath, inboxDir);
+  try {
+    await mkdir(dir, { recursive: true });
+    const linkInfo = await lstat(dir);
+    if (!linkInfo.isDirectory()) {
+      logger.warn('inbox 路径不是目录（符号链接或特殊文件），已拒绝', { dir });
+      return undefined;
+    }
+    const realDir = await realpath(dir);
+    const realRoot = await realpath(workspacePath);
+    if (!realDir.startsWith(realRoot + sep)) {
+      logger.warn('inbox 目录不在会话工作区内，已拒绝', { dir, realDir, realRoot });
+      return undefined;
+    }
+    return realDir;
+  } catch (error) {
+    logger.warn('解析 inbox 目录失败', {
+      dir,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
+/**
+ * 落一个文件到 inbox。失败一律返回 undefined（调用方降级成文字说明）。
+ *
+ * 时间戳前缀有两个作用：目录内按名字排序即按时间排序；同一秒内同名文件靠
+ * `-N` 后缀与 `wx` 标志退让。它同时是**来源标记**——清理只认这个前缀，
+ * 不会误删用户或 agent 自己放进来的文件（见 cleanupInbox）。
+ */
 export async function saveInboxFile(
   options: SaveInboxFileOptions,
 ): Promise<SavedInboxFile | undefined> {
@@ -99,18 +157,10 @@ export async function saveInboxFile(
     return undefined;
   }
 
-  const dir = join(workspacePath, inboxDir);
-  try {
-    await mkdir(dir, { recursive: true });
-    // 包含性校验：inboxDir 已在配置层被限制为纯目录名，这里再挡一次符号链接
-    // （攻击面是"工作区里预先存在一个指向外部的 inbox 符号链接"）
-    const realDir = await realpath(dir);
-    const realRoot = await realpath(workspacePath);
-    if (realDir !== realRoot && !realDir.startsWith(realRoot + sep)) {
-      logger.warn('inbox 目录不在会话工作区内，已拒绝落盘', { dir, realDir, realRoot });
-      return undefined;
-    }
+  const realDir = await resolveInboxDir(workspacePath, inboxDir, logger);
+  if (realDir === undefined) return undefined;
 
+  try {
     const safeName = sanitizeInboxFileName(options.fileName);
     const ext = extname(safeName);
     const stem = ext === '' ? safeName : safeName.slice(0, -ext.length);
@@ -124,9 +174,13 @@ export async function saveInboxFile(
         const handle = await open(absPath, 'wx');
         try {
           await handle.write(data);
-        } finally {
-          await handle.close();
+        } catch (error) {
+          // 半途写失败：删掉截断文件，别给后续解析留下半份内容
+          await handle.close().catch(() => {});
+          await unlink(absPath).catch(() => {});
+          throw error;
         }
+        await handle.close();
         return {
           absPath,
           relPath: `${inboxDir}/${fileName}`,
@@ -164,22 +218,30 @@ export interface InboxCleanupOptions {
 /**
  * inbox 清理：先删超期文件，再删最旧的直到总量回到上限内。
  *
- * 为什么是"删最旧"而不是"拒绝新文件"：用户刚发来的文件价值最高，
- * 旧文件的价值随时间衰减；拒绝新文件会让"刚发的 PDF 读不了"变成常态故障。
+ * 三条边界：
+ *   - 只认**本模块写的**文件（`<时间戳>-` 前缀）。`inbox` 对 agent 是很自然的名字，
+ *     它自己往里放中间产物完全可能；没有来源标记的话，一个 7 天定时器会悄悄
+ *     删掉它的东西且无人知情。前缀在这里就是 provenance。
+ *   - 目录必须是工作区内的真实目录（见 resolveInboxDir）——否则清理会变成
+ *     越权删除原语。
+ *   - 为什么是"删最旧"而不是"拒绝新文件"：用户刚发来的文件价值最高，旧文件的
+ *     价值随时间衰减；拒绝新文件会让"刚发的 PDF 读不了"变成常态故障。
  *
  * 全程 best-effort：任何一步失败只记 warn。清理失败不该影响用户这一轮的回答。
  */
 export async function cleanupInbox(options: InboxCleanupOptions): Promise<void> {
   const { workspacePath, inboxDir, retentionDays, maxBytes, logger } = options;
   const now = options.now ?? Date.now;
-  const dir = join(workspacePath, inboxDir);
+
+  const dir = await resolveInboxDir(workspacePath, inboxDir, logger);
+  if (dir === undefined) return;
 
   let entries: Array<{ name: string; size: number; mtimeMs: number }>;
   try {
     const dirents = await readdir(dir, { withFileTypes: true });
     entries = [];
     for (const dirent of dirents) {
-      if (!dirent.isFile() || dirent.name.startsWith('.')) continue;
+      if (!dirent.isFile() || !INBOX_FILE_PATTERN.test(dirent.name)) continue;
       try {
         const info = await stat(join(dir, dirent.name));
         entries.push({ name: dirent.name, size: info.size, mtimeMs: info.mtimeMs });
@@ -188,13 +250,10 @@ export async function cleanupInbox(options: InboxCleanupOptions): Promise<void> 
       }
     }
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') {
-      logger.warn('读取 inbox 目录失败，跳过清理', {
-        dir,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    logger.warn('读取 inbox 目录失败，跳过清理', {
+      dir,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return;
   }
 

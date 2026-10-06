@@ -170,25 +170,24 @@ describe('inbox 落盘', () => {
   it('清理：删超期文件，超总量时删最旧的而不是拒绝新文件', async () => {
     const workspace = tempWorkspace();
     const dir = join(workspace, 'inbox');
-    const old = join(dir, 'old.txt');
-    const mid = join(dir, 'mid.txt');
-    const fresh = join(dir, 'fresh.txt');
-    await saveInboxFile({
-      workspacePath: workspace,
-      inboxDir: 'inbox',
-      fileName: 'old.txt',
-      data: new Uint8Array(100),
-      maxBytes: 1024,
-      logger,
-    });
-    // 手工改名以控制 mtime 排序与时间跨度
-    const created = readdirSync(dir)[0]!;
-    renameSync(join(dir, created), old);
-    utimesSync(old, new Date(0), new Date(0));
-    writeFileSync(mid, 'x'.repeat(100));
-    utimesSync(mid, new Date(999_950_000_000), new Date(999_950_000_000));
-    writeFileSync(fresh, 'y'.repeat(100));
-    utimesSync(fresh, new Date(999_990_000_000), new Date(999_990_000_000));
+    const save = (fileName: string, ts: number) =>
+      saveInboxFile({
+        workspacePath: workspace,
+        inboxDir: 'inbox',
+        fileName,
+        data: new Uint8Array(100),
+        maxBytes: 1024,
+        logger,
+        now: () => ts,
+      });
+    // 用本模块自己落盘（文件名带 <时间戳>- 前缀），再用 utimes 设定逻辑 mtime
+    // 时间戳前缀是 13 位毫秒（与 Date.now() 一致），清理只认这个形态
+    const old = await save('old.txt', 1_000_000_000_000);
+    const mid = await save('mid.txt', 1_999_950_000_000);
+    const fresh = await save('fresh.txt', 1_999_990_000_000);
+    utimesSync(old!.absPath, new Date(1_000_000_000_000), new Date(1_000_000_000_000));
+    utimesSync(mid!.absPath, new Date(1_999_950_000_000), new Date(1_999_950_000_000));
+    utimesSync(fresh!.absPath, new Date(1_999_990_000_000), new Date(1_999_990_000_000));
 
     await cleanupInbox({
       workspacePath: workspace,
@@ -196,12 +195,79 @@ describe('inbox 落盘', () => {
       retentionDays: 1,
       maxBytes: 150,
       logger,
+      now: () => 2_000_000_000_000,
+    });
+    // old 超期必删；剩下的按总量上限（150）只留得下最新的那个
+    const left = readdirSync(dir).sort();
+    expect(left).not.toContain('1000000000000-old.txt');
+    expect(left).toHaveLength(1);
+    expect(left[0]).toBe('1999990000000-fresh.txt');
+  });
+
+  it('清理只认本模块命名的文件，不碰 agent 自己放进 inbox 的东西', async () => {
+    const workspace = tempWorkspace();
+    const dir = join(workspace, 'inbox');
+    const { mkdirSync: mk } = await import('node:fs');
+    mk(dir, { recursive: true });
+    // 没有 <时间戳>- 前缀 = 不是本模块写的
+    writeFileSync(join(dir, 'agent-notes.md'), 'x'.repeat(500));
+    utimesSync(join(dir, 'agent-notes.md'), new Date(0), new Date(0));
+
+    await cleanupInbox({
+      workspacePath: workspace,
+      inboxDir: 'inbox',
+      retentionDays: 1,
+      maxBytes: 1,
+      logger,
       now: () => 1_000_000_000_000,
     });
-    const left = readdirSync(dir).sort();
-    expect(left).not.toContain('old.txt');
-    expect(left).toHaveLength(1);
-    expect(left[0]).toBe('fresh.txt');
+    expect(readdirSync(dir)).toEqual(['agent-notes.md']);
+  });
+
+  it('inbox 是符号链接（指向工作区外）时，落盘与清理都拒绝执行', async () => {
+    const workspace = tempWorkspace();
+    const outside = tempWorkspace();
+    const { mkdirSync: mk, symlinkSync } = await import('node:fs');
+    mk(outside, { recursive: true });
+    // 模拟 agent 把 inbox 换成指向 /data/bot 的链接（威胁模型见 DESIGN §6.4）
+    writeFileSync(join(outside, 'sessions.json'), 'important');
+    symlinkSync(outside, join(workspace, 'inbox'));
+
+    const saved = await saveInboxFile({
+      workspacePath: workspace,
+      inboxDir: 'inbox',
+      fileName: 'x.pdf',
+      data: PDF_BYTES,
+      maxBytes: 1024,
+      logger,
+    });
+    expect(saved).toBeUndefined();
+
+    await cleanupInbox({
+      workspacePath: workspace,
+      inboxDir: 'inbox',
+      retentionDays: 1,
+      maxBytes: 0,
+      logger,
+      now: () => 1_000_000_000_000,
+    });
+    // 工作区外的文件必须原封不动
+    expect(readdirSync(outside)).toEqual(['sessions.json']);
+    expect(statSync(join(outside, 'sessions.json')).size).toBe('important'.length);
+  });
+
+  it('inboxDir 为空串时落盘拒绝（不让它退化成工作区根）', async () => {
+    const workspace = tempWorkspace();
+    const saved = await saveInboxFile({
+      workspacePath: workspace,
+      inboxDir: '',
+      fileName: 'x.pdf',
+      data: PDF_BYTES,
+      maxBytes: 1024,
+      logger,
+    });
+    expect(saved).toBeUndefined();
+    expect(readdirSync(workspace)).toEqual([]);
   });
 
   it('目录不存在时清理不抛错', async () => {

@@ -102,6 +102,25 @@ describe('loadConfig', () => {
     );
   });
 
+  it('会拼进工作区路径的目录名：空串 / 分隔符 / 点目录一律启动期拒绝', () => {
+    // 空串是 YAML 里最常见的"改配置忘了填"：'' 不是 nullish，会一路穿过
+    // `?? fallback`，而 path.join(ws, '') 恰好等于工作区根——落盘落在工作区根、
+    // 清理把 AGENTS.md 与 agent 产物当垃圾删。outboxDir 同理（且会把文件发回用户）。
+    // 配置文件里的空串是真正的洞：'' 不是 nullish，会穿过 `?? fallback`
+    expect(() =>
+      loadConfig(baseEnv, { attachments: { files: { inboxDir: '' } } }),
+    ).toThrow(ConfigError);
+    expect(() => loadConfig(baseEnv, { media: { outboxDir: '' } })).toThrow(ConfigError);
+    // env 里的纯空白视同"没设"（envRaw 会 trim），回落到默认值——这是既有语义
+    expect(loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: '   ' }).attachments.files.inboxDir).toBe(
+      'inbox',
+    );
+    expect(loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: '   ' }).media.outboxDir).toBe('outbox');
+    expect(() => loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: 'a/b' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: '.' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: '..' })).toThrow(ConfigError);
+  });
+
   it('inboxDir 必须是纯目录名，且不能与 media.outboxDir 同名', () => {
     // 同名的后果：用户发来的文件被 egress 立刻回发给自己
     expect(() =>

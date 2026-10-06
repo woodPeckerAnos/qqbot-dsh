@@ -297,6 +297,37 @@ function pickString(env: Env, envKey: string, fileValue: string | undefined, fal
   return envRaw(env, envKey) ?? fileValue ?? fallback;
 }
 
+/**
+ * 校验"会拼进会话工作区路径的目录名"。
+ *
+ * 为什么单独抽一个函数：这个校验有两处调用（`media.outboxDir` 与
+ * `attachments.files.inboxDir`），而它守的是一条安全不变量——目录必须是
+ * 工作区**之内**的一个普通子目录。四处踩过的坑：
+ *
+ *   - 空串：`envRaw() ?? fileValue ?? fallback` 里**空串不是 nullish**，
+ *     所以 `inboxDir: ""` 会一路通过；而 `path.join(ws, '')` 恰好等于工作区根，
+ *     于是落盘落在工作区根、清理把 `AGENTS.md` 与 agent 产物当垃圾删。
+ *     这类"配置写空"在 YAML 里极其常见（改配置时清空忘了填）。
+ *   - 分隔符与 `.` / `..`：能指向工作区之外的任意路径。
+ *
+ * 注释里写清楚，是因为下一个人很容易把它当成"格式检查"而顺手放宽。
+ */
+function assertWorkspaceSubdirName(value: string, label: string, hints: string[]): void {
+  const reason =
+    value === ''
+      ? '不能为空（空串会让它退化成工作区根目录）'
+      : value.includes('/') || value.includes('\\')
+        ? '不能含路径分隔符'
+        : value === '.' || value === '..'
+          ? '不能是 . 或 ..'
+          : undefined;
+  if (reason === undefined) return;
+  throw new ConfigError(
+    `${label} 必须是工作区内的纯子目录名：${reason}，收到 ${JSON.stringify(value)}`,
+    hints,
+  );
+}
+
 function pickInt(
   env: Env,
   envKey: string,
@@ -560,17 +591,9 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   // outboxDir 会拼进每个会话的工作区路径，必须是纯目录名（不含分隔符、不是 . / ..），
   // 否则"产物只能落在会话工作区内"这条安全不变量就被配置自己打破了。
   const mediaOutboxDir = pickString(env, 'BOT_MEDIA_OUTBOX_DIR', mediaFile.outboxDir, 'outbox');
-  if (
-    mediaOutboxDir.includes('/') ||
-    mediaOutboxDir.includes('\\') ||
-    mediaOutboxDir === '.' ||
-    mediaOutboxDir === '..'
-  ) {
-    throw new ConfigError(
-      `media 的 outboxDir 必须是纯目录名（不含路径分隔符），收到 ${JSON.stringify(mediaOutboxDir)}`,
-      ['正确示例：outbox、deliverables'],
-    );
-  }
+  assertWorkspaceSubdirName(mediaOutboxDir, 'media 的 outboxDir', [
+    '正确示例：outbox、deliverables',
+  ]);
 
   const mediaImageExtensionsRaw = pickList(env, 'BOT_MEDIA_IMAGE_EXTENSIONS', mediaFile.imageExtensions);
   const mediaImageExtensions = (
@@ -586,17 +609,9 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     attachmentsFile.files?.inboxDir,
     'inbox',
   );
-  if (
-    attachmentInboxDir.includes('/') ||
-    attachmentInboxDir.includes('\\') ||
-    attachmentInboxDir === '.' ||
-    attachmentInboxDir === '..'
-  ) {
-    throw new ConfigError(
-      `attachments.files 的 inboxDir 必须是纯目录名（不含路径分隔符），收到 ${JSON.stringify(attachmentInboxDir)}`,
-      ['正确示例：inbox、uploads'],
-    );
-  }
+  assertWorkspaceSubdirName(attachmentInboxDir, 'attachments.files.inboxDir', [
+    '正确示例：inbox、uploads',
+  ]);
   if (attachmentInboxDir === mediaOutboxDir) {
     throw new ConfigError(
       `attachments.files.inboxDir 与 media.outboxDir 不能同名（都是 ${JSON.stringify(attachmentInboxDir)}）`,
@@ -615,7 +630,10 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     attachmentExtensionsRaw.length > 0
       ? attachmentExtensionsRaw
       : ['pdf', 'txt', 'md', 'csv', 'json', 'yaml', 'yml', 'log', 'xml', 'html']
-  ).map((ext) => ext.trim().toLowerCase().replace(/^\./, ''));
+  )
+    .map((ext) => ext.trim().toLowerCase().replace(/^\./, ''))
+    // 空串会被 extensionOf('') 之外的调用方当成"任意无扩展名文件都命中白名单"
+    .filter((ext) => ext !== '');
 
   return {
     connectors: enabledConnectors,
