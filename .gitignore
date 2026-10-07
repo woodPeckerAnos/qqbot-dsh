@@ -6,6 +6,10 @@ dist/
 .env
 .env.local
 
+# 部署方的兴趣池（场景 5）：每套部署内容不同，样例在
+# src/pipeline/proactive/interests/interests.yml.example
+interests.yml
+
 # 本地调试产物（不由程序创建，仅为隔离工作区外的写入）
 .npm-cache/
 .npm-lock-staging/
