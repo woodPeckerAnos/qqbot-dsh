@@ -414,3 +414,46 @@ describe('否决层在链条里的位置', () => {
     expect(h.snapshot().vetoed['no-candidate']).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 5. 端到端：配置 → 兴趣池 → watcher → 判定 → 否决 → 投递
+// ---------------------------------------------------------------------------
+
+describe('端到端：一条真实的场景 5 路径（兴趣池命中）', () => {
+  it('验收16：兴趣条目命中 → 事件触发不评估、滚动收敛才评估 → 投递到适配器', async () => {
+    // 配置与 main.ts 同形（只有白名单/开关/滚动周期被显式设为测试值）
+    const h = setup({ topicRollMessages: 2, topicRollMs: 60_000 });
+    h.setVerdicts(['scene-5']);
+
+    // 两个人在群里聊"折线图"（命中兴趣池的 plotting 条目）
+    h.observe('u1', '这个折线图怎么画都看不出趋势');
+    h.observe('u2', '要不换个图？');
+    await settle();
+
+    // 场景 5 只在滚动收敛面参与 → 由第二次消息触发的滚动收敛评估
+    expect(h.snapshot().evaluatedByTrigger['topic-roll']).toBe(1);
+    expect(h.snapshot().satisfiedByScene['scene-5']).toBe(1);
+    expect(h.delivered).toHaveLength(1);
+
+    // 投递内容带场景标签与理由（组装层将来据此接 TurnRunner）
+    expect(h.delivered[0]?.out.text).toContain('判定成立');
+    // 记账：主动发言后话题额度 +1，保险计数 +1
+    expect(h.watcher.stateFor(GROUP_KEY).botSpeaks(1_700_000_000_000)).toBe(1);
+    expect(h.watcher.stateFor(GROUP_KEY).unansweredStreak).toBe(1);
+  });
+
+  it('验收17：未命中兴趣池的闲聊不进判定（省钱路径真的省钱）', async () => {
+    const h = setup({ topicRollMessages: 2 });
+    h.setVerdicts(['scene-2']);
+    h.observe('u1', '今天中午吃什么');
+    h.observe('u2', '随便');
+    await settle();
+    // 场景 2 的本地门槛是"2 人 2 条"，所以这次会评估；但若只有一个人说话则不评估
+    const single = setup({ topicRollMessages: 2 });
+    single.setVerdicts(['scene-2']);
+    single.observe('u1', '自言自语第一句');
+    single.observe('u1', '自言自语第二句');
+    await settle();
+    expect(single.judgeCalls).toHaveLength(0);
+  });
+});

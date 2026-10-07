@@ -168,6 +168,9 @@ export interface WatcherSnapshot {
   judgeFailures: number;
 }
 
+/** 兴趣匹配看最近多少条消息（话题是"这几句话在聊什么"，不是单条）。 */
+const RECENT_MATCH_MESSAGES = 5;
+
 /** 触发来源（watcher 自己的调度面 + 场景声明用的三个）。 */
 export type WatcherTrigger = Extract<SceneTrigger, 'message' | 'question-probe' | 'topic-roll'>;
 
@@ -256,6 +259,7 @@ export class ProactiveWatcher {
       message: { text: message.content },
       ...(this.deps.interests === undefined ? {} : { interests: this.deps.interests }),
       botAliases: this.config.botAliases,
+      text: this.matchText(state, message.content),
     });
     const candidates = collectCandidates(evidence, {
       maxUnansweredStreak: this.policy.maxUnansweredStreak,
@@ -411,14 +415,29 @@ export class ProactiveWatcher {
     trigger: WatcherTrigger,
     extra: { text?: string } = {},
   ) {
+    const state = this.states.for(convKey);
+    const now = this.now();
     return buildSceneEvidence({
-      state: this.states.for(convKey),
+      state,
       trigger,
-      now: this.now(),
+      now,
       ...(extra.text === undefined ? {} : { message: { text: extra.text } }),
       ...(this.deps.interests === undefined ? {} : { interests: this.deps.interests }),
       botAliases: this.config.botAliases,
+      // 兴趣匹配用**整段近期对话**而不是单条消息：话题是"这几句话在聊什么"，
+      // 只看触发那一条会漏掉（实测："这个折线图怎么画" + "要不换个图？"，
+      // 只看后一条命中不了任何兴趣条目）。
+      text: this.matchText(state, extra.text),
     });
+  }
+
+  /** 兴趣匹配的输入文本：最近若干条（含本轮）拼起来。 */
+  private matchText(state: ConversationState, extraText?: string): string {
+    const recent = state.entries
+      .slice(-RECENT_MATCH_MESSAGES)
+      .map((entry) => entry.text)
+      .join('\n');
+    return extraText === undefined ? recent : `${recent}\n${extraText}`;
   }
 
   /**
