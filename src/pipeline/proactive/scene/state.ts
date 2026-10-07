@@ -110,10 +110,13 @@ export interface ConversationStateOptions {
   questionTtlMs?: number;
 }
 
+/** 默认活动窗口（毫秒）：静默这么久就算话题翻篇。watcher 与 veto 上下文共用它。 */
+export const DEFAULT_ACTIVITY_WINDOW_MS = 10 * 60_000;
+
 export const DEFAULT_STATE_OPTIONS: Required<ConversationStateOptions> = {
   maxEntries: 200,
   maxAgeMs: 30 * 60_000,
-  activityWindowMs: 10 * 60_000,
+  activityWindowMs: DEFAULT_ACTIVITY_WINDOW_MS,
   maxQuestions: 20,
   questionTtlMs: 30 * 60_000,
 };
@@ -186,10 +189,18 @@ export class ConversationState {
     if (looksLikeQuestion(entry.text)) this.registerQuestion(entry);
   }
 
-  /** bot 在本群发了一条主动发言：计数 +1、无人回应计数 +1、刷新参与窗口。 */
+  /**
+   * bot 在本群发了一条**主动**发言：无人回应计数 +1、话题额度 +1。
+   *
+   * 语义提醒：计数是"连续几次主动发言之间没有人接话"。用户 @ bot 后的回复
+   * **不算**主动发言（那是被叫到的应答），因此不会让计数上涨——否则
+   * "没人理我就停"会被一轮正常问答误触发。
+   */
   recordBotSpoke(ts: number): void {
     this.botLastSpokeAt = ts;
     this.unansweredStreakCount += 1;
+    // 顺序要紧：先数这一句，再考虑要不要开新窗口。反过来写会让
+    // "新窗口里的第一句 bot 发言"被 startWindow 的清零吃掉（每话题一次形同失效）。
     this.botSpeaksInWindow += 1;
     if (this.windowStartedAt === undefined || this.isExpiredAt(ts)) this.startWindow(ts);
   }
@@ -202,6 +213,16 @@ export class ConversationState {
 
   get botLastSpoke(): number | undefined {
     return this.botLastSpokeAt;
+  }
+
+  /**
+   * 最近一次**人类**发言时间（不含 bot 自己）。
+   *
+   * 用途：滚动收敛必须等到"真的没人说话了"——用 bot 自己的发言当锚点会让
+   * 刚说完话就立刻收敛，反而更容易插话。
+   */
+  get lastHumanSpoke(): number | undefined {
+    return this.lastHumanAt;
   }
 
   /** bot 是否仍在这个活动窗口里参与着话题（场景 1 的预筛条件）。 */
@@ -287,6 +308,7 @@ export class ConversationState {
 
   private startWindow(ts: number): void {
     this.windowStartedAt = ts;
+    // 新话题开始 → 话题额度归零（"每话题一次"的口径就是这个窗口）
     this.botSpeaksInWindow = 0;
     this.participants.clear();
     // 话题翻篇：上一窗口的未答问题不再算"这个群里有人问了没人答"

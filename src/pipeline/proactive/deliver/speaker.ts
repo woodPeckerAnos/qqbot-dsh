@@ -106,6 +106,12 @@ export const PROACTIVE_DEGRADE_ORDER: readonly ProactiveDegradeReason[] = [
 
 export type ProactiveOutcome =
   | { status: 'sent'; trigger: ProactiveTrigger }
+  /**
+   * 灰度观察模式（`dryRun`）：判定链完整跑完，但**不真的发**。
+   * 与 `disabled` 的区别很重要：disabled 是"功能关着"，would-send 是
+   * "它本来会说话，只是我们按住了"——后者才是调参需要的信号。
+   */
+  | { status: 'would-send'; trigger: ProactiveTrigger }
   | {
       status: 'degraded';
       trigger: ProactiveTrigger;
@@ -162,6 +168,11 @@ export interface ProactiveSpeakerOptions {
    * 而不是让调用方在外部写 `if (enabled)` 分支。
    */
   enabled: boolean;
+  /**
+   * 灰度观察模式（默认关）：判定照跑、trace 照记、**永不真的发言**。
+   * 上线顺序建议：先 dryRun 观察一到两周，确认判据准了再打开真发言。
+   */
+  dryRun?: boolean;
   metrics?: ProactiveMetrics;
   logger: Logger;
 }
@@ -212,6 +223,18 @@ export class ProactiveSpeaker {
     // 缺省实现 = 平台不支持：与"官方层 do nothing"同义（见 core/connector.ts 注释）。
     if (typeof connector.proactive !== 'function') {
       return this.degrade('unsupported', trigger, '适配器未实现 proactive()', false, metrics);
+    }
+
+    // dryRun 在**调用适配器之前**短路：观察模式不该真的碰平台。
+    if (this.options.dryRun === true) {
+      metrics.sent(trigger);
+      this.options.logger.info('主动发言（dryRun：判定通过，未发送）', {
+        conversation: target.key,
+        trigger,
+        reason: delivery.reason,
+        length: content.text.length,
+      });
+      return { status: 'would-send', trigger };
     }
 
     let result;
@@ -285,4 +308,9 @@ function normalizeReason(reason: ProactiveRejectReason): ProactiveDegradeReason 
 /** 是否是一次成功投放（给调用方省一个判断）。 */
 export function isSent(outcome: ProactiveOutcome): boolean {
   return outcome.status === 'sent';
+}
+
+/** 是否是"判定通过但被 dryRun 按住"（观察模式的信号）。 */
+export function isWouldSend(outcome: ProactiveOutcome): boolean {
+  return outcome.status === 'would-send';
 }

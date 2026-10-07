@@ -101,7 +101,11 @@ export const SCENE_DEFINITIONS: readonly SceneDefinition[] = [
     name: '持续讨论',
     triggers: ['topic-roll'],
     precheck: (ctx) => {
-      if (ctx.recentHumanCount < 2 || ctx.recentMessageCount < 3) return undefined;
+      // **低门槛入口**：滚动收敛本身已经是很强的节流（每 N 条 / M 分钟一次），
+      // 本地只判断"这像不像一场多人讨论"。真正的三个判据（能力域 / 可答问题 /
+      // 事实性错误 + 信息增量）由 LLM 判据负责——本地这里一旦收紧，
+      // 场景 2 就会因为"没有候选"而永远进不了判定（且没有任何报错）。
+      if (ctx.recentHumanCount < 2 || ctx.recentMessageCount < 2) return undefined;
       if ((ctx.topic?.botSpeaks ?? 0) > 0) return undefined;
       return {
         confidence: 0.4,

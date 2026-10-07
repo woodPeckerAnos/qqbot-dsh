@@ -19,6 +19,7 @@
  */
 
 import {
+  DEFAULT_VETO_POLICY,
   sceneOrder,
   type ProactiveDecision,
   type SceneCandidate,
@@ -27,8 +28,9 @@ import {
   type VetoContext,
   type VetoPolicy,
   type VetoReason,
-  DEFAULT_VETO_POLICY,
 } from '../contract.js';
+
+export { DEFAULT_VETO_POLICY };
 
 /** 采纳 LLM 的 wait 建议时默认推迟多久（与既有 gate-wait 重查同量级）。 */
 export const DEFAULT_WAIT_MS = 30_000;
