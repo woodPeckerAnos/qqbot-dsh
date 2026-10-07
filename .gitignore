@@ -6,9 +6,11 @@ dist/
 .env
 .env.local
 
-# 部署方的兴趣池（场景 5）：每套部署内容不同，样例在
-# src/pipeline/proactive/interests/interests.yml.example
-interests.yml
+# 兴趣池（场景 5）**不忽略**：仓库里提交了一份近乎为空的 interests.yml 占位。
+# 原因：Docker 的 bind mount 在宿主文件不存在时会自动建同名**目录**，
+# 容器启动会直接失败（「interests.yml 是一个目录，不是文件」）。
+# 占位文件必须在仓库里，克隆后一挂载就是合法空池。
+# 你往里面加的真实兴趣条目：这是个人部署，按需提交或留着不提交都行。
 
 # 本地调试产物（不由程序创建，仅为隔离工作区外的写入）
 .npm-cache/

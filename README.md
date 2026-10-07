@@ -82,9 +82,13 @@ BOT_PROACTIVE_DRY_RUN=true           # 默认值：先观察，确认判据准�
 ```
 
 ```bash
-# 可选：兴趣池（场景 5）。文件不存在 = 空池，场景 5 不触发。
+# 可选：兴趣池（场景 5）。仓库里已有一份近乎为空的 interests.yml 占位，
+# 空池 = 场景 5 不触发（其余四个场景不受影响）。要真的用起来，照样例填：
 cp src/pipeline/proactive/interests/interests.yml.example interests.yml
 ```
+
+> ⚠️ 别删掉宿主上的 `interests.yml` / `qqbot.yml`：compose 是 bind mount，
+> 文件不存在时 Docker 会**自动建一个同名目录**，容器启动会直接失败。
 
 它**会在什么情况下开口**，用人话写在
 **[SCENES.md](src/pipeline/proactive/interests/SCENES.md)**：五类场景（指代 / 续聊追问 /
