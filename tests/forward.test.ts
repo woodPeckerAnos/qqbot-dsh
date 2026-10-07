@@ -85,7 +85,12 @@ describe('转发段归一化', () => {
       user_id: 12345,
       message: [{ type: 'forward', data: { id: 'fwd-1' } }],
     });
-    expect(onlyForward.type).toBe('ignored');
+    // 转发块本身不构成"被 @"：于是它是一条**旁听消息**（介入层会看到，
+    // 但没有 atSelf 语义）。注意它带 forwardRefs → 介入层只按 content 用
+    // （旁听不进 TurnRunner，不回查转发内容）。
+    expect(onlyForward.type).toBe('event');
+    if (onlyForward.type !== 'event') return;
+    expect(onlyForward.event.kind).toBe('group-message');
 
     const withAt = normalizeOneBotEvent({
       post_type: 'message',

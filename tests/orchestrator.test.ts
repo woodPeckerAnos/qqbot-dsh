@@ -224,6 +224,8 @@ function setup(
     topicJudge?: TopicJudge;
     /** 文档抽取器（默认不注入 = 只落盘不解析，与"没装 poppler"的部署等价） */
     extractDocument?: DocumentExtractor;
+    /** 传 false 表示**不装配**介入层（模拟"只要 @ 回复"的部署） */
+    observe?: false;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), 'qqbot-disp-'));
@@ -308,12 +310,14 @@ function setup(
     createRecordStage({ conversations }),
     admission.stage(),
   ];
+  const observed: NormalizedMessage[] = [];
   const orchestrator = new Orchestrator({
     logger,
     connectors,
     admins: config.admins,
     stats,
     stages,
+    ...(options.observe === false ? {} : { observe: (message) => observed.push(message) }),
     terminal: (ctx) => turnRunner.runTurn(ctx),
     createResponder: (message, conn, policy, messageLogger) =>
       new Responder({
@@ -356,6 +360,7 @@ function setup(
     conversations,
     sessions,
     background,
+    observed,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
@@ -380,6 +385,22 @@ function makeMessage(overrides: Partial<NormalizedMessage> = {}): NormalizedMess
     senderId: 'MEMBER-1',
     username: '小明',
     content: '帮我看看',
+    ts: 1_700_000_000_000,
+    raw: {},
+    ...overrides,
+  };
+}
+
+/** 造一条旁听消息（群里没 @ bot；会话键同群）。 */
+function makeObservedMessage(overrides: Partial<NormalizedMessage> = {}): NormalizedMessage {
+  return {
+    kind: 'group-message',
+    target: groupTarget('GROUP-1'),
+    eventId: 'EVENT-OBS-1',
+    msgId: 'MSG-OBS-1',
+    senderId: 'MEMBER-9',
+    username: '路人',
+    content: '今天中午吃什么',
     ts: 1_700_000_000_000,
     raw: {},
     ...overrides,
@@ -805,6 +826,58 @@ describe('编排 单聊', () => {
     expect(groupTarget('SAME').key).toBe('SAME');
     expect(c2cTarget('SAME').key).toBe('c2c:SAME');
     expect(groupTarget('SAME').key).not.toBe(c2cTarget('SAME').key);
+  });
+});
+
+describe('编排 旁听消息分流', () => {
+  beforeEach(() => {
+    ctx = setup();
+  });
+
+  it('旁听消息只投给介入层：不进 Ingress、不回复、不写对话记录、不占并发', async () => {
+    await ctx.orchestrator.handleEvent(makeObservedMessage());
+
+    // 投给了介入层
+    expect(ctx.observed).toHaveLength(1);
+    expect(ctx.observed[0]?.content).toBe('今天中午吃什么');
+    // 完全没有进入 Ingress：假 runtime 一次都没被调用、没有回复、没有对话记录
+    expect(ctx.runtime.prompts).toHaveLength(0);
+    expect(ctx.sent).toHaveLength(0);
+    expect(ctx.conversations.readAll('GROUP-1')).toEqual([]);
+    // 计数分开：received 不含旁听
+    const stats = ctx.orchestrator.snapshotStats();
+    expect(stats.observed).toBe(1);
+    expect(stats.received).toBe(0);
+    expect(stats.observedSkipped).toBe(0);
+  });
+
+  it('未装配介入层：旁听消息计 observedSkipped 并静默丢弃（不报错、不影响 @ 路径）', async () => {
+    ctx = setup({ observe: false });
+    await ctx.orchestrator.handleEvent(makeObservedMessage());
+    expect(ctx.orchestrator.snapshotStats().observedSkipped).toBe(1);
+    expect(ctx.orchestrator.snapshotStats().observed).toBe(1);
+
+    // @ 路径照常工作（旁听消息的存在不影响它）
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['ok']);
+    await pending;
+    expect(ctx.sent).toHaveLength(1);
+    expect(ctx.orchestrator.snapshotStats().received).toBe(1);
+  });
+
+  it('介入层抛错不会带崩主链路（旁听路径独立兜底）', async () => {
+    ctx = setup({
+      observe: false,
+    });
+    // 直接构造一个会抛错的介入层入口，验证 Orchestrator 兜底
+    const throwing = new Orchestrator({
+      ...ctx.orchestrator.deps,
+      observe: () => {
+        throw new Error('介入层炸了');
+      },
+    });
+    await expect(throwing.handleEvent(makeObservedMessage())).resolves.toBeUndefined();
   });
 });
 

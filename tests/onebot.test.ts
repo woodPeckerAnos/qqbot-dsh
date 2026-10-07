@@ -27,7 +27,13 @@ import {
   quotedAuthorFromGetMsg,
   quotedPartsFromGetMsg,
 } from '../src/adapters/onebot/normalize.js';
-import type { NormalizedEvent, NormalizedMessage } from '../src/core/connector.js';
+import {
+  isAddressedMessage,
+  isObservedMessage,
+  isUserMessage,
+  type NormalizedEvent,
+  type NormalizedMessage,
+} from '../src/core/connector.js';
 import { createNullLogger } from '../src/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -70,7 +76,7 @@ describe('OneBot 归一化', () => {
     expect(event.ts).toBe(1_700_000_000_000);
   });
 
-  it('群消息：没 @ 机器人时忽略', () => {
+  it('群消息：没 @ 机器人 → 归一化成**旁听消息**（不再丢弃，交给主动介入层）', () => {
     const result = normalizeOneBotEvent({
       post_type: 'message',
       message_type: 'group',
@@ -81,7 +87,36 @@ describe('OneBot 归一化', () => {
       user_id: 12345,
       message: [{ type: 'text', data: { text: '大家好' } }],
     });
-    expect(result.type).toBe('ignored');
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    expect(result.event.kind).toBe('group-message');
+    expect(isObservedMessage(result.event)).toBe(true);
+    expect(isAddressedMessage(result.event)).toBe(false);
+    expect(isUserMessage(result.event)).toBe(true);
+    // 旁听消息仍带完整上下文：谁说的、在哪个群、说了什么
+    expect(result.event.senderId).toBe('12345');
+    expect(result.event.target.key).toBe('ob11:g8888');
+    expect(result.event.content).toBe('大家好');
+    // 没有 / 命令语义的旁听消息不该被当成提问
+    expect(result.event.eventId).toContain('ob11:10000:1');
+  });
+
+  it('群消息：只有图片没文字也算旁听（内容至少是占位标记）', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 2,
+      group_id: 8888,
+      user_id: 12345,
+      message: [{ type: 'image', data: { file: 'x.jpg' } }],
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    expect(result.event.kind).toBe('group-message');
+    // 内容形态由 core/content.ts 决定（带文件名），这里只断言"非空且有占位语义"
+    expect(result.event.content).toContain('[图片');
   });
 
   it('群消息：机器人自己发的消息忽略（防自触发循环）', () => {

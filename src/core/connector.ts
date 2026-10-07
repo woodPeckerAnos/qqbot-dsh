@@ -207,9 +207,20 @@ export interface MediaBytes {
  *
  * 各平台的群聊/单聊消息都归一化成这个形状，编排层只有一条代码路径。
  * 平台专有的字段（消息段、附件等）放在 raw 里，编排层不解读。
+ *
+ * `kind` 三种取值的语义差别只有一件事——**这条消息是不是在跟 bot 说话**：
+ *
+ * | kind | 含义 | 编排层走向 |
+ * |---|---|---|
+ * | `group-at-message` | 群里 @ 了 bot | Ingress 管线 → agent turn → 回复 |
+ * | `c2c-message` | 单聊消息（私聊天然是"对 bot 说"） | 同上 |
+ * | `group-message` | **群里没 @ bot 的旁听消息** | 只进主动介入层（判断要不要插话），**不进 Ingress** |
+ *
+ * 旁听消息在 OneBot 上需要框架推送全量群消息；官方通道需要平台侧开通
+ * 「接收所有消息」能力（未开通时永远收不到，见 §接入能力）。
  */
 export interface NormalizedMessage {
-  kind: 'group-at-message' | 'c2c-message';
+  kind: 'group-at-message' | 'c2c-message' | 'group-message';
   target: ConversationTarget;
   /**
    * 事件级去重 id。适配器必须保证它在平台内唯一且已带平台命名空间
@@ -259,8 +270,28 @@ export interface NormalizedSystemEvent {
 
 export type NormalizedEvent = NormalizedMessage | NormalizedSystemEvent;
 
-/** 是否为用户消息（群聊或单聊），用于把消息事件与系统事件分开。 */
+/** 是否为用户消息（群聊 / 单聊 / 旁听），用于把消息事件与系统事件分开。 */
 export function isUserMessage(event: NormalizedEvent): event is NormalizedMessage {
+  return (
+    event.kind === 'group-at-message' ||
+    event.kind === 'c2c-message' ||
+    event.kind === 'group-message'
+  );
+}
+
+/**
+ * 是否为**旁听消息**（群里没 @ bot）。
+ *
+ * 这是编排层的分流依据，且分流点只有一处（`Orchestrator.handleEvent`）：
+ * 旁听消息**不进 Ingress 管线**（不写对话记录、不占并发、不回复），
+ * 只交给主动介入层判断"要不要插话"。
+ */
+export function isObservedMessage(event: NormalizedEvent): event is NormalizedMessage {
+  return event.kind === 'group-message';
+}
+
+/** 是否为「在跟 bot 说话」的消息（@ 或私聊）——这些才走完整的 Ingress 管线。 */
+export function isAddressedMessage(event: NormalizedEvent): event is NormalizedMessage {
   return event.kind === 'group-at-message' || event.kind === 'c2c-message';
 }
 

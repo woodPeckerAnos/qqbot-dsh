@@ -462,22 +462,32 @@ function normalizeMessage(raw: OneBotEvent, now: () => number): NormalizeResult 
     }
     if (raw.group_id === undefined) return { type: 'ignored', reason: '群消息缺少 group_id' };
     const extracted = extractMessageContent(raw.message ?? raw.raw_message, selfId);
-    if (!extracted.atSelf) return { type: 'ignored', reason: '群消息未 @ 机器人' };
+    const base = {
+      target: onebotGroupTarget(raw.group_id),
+      // 去重 id 自带平台命名空间（去重表全平台共用）
+      eventId: `ob11:${selfId}:${messageId}`,
+      msgId: String(messageId),
+      senderId: String(userId),
+      ...(senderName !== undefined ? { username: senderName } : {}),
+      content: extracted.content,
+      parts: extracted.parts,
+      ts,
+      raw: raw as unknown as Record<string, unknown>,
+    };
+
+    // 没 @ 机器人：不再丢弃，而是作为**旁听消息**交给主动介入层
+    // （要不要插话由介入层判断；旁听消息不进 Ingress 管线，见 core/connector.ts）。
+    // 纯媒体/无文本的旁听消息也放行——转录里至少有 `[图片]` 这类占位，
+    // "群里发过图"本身就是判断上下文的一部分。
+    if (!extracted.atSelf) {
+      return { type: 'event', event: { kind: 'group-message', ...base } };
+    }
     if (extracted.parts.length === 0) return { type: 'ignored', reason: '@ 之后没有正文' };
     return {
       type: 'event',
       event: {
         kind: 'group-at-message',
-        target: onebotGroupTarget(raw.group_id),
-        // 去重 id 自带平台命名空间（去重表全平台共用）
-        eventId: `ob11:${selfId}:${messageId}`,
-        msgId: String(messageId),
-        senderId: String(userId),
-        ...(senderName !== undefined ? { username: senderName } : {}),
-        content: extracted.content,
-        parts: extracted.parts,
-        ts,
-        raw: raw as unknown as Record<string, unknown>,
+        ...base,
       },
       ...(extracted.quotedMessageId !== undefined
         ? { quotedMessageId: extracted.quotedMessageId }

@@ -11,8 +11,16 @@
 import type { OffpeakSnapshot } from '../offpeak/index.js';
 
 export class PipelineStats {
-  /** 收到的用户消息数（Orchestrator 入口） */
+  /** 收到的用户消息数（Orchestrator 入口；**不含**旁听消息） */
   received = 0;
+  /**
+   * 收到的旁听消息数（群里没 @ bot，Orchestrator 入口分流）。
+   * 与 `received` 分开计数：旁听消息不占配额、不产生回复，混在一起会让人
+   * 误判"今天的消息量"。
+   */
+  observed = 0;
+  /** 旁听消息被丢弃数（未装配介入层时） */
+  observedSkipped = 0;
   /** 事件去重丢弃数（dedupe stage） */
   deduplicated = 0;
   /** 并发满员拒绝数（admission stage） */

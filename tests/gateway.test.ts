@@ -305,6 +305,35 @@ describe('QqGateway 事件归一化', () => {
     return { ...harness, events, socket };
   }
 
+  it('GROUP_MESSAGE_CREATE（全量群消息）归一化成旁听消息，不再当触发消息', async () => {
+    const { gateway, events, socket } = await readyGateway();
+    socket.fireMessage({
+      id: 'EVENT-OBS',
+      op: OpCode.DISPATCH,
+      s: 2,
+      t: 'GROUP_MESSAGE_CREATE',
+      d: {
+        id: 'MSG-OBS',
+        content: '今天中午吃什么',
+        group_openid: 'GROUP-A',
+        timestamp: '2026-07-21T10:00:00+08:00',
+        author: { member_openid: 'MEMBER-2', username: '小红' },
+      },
+    });
+
+    const kinds = events.map((e) => (e as { kind: string }).kind);
+    // 关键断言：它**不是** group-at-message（否则群里每句话都会起一轮 agent）
+    expect(kinds).not.toContain('group-at-message');
+    expect(kinds).toContain('group-message');
+    const message = events.find((e) => (e as { kind: string }).kind === 'group-message') as {
+      senderId: string;
+      content: string;
+    };
+    expect(message.senderId).toBe('MEMBER-2');
+    expect(message.content).toBe('今天中午吃什么');
+    await gateway.stop();
+  });
+
   it('GROUP_AT_MESSAGE_CREATE 归一化出 msgId / 会话目标 / senderId', async () => {
     const { gateway, events, socket } = await readyGateway();
     socket.fireMessage({

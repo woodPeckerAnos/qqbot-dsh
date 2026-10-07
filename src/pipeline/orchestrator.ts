@@ -21,7 +21,7 @@ import type {
   NormalizedMessage,
   ReplyPolicy,
 } from '../core/connector.js';
-import { isUserMessage } from '../core/connector.js';
+import { isAddressedMessage, isObservedMessage, isUserMessage } from '../core/connector.js';
 import type { SessionEventNotification, SessionStatusNotification } from '../dsh/protocol.js';
 import type { Logger } from '../logger.js';
 import type { OffpeakSnapshot } from '../offpeak/index.js';
@@ -61,12 +61,24 @@ export interface OrchestratorDeps {
   ) => Responder;
   /** runtime 事件路由（TurnRunner 的委托面） */
   turns: SessionEventRouter;
+  /**
+   * 主动介入层的入口（旁听消息的唯一去向）。
+   *
+   * 可选：未装配时旁听消息只计一个 skipped 计数（不报错）——这让"只想要
+   * @ 回复"的部署不必配介入层，也不会因为收到全量群消息而刷日志。
+   */
+  observe?: (message: NormalizedMessage) => void;
   /** health 快照的状态探针：准入闸门与谷时段闸的实时状态（对象归业务层持有） */
   status: () => { inFlight: number; queued: number; offpeak: OffpeakSnapshot };
 }
 
 export class Orchestrator {
-  constructor(private readonly deps: OrchestratorDeps) {}
+  /**
+   * `deps` 用 public readonly 暴露，只有一个用途：测试要基于一份已装配好的
+   * 依赖派生一个"改动单点"的实例（例如把介入层入口换成会抛错的桩，验证兜底）。
+   * 生产代码不应读取它——依赖是组装期注入的，运行期没有"改依赖"的语义。
+   */
+  constructor(readonly deps: OrchestratorDeps) {}
 
   snapshotStats(): PipelineStatsSnapshot {
     return { ...this.deps.stats, ...this.deps.status() };
@@ -74,7 +86,13 @@ export class Orchestrator {
 
   /** 入口：处理一个归一化事件。永不抛错（所有失败都转成回复或日志）。 */
   async handleEvent(event: NormalizedEvent): Promise<void> {
-    if (isUserMessage(event)) {
+    // 分流点只有这里一处：旁听消息（群里没 @ bot）不进 Ingress 管线——
+    // 不写对话记录、不占并发名额、不回复——只交给主动介入层判断要不要插话。
+    if (isObservedMessage(event)) {
+      this.handleObserved(event);
+      return;
+    }
+    if (isAddressedMessage(event)) {
       await this.handleMessage(event);
       return;
     }
@@ -96,6 +114,32 @@ export class Orchestrator {
 
   routeSessionStatus(conversationKey: string, status: SessionStatusNotification): void {
     this.deps.turns.routeSessionStatus(conversationKey, status);
+  }
+
+  /**
+   * 旁听消息入口：只投给主动介入层，永不进入 Ingress 管线。
+   *
+   * 为什么与 handleMessage 分开而不是在里面加一个 if：两者的**后续完全不同**
+   * ——旁听消息不该被去重表占据、不该走命令解析、不该写对话记录、不该占并发，
+   * 也不该产生任何用户可见的回复。用同一个函数加分支，迟早会有人在这条路径上
+   * 加一个"顺手"的副作用。
+   */
+  private handleObserved(message: NormalizedMessage): void {
+    this.deps.stats.observed += 1;
+    const observe = this.deps.observe;
+    if (observe === undefined) {
+      this.deps.stats.observedSkipped += 1;
+      return;
+    }
+    try {
+      observe(message);
+    } catch (error) {
+      // 介入层的第一条纪律是"永不抛错"；这里再兜一层，避免旁听消息把主链路带崩。
+      this.deps.logger.warn('旁听消息处理失败（已忽略）', {
+        conversation: message.target.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
