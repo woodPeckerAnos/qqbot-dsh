@@ -12,6 +12,7 @@
  */
 
 import type { InterestPool } from '../interests/pool.js';
+import type { ConversationState } from './state.js';
 import {
   sceneOrder,
   type SceneCandidate,
@@ -164,30 +165,71 @@ export function scenesForTrigger(trigger: SceneTrigger): readonly SceneDefinitio
 }
 
 // ---------------------------------------------------------------------------
-// 组装：把"会自动填"的字段填好（避免调用方传一个恒为空的列表）
+// 组装：把每个字段都交给**有生产者**的代码，调用方不手填
 // ---------------------------------------------------------------------------
 
 /**
- * 组装一次评估的证据：把**能从运行时自动得到**的两个字段填好——
- *   - `matchedInterestIds`：用兴趣池匹配本轮文本（命中才进判定，省 LLM 调用）；
- *   - `botAliases`：来自配置，指代检测用。
+ * 从会话状态组装一次评估的**全部证据**。
  *
- * 存在的理由：这两个字段曾经是调用方手填的，而"手填"在实践中的结果是
- * **永远是空列表**——场景 5 于是永远不会触发，而且没有任何报错。
- * 现在它们由本函数从「兴趣池 + 配置」推导，调用方不需要（也不应该）知道细节。
+ * 这是 `SceneEvidence` 的唯一生产入口（除测试外）。在此之前这些字段靠调用方
+ * 手填，实际结果是永远取默认值——场景 1/2/3/5 因此结构性不可能触发，
+ * 而且没有任何报错。现在每个字段都有明确来源：
+ *
+ * | 字段 | 来源 |
+ * |---|---|
+ * | `message` | 本轮消息（探针/滚动触发时为空） |
+ * | `botAliases` | 配置（`proactive.botAliases`） |
+ * | `lastBotSpeakAt` / `inBotTopicWindow` / `topic` | `ConversationState` 的活动窗口 |
+ * | `recentMessageCount` / `recentHumanCount` | 同上（按窗口过滤） |
+ * | `pendingQuestionCount` | 未答问题台账（本地疑问句识别 + TTL） |
+ * | `matchedInterestIds` | 兴趣池（本地关键词命中） |
+ * | `unansweredStreak` | bot 发言计数 / 人类消息归零 |
+ *
+ * `sceneRates` **刻意不填**：它要的是回放统计（每个场景的命中×发言历史频率），
+ * 目前没有任何数据管道产出它。留空 → 分位数预算退化为固定顺序（见 veto.ts），
+ * 这也是 `quantileBudget` 默认关闭的原因。
  */
 export function buildSceneEvidence(input: {
-  evidence: Omit<SceneEvidence, 'matchedInterestIds' | 'botAliases'>;
+  state: ConversationState;
+  trigger: SceneTrigger;
+  now: number;
+  /** 本轮消息（`question-probe` / `topic-roll` 触发时为空） */
+  message?: SceneEvidence['message'];
   interests?: InterestPool;
   botAliases?: readonly string[];
-  /** 匹配用的文本（缺省取本轮消息文本） */
+  /** 兴趣匹配用的文本（缺省取本轮消息文本） */
   text?: string;
 }): SceneEvidence {
-  const text = input.text ?? input.evidence.message?.text ?? '';
+  const { state, trigger, now } = input;
+  const text = input.text ?? input.message?.text ?? '';
+  const topicId = state.topicId(now);
+  const botSpeaks = state.botSpeaks(now);
+  const startedAt = Number.parseInt((topicId ?? '').replace('topic:', ''), 10);
+
   return {
-    ...input.evidence,
+    convKey: state.convKey,
+    trigger,
+    now,
+    ...(input.message === undefined ? {} : { message: input.message }),
     botAliases: input.botAliases ?? [],
+    ...(state.botLastSpoke === undefined ? {} : { lastBotSpeakAt: state.botLastSpoke }),
+    inBotTopicWindow: state.inBotTopicWindow(now),
+    ...(topicId === undefined || Number.isNaN(startedAt)
+      ? {}
+      : {
+          topic: {
+            id: topicId,
+            startedAt,
+            lastAt: now,
+            humanParticipants: state.humanParticipants(now),
+            botSpeaks,
+          },
+        }),
+    recentMessageCount: state.messageCount(now),
+    recentHumanCount: state.humanParticipants(now),
+    pendingQuestionCount: state.pendingQuestions(now).length,
     matchedInterestIds: input.interests?.matchIds(text) ?? [],
+    unansweredStreak: state.unansweredStreak,
   };
 }
 

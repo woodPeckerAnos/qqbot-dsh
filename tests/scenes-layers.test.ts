@@ -24,6 +24,8 @@ import {
   type SceneVerdict,
   type VetoContext,
 } from '../src/pipeline/proactive/contract.js';
+import type { NormalizedMessage } from '../src/core/connector.js';
+import { ConversationState } from '../src/pipeline/proactive/scene/state.js';
 import {
   SCENE_REGISTRY,
   buildSceneEvidence,
@@ -66,6 +68,20 @@ function evidence(overrides: Partial<SceneEvidence> = {}): SceneEvidence {
     matchedInterestIds: [],
     unansweredStreak: 0,
     ...overrides,
+  };
+}
+
+/** 造一条旁听消息（旁听不需要 parts，只要判定需要的字段）。 */
+function makeObserved(msgId: string, senderId: string, text: string, ts: number): NormalizedMessage {
+  return {
+    kind: 'group-message',
+    target: { platform: 'onebot', kind: 'group', id: '1', key: 'ob11:g1' },
+    eventId: `evt-${msgId}`,
+    msgId,
+    senderId,
+    content: text,
+    ts,
+    raw: {},
   };
 }
 
@@ -192,45 +208,67 @@ describe('① 搜集层：本地、只判断可能、不做裁决', () => {
     ).toBeDefined();
   });
 
-  it('验收7b：buildSceneEvidence 自动填兴趣命中与别名（避免"手填恒为空"的静默失效）', () => {
+  it('验收7b：buildSceneEvidence 从会话状态与兴趣池推导全部字段（调用方不手填）', () => {
     const pool = parseInterestPool(
       'interests:\n  - {id: plotting, topic: 画图, keywords: [折线图]}',
       'test.yml',
     );
+    const state = new ConversationState('ob11:g1', { activityWindowMs: 60_000 });
+    const now = 1_000_000;
+    // 两个人来回聊，其中一条是没被回答的问题
+    state.observe(makeObserved('m1', 'u1', '折线图怎么画才好看', now - 30_000));
+    state.observe(makeObserved('m2', 'u2', '这个我也不太会', now - 20_000));
+    state.observe(makeObserved('m3', 'u1', '要不你画一个给我看看', now - 15_000));
+
     const built = buildSceneEvidence({
-      evidence: {
-        convKey: 'ob11:g1',
-        trigger: 'topic-roll',
-        now: 1,
-        message: { text: '这个折线图怎么画' },
-        inBotTopicWindow: false,
-        recentMessageCount: 4,
-        recentHumanCount: 1,
-        pendingQuestionCount: 0,
-        unansweredStreak: 0,
-      },
+      state,
+      trigger: 'topic-roll',
+      now,
+      message: { text: '折线图还是不行' },
       interests: pool,
       botAliases: ['小助手'],
     });
     expect(built.matchedInterestIds).toEqual(['plotting']);
     expect(built.botAliases).toEqual(['小助手']);
-    // 场景 5 因此真的能进判定
-    expect(collectCandidates(built).map((item) => item.scene)).toEqual(['scene-5']);
-    // 没配兴趣池 / 没配别名时是空数组（场景 5 不触发，属预期）
-    const bare = buildSceneEvidence({
-      evidence: {
-        convKey: 'ob11:g1',
-        trigger: 'topic-roll',
-        now: 1,
-        inBotTopicWindow: false,
-        recentMessageCount: 9,
-        recentHumanCount: 3,
-        pendingQuestionCount: 0,
-        unansweredStreak: 0,
-      },
-    });
+    expect(built.recentHumanCount).toBe(2);
+    expect(built.recentMessageCount).toBe(3);
+    expect(built.pendingQuestionCount).toBe(1);
+    expect(built.unansweredStreak).toBe(0);
+    expect(built.inBotTopicWindow).toBe(false);
+    expect(built.topic?.id).toBe(`topic:${now - 30_000}`);
+    // 场景 2 与 5 因此真的能进候选（这正是"字段恒为空"时做不到的）
+    expect(collectCandidates(built).map((item) => item.scene)).toEqual(['scene-2', 'scene-5']);
+
+    // 没配兴趣池 / 没配别名 → 空（场景 5 不触发，属预期），但计数照旧有生产者
+    const bare = buildSceneEvidence({ state, trigger: 'topic-roll', now });
     expect(bare.matchedInterestIds).toEqual([]);
     expect(bare.botAliases).toEqual([]);
+    expect(bare.recentHumanCount).toBe(2);
+  });
+
+  it('验收7c：bot 发言后无人回应 → 保险生效；有人回应 → 场景 1 的参与窗口打开', () => {
+    const now = 2_000_000;
+    const state = new ConversationState('ob11:g1', { activityWindowMs: 60_000 });
+    state.observe(makeObserved('m1', 'u1', '帮我看看这个报错', now - 40_000));
+    state.recordBotSpoke(now - 30_000);
+
+    const afterBot = buildSceneEvidence({ state, trigger: 'message', now });
+    expect(afterBot.inBotTopicWindow).toBe(true);
+    expect(afterBot.topic?.botSpeaks).toBe(1);
+    expect(afterBot.unansweredStreak).toBe(1);
+    expect(collectCandidates(afterBot, { maxUnansweredStreak: 2 }).length).toBeGreaterThan(0);
+
+    // 连续两次无人回应 → 全体静默（保险在 LLM 之前短路）
+    state.recordBotSpoke(now - 20_000);
+    const twice = buildSceneEvidence({ state, trigger: 'message', now });
+    expect(twice.unansweredStreak).toBe(2);
+    expect(collectCandidates(twice, { maxUnansweredStreak: 2 })).toEqual([]);
+
+    // 有人说话 → 计数归零（并刷新活动窗口）
+    state.observe(makeObserved('m2', 'u2', '我试了下还是不行', now - 10_000));
+    const answered = buildSceneEvidence({ state, trigger: 'message', now });
+    expect(answered.unansweredStreak).toBe(0);
+    expect(collectCandidates(answered, { maxUnansweredStreak: 2 }).length).toBeGreaterThan(0);
   });
 
   it('验收7：估算权重优先取回放统计，缺省退化为先验', () => {
