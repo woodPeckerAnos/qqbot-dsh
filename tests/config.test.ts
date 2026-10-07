@@ -194,6 +194,24 @@ describe('loadConfig', () => {
     });
   });
 
+  it('主动发言：灰度默认开（手滑打开总开关也不会立刻说话）、白名单只认 env 且要带平台前缀', () => {
+    const bare = loadConfig(baseEnv);
+    expect(bare.proactive.dryRun).toBe(true); // 关键默认值：先观察，再发言
+    expect(bare.proactive.whitelistGroups).toEqual([]); // 空 = 不接任何群
+    expect(bare.proactive.questionProbeMs).toBe(90_000);
+    expect(bare.proactive.bufferMaxMessages).toBe(200);
+
+    const withList = loadConfig({ ...baseEnv, BOT_LISTEN_GROUPS: 'onebot:123456,ob11:g99' });
+    expect(withList.proactive.whitelistGroups).toEqual(['onebot:123456', 'ob11:g99']);
+
+    // 少写平台前缀是最容易犯的配置错误（会静默不生效）
+    expect(() => loadConfig({ ...baseEnv, BOT_LISTEN_GROUPS: '123456' })).toThrowError(
+      /缺少平台前缀/,
+    );
+    // 灰度可显式关掉（关掉之后才会真的发言）
+    expect(loadConfig({ ...baseEnv, BOT_PROACTIVE_DRY_RUN: 'false' }).proactive.dryRun).toBe(false);
+  });
+
   it('主动发言：别名太短或太多、滚动周期越界都在启动期被拒（安静故障要拦住）', () => {
     expect(() => loadConfig({ ...baseEnv, BOT_BOT_ALIASES: '助' })).toThrowError(ConfigError);
     expect(() =>

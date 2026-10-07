@@ -21,6 +21,20 @@ export class PipelineStats {
   observed = 0;
   /** 旁听消息被丢弃数（未装配介入层时） */
   observedSkipped = 0;
+  /** 主动介入：进入判定的评估次数 */
+  proactiveEvaluated = 0;
+  /** 主动介入：判定失败次数（超时 / HTTP / 解析） */
+  proactiveJudgeFailures = 0;
+  /** 主动介入：因判定连续失败被暂停评估的会话数 */
+  proactiveSuspended = 0;
+  /** 主动介入：被否决层否决的次数 */
+  proactiveVetoed = 0;
+  /** 主动介入：真的发出的主动发言数 */
+  proactiveSpoke = 0;
+  /** 主动介入：dryRun 下"本应发出"的次数 */
+  proactiveWouldSend = 0;
+  /** 主动介入：投递层降级次数（平台不支持 / 限流 / 错误） */
+  proactiveDegraded = 0;
   /** 事件去重丢弃数（dedupe stage） */
   deduplicated = 0;
   /** 并发满员拒绝数（admission stage） */

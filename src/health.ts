@@ -29,6 +29,14 @@ export interface HealthSnapshot {
   background: BackgroundSnapshot;
   /** 编排层统计（字段名 dispatcher 是 /metrics 的对外契约，RUNBOOK 在用） */
   dispatcher: PipelineStatsSnapshot;
+  /**
+   * 主动介入层快照（旁听/判定/投递）。
+   *
+   * 未装配介入层时整个字段缺失——**这本身就是有效信息**：
+   * "bot 只在被 @ 时回复"与"它旁听了但决定不说"是两件事，
+   * 排障时必须能一眼区分（`enabled=false` / `conversations=0` / `spoke=0` 各有含义）。
+   */
+  proactive?: ProactiveHealthSnapshot;
   /** 最近一次收到任何连接器事件的时间距今毫秒；undefined 表示还没收到过 */
   lastEventAgeMs?: number;
   warnings: string[];
@@ -128,12 +136,36 @@ export function createHealthServer(options: HealthServerOptions): HealthServer {
  */
 export const EVENT_STALE_THRESHOLD_MS = 150_000;
 
+/** 主动介入层在 health 里的形状（由组装层从 watcher 快照映射而来）。 */
+export interface ProactiveHealthSnapshot {
+  enabled: boolean;
+  dryRun: boolean;
+  conversations: number;
+  buffered: number;
+  pendingQuestions: number;
+  evaluating: number;
+  suspended: number;
+  spoke: number;
+  wouldSend: number;
+  judgeFailures: number;
+  /** 兴趣池：条目数与是否真的读到文件（`enabled && !loaded` = 路径配错了） */
+  interests: { enabled: boolean; loaded: boolean; count: number; file: string };
+  /** bot 别名个数（场景 4 的指代检测面） */
+  botAliases: number;
+  evaluatedByTrigger: Record<string, number>;
+  satisfiedByScene: Record<string, number>;
+  vetoed: Record<string, number>;
+  deliveryDegraded: Record<string, number>;
+}
+
 export function buildHealthSnapshot(input: {
   startedAt: number;
   connectors: Record<string, ConnectorHealth>;
   runtime: { size: number; activeConversationKeys: string[]; activeSubagents: number };
   background: BackgroundSnapshot;
   dispatcher: PipelineStatsSnapshot;
+  /** 主动介入层快照；未装配时省略 */
+  proactive?: ProactiveHealthSnapshot;
   now?: number;
 }): HealthSnapshot {
   const now = input.now ?? Date.now();
@@ -182,6 +214,7 @@ export function buildHealthSnapshot(input: {
     runtime: input.runtime,
     background: input.background,
     dispatcher: input.dispatcher,
+    ...(input.proactive === undefined ? {} : { proactive: input.proactive }),
     ...(lastEventAt !== undefined ? { lastEventAgeMs: now - lastEventAt } : {}),
     warnings,
   };

@@ -45,6 +45,15 @@ import type { IngressStage } from './pipeline/ingress/types.js';
 import { Orchestrator } from './pipeline/orchestrator.js';
 import { PipelineStats } from './pipeline/stats.js';
 import { createTopicJudge } from './pipeline/topic-judge.js';
+import { ProactiveSpeaker } from './pipeline/proactive/deliver/speaker.js';
+import { loadInterestPool } from './pipeline/proactive/interests/pool.js';
+import { createChatClient } from './pipeline/proactive/judge/chat-client.js';
+import { createDefaultProactiveJudge } from './pipeline/proactive/judge/client.js';
+import {
+  DEFAULT_WATCHER_CONFIG,
+  ProactiveWatcher,
+} from './pipeline/proactive/scene/watcher.js';
+import type { ProactiveHealthSnapshot } from './health.js';
 import { TurnRunner } from './pipeline/turn-runner.js';
 import { ConversationStore } from './store/conversations.js';
 import { SeenStore } from './store/seen.js';
@@ -241,6 +250,142 @@ async function main(): Promise<void> {
     stats,
   });
 
+  // --- 主动介入层（旁听 → 判定 → 主动发言）--------------------------------
+  //
+  // 装配顺序有依赖：兴趣池 → 投递器 → 判定器 → watcher。四者都只在
+  // `config.proactive.enabled` 时创建；未启用时 orchestrator 拿到的是 undefined
+  // observe（旁听消息只计 skipped 计数），**"只 @ 回复"的部署形态不受影响**。
+  //
+  // 兴趣池文件不存在 = 空池（合法，场景 5 不触发）；存在但格式错 = 启动期报错
+  // （fail-closed，不让 bot 悄悄少一个场景）。
+  let proactive: ProactiveWatcher | undefined;
+  /** health 里的介入层快照（延迟求值：每次 /metrics 都取最新） */
+  let proactiveHealth: (() => ProactiveHealthSnapshot) | undefined;
+  if (config.proactive.enabled) {
+    const interests = loadInterestPool({
+      path: config.proactive.interestsFile,
+      // 显式配了路径就必须存在（否则是"配了但没生效"这种最难查的故障）
+      explicit: config.proactive.interestsFile !== 'interests.yml',
+      enabled: config.proactive.interestsEnabled,
+    });
+    // 回填给配置摘要：`enabled && !loaded` 就是路径配错了
+    config.proactive.interestsLoaded = interests.size > 0;
+    config.proactive.interestsCount = interests.size;
+
+    const speaker = new ProactiveSpeaker({
+      connectorFor: (target) => connectors.get(target.platform),
+      // 单一开关：主动发言复用介入层总开关（见 deliver/speaker.ts 的说明）
+      enabled: true,
+      dryRun: config.proactive.dryRun,
+      logger: logger.child({ component: 'proactive-deliver' }),
+    });
+
+    // 判定能力：需要 LLM 密钥。没有密钥时 watcher 只收集不判定（"只听不说"）。
+    const apiKey = process.env['DEEPSEEK_API_KEY'] ?? '';
+    const judge =
+      apiKey === ''
+        ? undefined
+        : createDefaultProactiveJudge({
+            chat: createChatClient({
+              apiBase: config.topic.apiBase,
+              apiKey,
+              model: config.topic.model,
+              timeoutMs: config.topic.timeoutMs,
+            }),
+            maxConcurrent: 2,
+            onError: (reason, detail) => {
+              stats.proactiveJudgeFailures += 1;
+              logger.warn('主动介入判定失败（本次按沉默处理）', { reason, detail });
+            },
+          });
+
+    proactive = new ProactiveWatcher({
+      config: {
+        ...DEFAULT_WATCHER_CONFIG,
+        enabled: true,
+        dryRun: config.proactive.dryRun,
+        // 白名单来自 BOT_LISTEN_GROUPS（个人标识不进配置文件；介入层将来
+        // 归并到同一个变量，届时不冲突）
+        whitelistGroups: config.proactive.whitelistGroups,
+        botAliases: config.proactive.botAliases,
+        topicRollMessages: config.proactive.topicRollMessages,
+        topicRollMs: config.proactive.topicRollMs,
+        questionProbeMs: config.proactive.questionProbeMs,
+        stateOptions: {
+          maxEntries: config.proactive.bufferMaxMessages,
+          maxAgeMs: config.proactive.bufferMaxAgeMs,
+        },
+      },
+      speaker,
+      ...(judge === undefined ? {} : { judge }),
+      interests,
+      logger: logger.child({ component: 'proactive-watcher' }),
+      metrics: {
+        evaluated: (trigger) => {
+          stats.proactiveEvaluated += 1;
+          logger.debug('主动介入评估', { trigger });
+        },
+        judgeFailed: () => {
+          stats.proactiveJudgeFailures += 1;
+        },
+        judgeSuspended: (conversation) => {
+          stats.proactiveSuspended += 1;
+          logger.warn('主动介入暂停评估（判定连续失败）', { conversation });
+        },
+        vetoed: (reason, scene) => {
+          stats.proactiveVetoed += 1;
+          logger.debug('主动介入被否决', { reason, scene });
+        },
+        spoke: (scene, dryRun) => {
+          if (dryRun) stats.proactiveWouldSend += 1;
+          else {
+            stats.proactiveSpoke += 1;
+            stats.repliesSent += 1;
+          }
+          logger.info(dryRun ? '主动介入（dryRun：本应发言）' : '主动介入已发言', { scene });
+        },
+        deliveryDegraded: (reason, scene) => {
+          stats.proactiveDegraded += 1;
+          logger.debug('主动介入投递降级', { reason, scene });
+        },
+      },
+    });
+
+    proactiveHealth = (): ProactiveHealthSnapshot => {
+      const snapshot = proactive?.snapshot();
+      return {
+        enabled: snapshot?.enabled ?? false,
+        dryRun: snapshot?.dryRun ?? false,
+        conversations: snapshot?.conversations ?? 0,
+        buffered: snapshot?.buffered ?? 0,
+        pendingQuestions: snapshot?.pendingQuestions ?? 0,
+        evaluating: snapshot?.evaluating ?? 0,
+        suspended: snapshot?.suspended ?? 0,
+        spoke: snapshot?.spoke ?? 0,
+        wouldSend: snapshot?.wouldSend ?? 0,
+        judgeFailures: snapshot?.judgeFailures ?? 0,
+        interests: {
+          enabled: config.proactive.interestsEnabled,
+          loaded: config.proactive.interestsLoaded,
+          count: config.proactive.interestsCount,
+          file: config.proactive.interestsFile,
+        },
+        botAliases: config.proactive.botAliases.length,
+        evaluatedByTrigger: snapshot?.evaluatedByTrigger ?? {},
+        satisfiedByScene: snapshot?.satisfiedByScene ?? {},
+        vetoed: snapshot?.vetoed ?? {},
+        deliveryDegraded: snapshot?.deliveryDegraded ?? {},
+      };
+    };
+    logger.info('主动介入已装配', {
+      dryRun: config.proactive.dryRun,
+      groups: config.proactive.whitelistGroups.length,
+      interests: interests.size,
+      botAliases: config.proactive.botAliases.length,
+      judge: judge === undefined ? '未配置判定（只听不说）' : 'ready',
+    });
+  }
+
   // 后台结果投递器：后台子代理完成后，能即时推送就推送（OneBot 恒可、官方在
   // 被动窗口内且配额未尽），否则暂存待下一条消息带出；暂存持久化到 stateDir，
   // 桥接进程重启后仍能带出（见 pipeline/egress/background.ts、DESIGN §13.5）。
@@ -325,6 +470,9 @@ async function main(): Promise<void> {
           : {}),
       }),
     turns: turnRunner,
+    // 旁听消息的去向：唯一入口是 watcher（未启用时留 undefined →
+    // orchestrator 只计 skipped 计数）
+    ...(proactive === undefined ? {} : { observe: (message) => proactive?.observe(message) }),
     status: () => ({
       inFlight: admission.inUse,
       queued: admission.queued,
@@ -362,6 +510,11 @@ async function main(): Promise<void> {
   // 这里只留一层 .catch 作为组装级保险（Orchestrator 自身永不抛错）。
   for (const connector of connectors.values()) {
     connector.on((event) => {
+      // 被 @ 的消息也记进旁听缓冲：否则判定看不到"bot 回答了谁、回答了什么"，
+      // 场景 1（续聊追问）没有判断依据。只记不评（评估仍由旁听路径触发）。
+      if (proactive !== undefined && (event.kind === 'group-at-message' || event.kind === 'c2c-message')) {
+        proactive.observeAddressed(event);
+      }
       void orchestrator.handleEvent(event).catch((error: unknown) => {
         logger.error('处理事件时出错', {
           kind: event.kind,
@@ -388,6 +541,7 @@ async function main(): Promise<void> {
         },
         background: background.snapshot(),
         dispatcher: orchestrator.snapshotStats(),
+        ...(proactiveHealth === undefined ? {} : { proactive: proactiveHealth() }),
       }),
   });
   await health.start();

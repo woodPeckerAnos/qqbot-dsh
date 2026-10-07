@@ -108,6 +108,8 @@ export interface HealthFileConfig {
  */
 export interface ProactiveFileConfig {
   enabled?: boolean;
+  /** 灰度观察：判定照跑、不真发言（默认 true） */
+  dryRun?: boolean;
   interestsEnabled?: boolean;
   interestsFile?: string;
   /** bot 在本群的别名（场景 4 指代检测用），如 ["小助手", "助手酱"] */
@@ -116,6 +118,11 @@ export interface ProactiveFileConfig {
   topicRollMessages?: number;
   /** 话题滚动周期：多少毫秒无仲裁则收敛一次 */
   topicRollMs?: number;
+  /** 问题挂起多久后探针（场景 3 的答案窗口） */
+  questionProbeMs?: number;
+  /** 旁听缓冲上限（条）与最长保留时长（毫秒） */
+  bufferMaxMessages?: number;
+  bufferMaxAgeMs?: number;
 }
 
 /** 富媒体输入配额（与平台无关，官方/OneBot 共用）。 */
@@ -269,11 +276,15 @@ const OFFPEAK_SPEC: SectionSpec = {
 const HEALTH_SPEC: SectionSpec = { port: 'int' };
 const PROACTIVE_SPEC: SectionSpec = {
   enabled: 'bool',
+  dryRun: 'bool',
   interestsEnabled: 'bool',
   interestsFile: 'string',
   botAliases: 'stringList',
   topicRollMessages: 'int',
   topicRollMs: 'int',
+  questionProbeMs: 'int',
+  bufferMaxMessages: 'int',
+  bufferMaxAgeMs: 'int',
 };
 const ATTACHMENTS_SPEC: SectionSpec = {
   enabled: 'bool',

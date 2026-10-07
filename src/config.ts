@@ -200,6 +200,8 @@ export interface Config {
    */
   proactive: {
     enabled: boolean;
+    /** 灰度观察：判定照跑、记录"本应发言"，但不真的发（BOT_PROACTIVE_DRY_RUN，默认 true） */
+    dryRun: boolean;
     /** 兴趣池总开关（BOT_PROACTIVE_INTERESTS / proactive.interestsEnabled，默认 true） */
     interestsEnabled: boolean;
     /**
@@ -212,12 +214,26 @@ export interface Config {
     interestsLoaded: boolean;
     /** 兴趣池条目数（health 用） */
     interestsCount: number;
+    /**
+     * 群白名单（**只认 env `BOT_LISTEN_GROUPS`**，与介入层共用同一个变量）。
+     *
+     * 为什么只从 env 来：群号属于个人标识，本项目既有的纪律是"个人标识不进
+     * qqbot.yml"（见 BOT_ADMINS 的处理）。条目形如 `onebot:123456` 或
+     * `ob11:g123456`；**空列表 = 不接任何群**（fail-closed）。
+     */
+    whitelistGroups: string[];
     /** bot 在本群的别名（BOT_BOT_ALIASES / proactive.botAliases），场景 4 指代检测用 */
     botAliases: string[];
     /** 话题滚动周期（条）：每多少条旁听消息收敛一次，场景 2/5 的入口 */
     topicRollMessages: number;
     /** 话题滚动周期（毫秒）：无仲裁时的兜底收敛间隔 */
     topicRollMs: number;
+    /** 问题挂起多久后探针（BOT_PROACTIVE_QUESTION_PROBE_MS / proactive.questionProbeMs） */
+    questionProbeMs: number;
+    /** 旁听缓冲上限（条）：判定只需要近期上下文 */
+    bufferMaxMessages: number;
+    /** 旁听缓冲最长保留时长（毫秒） */
+    bufferMaxAgeMs: number;
   };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
@@ -455,13 +471,27 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
     }
   }
 
+  // 白名单只认 env（个人标识不进配置文件）；条目必须含 `:`，否则是写错了平台前缀
+  const whitelistGroups = pickList(env, 'BOT_LISTEN_GROUPS', undefined);
+  for (const item of whitelistGroups) {
+    if (!item.includes(':')) {
+      throw new ConfigError(`BOT_LISTEN_GROUPS 条目缺少平台前缀：${item}`, [
+        '正确写法：onebot:123456 或 ob11:g123456（平台标识:群号）',
+      ]);
+    }
+  }
+
   return {
     enabled: pickBool(env, 'BOT_PROACTIVE_ENABLED', file?.enabled, false),
+    // ⚠️ 灰度默认**开**：即使有人手滑把总开关打开，也不会立刻在群里说话，
+    // 而是先记录"本应发言"。观察一到两周确认判据准了再显式关掉它。
+    dryRun: pickBool(env, 'BOT_PROACTIVE_DRY_RUN', file?.dryRun, true),
     interestsEnabled: pickBool(env, 'BOT_PROACTIVE_INTERESTS', file?.interestsEnabled, true),
     interestsFile: pickString(env, 'QQ_INTERESTS_FILE', file?.interestsFile, 'interests.yml'),
     // 真实取值由组装层读文件后回填（见 main.ts）；配置层只知道路径。
     interestsLoaded: false,
     interestsCount: 0,
+    whitelistGroups,
     botAliases: aliases,
     topicRollMessages: pickInt(
       env,
@@ -478,6 +508,30 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       300_000,
       { min: 10_000, max: 3_600_000 },
       'proactive.topicRollMs',
+    ),
+    questionProbeMs: pickInt(
+      env,
+      'BOT_PROACTIVE_QUESTION_PROBE_MS',
+      file?.questionProbeMs,
+      90_000,
+      { min: 10_000, max: 3_600_000 },
+      'proactive.questionProbeMs',
+    ),
+    bufferMaxMessages: pickInt(
+      env,
+      'BOT_PROACTIVE_BUFFER_MAX_MESSAGES',
+      file?.bufferMaxMessages,
+      200,
+      { min: 10, max: 10_000 },
+      'proactive.bufferMaxMessages',
+    ),
+    bufferMaxAgeMs: pickInt(
+      env,
+      'BOT_PROACTIVE_BUFFER_MAX_AGE_MS',
+      file?.bufferMaxAgeMs,
+      30 * 60_000,
+      { min: 60_000, max: 72 * 3_600_000 },
+      'proactive.bufferMaxAgeMs',
     ),
   };
 }
@@ -895,12 +949,14 @@ export function describeConfig(config: Config): Record<string, unknown> {
     adminCount: config.admins.length,
     proactive: {
       enabled: config.proactive.enabled,
+      dryRun: config.proactive.dryRun,
       interests: {
         enabled: config.proactive.interestsEnabled,
         file: config.proactive.interestsFile,
         loaded: config.proactive.interestsLoaded,
         count: config.proactive.interestsCount,
       },
+      whitelistGroups: config.proactive.whitelistGroups.length,
       botAliases: config.proactive.botAliases,
       topicRoll: {
         messages: config.proactive.topicRollMessages,
