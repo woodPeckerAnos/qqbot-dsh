@@ -211,6 +211,8 @@ describe('成本闸：不该花的一次调用都不花', () => {
     h.observe('u1', '今天中午吃什么'); // 没 @、不是问题、没命中兴趣 → 无候选
     await settle();
     expect(h.snapshot().evaluatedByTrigger['message']).toBeUndefined();
+    // 两条都断言："假判定的调用列表为空" + "watcher 的 judgeCalls 计数为 0"
+    expect(h.snapshot().judgeCalls).toBe(0);
     // 滚动定时器到点后会评估一次（那是场景 2/5 的设计入口），这里只断言"消息触发"没花钱
     expect(h.judgeCalls).toHaveLength(0);
   });
@@ -300,6 +302,8 @@ describe('降级：判定失败一律沉默，且不刷 API', () => {
     await settle();
     expect(h.delivered).toHaveLength(0);
     expect(h.snapshot().judgeFailures).toBe(1);
+    // judgeCalls 与 judgeFailures 一起读，才能分清"没调判定"与"调了但失败"
+    expect(h.snapshot().judgeCalls).toBe(1);
 
     h.observe('u1', '机器人在吗，帮我一下');
     await settle();

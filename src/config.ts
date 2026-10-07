@@ -230,6 +230,14 @@ export interface Config {
     topicRollMs: number;
     /** 问题挂起多久后探针（BOT_PROACTIVE_QUESTION_PROBE_MS / proactive.questionProbeMs） */
     questionProbeMs: number;
+    /**
+     * 判定调用超时（BOT_PROACTIVE_JUDGE_TIMEOUT_MS / proactive.judgeTimeoutMs）。
+     *
+     * **刻意与 `topic.timeoutMs` 分开**：话题判定只输出一个布尔值（10 秒够），
+     * 而主动介入的判定要逐场景输出多段 JSON（最多 5 条判定 + 理由），
+     * 借用话题判定的 10 秒会频繁超时——超时 = 沉默，表现为「它从来不说话」。
+     */
+    judgeTimeoutMs: number;
     /** 旁听缓冲上限（条）：判定只需要近期上下文 */
     bufferMaxMessages: number;
     /** 旁听缓冲最长保留时长（毫秒） */
@@ -516,6 +524,15 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       90_000,
       { min: 10_000, max: 3_600_000 },
       'proactive.questionProbeMs',
+    ),
+    // 判定超时比话题判定宽一倍：输出是多段 JSON 而不是一个布尔值
+    judgeTimeoutMs: pickInt(
+      env,
+      'BOT_PROACTIVE_JUDGE_TIMEOUT_MS',
+      file?.judgeTimeoutMs,
+      20_000,
+      { min: 1_000, max: 120_000 },
+      'proactive.judgeTimeoutMs',
     ),
     bufferMaxMessages: pickInt(
       env,
@@ -962,6 +979,7 @@ export function describeConfig(config: Config): Record<string, unknown> {
         messages: config.proactive.topicRollMessages,
         ms: config.proactive.topicRollMs,
       },
+      judgeTimeoutMs: config.proactive.judgeTimeoutMs,
     },
     attachments: config.attachments,
     media: {

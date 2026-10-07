@@ -147,6 +147,12 @@ export interface ProactiveHealthSnapshot {
   suspended: number;
   spoke: number;
   wouldSend: number;
+  /**
+   * 发起过判定调用的次数。与 `judgeFailures` 一起读：
+   * `judgeCalls==0` = 没判定能力；`judgeCalls>judgeFailures` = LLM 答了但判不成立；
+   * `judgeCalls==judgeFailures` = 每次调用都失败（超时 / 密钥 / 解析）。
+   */
+  judgeCalls: number;
   judgeFailures: number;
   /** 兴趣池：条目数与是否真的读到文件（`enabled && !loaded` = 路径配错了） */
   interests: { enabled: boolean; loaded: boolean; count: number; file: string };

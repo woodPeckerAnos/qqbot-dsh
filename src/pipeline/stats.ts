@@ -23,6 +23,8 @@ export class PipelineStats {
   observedSkipped = 0;
   /** 主动介入：进入判定的评估次数 */
   proactiveEvaluated = 0;
+  /** 主动介入：发起过的判定调用次数（与 proactiveJudgeFailures 一起读，分清"没调"与"调了失败"） */
+  proactiveJudgeCalls = 0;
   /** 主动介入：判定失败次数（超时 / HTTP / 解析） */
   proactiveJudgeFailures = 0;
   /** 主动介入：因判定连续失败被暂停评估的会话数 */

@@ -306,6 +306,10 @@ proactive:
   topicRollMs: 300000
   # 问题挂起多久后探针（场景 3）：先给群里留出回答时间。
   questionProbeMs: 90000
+  # 判定调用超时。刻意与 topic.timeoutMs 分开：话题判定只输出一个布尔值
+  # （10 秒够），而主动介入要逐场景输出多段 JSON——借用 10 秒会频繁超时，
+  # 而超时 = 沉默，表现就是「它从来不主动说话」。
+  judgeTimeoutMs: 20000
   # 旁听缓冲（判定只需要近期上下文；不落盘）。
   bufferMaxMessages: 200
   bufferMaxAgeMs: 1800000

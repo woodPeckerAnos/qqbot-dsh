@@ -282,6 +282,10 @@ async function main(): Promise<void> {
 
     // 判定能力：需要 LLM 密钥。没有密钥时 watcher 只收集不判定（"只听不说"）。
     const apiKey = process.env['DEEPSEEK_API_KEY'] ?? '';
+    if (apiKey === '') {
+      // 明确警告：否则表现为"装配成功但从不说话"，是最难查的一种
+      logger.warn('主动介入缺少 DEEPSEEK_API_KEY：判定不会执行，只会收集旁听（只听不说）');
+    }
     const judge =
       apiKey === ''
         ? undefined
@@ -290,7 +294,9 @@ async function main(): Promise<void> {
               apiBase: config.topic.apiBase,
               apiKey,
               model: config.topic.model,
-              timeoutMs: config.topic.timeoutMs,
+              // 独立超时：判定要逐场景输出多段 JSON，借用话题判定的 10 秒
+              // 会频繁超时——超时 = 沉默 = "它从来不主动说话"
+              timeoutMs: config.proactive.judgeTimeoutMs,
             }),
             maxConcurrent: 2,
             onError: (reason, detail) => {
@@ -323,6 +329,7 @@ async function main(): Promise<void> {
       metrics: {
         evaluated: (trigger) => {
           stats.proactiveEvaluated += 1;
+          stats.proactiveJudgeCalls += 1;
           logger.debug('主动介入评估', { trigger });
         },
         judgeFailed: () => {
@@ -363,6 +370,7 @@ async function main(): Promise<void> {
         suspended: snapshot?.suspended ?? 0,
         spoke: snapshot?.spoke ?? 0,
         wouldSend: snapshot?.wouldSend ?? 0,
+        judgeCalls: snapshot?.judgeCalls ?? 0,
         judgeFailures: snapshot?.judgeFailures ?? 0,
         interests: {
           enabled: config.proactive.interestsEnabled,

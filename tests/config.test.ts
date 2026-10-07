@@ -200,6 +200,10 @@ describe('loadConfig', () => {
     expect(bare.proactive.whitelistGroups).toEqual([]); // 空 = 不接任何群
     expect(bare.proactive.questionProbeMs).toBe(90_000);
     expect(bare.proactive.bufferMaxMessages).toBe(200);
+    // 判定超时与话题判定**分开**：话题判定 10s，主动介入判定 20s
+    // （多段 JSON 输出，沿用 10s 会频繁超时 → 沉默 → "它从来不说话"）
+    expect(bare.proactive.judgeTimeoutMs).toBe(20_000);
+    expect(bare.topic.timeoutMs).toBe(10_000);
 
     const withList = loadConfig({ ...baseEnv, BOT_LISTEN_GROUPS: 'onebot:123456,ob11:g99' });
     expect(withList.proactive.whitelistGroups).toEqual(['onebot:123456', 'ob11:g99']);
@@ -210,6 +214,13 @@ describe('loadConfig', () => {
     );
     // 灰度可显式关掉（关掉之后才会真的发言）
     expect(loadConfig({ ...baseEnv, BOT_PROACTIVE_DRY_RUN: 'false' }).proactive.dryRun).toBe(false);
+    // 判定超时可单独调（借用话题判定的 10 秒是"从不说话"的常见成因）
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_JUDGE_TIMEOUT_MS: '45000' }).proactive.judgeTimeoutMs,
+    ).toBe(45_000);
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_JUDGE_TIMEOUT_MS: '999' })).toThrowError(
+      ConfigError,
+    );
   });
 
   it('主动发言：别名太短或太多、滚动周期越界都在启动期被拒（安静故障要拦住）', () => {

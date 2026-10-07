@@ -120,6 +120,8 @@ export interface ProactiveFileConfig {
   topicRollMs?: number;
   /** 问题挂起多久后探针（场景 3 的答案窗口） */
   questionProbeMs?: number;
+  /** 判定调用超时（毫秒）；与 topic.timeoutMs 分开，见 config.ts 的说明 */
+  judgeTimeoutMs?: number;
   /** 旁听缓冲上限（条）与最长保留时长（毫秒） */
   bufferMaxMessages?: number;
   bufferMaxAgeMs?: number;
@@ -283,6 +285,7 @@ const PROACTIVE_SPEC: SectionSpec = {
   topicRollMessages: 'int',
   topicRollMs: 'int',
   questionProbeMs: 'int',
+  judgeTimeoutMs: 'int',
   bufferMaxMessages: 'int',
   bufferMaxAgeMs: 'int',
 };

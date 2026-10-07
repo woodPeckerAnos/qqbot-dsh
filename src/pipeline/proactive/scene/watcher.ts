@@ -165,6 +165,14 @@ export interface WatcherSnapshot {
   deliveryDegraded: Record<string, number>;
   /** 本地有候选但没有判定能力（只收集不判定）的次数 */
   collectedOnly: number;
+  /**
+   * 真的发起过判定调用的次数。
+   * 与 `judgeFailures` 一起读才能分清三种「没说话」：
+   *   有候选但 judgeCalls=0 → 没有判定能力（缺密钥 / 只收集）；
+   *   judgeCalls > judgeFailures → LLM 答了但判不成立（判据问题）；
+   *   judgeCalls == judgeFailures → 每次调用都失败（超时 / 密钥 / 解析）。
+   */
+  judgeCalls: number;
   judgeFailures: number;
 }
 
@@ -204,6 +212,7 @@ export class ProactiveWatcher {
     vetoed: new Map<string, number>(),
     deliveryDegraded: new Map<string, number>(),
     collectedOnly: 0,
+    judgeCalls: 0,
     spoke: 0,
     wouldSend: 0,
     judgeFailures: 0,
@@ -349,6 +358,7 @@ export class ProactiveWatcher {
       wouldSend: this.counters.wouldSend,
       deliveryDegraded: Object.fromEntries(this.counters.deliveryDegraded),
       collectedOnly: this.counters.collectedOnly,
+      judgeCalls: this.counters.judgeCalls,
       judgeFailures: this.counters.judgeFailures,
     };
   }
@@ -547,6 +557,7 @@ export class ProactiveWatcher {
     });
 
     this.bump(this.counters.evaluatedByTrigger, trigger);
+    this.counters.judgeCalls += 1;
     this.metrics.evaluated(trigger);
 
     const verdicts = await judge.judge({
