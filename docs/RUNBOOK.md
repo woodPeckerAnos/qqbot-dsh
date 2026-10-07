@@ -400,6 +400,72 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 ---
 
+## 4.5 主动发言相关（它不主动说话 / 它说得不对）
+
+主动介入是**独立于 @ 回复**的一条链路：旁听群消息 → 判定要不要插话 → 主动发言。
+它的开关、白名单、灰度与 @ 路径完全无关，排障时先分清"是它决定不说"还是"链路没通"。
+
+### 4.5.1 分诊：看 health 的 `proactive` 段
+
+```bash
+curl -s localhost:8080/health | jq .proactive
+```
+
+**整段缺失** = 介入层没装配（`proactive.enabled=false`，默认值）。
+"bot 只在被 @ 时回复"与"它旁听了但决定不说"是两件事，这里必须先分清。
+
+| 现象 | 常见原因 | 怎么确认 |
+|---|---|---|
+| 段缺失 | `BOT_PROACTIVE_ENABLED` / `proactive.enabled` 没打开 | 启动日志里的 `主动介入已装配` 一行不会出现 |
+| `enabled: true` 但 `conversations: 0` | 白名单没配或写错（`BOT_LISTEN_GROUPS` 为空 = 不接任何群） | 条目必须带平台前缀：`onebot:123456`、`ob11:g123456` |
+| `interests.enabled: true` 但 `interests.loaded: false` | 兴趣池文件路径配错（默认 `interests.yml`，容器里要有这个文件） | 场景 5 永远不会触发，但其余场景正常 |
+| `dryRun: true` | **这是默认值**：判定照跑、只记 `wouldSend`，不会真的发言 | 确认判据准了再显式设 `false` |
+| `wouldSend > 0` 而 `spoke == 0` | 就是上面这条（灰度模式在工作） | 观察 `vetoed` / `satisfiedByScene` 判断判据质量 |
+| `spoke == 0` 且 `vetoed` 全是 `no-candidate` | 本地预筛没命中：消息不是指代/续聊/问句，也没命中兴趣池 | 看 `SCENES.md` 的成立条件；兴趣池加条目 |
+| `spoke == 0` 且 `judgeFailures > 0` | 判定调用失败（超时/网络/密钥/解析） | 日志里搜「主动介入判定失败」；连续失败会 `suspended` |
+| `suspended > 0` | 判定连续失败达上限，该会话暂停评估 | 修好上游后重启进程（暂停状态不持久化） |
+| `vetoed` 里 `rate-limit` / `topic-spent` | 触发了限流或"每话题一次" | 这是设计行为；额度见 `qqbot.yml` 与 veto 策略 |
+| `deliveryDegraded: {"unsupported": N}` | **官方通道不支持主动发言**（主动推送已停用） | 预期行为，不是故障；OneBot 才有这个能力 |
+
+### 4.5.2 "它为什么说了这句"
+
+每次判定都会记 `satisfiedByScene`（哪个场景被判成立）与 `vetoed`（被什么否掉）。
+日志里按 `component: proactive-watcher` 过滤，能看到评估、否决、投递三个阶段，
+其中 `主动介入已发言` / `主动介入（dryRun：本应发言）` 两条会带 `scene` 字段
+（`scene-1`…`scene-5`，含义见 `src/pipeline/proactive/interests/SCENES.md`）。
+
+### 4.5.3 "它为什么不说话"（按链条从后往前查）
+
+1. **平台能力**：官方通道恒为 `unsupported`（见上表）。要主动发言必须走 OneBot。
+2. **投递开关**：总开关关了 / 灰度没关（`dryRun`）/ 该群不在白名单。
+3. **否决层**：`vetoed` 里有 `rate-limit`（10 分钟 3 次、1 小时 8 次）、
+   `topic-spent`（同一话题已说过）、`no-response`（连续两次介入没人理，保险生效）。
+4. **判定层**：`judgeFailures` 涨 = 判定没跑通；`satisfiedByScene` 全空 =
+   模型认为没有一个场景成立（看 `SCENES.md` 的成立门槛，多数是判据真的不成立）。
+5. **搜集层**：全是 `no-candidate` = 本地预筛就没命中。逐条对照：
+   - 场景 4：消息里有没有 bot 的别名，或"机器人/助手"+请求词；
+   - 场景 1：bot 在这个话题里说过话吗（活动窗口内）；
+   - 场景 3：有没有 ≥4 字的疑问句（问号或疑问词），且挂起够久；
+   - 场景 2：近窗是否 ≥2 人且 ≥2 条消息；
+   - 场景 5：`interests.yml` 里有没有对应的关键词命中。
+
+### 4.5.4 旁听能力的平台前提
+
+- **OneBot**：需要框架推送**全量群消息**（NapCat 等默认就推）；
+  非 @ 群消息在归一化阶段变成旁听消息，`stats.observed` 会涨。
+  若 `observed` 一直是 0，说明框架没推全量消息，不是代码问题。
+- **官方通道**：需要平台侧开通「接收所有消息」能力，否则永远收不到旁听消息
+  （`GROUP_MESSAGE_CREATE` 不会推）。开通后它会归一到旁听消息，
+  **不会**再像从前那样把每条群消息都当触发消息——那个隐患已修。
+
+### 4.5.5 隐私与留存
+
+旁听内容**只在内存**（每会话一个有界 ring buffer，默认 200 条 / 30 分钟），
+进程重启即清空，不落盘；判定用的转录只在调用 LLM 时构造，不写文件。
+"仲裁快照 / 回放录制"目前**没有实现**（属方案 S4），所以不存在旁听落盘的问题。
+
+---
+
 ## 5. 重启后"失忆"
 
 预期行为是：**DSH 会话是新建的，上下文由对话记录回放恢复。**

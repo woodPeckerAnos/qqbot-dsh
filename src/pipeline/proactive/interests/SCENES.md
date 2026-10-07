@@ -12,9 +12,19 @@
 > 代码实现：`scene/collect.ts`（什么时候可能命中）→ `judge/judge.ts`（成立的判据）
 > → `veto/veto.ts`（顺序与额度）；投递走 `deliver/speaker.ts`。
 >
-> **状态**：场景的判定三层已就位（纯函数 + 契约测试），但**尚未接入运行时**
-> ——介入 turn 的合成与 speak 链接线属实施期 S1。当前部署的 bot 只在被 @ 时回复。
-> 分期见 [docs/PROACTIVE-INTERVENTION-ARCH.md](../../../../docs/PROACTIVE-INTERVENTION-ARCH.md) §8。
+> **状态：已接入运行时（默认灰度观察）**。链路是
+> 旁听消息 → `ProactiveWatcher` → 本地预筛 → 判定 → 否决 → `ProactiveSpeaker` → 适配器。
+> 两个默认值决定了它当下的实际行为：
+>   1. `proactive.enabled` 默认 **false**（不配就不主动开口）；
+>   2. `proactive.dryRun` 默认 **true**——即使打开了总开关，它也只记录
+>      "本应发言"（health 里的 `wouldSend`），不会真的说话。
+> 也就是说：**要让 bot 真的主动开口，需要同时配置 `enabled: true` +
+> `dryRun: false` + `BOT_LISTEN_GROUPS`**。排障见
+> [docs/RUNBOOK.md](../../../../docs/RUNBOOK.md) §4.5。
+>
+> 已知的简化（刻意，不是未完成）：场景 1/2/5 的"话题"用**活动窗口**近似
+> （静默超过 10 分钟算翻篇），不做话题聚簇；架构讨论见
+> [docs/PROACTIVE-INTERVENTION-ARCH.md](../../../../docs/PROACTIVE-INTERVENTION-ARCH.md) §3。
 
 ---
 
@@ -202,6 +212,10 @@ bot ：这个报错是因为 requests 没装，先 pip install requests
   （`VetoPolicy.maxPerTopic`），写进兴趣池会形成两套账；
 - **临时停用**：`qqbot.yml` 的 `proactive.interestsEnabled: false` 或整份停用
   `proactive.enabled: false`。
+
+**怎么改、改了怎么生效**：改 `interests.yml` 后**需要重启进程**（兴趣池在启动时读一次；
+运行期热更新是 role-play 迭代的事，接缝已留在 `replaceHotWords` 之外的
+`InterestPool.replaceEntries()`）。
 
 **给后续做 role-play 的人（也是给 agent 的约定）**：
 

@@ -63,11 +63,29 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 
 ## 3. 会话层：主动发言怎么被触发
 
-| 触发来源 `trigger` | 谁发起 | 现状 |
-|---|---|---|
-| `intervention:scene-1` … `scene-5` | 介入层（旁听 → 仲裁 → speak 链） | 见 `docs/PROACTIVE-INTERVENTION-ARCH.md`（方案，未实施） |
-| `manual` | 管理员命令 | 预留 |
-| `system-event` | 进群问候等平台事件 | 预留 |
+```
+群消息（OneBot 全量推送 / 官方「接收所有消息」能力）
+   │
+   ├─ 被 @ 或私聊 ──▶ Ingress 管线 → agent turn → reply（既有路径，不变）
+   │                     └─ 同时也记进旁听缓冲（判定要看到"bot 回答了谁"）
+   │
+   └─ 没 @ 的群消息 ──▶ **旁听消息**（core/connector.ts 的 kind='group-message'）
+                         └─▶ ProactiveWatcher.observe()
+                               ① 本地预筛（零 LLM 成本）→ 无候选就到此为止
+                               ② 有候选才调判定（LLM）
+                               ③ 否决层（顺序 / 限流 / 每话题一次 / 无人回应保险）
+                               ④ ProactiveSpeaker.deliver() → 适配器
+```
+
+触发面与场景的对应（详细门槛见 [interests/SCENES.md](interests/SCENES.md)）：
+
+| 触发来源 `trigger` | 何时 | 参与的场景 | 谁发起 |
+|---|---|---|---|
+| `message` | 每条旁听消息 | 场景 1（续聊追问）、场景 4（指代） | `ProactiveWatcher.observe()` |
+| `question-probe` | 问题挂起 90s 后 | 场景 3（无人应答） | watcher 的探针定时器 |
+| `topic-roll` | 每 30 条**或**静默 5 分钟后 | 场景 2（持续讨论）、场景 5（兴趣） | watcher 的滚动定时器 |
+| `manual` | 管理员命令 | — | 预留 |
+| `system-event` | 进群问候等 | — | 走 `reply(event_id)`，**不**经本模块（见 §8） |
 
 `trigger` 只用于**记账与日志**（让 `/metrics` 能回答"哪个场景在说话、
 哪个通道在降级"），平台侧看不到它，也不要用它做任何判定。
@@ -138,7 +156,11 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 
 | 配置（`qqbot.yml` 的 `proactive:` 段） | 默认 | 说明 |
 |---|---|---|
-| `intervention.enabled` | `false` | 介入层总开关（默认关、群白名单、谷时段）。**主动发言复用它** |
+| `proactive.enabled` | `false` | 总开关（fail-closed：不配就不主动开口） |
+| `proactive.dryRun` | **`true`** | 灰度：判定照跑、只记 `wouldSend`，**不真的发言**。上线先观察一到两周 |
+| `BOT_LISTEN_GROUPS`（env） | 空 | 群白名单，**唯一入口**；条目必须带平台前缀（`onebot:123456`）；空 = 不接任何群 |
+| `proactive.questionProbeMs` | `90000` | 问题挂起多久后探针（场景 3） |
+| `proactive.bufferMaxMessages` / `bufferMaxAgeMs` | `200` / `30min` | 旁听缓冲（内存，不落盘） |
 | `proactive.interestsEnabled` | `true` | 兴趣池总开关（场景 5） |
 | `proactive.interestsFile` | `interests.yml` | 兴趣池文件路径（`QQ_INTERESTS_FILE` 可覆盖）。**不存在 = 空池**，格式错 = 启动报错 |
 | `proactive.botAliases` | `[]` | bot 在本群的别名（场景 4 指代检测）；至少 2 字、最多 5 个 |

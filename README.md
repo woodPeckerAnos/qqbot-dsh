@@ -102,10 +102,41 @@ QQ 机器人的约束比看起来紧得多，下面每一条都有对应机制�
 | 用户发来的文件不能被立刻回发给自己 | `inbox/` 与 `outbox/` 严格分开，配置层拒绝同名（启动期报错）；文件名来自用户 → sanitize + `<时间戳>-` 前缀 + `wx` 不覆盖 |
 | 无法从文档确认的项（消息长度上限等） | 保守默认 + 遇错降级，且全部列进 [RUNBOOK 第 7 节](docs/RUNBOOK.md) |
 | **主动发言**（没有用户消息可锚定时说话）在官方通道上不可用（主动推送已停用、群聊每月 4 条、用户可关闭接收） | 收敛成一个平台能力 `BotConnector.proactive`：官方层 do nothing 返回 `unsupported`，OneBot 直接发；外层走同一条 `ProactiveSpeaker` 路径（[说明](src/pipeline/proactive/README.md)） |
+| 机器人只对 @ 反应，"没人问它"时像个死物 | 旁听非 @ 群消息 → 本地预筛（零 LLM 成本）→ 判定要不要插话 → 否决层（限流 / 每话题一次 / 没人理我就停）→ 主动发言；**默认灰度**：打开也先只记录"本应发言"（[场景清单](src/pipeline/proactive/interests/SCENES.md)、[排障](docs/RUNBOOK.md)） |
 | OneBot 图片 URL 会过期（约 2 小时）/ 有头 NapCat 常只给文件标识 | `fetchMedia` 先直连 URL，失败自动用 `get_file`/`get_image` 动作回查字节 |
 | 多个产物逐条发会刷屏 | 一轮多文件自动打包成单个 zip 发一条消息；只发本轮新产生的文件（mtime 过滤），旧文件不重复发 |
 | 长任务把会话卡住、排队消息没反馈 | 忙时即时排队提示；管理员 `/stop` 强制中断在途任务（回收 runtime） |
 | 已结束的话题赖在上下文里 | 新消息与既有话题是否相关由小模型判定（`topic` 配置段，不经 DSH 进程）：判定无关即重置上下文；判定失败一律视为相关（不误清）；管理员 `/new` 显式开新话题 |
+
+## 让机器人会主动说话（可选）
+
+默认**关闭**，且即使打开也先进入**灰度观察**（判定照跑、只记录"本应发言"，
+health 里看 `proactive.wouldSend`）。要开启三件事：
+
+```bash
+# .env（群号是个人标识，只在这里配）
+BOT_LISTEN_GROUPS=onebot:123456        # 白名单；留空 = 不接任何群
+BOT_PROACTIVE_ENABLED=true             # 总开关
+BOT_PROACTIVE_DRY_RUN=false            # 关掉灰度才会真的发言（先别急着关）
+```
+
+```bash
+# 兴趣池（场景 5）——可选，文件不存在就是空池
+cp src/pipeline/proactive/interests/interests.yml.example interests.yml
+```
+
+它会在**什么情况下**主动开口，用人话写在
+[src/pipeline/proactive/interests/SCENES.md](src/pipeline/proactive/interests/SCENES.md)：
+五类场景（指代 / 续聊追问 / 无人应答 / 持续讨论 / 兴趣话题）+ 全局闸门
+（没人理我就停、限流、每话题一次、夜间静默）。**"它为什么不说话"的排查顺序**
+见 [RUNBOOK §4.5](docs/RUNBOOK.md)。
+
+两条通道的能力差异（重要）：
+
+| | 旁听（听得到没 @ 的消息） | 主动发言 |
+|---|---|---|
+| OneBot（NapCat 等） | 支持（框架默认推全量群消息） | 支持 |
+| 官方开放平台 | 需开通「接收所有消息」能力 | **不支持**（主动推送已停用，群聊每月 4 条） |
 
 ## 权限模型（请务必了解）
 
@@ -187,8 +218,10 @@ src/core/       接入层契约：BotConnector / 归一化事件 / 内容片段�
 src/adapters/   接入平台：qq-official（官方开放平台）/ onebot（NapCat 等社区框架）
 src/dsh/        DSH 桥接：NDJSON JSON-RPC 客户端 / 子进程监督 / 进程池 / turn 归并 / 图片内联
 src/pipeline/   编排：调度 / 配额与进度 / 分段 / 文本清洗 / 并发原语（全平台共用一条链路）
-src/pipeline/proactive/  主动发言的唯一聚集地：SCENES.md（场景人话真相源）
-                         + contract.ts + scene/（搜集）judge/（判据）veto/（否决）deliver/（投递）
+src/pipeline/proactive/  主动发言的唯一聚集地：
+                         interests/SCENES.md（场景人话真相源）+ interests/pool.ts（兴趣池）
+                         + contract.ts + scene/（搜集·状态·runner）judge/（判据）veto/（否决）
+                         + deliver/（投递）
 src/store/      持久化：对话记录（JSONL）/ 事件去重 / 会话映射 / 路径布局
 dsh-profile/    DSH profile 补丁 + 自动审批桩
 scripts/        容器入口 + 五个验证脚本

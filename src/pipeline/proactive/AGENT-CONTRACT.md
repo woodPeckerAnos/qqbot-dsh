@@ -11,12 +11,24 @@
 ```
 src/pipeline/proactive/
   interests/SCENES.md  当前生效场景的自然语言真相源（**新增场景第一步**）
+  interests/pool.ts    兴趣池：读取 + 启动期校验 + 本地匹配（上游将来由 role-play 接管）
   interests/interests.yml.example  兴趣池样例（照它写 interests.yml）
   contract.ts          三层共享契约：SceneId / SCENE_ORDER / 触发面 / 判定 / 终局
-  scene/collect.ts     ① 搜集层    judge/judge.ts  ② LLM 层
-  veto/veto.ts         ③ 否决层    deliver/speaker.ts  投递层
+  scene/collect.ts     ① 搜集层（本地预筛 + 证据组装）
+  scene/state.ts       会话级旁听状态（缓冲 / 未答问题台账 / 无人回应计数 / 活动窗口）
+  scene/transcript.ts  转录与结构化事实渲染（含不可信边界）
+  scene/watcher.ts     **唯一 runner**：三个触发面 + 定时器 + 成本闸 + 记账
+  judge/judge.ts       ② LLM 层：判据文案 / prompt / 输出契约 / 容错解析（纯逻辑）
+  judge/client.ts      ② LLM 层调用侧：并发闸 + fail-closed（注入 fetch 可测）
+  judge/chat-client.ts 最小 Chat 客户端（OpenAI 兼容）
+  veto/veto.ts         ③ 否决层：顺序 / 额度 / 预算 → 唯一终局（纯函数）
+  deliver/speaker.ts   投递层：唯一出口（dryRun / 平台能力差异都在这里）
   README.md / AGENT-CONTRACT.md
 ```
+
+**链路的唯一入口是 `scene/watcher.ts` 的 `observe()`**（由 `main.ts` 经
+`Orchestrator` 注入）。不要在别处新增第二个评估入口——那样会绕过成本闸
+与"同会话不并发评估"。
 
 ---
 
@@ -183,6 +195,8 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 | 层 | 文件 | 你在这里能改什么 | 不该出现在这里的东西 |
 |---|---|---|---|
 | ① 搜集 | `scene/collect.ts` | `SCENE_DEFINITIONS` 的 `precheck` / `triggers`；`collectCandidates()` 的保险 | LLM 调用、额度判断、"谁赢" |
+| ① 状态 | `scene/state.ts` | 活动窗口、台账上限、疑问句识别门槛 | LLM 调用、额度策略 |
+| runner | `scene/watcher.ts` | 触发面与定时器、成本闸、按会话的额度记账 | 场景判据（那在 collect/judge）、文案 |
 | ② LLM | `judge/judge.ts` | `SCENE_1..5_CRITERIA` 文案、`renderJudgeCriteria()`、`parseSceneVerdicts()` 容错 | 优先级/预算、候选之外的场景 |
 | ③ 否决 | `veto/veto.ts` | `VetoPolicy` 默认值、否决顺序、`selectByQuantileBudget()` | 读消息文本、调 LLM、语义判断 |
 
@@ -277,6 +291,10 @@ git diff                                   # 复核：有没有偷偷改到别�
 | 照 P0 方案文档配 `inflight-merge.maxMessages` | 实际参数名是 `maxPending` / `maxAgeMs`，写错**静默无效** | 以代码为准；新增参数时三处同步 |
 | 以为 `/listen` 命令存在 | 控制面完全没做（`setRuntimeEnabled()` 无调用点） | 需要控制面就先实现，不要假设 |
 | 让调用方手填 `matchedInterestIds` / `botAliases` | 手填的结果是**永远空列表**：场景 5 永不触发，且没有任何报错 | 用 `buildSceneEvidence()` 从兴趣池与配置推导（见下） |
+| 本地预筛占用"正在评估"标记 | 异步评估短暂占用标记，而消息触发很密 → 紧随其后的滚动收敛被**静默丢弃**（实测：第一条消息触发一次无候选评估，第三条的收敛因此永不生效） | 预筛必须在占标记**之前**跑完；无候选同步返回 |
+| 先入状态再做保险判断 | `state.observe` 会把无人回应计数清零 → "没人理我就停"永远读到 0、保险形同失效 | `observe()` 里**先**用旧状态预筛，**再**入状态 |
+| 兴趣匹配只看触发的那一条消息 | 场景 5 的典型对话是"这个折线图怎么画" + "要不换个图？"，只看后一条命中不了任何条目 | 用 `watcher.matchText()`（最近 5 条拼接） |
+| 以为新窗口里 bot 的第一句发言会被计数 | `startWindow` 会清零话题额度 → 顺序写反等于"每话题一次"失效 | `recordBotSpoke` 先计数再判窗口 |
 | 在转录里找不到 bot 自己刚说的话 | 旁听缓冲只收非 @ 消息，bot 的 @ 回复不进缓冲 | 场景 1 的判定需要 `<bot最近发言>` 块（见架构方案 §3.6） |
 
 ---
