@@ -1,7 +1,8 @@
 ---
 doc: new-content-requirement
 kind: requirement
-status: 待实施
+status: **已作废**（被 TOPIC-SESSION-REQUIREMENT.md 取代）
+superseded-by: TOPIC-SESSION-REQUIREMENT.md
 scope: 用「决策状态的变化」替代 topic-spent 的"每话题一次"，并给主动介入的再评估立一个本地可判的门槛
 touches:
   - 会话状态（scene/state.ts：信号集与消息级读法）
@@ -24,6 +25,13 @@ stats:
   - new_content_locked
   - new_content_anchor_missing
 ---
+
+> ⚠️ **本方案已作废，仅作"被否掉的方案"记录。**
+> 作废原因：本地信号集本质上是用启发式去猜"只有 LLM 才能知道的事"，与维护者
+> 「话题明显是 llm 后才能明确的一个东西」的判断冲突；且代码对账发现至少三项
+> 信号不可判或会产生循环（`answerArrived` 的"被答"无生产者、`markSilenced`
+> 在每次探针否决时触发导致"bot 拒答→全面禁言"、`windowRolled`/无锚点在现有
+> 代码里恒为假）。替代方案见 [TOPIC-SESSION-REQUIREMENT.md](TOPIC-SESSION-REQUIREMENT.md)。
 
 # 原始需求
 

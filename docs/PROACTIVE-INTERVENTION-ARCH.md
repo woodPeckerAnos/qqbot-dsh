@@ -12,9 +12,11 @@
 > - [WAIT-CONVERGENCE-REQUIREMENT.md](WAIT-CONVERGENCE-REQUIREMENT.md)
 >   ——`vetoed.wait` 占全部判定的 46%（1682 次）且产出为零；给出收敛方案
 >   （票据化 + 三类理由 + 唤醒前本地判断）与 11 条验收标准；
-> - [NEW-CONTENT-REQUIREMENT.md](NEW-CONTENT-REQUIREMENT.md)
->   ——`topic-spent` 拦掉了模型意图的 90%（494/550）；用「决策状态的变化」
->   （5 个本地信号）替代"每话题一次"，并保留语义增量作为二期。
+> - [TOPIC-SESSION-REQUIREMENT.md](TOPIC-SESSION-REQUIREMENT.md)
+>   ——`topic-spent` 拦掉了模型意图的 90%（494/550）；改用「话题 session +
+>   发言预算」（预算 2、静默 10 分钟关闭、不做 topicChange），明确以覆盖换精度；
+>   更早的本地信号集方案（[NEW-CONTENT-REQUIREMENT.md](NEW-CONTENT-REQUIREMENT.md)）
+>   已在代码对账中被否，保留为记录。
 >
 > **本文件回答的原始问题**：把主动介入拆成业务方给出的 5 种场景、
 > 且「同时命中多个时按加载顺序取第一个」之后，最有可能的落地架构是什么。

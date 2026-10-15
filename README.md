@@ -141,7 +141,8 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 | [proactive/AGENT-CONTRACT](src/pipeline/proactive/AGENT-CONTRACT.md) | 扩展契约（给 agent 读）：新增介入规则 / 新增平台 / 改场景表 |
 | [PROACTIVE-INTERVENTION-ARCH](docs/PROACTIVE-INTERVENTION-ARCH.md) | 主动介入架构方案：5 场景 → 三段式架构、取舍与未实现项 |
 | [WAIT-CONVERGENCE-REQUIREMENT](docs/WAIT-CONVERGENCE-REQUIREMENT.md) | 需求：`wait`（延迟重查）的收敛——票据化、三类理由、唤醒前本地判断、11 条验收 |
-| [NEW-CONTENT-REQUIREMENT](docs/NEW-CONTENT-REQUIREMENT.md) | 需求：用「决策状态的变化」替代 `topic-spent` 的每话题一次——本地信号集、锚点、12 条验收 |
+| [TOPIC-SESSION-REQUIREMENT](docs/TOPIC-SESSION-REQUIREMENT.md) | 需求：用「话题 session + 发言预算」替代 `topic-spent` 的每话题一次（预算 2 / 静默 10 分钟关闭 / 不做 topicChange） |
+| [NEW-CONTENT-REQUIREMENT](docs/NEW-CONTENT-REQUIREMENT.md) | ~~已作废~~：本地信号集方案（被上一份取代，保留作"被否掉的方案"记录） |
 
 ## 开发
 
