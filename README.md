@@ -140,7 +140,8 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 | [proactive/README](src/pipeline/proactive/README.md) | 主动发言模块：能力收敛、三层判定架构、降级链 |
 | [proactive/AGENT-CONTRACT](src/pipeline/proactive/AGENT-CONTRACT.md) | 扩展契约（给 agent 读）：新增介入规则 / 新增平台 / 改场景表 |
 | [PROACTIVE-INTERVENTION-ARCH](docs/PROACTIVE-INTERVENTION-ARCH.md) | 主动介入架构方案：5 场景 → 三段式架构、取舍与未实现项 |
-| [WAIT-CONVERGENCE-REQUIREMENT](docs/WAIT-CONVERGENCE-REQUIREMENT.md) | 待实施需求：`wait`（延迟重查）的收敛——票据化、三类理由、唤醒前本地判断、11 条验收 |
+| [WAIT-CONVERGENCE-REQUIREMENT](docs/WAIT-CONVERGENCE-REQUIREMENT.md) | 需求：`wait`（延迟重查）的收敛——票据化、三类理由、唤醒前本地判断、11 条验收 |
+| [NEW-CONTENT-REQUIREMENT](docs/NEW-CONTENT-REQUIREMENT.md) | 需求：用「决策状态的变化」替代 `topic-spent` 的每话题一次——本地信号集、锚点、12 条验收 |
 
 ## 开发
 

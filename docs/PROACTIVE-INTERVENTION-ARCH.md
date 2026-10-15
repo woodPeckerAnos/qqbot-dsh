@@ -8,9 +8,13 @@
 > 尚未实现：仲裁记录与离线回放（S4）、话题聚簇（当前用活动窗口近似，见 §3.1）、
 > 兴趣池由 role-play 动态设定（维护者已预告的后续迭代）。
 >
-> 已单独立项的需求：[WAIT-CONVERGENCE-REQUIREMENT.md](WAIT-CONVERGENCE-REQUIREMENT.md)
-> ——一周灰度数据显示 `vetoed.wait` 占全部判定的 46%（1682 次）且产出为零，
-> 该文档给出收敛方案（票据化 + 三类理由 + 唤醒前本地判断）与 11 条验收标准。
+> 已单独立项的需求（均由一周灰度数据触发）：
+> - [WAIT-CONVERGENCE-REQUIREMENT.md](WAIT-CONVERGENCE-REQUIREMENT.md)
+>   ——`vetoed.wait` 占全部判定的 46%（1682 次）且产出为零；给出收敛方案
+>   （票据化 + 三类理由 + 唤醒前本地判断）与 11 条验收标准；
+> - [NEW-CONTENT-REQUIREMENT.md](NEW-CONTENT-REQUIREMENT.md)
+>   ——`topic-spent` 拦掉了模型意图的 90%（494/550）；用「决策状态的变化」
+>   （5 个本地信号）替代"每话题一次"，并保留语义增量作为二期。
 >
 > **本文件回答的原始问题**：把主动介入拆成业务方给出的 5 种场景、
 > 且「同时命中多个时按加载顺序取第一个」之后，最有可能的落地架构是什么。
@@ -389,9 +393,9 @@ export interface SceneVerdict {
   satisfied: boolean;
   confidence: number;      // 用于预算与排序，不用于放行
   reason: string;
-  evidence?: string;       // 场景 1/2 的被纠错原文；场景 3 的问题原文
+  evidence?: string;       // 场景 1/2 的被纠错原文；场景 3 的对象引用（q:<id>）
   directive?: string;      // 交给介入 turn 的「该说什么」要点
-  suggestsWait?: boolean;  // 只提建议，是否采纳由 ③ 层决定
+  waitReason?: 'yielding' | 'not-yet' | 'watching';  // 三态；采纳与否由 ③ 层决定
 }
 
 // ③ 层输出（代码侧）：唯一的终局
@@ -430,14 +434,16 @@ export type ProactiveDecision =
 |---|---|
 | 4 指代 | 成立 = 明确是「在对 bot 说」而非「在议论 bot」；只是提及 bot 的名字但话题不需要 bot → 不成立 |
 | 1 续聊 | 成立 = 与 bot 上一条发言同一话题，且**尚无人（含提问者自己）解决**；只是继续闲聊 → 不成立 |
-| 3 无人应答 | 成立 = 问题仍未被回答 + 在能力域内 + 已静默足够久；**若有人正在回应 → 不成立 + `suggestsWait`** |
+| 3 无人应答 | 成立 = 问题仍未被回答 + 在能力域内 + 已静默足够久；**若有人正在回应 → 不成立 + `waitReason:'yielding'`**（还没到时候给 `not-yet`，刚说完看反应给 `watching`） |
 | 2 持续讨论 | 成立 = 三判据至少一个成立（可提供能力 / 有可答问题 / 有事实性错误）**且**有信息增量；纯观点碰撞、情绪话题 → 不成立 |
 | 5 兴趣 / 性格 | 成立 = 话题停在**没有结论或没人动手**处，且 bot 能补一句可立即使用的结果 |
 
 「每话题至多 1 次」这类**额度**约束不写在 criteria 里——它是 ③ 层的事
 （`VetoPolicy.maxPerTopic`）；写进 prompt 会让额度无法配置、无法回放对比。
-同理，`suggestsWait` 只是模型的**建议**，是否真的等待由 ③ 层按
-`maxWaitRetries` 决定。
+同理，`waitReason` 只是模型的**建议**，是否真的等待由 ③ 层按
+`maxWaitPerItem` 决定（且只有 `yielding` 会建票据、排一次唤醒；
+`not-yet` / `watching` 分别交给既有的问题探针与"下一条人类消息"——
+完整设计见 [WAIT-CONVERGENCE-REQUIREMENT.md](./WAIT-CONVERGENCE-REQUIREMENT.md)）。
 
 ### 4.4 事实性错误要区分「可确证」与「观点分歧」
 
