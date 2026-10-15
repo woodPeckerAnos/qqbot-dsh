@@ -55,14 +55,52 @@ interface Harness {
   watcher: ProactiveWatcher;
   /** 手动推进时间 + 触发到期的定时器 */
   advance(ms: number): void;
+  /** 推进时间但**不**触发定时器（用于"先把消息放进转录，再让唤醒到点"） */
+  advanceSilently(ms: number): void;
+  /** 触发此刻所有已到期的定时器（不推进时间） */
+  tick(): void;
+  /** 发一条旁听消息（`msFromStart` 缺省用当前时钟；给了就先推进到那一刻） */
   observe(senderId: string, text: string, msFromStart?: number): void;
   judgeCalls: ProactiveJudgeInput[];
   delivered: Array<{ target: ConversationTarget; out: OutgoingMessage }>;
   /** 让判定返回的"成立场景" */
-  setVerdicts(scenes: string[], options?: { suggestsWait?: boolean }): void;
+  setVerdicts(scenes: string[], options?: JudgeOptions): void;
   /** 让判定失败 */
   setJudgeFailure(fail: boolean): void;
   snapshot(): ReturnType<ProactiveWatcher['snapshot']>;
+  /** 第 N 次旁听消息会登记出来的问题 id（`<msgId>@<ts>`，台账的命名规则） */
+  questionIdOf(senderId: string, msFromStart: number): string;
+  /**
+   * 让会话里出现一个**挂起问题**（场景 3 的判定对象），返回它的 id。
+   *
+   * 顺带让场景 1 成为候选（bot 在这个话题里说过话）——否则"每条消息"那条
+   * 触发面在本地就被短路了，判定根本不跑。探针由 `questionProbeMs` 决定，
+   * 因此调用方要用 `advance(questionProbeMs)` 把它推到判定面前。
+   */
+  armQuestion(text?: string): string;
+  /**
+   * 只让**下一次**判定"让路"（之后的判定回到 `setVerdicts` 设定的形态）。
+   *
+   * ⚠️ 必须在上一次判定**收口之后**再设（`await settle()`），否则它会被上一次
+   * 判定吃掉——`kick` 是 fire-and-forget，同步设置的开关会被更早发出的那次调用读到。
+   */
+  yieldOnce(targetId?: string): void;
+}
+
+/**
+ * 假判定的行为开关。
+ *
+ * `waitReason` + `waitOn` 是"让路"这条路的入口：模型说 `yielding` 时**必须**
+ * 在 evidence 里回抄 `q:<id>`，否则否决层只能判它"引用无效"——这正是需求
+ * 验收 9 要考的行为，因此夹具必须能分别模拟"给了 id"与"没给 id"。
+ */
+interface JudgeOptions {
+  /** 一次性：只在下一次判定里生效（之后恢复 `waitReason`） */
+  waitReason?: 'yielding' | 'not-yet' | 'watching';
+  /** 让路时引用的对象 id；缺省 = 不给引用（模拟模型漏报） */
+  waitOn?: string;
+  /** 让路时回抄的原始 evidence（覆盖 `q:<waitOn>` 的默认拼法） */
+  waitEvidence?: string;
 }
 
 function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proactive?: boolean } = {}): Harness {
@@ -71,20 +109,39 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proac
   const judgeCalls: ProactiveJudgeInput[] = [];
   const delivered: Array<{ target: ConversationTarget; out: OutgoingMessage }> = [];
   let satisfied: string[] = [];
-  let suggestsWait = false;
+  let waitReason: JudgeOptions['waitReason'];
+  let waitOn: string | undefined;
+  let waitEvidence: string | undefined;
+  let once: JudgeOptions | undefined;
   let failing = false;
 
   const judge: ProactiveJudge = {
     async judge(input) {
       judgeCalls.push(input);
       if (failing) return undefined;
-      const verdicts: SceneVerdict[] = input.candidates.map((candidate: SceneCandidate) => ({
-        scene: candidate.scene,
-        satisfied: satisfied.includes(candidate.scene),
-        confidence: satisfied.includes(candidate.scene) ? 0.9 : 0.1,
-        reason: satisfied.includes(candidate.scene) ? '判定成立' : '判定不成立',
-        ...(suggestsWait ? { suggestsWait: true } : {}),
-      }));
+      const pending: JudgeOptions = once ?? { waitReason, waitOn, waitEvidence };
+      once = undefined;
+      const verdicts: SceneVerdict[] = input.candidates.map((candidate: SceneCandidate) => {
+        const hit = satisfied.includes(candidate.scene);
+        // "让路"只作用在**没有成立**的场景上（成立与先别说不可能同时为真）
+        const reason = hit ? undefined : pending.waitReason;
+        return {
+          scene: candidate.scene,
+          satisfied: hit,
+          confidence: hit ? 0.9 : 0.1,
+          reason: hit ? '判定成立' : '判定不成立',
+          ...(reason === undefined
+            ? {}
+            : {
+                waitReason: reason,
+                ...(pending.waitEvidence !== undefined
+                  ? { evidence: pending.waitEvidence }
+                  : pending.waitOn !== undefined
+                    ? { evidence: `q:${pending.waitOn}` }
+                    : {}),
+              }),
+        };
+      });
       return verdicts;
     },
   };
@@ -121,6 +178,16 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proac
     ...overrides,
   };
 
+  /** 触发此刻所有已到期的定时器（手动时钟的"事件循环"）。 */
+  function fireDue(): void {
+    for (const timer of timers) {
+      if (!timer.cancelled && timer.at <= clock) {
+        timer.cancelled = true;
+        timer.fn();
+      }
+    }
+  }
+
   const watcher = new ProactiveWatcher({
     config,
     speaker,
@@ -144,13 +211,12 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proac
     watcher,
     advance(ms) {
       clock += ms;
-      for (const timer of timers) {
-        if (!timer.cancelled && timer.at <= clock) {
-          timer.cancelled = true;
-          timer.fn();
-        }
-      }
+      fireDue();
     },
+    advanceSilently(ms) {
+      clock += ms;
+    },
+    tick: fireDue,
     observe(senderId, text) {
       watcher.observe(makeObserved(senderId, text, clock));
     },
@@ -158,12 +224,33 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proac
     delivered,
     setVerdicts(scenes, opts) {
       satisfied = scenes;
-      suggestsWait = opts?.suggestsWait ?? false;
+      waitReason = opts?.waitReason;
+      waitOn = opts?.waitOn;
+      waitEvidence = opts?.waitEvidence;
+      // `once` 只有显式给了才排：否则它会把 settled 的 waitReason 吃掉一次
+      once = undefined;
     },
     setJudgeFailure(fail) {
       failing = fail;
     },
     snapshot: () => watcher.snapshot(),
+    questionIdOf(senderId, msFromStart) {
+      // 与 ConversationState.registerQuestion 的命名规则一致：`<msgId>@<ts>`
+      return `${makeObserved(senderId, '', 1_700_000_000_000 + msFromStart).msgId}@${
+        1_700_000_000_000 + msFromStart
+      }`;
+    },
+    armQuestion(text = '有没有人知道这个接口的分页参数怎么传？') {
+      // 先让 bot 在这个话题里说过话（场景 1 的候选条件），再提一个挂起问题
+      watcher.observe(makeObserved('u1', '帮我看看这个报错', clock));
+      watcher.notifyBotSpoke(GROUP_KEY);
+      const id = `${makeObserved('u2', '', clock).msgId}@${clock}`;
+      watcher.observe(makeObserved('u2', text, clock));
+      return id;
+    },
+    yieldOnce(targetId) {
+      once = { waitReason: 'yielding', ...(targetId === undefined ? {} : { waitOn: targetId }) };
+    },
   };
 }
 
@@ -351,22 +438,31 @@ describe('否决层在链条里的位置', () => {
     expect(h.delivered).toHaveLength(0);
   });
 
-  it('验收12：判定 wait 建议 → 排一次重查，不立即发言', async () => {
-    // 先让场景 1 成为候选（bot 在这个话题里说过话），否则本地没候选、判定都不跑
-    // 探针时间调长：本用例只验证 wait 的那条重查路径，不让问题探针插进来
-    const h = setup({ questionProbeMs: 600_000 });
-    h.observe('u1', '帮我看看这个报错');
-    h.watcher.notifyBotSpoke(GROUP_KEY);
-    h.setVerdicts([], { suggestsWait: true });
+  it('验收12：判定让路 → 建票据 + 排一次唤醒，不立即发言', async () => {
+    const h = setup({ questionProbeMs: 1_000 });
+    const questionId = h.armQuestion();
+    await settle();
 
-    h.observe('u2', '我这也报错了，有没有人知道这个怎么解决？');
+    // 探针到期 → 场景 3 进候选；这次模型说"有人在答，让路"
+    h.yieldOnce(questionId);
+    h.advance(1_000);
     await settle();
     expect(h.delivered).toHaveLength(0);
     expect(h.snapshot().vetoed['wait']).toBe(1);
-    const calls = h.judgeCalls.length;
-    h.advance(30_000);
+    expect(h.snapshot().waitTickets.created).toBe(1);
+    expect(h.snapshot().waitTickets.pending).toBe(1);
+
+    // 让路窗口里群里有人接了话（转录有新增），且这条消息在唤醒**之前**进了状态
+    h.advanceSilently(20_000);
+    h.observe('u3', '我看下这个问题');
     await settle();
-    expect(h.judgeCalls.length).toBeGreaterThan(calls);
+
+    // 45 秒到点 → 唤醒后**真的**重新判定一次
+    h.advanceSilently(25_000);
+    h.tick();
+    await settle();
+    expect(h.judgeCalls.some((call) => call.evidence.trigger === 'wait-wakeup')).toBe(true);
+    expect(h.snapshot().evaluatedByTrigger['wait-wakeup']).toBe(1);
   });
 
   it('验收13：限流窗口按会话记——发言后同一会话内不再投递', async () => {

@@ -205,6 +205,11 @@ describe('loadConfig', () => {
     expect(bare.proactive.judgeTimeoutMs).toBe(20_000);
     expect(bare.topic.timeoutMs).toBe(10_000);
 
+    // 「让路」（wait）的两个参数刻意保守：让路只能让一次，且不超过 45 秒。
+    // 这是"等待"从会话级收窄为条目级之后**唯一**还需要的两个旋钮。
+    expect(bare.proactive.maxWaitPerItem).toBe(1);
+    expect(bare.proactive.waitYieldMs).toBe(45_000);
+
     const withList = loadConfig({ ...baseEnv, BOT_LISTEN_GROUPS: 'onebot:123456,ob11:g99' });
     expect(withList.proactive.whitelistGroups).toEqual(['onebot:123456', 'ob11:g99']);
 
@@ -221,6 +226,26 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_JUDGE_TIMEOUT_MS: '999' })).toThrowError(
       ConfigError,
     );
+
+    // 「让路」参数：默认保守（1 次 / 45 秒），且两端都有校验
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_MAX_WAIT_PER_ITEM: '2' }).proactive.maxWaitPerItem,
+    ).toBe(2);
+    expect(loadConfig({ ...baseEnv, BOT_PROACTIVE_WAIT_YIELD_MS: '60000' }).proactive.waitYieldMs).toBe(
+      60_000,
+    );
+    // 范围外的值在启动期被拒（等待时长下限 15 秒：短于它就不是"让路"而是抢话）
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_WAIT_YIELD_MS: '1000' })).toThrowError(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_WAIT_YIELD_MS: '999999' })).toThrowError(
+      ConfigError,
+    );
+    // ⚠️ 配成 5 **不报错**：正确的行为是"按硬上限 3 处理并 warn"，
+    // 因为那是运行期约束（上限必须活在模型之下），不是配置语法错误。
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_MAX_WAIT_PER_ITEM: '5' }).proactive.maxWaitPerItem,
+    ).toBe(5);
   });
 
   it('主动发言：别名太短或太多、滚动周期越界都在启动期被拒（安静故障要拦住）', () => {

@@ -204,6 +204,101 @@ describe('未答问题台账（场景 3）', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// wait 收敛要用的两个字段（见 docs/WAIT-CONVERGENCE-REQUIREMENT.md 判定三/五）
+// ---------------------------------------------------------------------------
+
+describe('让路台账：预算、判定时刻与"问题关闭"通知', () => {
+  it('验收15：yieldBudget 记在**问题那一行**上，可累加可查询', () => {
+    const s = state();
+    s.observe(msg('m1', 'u1', '这个问题有人知道吗？', T0));
+    const [q] = s.pendingQuestions(T0 + 1_000);
+    expect(q?.yieldBudgetUsed).toBe(0);
+    expect(s.yieldBudget(q?.id ?? '')).toBe(0);
+
+    s.recordYield(q?.id ?? '');
+    s.recordYield(q?.id ?? '');
+    expect(s.yieldBudget(q?.id ?? '')).toBe(2);
+    // 记在问题上（不是会话上）：另一个问题不受影响
+    s.observe(msg('m2', 'u2', '那这个呢，有人知道吗？', T0 + 2_000));
+    const other = s.pendingQuestions(T0 + 3_000).find((item) => item.msgId === 'm2');
+    expect(s.yieldBudget(other?.id ?? '')).toBe(0);
+  });
+
+  it('验收16：lastEvaluatedAt 只前进不回退，且"有没有新增内容"以它为基准', () => {
+    const s = state();
+    s.observe(msg('m1', 'u1', '这个问题有人知道吗？', T0));
+    const [q] = s.pendingQuestions(T0 + 1_000);
+    const id = q?.id ?? '';
+
+    // 还没判定过 → 一律按"有新增"处理（宁可多查一次，不可漏掉一段对话）
+    expect(s.hasNewContentSince(undefined)).toBe(true);
+
+    s.markEvaluated(id, T0 + 5_000);
+    expect(q?.lastEvaluatedAt).toBe(T0 + 5_000);
+    // 乱序/并发调用不该把标记拉回去
+    s.markEvaluated(id, T0 + 1_000);
+    expect(q?.lastEvaluatedAt).toBe(T0 + 5_000);
+
+    // 转录里没有**晚于**判定时刻的消息 → 无新增（唤醒时因此不花 LLM）。
+    // 边界是严格大于：判定那一刻已经在转录里的那条消息不算"新增"，
+    // 否则每次唤醒都会被自己上一轮的触发消息喂饱（等于没有这道检查）。
+    expect(s.hasNewContentSince(T0 + 5_000)).toBe(false);
+    expect(s.hasNewContentSince(T0)).toBe(false);
+    expect(s.hasNewContentSince(T0 - 1)).toBe(true);
+
+    s.observe(msg('m2', 'u2', '我看看', T0 + 6_000));
+    expect(s.hasNewContentSince(T0 + 5_000)).toBe(true);
+  });
+
+  it('验收17：问题关闭会**通知**监听者（调度层据此立即作废票据、取消唤醒）', () => {
+    const s = state({ questionTtlMs: 30_000, activityWindowMs: 60_000 });
+    const closed: Array<{ id: string; cause: string }> = [];
+    s.onQuestionClosed((event) => closed.push({ id: event.id, cause: event.cause }));
+
+    s.observe(msg('m1', 'u1', '第一个问题有人知道吗？', T0));
+    const [q1] = s.pendingQuestions(T0 + 1_000);
+    s.markAnswered(q1?.id ?? '');
+    expect(closed).toEqual([{ id: q1?.id ?? '', cause: 'answered' }]);
+
+    // 幂等：重复关闭同一条问题不重复通知（否则同一张票据会被作废两次）
+    s.markAnswered(q1?.id ?? '');
+    expect(closed).toHaveLength(1);
+
+    // TTL 到期同样要通知
+    s.observe(msg('m2', 'u2', '第二个问题有人知道吗？', T0 + 2_000));
+    const before = closed.length;
+    s.pendingQuestions(T0 + 40_000);
+    expect(closed.length).toBe(before + 1);
+    expect(closed.at(-1)?.cause).toBe('expired');
+
+    // 话题翻篇（新窗口）也是"关闭"：挂在旧问题上的票据必须当场作废
+    const s2 = state({ activityWindowMs: 60_000 });
+    const closed2: string[] = [];
+    s2.onQuestionClosed((event) => closed2.push(event.cause));
+    s2.observe(msg('m1', 'u1', '窗口里第一个问题有人知道吗？', T0));
+    expect(s2.pendingQuestions(T0 + 1_000)).toHaveLength(1);
+    s2.observe(msg('m2', 'u2', '静默很久之后换话题', T0 + 120_000));
+    expect(closed2).toContain('window-reset');
+    expect(s2.pendingQuestions(T0 + 121_000)).toHaveLength(0);
+  });
+
+  it('验收18：Store 把任意会话的问题关闭事件带 convKey 转发出来', () => {
+    const store = new ConversationStateStore({ activityWindowMs: 60_000 });
+    const seen: Array<{ convKey: string; id: string }> = [];
+    store.onQuestionClosed((convKey, event) => seen.push({ convKey, id: event.id }));
+
+    const a = store.for('ob11:g1');
+    a.observe(msg('m1', 'u1', '这个有人知道吗？', T0));
+    const [q] = a.pendingQuestions(T0 + 1_000);
+    a.markAnswered(q?.id ?? '');
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.convKey).toBe('ob11:g1');
+    expect(seen[0]?.id).toBe(q?.id);
+  });
+});
+
 describe('缓冲边界与注册表', () => {
   it('验收13：缓冲按条数上限淘汰最旧的（判定只要近期上下文）', () => {
     const s = state({ maxEntries: 5 });

@@ -65,6 +65,7 @@ function evidence(overrides: Partial<SceneEvidence> = {}): SceneEvidence {
     recentMessageCount: 0,
     recentHumanCount: 0,
     pendingQuestionCount: 0,
+    pendingQuestions: [],
     matchedInterestIds: [],
     unansweredStreak: 0,
     ...overrides,
@@ -105,9 +106,29 @@ function vetoContext(overrides: Partial<VetoContext> = {}): VetoContext {
     spokeCount10Min: 0,
     spokeCount1Hour: 0,
     topicBotSpeaks: 0,
-    waitRetries: 0,
     ...overrides,
   };
+}
+
+/** 一条"让路"判定：引用 `q:<id>`，理由是三态里的 `yielding`。 */
+function yieldingVerdict(targetId: string, overrides: Partial<SceneVerdict> = {}): SceneVerdict {
+  return {
+    scene: 'scene-3',
+    satisfied: false,
+    confidence: 0.5,
+    reason: '有人正在答',
+    evidence: `q:${targetId}`,
+    waitReason: 'yielding',
+    ...overrides,
+  };
+}
+
+/** 一个仍挂起的对象（wait 票据要挂上去的那一行）。 */
+function waitTarget(
+  targetId: string,
+  overrides: Partial<{ exists: boolean; open: boolean; yieldBudgetUsed: number }> = {},
+) {
+  return { id: targetId, exists: true, open: true, yieldBudgetUsed: 0, ...overrides };
 }
 
 // ---------------------------------------------------------------------------
@@ -345,16 +366,62 @@ describe('② LLM 层：逐场景判定与容错', () => {
     expect(fenced?.[1]).toMatchObject({ scene: 'scene-3', satisfied: true, confidence: 0.7 });
   });
 
-  it('验收12：suggestsWait 被保留（是否采纳由否决层决定）', () => {
+  it('验收12：waitReason 三态被保留，非法值丢弃（是否采纳仍由否决层决定）', () => {
     const parsed = parseSceneVerdicts(
       JSON.stringify({
         verdicts: [
-          { scene: 'scene-3', satisfied: false, confidence: 0.5, reason: '有人正在答', suggestsWait: true },
+          { scene: 'scene-3', satisfied: false, confidence: 0.5, reason: '有人正在答', waitReason: 'yielding' },
         ],
       }),
       candidates,
     );
-    expect(parsed?.[1]?.suggestsWait).toBe(true);
+    expect(parsed?.[1]?.waitReason).toBe('yielding');
+
+    // 另外两态原样保留：它们对应完全不同的唤醒责任人（探针 / 下一条消息）
+    for (const reason of ['not-yet', 'watching'] as const) {
+      const one = parseSceneVerdicts(
+        JSON.stringify({
+          verdicts: [{ scene: 'scene-3', satisfied: false, confidence: 0.5, reason: 'x', waitReason: reason }],
+        }),
+        candidates,
+      );
+      expect(one?.[1]?.waitReason).toBe(reason);
+    }
+
+    // 模型编出来的第四个理由 → 丢弃该字段（不是整条降级），判据描述需要更明确
+    const bogus = parseSceneVerdicts(
+      JSON.stringify({
+        verdicts: [{ scene: 'scene-3', satisfied: false, confidence: 0.5, reason: 'x', waitReason: 'maybe-later' }],
+      }),
+      candidates,
+    );
+    expect(bogus?.[1]?.waitReason).toBeUndefined();
+
+    // 已成立的判定不再带理由："成立"与"先别说"不可能同时为真
+    const satisfied = parseSceneVerdicts(
+      JSON.stringify({
+        verdicts: [{ scene: 'scene-3', satisfied: true, confidence: 0.9, reason: 'x', waitReason: 'yielding' }],
+      }),
+      candidates,
+    );
+    expect(satisfied?.[1]?.waitReason).toBeUndefined();
+    expect(satisfied?.[1]?.satisfied).toBe(true);
+  });
+
+  it('验收12b：判据正文与 JSON 契约都已改成三态（prompt 里不再有布尔值）', () => {
+    const scene3 = SCENE_CRITERIA.find((item) => item.scene === 'scene-3');
+    expect(scene3?.criteria).toContain('waitReason');
+    expect(scene3?.criteria).toContain('yielding');
+    expect(scene3?.criteria).toContain('not-yet');
+    expect(scene3?.criteria).toContain('watching');
+    expect(scene3?.criteria).not.toContain('suggestsWait');
+
+    expect(JUDGE_OUTPUT_CONTRACT).toContain('waitReason');
+    expect(JUDGE_OUTPUT_CONTRACT).not.toContain('suggestsWait');
+
+    // 模型要给 yielding 就必须有稳定的对象名可引用
+    const doc = readFileSync(fileURLToPath(new URL(SCENES_DOC, import.meta.url)), 'utf8');
+    expect(doc).toContain('waitReason');
   });
 });
 
@@ -437,26 +504,123 @@ describe('③ 否决层：顺序、额度与终局', () => {
     ).toMatchObject({ action: 'silent', reason: 'no-scene' });
   });
 
-  it('验收17：wait 建议由本层决定是否采纳，超过上限即 wait-exhausted', () => {
-    const waiting: SceneVerdict = {
-      scene: 'scene-3',
-      satisfied: false,
-      confidence: 0.5,
-      reason: '有人正在答',
-      suggestsWait: true,
-    };
+  it('验收17：wait 的判定树——只有"yielding + 对象仍挂起 + 预算未用尽"才建票据', () => {
+    const id = 'msg-1@1000';
+    const waiting = [yieldingVerdict(id)];
+
+    // ① 三态里的 yielding + 有效的挂起对象 + 预算没用过 → wait（票据挂在对象上）
     const first = evaluateVeto({
       candidates: [candidate('scene-3')],
-      verdicts: [waiting],
-      context: vetoContext(),
+      verdicts: waiting,
+      context: vetoContext({ wait: waitTarget(id) }),
     });
-    expect(first).toMatchObject({ action: 'wait', scene: 'scene-3' });
+    expect(first).toMatchObject({ action: 'wait', reason: 'yielding', targetId: id });
+
+    // ② 同一对象让路预算已用尽 → wait-spent（上限活在模型之下）
     const second = evaluateVeto({
       candidates: [candidate('scene-3')],
-      verdicts: [waiting],
-      context: vetoContext({ waitRetries: 1 }),
+      verdicts: waiting,
+      context: vetoContext({ wait: waitTarget(id, { yieldBudgetUsed: 1 }) }),
     });
-    expect(second).toMatchObject({ action: 'silent', reason: 'wait-exhausted' });
+    expect(second).toMatchObject({ action: 'silent', reason: 'wait-spent' });
+
+    // ③ `maxWaitPerItem` 配成 2 时，同一个对象可以再让一次
+    const again = evaluateVeto(
+      {
+        candidates: [candidate('scene-3')],
+        verdicts: waiting,
+        context: vetoContext({ wait: waitTarget(id, { yieldBudgetUsed: 1 }) }),
+      },
+      { ...DEFAULT_VETO_POLICY, maxWaitPerItem: 2 },
+    );
+    expect(again).toMatchObject({ action: 'wait' });
+
+    // ④ 硬上限：配成 5 也按 3 处理（"把收敛改回不收敛"不该只需改一行配置）
+    const capped = evaluateVeto(
+      {
+        candidates: [candidate('scene-3')],
+        verdicts: waiting,
+        context: vetoContext({ wait: waitTarget(id, { yieldBudgetUsed: 3 }) }),
+      },
+      { ...DEFAULT_VETO_POLICY, maxWaitPerItem: 5 },
+    );
+    expect(capped).toMatchObject({ action: 'silent', reason: 'wait-spent' });
+  });
+
+  it('验收17b：wait 的判定树——按下、对象已关闭、引用无效、无等待建议', () => {
+    const id = 'msg-1@1000';
+    const veto = (
+      v: SceneVerdict,
+      wait?: { id: string; exists: boolean; open: boolean; yieldBudgetUsed: number },
+    ) =>
+      evaluateVeto({
+        candidates: [candidate('scene-3')],
+        verdicts: [v],
+        context: vetoContext(wait === undefined ? {} : { wait }),
+      });
+
+    // `not-yet` / `watching` 不是"被否决"，是"模型说不用等" → wait-declined
+    for (const reason of ['not-yet', 'watching'] as const) {
+      expect(veto(yieldingVerdict(id, { waitReason: reason }), waitTarget(id))).toMatchObject({
+        action: 'silent',
+        reason: 'wait-declined',
+      });
+    }
+
+    // 对象已关闭（问题已答 / 过期 / 话题翻篇）→ 唤醒时就地作废，不建票据
+    expect(veto(yieldingVerdict(id), waitTarget(id, { open: false }))).toMatchObject({
+      action: 'silent',
+      reason: 'wait-declined',
+    });
+
+    // 引用无效：台账里**从来没有过**这个 id（模型回抄错了 / 幻觉）→ silent，
+    // 且必须与"曾经有过但已关闭"分开计数（后者是好消息：省下了一次调用）
+    expect(veto(yieldingVerdict(id), waitTarget(id, { exists: false, open: false }))).toMatchObject({
+      action: 'silent',
+      reason: 'wait-declined',
+    });
+    expect(veto(yieldingVerdict(id), waitTarget(id, { exists: false, open: false }))).toHaveProperty(
+      'detail',
+      expect.stringContaining('invalid-target'),
+    );
+
+    // 压根没给引用（模型只说"有人在答"，没说在等谁）→ 同样按引用无效处理
+    expect(veto(yieldingVerdict(id))).toMatchObject({ action: 'silent', reason: 'wait-declined' });
+    expect(veto(yieldingVerdict(id))).toHaveProperty('detail', expect.stringContaining('invalid-target'));
+
+    // 没有任何"等一等"的判定 → 就是旧的 no-scene
+    expect(veto(verdict('scene-3', { satisfied: false }))).toMatchObject({
+      action: 'silent',
+      reason: 'no-scene',
+    });
+
+    // 旧版布尔位只为存量回放数据保留：等价于 yielding
+    const legacy = veto(
+      { scene: 'scene-3', satisfied: false, confidence: 0.5, reason: 'x', suggestsWait: true },
+      waitTarget(id),
+    );
+    expect(legacy).toMatchObject({ action: 'wait', reason: 'yielding', targetId: id });
+
+    // 多个候选同时说"先别说" → 取全局顺序里的第一个（与 speak 的裁决同构）
+    const two = evaluateVeto({
+      candidates: [candidate('scene-3'), candidate('scene-5')],
+      verdicts: [
+        yieldingVerdict(id, { scene: 'scene-5' }),
+        yieldingVerdict(id, { scene: 'scene-3' }),
+      ],
+      context: vetoContext({ wait: waitTarget(id) }),
+    });
+    expect(two).toMatchObject({ action: 'wait' });
+  });
+
+  it('验收17c：satisfied 非空时 wait 完全不参与（优先级不变）', () => {
+    const id = 'msg-1@1000';
+    const decision = evaluateVeto({
+      candidates: [candidate('scene-3'), candidate('scene-4')],
+      verdicts: [yieldingVerdict(id), verdict('scene-4')],
+      context: vetoContext({ wait: waitTarget(id) }),
+    });
+    expect(decision).toMatchObject({ action: 'speak', scene: 'scene-4' });
   });
 
   it('验收18：分位数预算默认关闭；开启后高权重场景自然突破且不产生空集合', () => {
