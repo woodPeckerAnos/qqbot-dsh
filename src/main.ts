@@ -317,6 +317,8 @@ async function main(): Promise<void> {
         topicRollMessages: config.proactive.topicRollMessages,
         topicRollMs: config.proactive.topicRollMs,
         questionProbeMs: config.proactive.questionProbeMs,
+        maxWaitPerItem: config.proactive.maxWaitPerItem,
+        waitYieldMs: config.proactive.waitYieldMs,
         stateOptions: {
           maxEntries: config.proactive.bufferMaxMessages,
           maxAgeMs: config.proactive.bufferMaxAgeMs,
@@ -355,6 +357,27 @@ async function main(): Promise<void> {
           stats.proactiveDegraded += 1;
           logger.debug('主动介入投递降级', { reason, scene });
         },
+        // wait 票据：每张票据只有一个终局，四个计数之和 == created（账目闭合）。
+        // 这四个数是"wait 到底有没有价值"的唯一答案来源：
+        // `resolved` 长期为 0 → 正确答案可能是把 `yielding` 也按 silent 处理。
+        waitTicket: (terminal, scene) => {
+          stats.proactiveWaitTickets[terminal] = (stats.proactiveWaitTickets[terminal] ?? 0) + 1;
+          logger.debug('主动介入 wait 票据终局', { terminal, scene });
+        },
+        waitTicketCreated: (reason, scene) => {
+          stats.proactiveWaitTicketCreated += 1;
+          stats.proactiveWaitTicketCreatedByReason[reason] =
+            (stats.proactiveWaitTicketCreatedByReason[reason] ?? 0) + 1;
+          logger.debug('主动介入 wait 票据建立', { reason, scene });
+        },
+        waitDeclined: (reason, scene) => {
+          stats.proactiveWaitDeclined[reason] = (stats.proactiveWaitDeclined[reason] ?? 0) + 1;
+          logger.debug('主动介入：模型想等但被按下', { reason, scene });
+        },
+        waitInvalidTarget: (scene) => {
+          stats.proactiveWaitInvalidTarget += 1;
+          logger.debug('主动介入：模型引用了不存在的挂起问题', { scene });
+        },
       },
     });
 
@@ -379,6 +402,17 @@ async function main(): Promise<void> {
           file: config.proactive.interestsFile,
         },
         botAliases: config.proactive.botAliases.length,
+        waitTickets: snapshot?.waitTickets ?? {
+          pending: 0,
+          created: 0,
+          resolved: 0,
+          spent: 0,
+          stale: 0,
+          unchanged: 0,
+          invalidTarget: 0,
+        },
+        waitTicketsCreatedByReason: snapshot?.waitTicketsCreatedByReason ?? {},
+        waitDeclined: snapshot?.waitDeclined ?? {},
         evaluatedByTrigger: snapshot?.evaluatedByTrigger ?? {},
         satisfiedByScene: snapshot?.satisfiedByScene ?? {},
         vetoed: snapshot?.vetoed ?? {},

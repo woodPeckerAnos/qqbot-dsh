@@ -10,9 +10,26 @@
  *   3. **只收紧不放宽**：任何约束命中都只会让结果更保守。
  *
  * 决策顺序（短路，越靠前越"全局"）：
- *   no-candidate（本地没候选）→ no-scene（模型全判不成立，可能转 wait）
- *   → rate-limit（硬限流）→ topic-spent（同一话题已说过）
- *   → budget（顺序 / 分位数预算）→ speak
+ *   no-candidate（本地没候选）→ no-scene（模型全判不成立）
+ *   → **wait 的那一支**（见下）→ rate-limit（硬限流）
+ *   → topic-spent（同一话题已说过）→ budget（顺序 / 分位数预算）→ speak
+ *
+ * ## `wait` 的唯一入口（本节对应 docs/WAIT-CONVERGENCE-REQUIREMENT.md 判定二）
+ *
+ * ```
+ * 候选为空                        → silent('no-candidate')
+ * 无 satisfied 且无 waiter        → silent('no-scene')
+ * 无 satisfied 且有 waiter：
+ *     ├ waiter 引用无效 / 缺失    → silent（调度层计 wait_ticket_invalid_target）
+ *     ├ waiter.reason ≠ yielding  → silent('wait-declined')  ← not-yet / watching
+ *     ├ 对象已关闭（问题已答/过期）→ silent（调度层计 wait_ticket_stale）
+ *     └ 对象仍挂起：
+ *          ├ 该对象让路预算已用尽 → silent('wait-spent')
+ *          └ 否则 → wait（建票据，计 wait_ticket_created）
+ * ```
+ *
+ * `satisfied` 非空时的优先级**不变**（顺序 → 硬限流 → 每话题额度）——
+ * wait 只是"没有场景成立"这一支的细化，不去抢成立场景的名额。
  *
  * 注意 `no-response`（没人理我就停）**不在这里**：它必须在调用 LLM 之前短路，
  * 因此由 collect.ts 的入口执行、由调用方从 VetoPolicy 传入上限（见 §"三层分工"）。
@@ -20,6 +37,7 @@
 
 import {
   DEFAULT_VETO_POLICY,
+  effectiveMaxWaitPerItem,
   sceneOrder,
   type ProactiveDecision,
   type SceneCandidate,
@@ -28,12 +46,23 @@ import {
   type VetoContext,
   type VetoPolicy,
   type VetoReason,
+  type WaitReason,
 } from '../contract.js';
 
-export { DEFAULT_VETO_POLICY };
+export { DEFAULT_VETO_POLICY, MAX_WAIT_PER_ITEM_CAP } from '../contract.js';
 
-/** 采纳 LLM 的 wait 建议时默认推迟多久（与既有 gate-wait 重查同量级）。 */
-export const DEFAULT_WAIT_MS = 30_000;
+/**
+ * 从一条判定里取出模型想表达的理由（三态）。
+ *
+ * 兼容口径：存量回放数据里只有布尔 `suggestsWait`，它表达的正是
+ * "有人在答"这一种（三态拆分前它同时承担了三件事），因此等价映射为 `yielding`。
+ * **判据正文与 JSON 契约已经不再产出它**，这里只是让旧样本仍可离线回放。
+ */
+function waitReasonOf(verdict: SceneVerdict): WaitReason | undefined {
+  if (verdict.waitReason !== undefined) return verdict.waitReason;
+  if (verdict.suggestsWait === true) return 'yielding';
+  return undefined;
+}
 
 /**
  * 按场景置信度加权的**分位数预算**：选出"在预算内最值得说"的场景。
@@ -88,15 +117,9 @@ export function evaluateVeto(
     .filter((verdict) => verdict.satisfied && verdict.scene !== undefined)
     .sort((left, right) => sceneOrder(left.scene) - sceneOrder(right.scene));
   if (satisfied.length === 0) {
-    // 模型可能建议"等一会更合适"——是否采纳仍由本层决定
-    const waiter = verdicts.find((verdict) => verdict.suggestsWait === true);
-    if (waiter !== undefined && context.waitRetries < policy.maxWaitRetries) {
-      return { action: 'wait', scene: waiter.scene, delayMs: DEFAULT_WAIT_MS, reason: waiter.reason };
-    }
-    return silent(
-      waiter === undefined ? 'no-scene' : 'wait-exhausted',
-      waiter === undefined ? undefined : 'wait 建议已用尽',
-    );
+    // 模型说"先别说"——**采纳与否只由这一支决定**（旧实现在这里排了一个
+    // 与任何对象都无关的定时器，于是 wait 占比 46%、产出为零）。
+    return decideWait(verdicts, context, policy);
   }
 
   // ③ 硬限流：最保守的一道，先于一切"策略"
@@ -164,4 +187,67 @@ function silent(reason: VetoReason, detail?: string): ProactiveDecision {
   return detail === undefined
     ? { action: 'silent', reason }
     : { action: 'silent', reason, detail };
+}
+
+/**
+ * "模型全判不成立"这一支的终局——wait 的**唯一入口**。
+ *
+ * 纯函数：所有判断依据都已经在 `context.wait` 里被结构化（对象是否仍挂起、
+ * 让路预算用了多少），因此这一整棵决策树可以被单测穷举，不需要真 LLM。
+ */
+function decideWait(
+  verdicts: readonly SceneVerdict[],
+  context: VetoContext,
+  policy: VetoPolicy,
+): ProactiveDecision {
+  // 谁在说"先别说"：三态理由里只有 `yielding` 需要排唤醒，其余按 silent 处理。
+  let waiter: { verdict: SceneVerdict; reason: WaitReason } | undefined;
+  for (const verdict of verdicts) {
+    const reason = waitReasonOf(verdict);
+    if (reason === undefined) continue;
+    // 已成立的场景不会走到这里（调用方只在 satisfied 为空时进来），
+    // 但"成立却又说在等"是自相矛盾的判定，一律不采纳。
+    if (verdict.satisfied) continue;
+    // 多个候选同时说"先别说"：取全局顺序里的第一个（与 speak 的裁决同构）
+    if (waiter === undefined || sceneOrder(verdict.scene) < sceneOrder(waiter.verdict.scene)) {
+      waiter = { verdict, reason };
+    }
+  }
+  if (waiter === undefined) return silent('no-scene');
+
+  // ① 引用无效：模型报了一个台账里**从来没有过**的 id（`q:<id>` 回抄错了、
+  //    或者是幻觉）。不猜、不建票据、不退化回无限等待。
+  //    这一条**不产生票据**，所以不进账目等式（见需求验收 11）。
+  const target = context.wait;
+  if (target === undefined || !target.exists) {
+    return silent(
+      'wait-declined',
+      `wait:invalid-target|理由 ${waiter.reason}，对象 ${target?.id ?? '(未给出)'} 不在台账里`,
+    );
+  }
+
+  // ② 理由不排唤醒：`not-yet`（交给既有的 90 秒探针）/ `watching`（等下一条
+  //    人类消息）。它们**不是"被否决"**，是"模型说不用等"，因此必须有独立
+  //    计数，否则"模型为什么没让 bot 说话"在指标里彻底消失。
+  //    （非法的理由在解析期就已经被丢弃，走不到这里。）
+  if (waiter.reason !== 'yielding') {
+    return silent('wait-declined', `wait:${waiter.reason}`);
+  }
+
+  // ③ 对象存在但已关闭（问题被答 / 过期 / 话题翻篇）→ **不建票据、不花 LLM**。
+  //    这类是"好消息"：本地检查替我们省下了一次调用。
+  if (!target.open) return silent('wait-declined', `wait:stale|${target.id}`);
+
+  // ④ 该对象的"让路"预算用尽：`maxWaitPerItem` 是代码里的硬上限，
+  //    模型再给多少次 yielding 都过不去（The cap must live below the model）。
+  const budget = effectiveMaxWaitPerItem(policy.maxWaitPerItem);
+  if (target.yieldBudgetUsed >= budget) {
+    return silent(
+      'wait-spent',
+      `${target.id} 已让路 ${target.yieldBudgetUsed} 次（上限 ${budget}）`,
+    );
+  }
+
+  // ⑤ 采纳：建票据（调度层按 waitYieldMs 排**每会话一个**唤醒点）。
+  return { action: 'wait', reason: 'yielding', targetId: target.id };
 }

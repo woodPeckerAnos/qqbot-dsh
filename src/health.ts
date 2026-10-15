@@ -158,6 +158,42 @@ export interface ProactiveHealthSnapshot {
   interests: { enabled: boolean; loaded: boolean; count: number; file: string };
   /** bot 别名个数（场景 4 的指代检测面） */
   botAliases: number;
+  /**
+   * 让路（wait）的收敛账目——"这个机制该保留还是删掉"由它回答
+   * （见 docs/WAIT-CONVERGENCE-REQUIREMENT.md「可观测性」）。
+   *
+   * **账目必须闭合**：`created === resolved + spent + stale + unchanged`。
+   * `invalidTarget` 与 `waitDeclined` 不产生票据，因此不参与这个等式。
+   */
+  waitTickets: {
+    /** 当前待唤醒的票据数 */
+    pending: number;
+    created: number;
+    /** 等待熬到了成立（高 = wait 有价值；长期为 0 = 该删掉） */
+    resolved: number;
+    /** 让路预算用尽、静默（高 = 模型过度使用"让路"） */
+    spent: number;
+    /** 唤醒时对象已关闭（**越高越好**：省下了调用） */
+    stale: number;
+    /** 唤醒时转录无新增，跳过重问（同理） */
+    unchanged: number;
+    /** 模型引用了一个不存在（或没给）的挂起问题 */
+    invalidTarget: number;
+  };
+  /**
+   * 建票据的**理由分布**（`wait_ticket_created{reason}`）。
+   *
+   * 需求点名要有这一项：按理由分布直接反映判据是否需要调整
+   * （`yielding` 占绝大多数而 `resolved` 长期为 0 = 模型过度使用"让路"）。
+   */
+  waitTicketsCreatedByReason: Record<string, number>;
+  /**
+   * 模型想等、但被否决层按下的次数，**按理由拆开**。
+   *
+   * 必须有这一项：`not-yet` / `watching` 走 silent 分支，
+   * 不单独计数的话"模型为什么没让 bot 说话"就完全不可见了。
+   */
+  waitDeclined: Record<string, number>;
   evaluatedByTrigger: Record<string, number>;
   satisfiedByScene: Record<string, number>;
   vetoed: Record<string, number>;

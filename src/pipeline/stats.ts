@@ -37,6 +37,29 @@ export class PipelineStats {
   proactiveWouldSend = 0;
   /** 主动介入：投递层降级次数（平台不支持 / 限流 / 错误） */
   proactiveDegraded = 0;
+  /**
+   * 主动介入：wait 票据的**建票**次数（模型想等，且对象仍挂起）。
+   * 与 `proactiveWaitTickets` 的四个终局一起读才能闭合账目。
+   */
+  proactiveWaitTicketCreated = 0;
+  /**
+   * 主动介入：建票据的**理由分布**（`wait_ticket_created{reason}`）。
+   * 需求点名要有它：按理由分布直接回答"模型为什么想等"。
+   */
+  proactiveWaitTicketCreatedByReason: Record<string, number> = {};
+  /**
+   * 主动介入：wait 票据的四种终局计数（`resolved` / `spent` / `stale` / `unchanged`）。
+   *
+   * 账目等式：`proactiveWaitTicketCreated === Σ 本字段`。
+   *   - `resolved` 高 = wait 有价值；长期为 0 = 这个机制应该删掉；
+   *   - `spent` 高 = 模型过度使用"让路"；
+   *   - `stale` / `unchanged` 越高越好（各自省下了一次 LLM 调用）。
+   */
+  proactiveWaitTickets: Record<string, number> = {};
+  /** 主动介入：模型想等、但被否决层按下的次数（按理由：not-yet / watching / …） */
+  proactiveWaitDeclined: Record<string, number> = {};
+  /** 主动介入：模型引用了一个不存在（或没给）的挂起问题 */
+  proactiveWaitInvalidTarget = 0;
   /** 事件去重丢弃数（dedupe stage） */
   deduplicated = 0;
   /** 并发满员拒绝数（admission stage） */
@@ -107,10 +130,23 @@ export class PipelineStats {
   progressSent = 0;
 }
 
-/** health 端点展示用的完整快照：计数 + 准入闸门状态 + 谷时段闸状态。 */
+/**
+ * health 端点展示用的完整快照：计数 + 准入闸门状态 + 谷时段闸状态。
+ *
+ * 三个 wait 相关字段被映射成**数字**（而不是原样透出对象）：
+ * `dispatcher` 是 `/metrics` 的对外契约，字段全为数字是一条被 RUNBOOK
+ * 依赖的形状约束——按理由拆开的分布另在 `proactive.waitDeclined` /
+ * `proactive.waitTickets` 里给（见 health.ts）。
+ */
 export type PipelineStatsSnapshot = {
   [K in keyof PipelineStats]: number;
 } & {
+  /** 四种终局之和（与 `proactiveWaitTicketCreated` 一起读，账目应当闭合） */
+  proactiveWaitTickets: number;
+  /** 按理由建票次数的总和（按理由的分布见 proactive.waitTicketsCreatedByReason） */
+  proactiveWaitTicketCreatedByReason: number;
+  /** 按下次数的总和（按理由的分布见 proactive.waitDeclined） */
+  proactiveWaitDeclined: number;
   inFlight: number;
   queued: number;
   offpeak: OffpeakSnapshot;

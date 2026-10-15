@@ -26,6 +26,13 @@ import { ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import { ConfigError } from './config-error.js';
 import type { FileConfig, ProactiveFileConfig } from './config-file.js';
 import {
+  DEFAULT_MAX_WAIT_PER_ITEM,
+  DEFAULT_WAIT_YIELD_MS,
+  MAX_WAIT_PER_ITEM_CAP,
+  WAIT_YIELD_MS_MAX,
+  WAIT_YIELD_MS_MIN,
+} from './pipeline/proactive/contract.js';
+import {
   formatWindows,
   isValidDateString,
   isValidTimeZone,
@@ -230,6 +237,22 @@ export interface Config {
     topicRollMs: number;
     /** 问题挂起多久后探针（BOT_PROACTIVE_QUESTION_PROBE_MS / proactive.questionProbeMs） */
     questionProbeMs: number;
+    /**
+     * 每个挂起问题最多"让路"几次（BOT_PROACTIVE_MAX_WAIT_PER_ITEM /
+     * proactive.maxWaitPerItem，默认 1，硬上限 3）。
+     *
+     * 这是"让路只能让一次"的**代码级**硬上限：超出硬上限按 3 处理并 warn，
+     * 因为把收敛改回不收敛不该只需要改一行配置（见 wait 收敛需求）。
+     */
+    maxWaitPerItem: number;
+    /**
+     * "让路"理由的等待时长（BOT_PROACTIVE_WAIT_YIELD_MS / proactive.waitYieldMs，
+     * 默认 45000，范围 15000–120000）。
+     *
+     * 语义是"现在差不多该说了，但此刻有人在动，再给几十秒"，因此刻意短：
+     * 它只是**把下一次唤醒提前一点**，不是一台新的等待机器。
+     */
+    waitYieldMs: number;
     /**
      * 判定调用超时（BOT_PROACTIVE_JUDGE_TIMEOUT_MS / proactive.judgeTimeoutMs）。
      *
@@ -524,6 +547,28 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       90_000,
       { min: 10_000, max: 3_600_000 },
       'proactive.questionProbeMs',
+    ),
+    // 让路预算：默认 1（让路只能让一次）。
+    //
+    // ⚠️ 这里的 `max` 刻意**不是**硬上限（3）：配成 5 时正确的行为是
+    // "按 3 处理并 warn"（需求边界表），而不是启动失败。校验范围只挡明显
+    // 越界的值，真正的硬上限由 `effectiveMaxWaitPerItem` 在 watcher 层执行
+    // ——"上限必须活在模型之下"，而且是**运行期**的约束。
+    maxWaitPerItem: pickInt(
+      env,
+      'BOT_PROACTIVE_MAX_WAIT_PER_ITEM',
+      file?.maxWaitPerItem,
+      DEFAULT_MAX_WAIT_PER_ITEM,
+      { min: 0, max: MAX_WAIT_PER_ITEM_CAP * 10 },
+      'proactive.maxWaitPerItem',
+    ),
+    waitYieldMs: pickInt(
+      env,
+      'BOT_PROACTIVE_WAIT_YIELD_MS',
+      file?.waitYieldMs,
+      DEFAULT_WAIT_YIELD_MS,
+      { min: WAIT_YIELD_MS_MIN, max: WAIT_YIELD_MS_MAX },
+      'proactive.waitYieldMs',
     ),
     // 判定超时比话题判定宽一倍：输出是多段 JSON 而不是一个布尔值
     judgeTimeoutMs: pickInt(

@@ -11,6 +11,7 @@
  */
 
 import {
+  isWaitReason,
   SCENE_ORDER,
   sceneOrder,
   type SceneCandidate,
@@ -42,12 +43,26 @@ const SCENE_2_CRITERIA = [
   '这是最容易被反感的一类介入：宁可漏，不可多。',
 ].join('\n');
 
+/**
+ * 场景 3 的**三态**判据。
+ *
+ * 改写理由（见 docs/WAIT-CONVERGENCE-REQUIREMENT.md）：旧版让模型对一件
+ * "要不要等"的事回答一个布尔值，于是一个布尔值同时承担了三件时间尺度完全
+ * 不同的事，最后被实现成一个不绑定任何对象的新调度机制（占比 46%、产出为零）。
+ * 现在模型必须说清**是哪种"先别说"**，而每种理由对应完全不同的唤醒责任人。
+ */
 const SCENE_3_CRITERIA = [
   'SCENE-3 无人应答：会话里有一个具体问题长时间没人回答。',
   '只考虑【结构化事实】里列出的挂起问题；没有挂起问题就判不成立。',
   '成立条件：问题仍未被回答 + 落在 bot 能力域内 + 已静默足够久（越久越应该答）。',
-  '若群里有人正在回应（刚有人接话、有人补充信息）→ 判不成立并给 suggestsWait=true。',
-  '不成立：问题已被回答、问题面向特定某人、私人或情绪话题、超出 bot 能力域。',
+  '若你认为"先别说"，判 satisfied=false，并用 waitReason 说明是**哪一种**先别说：',
+  '  - "yielding"：有人在答（正在打字、刚接话、刚补充信息）→ 过几十秒再看；',
+  '  - "not-yet" ：还没到时候（问题太新、话题刚起）→ 交给既有的 90 秒探针；',
+  '  - "watching"：bot 刚说完、正在看反应 → 不排唤醒，等群里下一条消息。',
+  'waitReason 必须如实反映现场：没人在答就不要给 "yielding"。',
+  '若给出 "yielding"，必须把你所指的那个挂起问题的 id（见【结构化事实】）原样写进',
+  'evidence，例如 "q:msg-123@1700000000000"；给不出有效 id 时请改用 "not-yet"。',
+  '不成立且不涉及等待：问题已被回答、问题面向特定某人、私人或情绪话题、超出 bot 能力域。',
 ].join('\n');
 
 const SCENE_4_CRITERIA = [
@@ -92,9 +107,40 @@ function criteriaFor(scene: SceneId): string {
 // prompt 渲染
 // ---------------------------------------------------------------------------
 
+/**
+ * 挂起问题在 prompt 里的**对象引用前缀**。
+ *
+ * 模型要给 `yielding` 就必须报出"在等的是哪一个挂起问题"，而"引用一个对象"
+ * 要求那个对象**有稳定的名字**——所以结构化事实块里的每条挂起问题都带上
+ * `q:<id>`，模型原样回抄，否决层据此在台账里查。
+ */
+export const WAIT_TARGET_PREFIX = 'q:';
+
+/**
+ * 从模型给的 `evidence` 里取出它对挂起问题的**对象引用**。
+ *
+ * 容错纪律：只认原样回抄的 `q:<id>`（大小写不敏感、允许中文括号/空格围栏）。
+ * 取不到就返回 undefined——**不猜**、不退化回"随便挑一个挂起问题"，
+ * 因为"引用无效"本身就是要被计数的模型行为（`wait_ticket_invalid_target`）。
+ */
+export function extractWaitTargetId(evidence: string | undefined): string | undefined {
+  if (evidence === undefined) return undefined;
+  const matched = /q:([^\s，。；、）)"'】\]]+)/i.exec(evidence);
+  return matched?.[1];
+}
+
 /** 结构化事实块：把状态计数交给模型，省掉"从转录里数数"的幻觉来源。 */
 function renderFacts(evidence: SceneEvidence, candidates: readonly SceneCandidate[]): string {
   const lines = [`触发来源：${evidence.trigger}`];
+  if (evidence.pendingQuestions.length > 0) {
+    lines.push(`挂起问题（要给 yielding 就回抄它的 id）：`);
+    for (const question of evidence.pendingQuestions) {
+      lines.push(
+        `  id=${WAIT_TARGET_PREFIX}${question.id}｜${question.askerLabel}：${question.text}` +
+          `（已静默 ${question.silentSeconds} 秒，探针 ${question.probes} 次）`,
+      );
+    }
+  }
   if (evidence.topic !== undefined) {
     lines.push(
       `当前话题：${evidence.topic.id}（参与 ${evidence.topic.humanParticipants} 人，` +
@@ -111,6 +157,13 @@ function renderFacts(evidence: SceneEvidence, candidates: readonly SceneCandidat
     lines.push(`命中的兴趣池条目：${evidence.matchedInterestIds.join('、')}`);
   }
   lines.push(`连续未被回应的介入次数：${evidence.unansweredStreak}`);
+  if (evidence.waitWakeup !== undefined) {
+    lines.push(
+      `本次是**让路后的重查**：你上一轮说"有人在答"，现在已过 ` +
+        `${Math.round(evidence.waitWakeup.yieldedForMs / 1000)} 秒，对象是 ` +
+        `${WAIT_TARGET_PREFIX}${evidence.waitWakeup.targetId}。`,
+    );
+  }
   if (candidates.length > 0) {
     const local = candidates
       .map((item) => `${item.scene}(本地置信 ${item.localConfidence.toFixed(2)})`)
@@ -139,9 +192,10 @@ export function renderJudgeCriteria(candidates: readonly SceneCandidate[]): stri
     '   你只需如实判定每个场景；',
     '3. `confidence` 是你对该判定的把握（0..1），不是"该不该说话"的意愿；',
     '4. 场景 1/2 的"事实性错误"只认**可确证**的事实，必须把被纠错的原文片段写进 `evidence`；',
-    '5. 如果你认为"现在不该说、但等一会更合适"，把该场景判 `satisfied:false` 并给',
-    '   `suggestsWait:true`——是否真的等待由代码决定；',
-    '6. 宁缺勿滥：不确定就判不成立。',
+    '5. 如果你认为"现在不该说"，把该场景判 `satisfied:false` 并用 `waitReason` 说明',
+    '   是**哪一种**先别说（三选一，见该场景判据）；是否真的等待、等多久，仍由代码决定；',
+    '6. `waitReason` 只能是 "yielding" / "not-yet" / "watching" / ""（空串 = 不是在等）；',
+    '7. 宁缺勿滥：不确定就判不成立。',
     '',
   ];
   for (const candidate of ordered) {
@@ -160,9 +214,11 @@ export function renderJudgeCriteria(candidates: readonly SceneCandidate[]): stri
 export const JUDGE_OUTPUT_CONTRACT = [
   '你只能输出一个 JSON 对象，不要输出任何其他内容：',
   '{"verdicts":[{"scene":"scene-1","satisfied":true,"confidence":0.0,',
-  ' "reason":"<20字内理由>","evidence":"","directive":"","suggestsWait":false}]}',
+  ' "reason":"<20字内理由>","evidence":"","directive":"","waitReason":""}]}',
   'verdicts 必须覆盖上面列出的每一个候选场景 id，且只能是这些 id。',
   'satisfied 为布尔值；confidence 为 0..1 的数；evidence/directive 可为空字符串。',
+  'waitReason 三选一或空串："yielding"（有人在答）/"not-yet"（还没到时候）',
+  ' /"watching"（刚说完看反应）；只有 satisfied=false 时才可能有值。',
 ].join('\n');
 
 // ---------------------------------------------------------------------------
@@ -218,9 +274,14 @@ export function parseSceneVerdicts(
     const scene = record['scene'];
     if (typeof scene !== 'string' || !allowed.has(scene as SceneId)) continue;
     const confidence = record['confidence'];
+    const satisfied = record['satisfied'] === true;
+    // waitReason 只认三个合法值：模型编出来的第四个值一律丢弃（不是整条降级）。
+    // 已经是 satisfied 的判定不再带理由——"成立"与"先别说"不可能同时为真。
+    const rawReason = record['waitReason'];
+    const waitReason = !satisfied && isWaitReason(rawReason) ? rawReason : undefined;
     const verdict: SceneVerdict = {
       scene: scene as SceneId,
-      satisfied: record['satisfied'] === true,
+      satisfied,
       confidence:
         typeof confidence === 'number' && Number.isFinite(confidence)
           ? clamp01(confidence)
@@ -232,7 +293,7 @@ export function parseSceneVerdicts(
       ...(optionalString(record, 'directive') === undefined
         ? {}
         : { directive: optionalString(record, 'directive') as string }),
-      ...(record['suggestsWait'] === true ? { suggestsWait: true } : {}),
+      ...(waitReason === undefined ? {} : { waitReason }),
     };
     byScene.set(verdict.scene, verdict);
   }

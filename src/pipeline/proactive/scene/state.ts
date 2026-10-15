@@ -59,6 +59,31 @@ export interface PendingQuestion {
   /** 已经探针过几次（上限由 watcher 与 veto 策略决定） */
   probes: number;
   state: 'open' | 'answered' | 'expired' | 'silenced';
+  /**
+   * 该问题已经"让路"过几次（与 `VetoPolicy.maxWaitPerItem` 比）。
+   *
+   * 生命周期与问题本身一致：问题还在台账里就累计，问题关闭即随票据一起作废。
+   * 记在**问题这一行**上（而不是会话上）是项目纪律的直接应用：
+   * 「状态只按会话/话题/问题/花费窗口记账，永不按场景记账」
+   * （架构文档 §3.0），同时把"等待"从会话级收窄为条目级。
+   */
+  yieldBudgetUsed: number;
+  /**
+   * 最近一次**真正跑到判定**的时刻（挂起问题版本）。
+   *
+   * 用途：唤醒前的第二道本地检查——"转录自上次判定以来无新增"就不调 LLM。
+   * `undefined` = 还没判定过（此时一律按"有新增"处理，宁可多查一次）。
+   */
+  lastEvaluatedAt?: number;
+}
+
+/** 问题关闭的原因（回调里带出去，供调度层作废票据时记账）。 */
+export type QuestionClosedCause = 'answered' | 'expired' | 'window-reset';
+
+/** 台账里一条问题关闭时的通知载荷。 */
+export interface QuestionClosedEvent {
+  readonly id: string;
+  readonly cause: QuestionClosedCause;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +164,15 @@ export class ConversationState {
   private unansweredStreakCount = 0;
   /** 本轮活动窗口内出现过的人类发言者（不含 bot） */
   private readonly participants = new Map<string, number>();
+  /**
+   * 问题关闭的监听者（调度层用它就地作废票据、取消唤醒）。
+   *
+   * 为什么用回调而不是让 watcher 自己扫：**问题关闭是本地可判的**，
+   * 而"问题一旦关闭，其票据必须立即作废并取消唤醒，而不是等定时器到点再发现"
+   * （见 docs/WAIT-CONVERGENCE-REQUIREMENT.md 第五节）。回调让关闭这件事
+   * 只有一个出口，watcher 不需要在每条消息上都重扫一遍台账。
+   */
+  private readonly questionClosedListeners = new Set<(event: QuestionClosedEvent) => void>();
 
   constructor(convKey: string, options: ConversationStateOptions = {}) {
     this.convKey = convKey;
@@ -281,16 +315,29 @@ export class ConversationState {
    *
    * 谁调用：watcher 在每次评估时，依据否决层/判定的结果来回写"问题已被回答"
    * （当前的实现是"同一窗口内有他人发言且判定说问题不再挂起"，见 watcher 注释）。
+   * 关闭会**通知**调度层：该问题的 wait 票据立即作废、唤醒被取消。
    */
   markAnswered(questionId: string): void {
-    const question = this.questions.get(questionId);
-    if (question !== undefined) question.state = 'answered';
+    this.closeQuestion(questionId, 'answered');
   }
 
   /** 标记问题已被评估过但决定不说（避免反复撞同一堵墙：拒绝也落标记）。 */
   markSilenced(questionId: string): void {
     const question = this.questions.get(questionId);
     if (question !== undefined) question.state = 'silenced';
+  }
+
+  /**
+   * 订阅"问题关闭"事件（返回取消订阅函数）。
+   *
+   * 只在**真正从"挂起"变成"关闭"**时触发一次——重复关闭同一条问题不会
+   * 重复通知，因此监听者不必自己判重。
+   */
+  onQuestionClosed(listener: (event: QuestionClosedEvent) => void): () => void {
+    this.questionClosedListeners.add(listener);
+    return () => {
+      this.questionClosedListeners.delete(listener);
+    };
   }
 
   /** 记录一次探针（watcher 排定时器时调用）。 */
@@ -304,7 +351,54 @@ export class ConversationState {
     return this.questions.get(questionId)?.probes ?? 0;
   }
 
+  /** 记一次"让路"（否决层建票据时调用）。 */
+  recordYield(questionId: string): void {
+    const question = this.questions.get(questionId);
+    if (question !== undefined) question.yieldBudgetUsed += 1;
+  }
+
+  /** 该问题已经让路几次。 */
+  yieldBudget(questionId: string): number {
+    return this.questions.get(questionId)?.yieldBudgetUsed ?? 0;
+  }
+
+  /**
+   * 记一次"真正跑到判定"（watcher 发起判定调用前调用）。
+   *
+   * 时钟只前进不回退：并发/乱序调用不该把标记拉回去。
+   */
+  markEvaluated(questionId: string, ts: number): void {
+    const question = this.questions.get(questionId);
+    if (question === undefined) return;
+    if (question.lastEvaluatedAt === undefined || ts > question.lastEvaluatedAt) {
+      question.lastEvaluatedAt = ts;
+    }
+  }
+
+  /**
+   * 转录自 `since` 以来是否有**新增内容**（唤醒前的第二道本地检查）。
+   *
+   * 实现刻意是最朴素的"转录是否新增"（需求「明确不在本需求内」一节：
+   * 先用最朴素的实现，等"新内容比例"落地后替换）。`since === undefined`
+   * 表示还没判定过 → 一律按"有新增"处理（宁可多查一次，不可漏掉一段对话）。
+   */
+  hasNewContentSince(since?: number): boolean {
+    if (since === undefined) return true;
+    return this.buffer.some((entry) => entry.ts > since);
+  }
+
   // --- 内部 -----------------------------------------------------------------
+
+  /**
+   * 关闭一条问题（幂等）：只在**从挂起变为关闭**的那一次通知监听者。
+   * 已经是终态的问题不重复关闭、也不重复通知——否则同一张票据会被作废两次。
+   */
+  private closeQuestion(questionId: string, cause: QuestionClosedCause): void {
+    const question = this.questions.get(questionId);
+    if (question === undefined || question.state !== 'open') return;
+    question.state = cause === 'answered' ? 'answered' : 'expired';
+    for (const listener of this.questionClosedListeners) listener({ id: questionId, cause });
+  }
 
   private startWindow(ts: number): void {
     this.windowStartedAt = ts;
@@ -313,6 +407,9 @@ export class ConversationState {
     this.participants.clear();
     // 话题翻篇：上一窗口的未答问题不再算"这个群里有人问了没人答"
     // （否则十分钟前的问题会一直挂在台账里，让场景 3 凭空触发）。
+    // 逐条关闭（而不是 clear）是必须的：挂在它们身上的 wait 票据要**立即**
+    // 作废并取消唤醒，而不是等定时器到点才发现对象已经不存在了。
+    for (const id of [...this.questions.keys()]) this.closeQuestion(id, 'window-reset');
     this.questions.clear();
     // 注意：不清 buffer——转录需要跨窗口的近期上下文；
     // 计数类（条数/人头）在读取时按 windowStartedAt 过滤。
@@ -356,10 +453,13 @@ export class ConversationState {
       askedAt: entry.ts,
       probes: 0,
       state: 'open',
+      yieldBudgetUsed: 0,
     });
     while (this.questions.size > this.options.maxQuestions) {
       const oldest = [...this.questions.values()].sort((a, b) => a.askedAt - b.askedAt)[0];
       if (oldest === undefined) break;
+      // 台账满员淘汰也算"关闭"：票据得跟着作废，否则会留一张永远醒不来的孤儿票据
+      this.closeQuestion(oldest.id, 'window-reset');
       this.questions.delete(oldest.id);
     }
   }
@@ -367,7 +467,9 @@ export class ConversationState {
   private expireQuestions(now: number): void {
     for (const question of this.questions.values()) {
       if (question.state !== 'open') continue;
-      if (now - question.askedAt > this.options.questionTtlMs) question.state = 'expired';
+      if (now - question.askedAt > this.options.questionTtlMs) {
+        this.closeQuestion(question.id, 'expired');
+      }
     }
   }
 }
@@ -376,6 +478,9 @@ export class ConversationState {
 export class ConversationStateStore {
   private readonly states = new Map<string, ConversationState>();
   private readonly options: ConversationStateOptions;
+  /** 问题关闭的统一分发（转发给每个会话自己的订阅者） */
+  private readonly closers = new Set<(convKey: string, event: QuestionClosedEvent) => void>();
+  private readonly unsubscribe: Array<() => void> = [];
 
   constructor(options: ConversationStateOptions = {}) {
     this.options = options;
@@ -386,9 +491,29 @@ export class ConversationStateStore {
     let state = this.states.get(convKey);
     if (state === undefined) {
       state = new ConversationState(convKey, this.options);
+      // 每个会话的问题关闭事件都带上 convKey 转发出去——调度层据此作废票据，
+      // 而它只需要订阅一次（不必关心有多少个会话被创建过）。
+      this.unsubscribe.push(
+        state.onQuestionClosed((event) => {
+          for (const listener of this.closers) listener(convKey, event);
+        }),
+      );
       this.states.set(convKey, state);
     }
     return state;
+  }
+
+  /**
+   * 订阅**任意会话**的问题关闭事件（返回取消订阅函数）。
+   * 只能拿到此后新建的会话——调用方应在组装期就订阅好（见 watcher 构造器）。
+   */
+  onQuestionClosed(
+    listener: (convKey: string, event: QuestionClosedEvent) => void,
+  ): () => void {
+    this.closers.add(listener);
+    return () => {
+      this.closers.delete(listener);
+    };
   }
 
   /** 已跟踪的会话数（health 展示用）。 */

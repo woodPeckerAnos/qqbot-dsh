@@ -11,7 +11,7 @@
  *      产出：SceneVerdict[]（成立与否 + 置信度 + 理由 + 证据）
  *      禁止：做优先级/预算裁决（那是策略，不是语义）；产生清单外的场景
  * ③ 否决层 veto.ts      确定性约束 + **顺序与预算的唯一实现**
- *      产出：ProactiveDecision（speak / wait / defer-to-scene / silent）
+ *      产出：ProactiveDecision（speak / wait / silent）
  *      禁止：读原始消息文本、调用 LLM、做任何语义判断
  * ```
  *
@@ -70,9 +70,15 @@ export function sortSceneIds(ids: readonly SceneId[]): SceneId[] {
  * - `message`        一条旁听消息到达（场景 1、4）
  * - `question-probe` 问题台账探针到期（场景 3；T1=90s / T2=10min）
  * - `topic-roll`     话题滚动收敛点（场景 2、5；每 N 条或 M 分钟）
+ * - `wait-wakeup`    wait 票据到期重查（场景 3；与探针**分开**，见 docs/WAIT-CONVERGENCE-REQUIREMENT.md）
  * - `speak-followup` bot 刚发过言，接续对它的回应（可选的收紧通道）
  */
-export type SceneTrigger = 'message' | 'question-probe' | 'topic-roll' | 'speak-followup';
+export type SceneTrigger =
+  | 'message'
+  | 'question-probe'
+  | 'topic-roll'
+  | 'wait-wakeup'
+  | 'speak-followup';
 
 // ---------------------------------------------------------------------------
 // ① 搜集层
@@ -115,6 +121,24 @@ export interface SceneEvidence {
   readonly recentHumanCount: number;
   /** 问题台账里仍挂起的问题数（场景 3） */
   readonly pendingQuestionCount: number;
+  /**
+   * 仍挂起的问题清单（结构化事实 + **对象引用**的来源）。
+   *
+   * 为什么必须进 evidence：模型要给 `yielding` 就得说清"在等的是哪一个问题"，
+   * 而"引用一个对象"要求那个对象在 prompt 里有稳定的名字。旧实现没有它，
+   * 于是重查时"等的是谁"已经完全丢失（`question-probe` 标签下的候选集
+   * 只剩场景 3，与原来的等待对象毫无关系）。
+   */
+  readonly pendingQuestions: readonly PendingQuestionFact[];
+  /**
+   * 本次评估是"让路后到期重查"时，带上被唤醒的那个对象。
+   * 判定 prompt 据此告诉模型"你上轮说有人在答，现在过了 N 秒"。
+   */
+  readonly waitWakeup?: {
+    readonly targetId: string;
+    /** 从"让路"那一刻到本次唤醒经过了多久（毫秒） */
+    readonly yieldedForMs: number;
+  };
   /** 命中的兴趣池条目 id（场景 5；空数组 = 无候选） */
   readonly matchedInterestIds: readonly string[];
   /** 连续「介入后无人回应」的次数（任何用户发言归零） */
@@ -130,6 +154,20 @@ export interface SceneEvidence {
 export interface SceneHit {
   confidence: number;
   evidence?: string;
+}
+
+/**
+ * 一条挂起问题在**结构化事实块**里的样子（判定 prompt 只读这个，不读台账对象）。
+ *
+ * `id` 是模型唯一被允许用来引用对象的名字；`askerLabel` / `silentSeconds` /
+ * `probes` 是给模型判断"够不够久了"的事实，不需要它从转录里数。
+ */
+export interface PendingQuestionFact {
+  readonly id: string;
+  readonly askerLabel: string;
+  readonly text: string;
+  readonly silentSeconds: number;
+  readonly probes: number;
 }
 
 export interface ScenePrecheckContext extends SceneEvidence {
@@ -165,6 +203,39 @@ export interface SceneCandidate {
 // ---------------------------------------------------------------------------
 
 /**
+ * 模型说"先别说"的**理由**——三态，取代原来的布尔 `suggestsWait`。
+ *
+ * 为什么必须是三态：一个布尔值同时表达了三件**时间尺度完全不同**的事，
+ * 于是被实现成了一个独立于任何对象的新调度机制（`wait` 占比 46%、产出为零，
+ * 见 docs/WAIT-CONVERGENCE-REQUIREMENT.md）。拆开之后：
+ *
+ * | 理由 | 模型想说的 | 谁负责下次唤醒 | 是否建票据 |
+ * |---|---|---|---|
+ * | `yielding`  | 有人在答（正在打字、刚接话） | 本机制：`waitYieldMs` 后 | **是** |
+ * | `not-yet`   | 还没到时候（问题太新、话题刚起） | 已有的 90 秒问题探针 / 话题滚动 | 否 |
+ * | `watching`  | 刚说完，看反应 | 不排唤醒；由下一条人类消息自然唤醒 | 否 |
+ */
+export type WaitReason = 'yielding' | 'not-yet' | 'watching';
+
+export const WAIT_REASONS: readonly WaitReason[] = ['yielding', 'not-yet', 'watching'];
+
+/** 票据的四种终局。**每张票据只有一个终局**（账目闭合：resolved+spent+stale+unchanged == created）。 */
+export type WaitTicketTerminal =
+  /** 唤醒时对象仍挂起、模型判成立 → 等待熬到了成立 */
+  | 'resolved'
+  /** 唤醒后重新判定，任何结果都消耗票据（又让路 / 给别的理由 / 判不成立） */
+  | 'spent'
+  /** 唤醒时对象已关闭，或关闭时被就地取消（问题被答 / 过期 / 话题翻篇） */
+  | 'stale'
+  /** 唤醒时转录自上次判定以来无新增 → 不花 LLM */
+  | 'unchanged';
+
+/** 是否是一个合法的三态理由（解析模型输出时用它挡掉幻觉值）。 */
+export function isWaitReason(value: unknown): value is WaitReason {
+  return typeof value === 'string' && (WAIT_REASONS as readonly string[]).includes(value);
+}
+
+/**
  * LLM 对**单个**场景的语义判定。
  *
  * 刻意是"逐场景多标签"而不是"五选一 + 是否发言"：把选择权留在代码里，
@@ -181,9 +252,15 @@ export interface SceneVerdict {
   /** 交给介入 turn 的「该说什么」要点 */
   readonly directive?: string;
   /**
-   * 模型自己说"现在不该说，但等一会值得再看"。
+   * 模型自己说"现在不该说，但等一下"——三态理由，见 `WaitReason`。
+   *
    * 只有 LLM 能提这个建议（它才知道话题是不是正在展开），
-   * 但**是否真的 defer 由否决层决定**（预算/限流可以说"不，直接放弃"）。
+   * 但**是否真的 defer、以及 defer 多久，由否决层与调度层决定**。
+   */
+  readonly waitReason?: WaitReason;
+  /**
+   * 旧版布尔位，**仅为兼容存量回放数据而保留**（等价于 `waitReason:'yielding'`）。
+   * 判据正文与 JSON 契约都已经改成三态，解析器不再产出它。
    */
   readonly suggestsWait?: boolean;
 }
@@ -206,8 +283,10 @@ export type VetoReason =
   | 'rate-limit'
   /** 同一话题已介入过 */
   | 'topic-spent'
-  /** 采纳 LLM 的 wait 建议，但推迟次数已用尽 */
-  | 'wait-exhausted';
+  /** 该挂起问题的"让路"预算已用尽（`maxWaitPerItem`，含唤醒后的那一次） */
+  | 'wait-spent'
+  /** 模型想等，但按下的理由不排唤醒 / 理由无效（`not-yet` / `watching` / 无目标） */
+  | 'wait-declined';
 
 export const VETO_REASON_ORDER: readonly VetoReason[] = [
   'no-candidate',
@@ -216,8 +295,37 @@ export const VETO_REASON_ORDER: readonly VetoReason[] = [
   'rate-limit',
   'topic-spent',
   'budget',
-  'wait-exhausted',
+  'wait-spent',
+  'wait-declined',
 ];
+
+/**
+ * wait 票据要挂在的**对象**（本轮只支持"一个挂起问题"这一类）。
+ *
+ * 由调用方从台账组装成**结构化事实**传进来——否决层依然不读原始文本、
+ * 不碰状态，只按这张表做决定，因此仍然可以完全用单测穷举。
+ *
+ * 这是本机制最重要的一个改变：等待**从会话级收窄为条目级**。
+ * 旧实现的重查触发标签固定写成 `question-probe`，于是"等的是谁"在重查时
+ * 已经丢了——不绑定对象的等待等于在问一个已经被换掉的问题。
+ */
+export interface WaitTarget {
+  /** 挂起问题 id（`<msgId>@<ts>`，由台账生成并原样回给模型） */
+  readonly id: string;
+  /**
+   * 台账里**有没有**这个 id。
+   *
+   * 必须与 `open` 分开，否则两件必须被分开计数的事会混成一件：
+   * 模型幻觉出一个不存在的 id（`wait_ticket_invalid_target`，
+   * 说明判据描述需要更明确）与"对象曾存在但已关闭"（`stale`，是**好事**，
+   * 说明本地检查省下了一次调用）在只看"当前挂起清单"时长得一模一样。
+   */
+  readonly exists: boolean;
+  /** 该问题是否**仍挂起**（已答 / 过期 / 话题翻篇后为 false） */
+  readonly open: boolean;
+  /** 该问题已经让路几次（与 `maxWaitPerItem` 比，判断预算是否用尽） */
+  readonly yieldBudgetUsed: number;
+}
 
 /** 否决层看到的上下文：**结构化的**额度与顺序，没有原始文本。 */
 export interface VetoContext {
@@ -227,8 +335,11 @@ export interface VetoContext {
   readonly spokeCount1Hour: number;
   /** 该话题已被介入的次数（话题记账） */
   readonly topicBotSpeaks: number;
-  /** 本次评估是第几次 wait 重查（0 = 首查） */
-  readonly waitRetries: number;
+  /**
+   * wait 的对象状态（模型引用的那个挂起问题）。
+   * `undefined` = 模型没有给出对象引用，或引用的 id 在台账里不存在。
+   */
+  readonly wait?: WaitTarget;
   /** 场景顺序覆盖（缺省用 `SCENE_ORDER`；用于 A/B 与回放对比） */
   readonly order?: readonly SceneId[];
 }
@@ -244,8 +355,13 @@ export interface VetoPolicy {
   readonly quantileBudget: boolean;
   /** 每个窗口期望的发言次数（分位数预算的目标） */
   readonly targetRate: number;
-  /** wait 建议最多被采纳几次 */
-  readonly maxWaitRetries: number;
+  /**
+   * 每个挂起问题最多"让路"几次（默认 1）。
+   *
+   * 上限**必须活在这一层**（模型之下），不能写在 prompt 里当请求——
+   * "让路只能让一次"是代码里的硬约束，模型无法用理由绕过它。
+   */
+  readonly maxWaitPerItem: number;
 }
 
 export const DEFAULT_VETO_POLICY: VetoPolicy = {
@@ -255,8 +371,31 @@ export const DEFAULT_VETO_POLICY: VetoPolicy = {
   maxPerTopic: 1,
   quantileBudget: false,
   targetRate: 1.5,
-  maxWaitRetries: 1,
+  maxWaitPerItem: 1,
 };
+
+/** `maxWaitPerItem` 的硬上限：配得再大也按它处理（防止"把收敛改回不收敛"）。 */
+export const MAX_WAIT_PER_ITEM_CAP = 3;
+
+/** `maxWaitPerItem` 的内置默认：**让路只能让一次**。 */
+export const DEFAULT_MAX_WAIT_PER_ITEM = 1;
+
+/** `waitYieldMs`（"让路"等待时长）的合法范围与默认值：默认不超过 45 秒。 */
+export const WAIT_YIELD_MS_MIN = 15_000;
+export const WAIT_YIELD_MS_MAX = 120_000;
+export const DEFAULT_WAIT_YIELD_MS = 45_000;
+
+/** 把任意配置值收敛成**生效的**让路预算（硬上限之下，至少 1 次也不超过硬上限）。 */
+export function effectiveMaxWaitPerItem(configured: number): number {
+  if (!Number.isFinite(configured)) return DEFAULT_MAX_WAIT_PER_ITEM;
+  return Math.min(Math.max(1, Math.trunc(configured)), MAX_WAIT_PER_ITEM_CAP);
+}
+
+/** 把任意配置值收敛成**生效的**让路时长（毫秒）。 */
+export function effectiveWaitYieldMs(configured: number): number {
+  if (!Number.isFinite(configured)) return DEFAULT_WAIT_YIELD_MS;
+  return Math.min(Math.max(WAIT_YIELD_MS_MIN, Math.trunc(configured)), WAIT_YIELD_MS_MAX);
+}
 
 /** 否决层的终局：唯一会产生副作用（发言 / 排定时器）的东西。 */
 export type ProactiveDecision =
@@ -270,7 +409,16 @@ export type ProactiveDecision =
       /** 同时成立但被顺序/预算压下去的场景（进 trace，用于调序） */
       readonly alsoMatched: readonly SceneId[];
     }
-  | { readonly action: 'wait'; readonly scene: SceneId; readonly delayMs: number; readonly reason: string }
+  | {
+      readonly action: 'wait';
+      /** 让路的理由（目前只有 `yielding` 会走到这里） */
+      readonly reason: WaitReason;
+      /**
+       * 票据挂载的**对象** id——调度层据此建票据、并在对象关闭时取消唤醒。
+       * 走到这里必然是有效引用（无效引用在否决层就已经 silent 了）。
+       */
+      readonly targetId: string;
+    }
   | { readonly action: 'silent'; readonly reason: VetoReason; readonly detail?: string };
 
 /** 是否放行（给调用方省一个判断）。 */

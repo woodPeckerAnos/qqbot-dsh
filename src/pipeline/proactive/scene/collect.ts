@@ -116,7 +116,10 @@ export const SCENE_DEFINITIONS: readonly SceneDefinition[] = [
   {
     id: 'scene-3',
     name: '无人应答',
-    triggers: ['question-probe'],
+    // `wait-wakeup` 与 `question-probe` 参与的场景相同（都是"重新看一个挂起问题"），
+    // 但**触发标签必须分开**：否则 `evaluatedByTrigger` 分不清"探针"与"重查"，
+    // 而"wait 的价值"正是上一轮完全缺失的那份数据。
+    triggers: ['question-probe', 'wait-wakeup'],
     precheck: (ctx) =>
       ctx.pendingQuestionCount <= 0
         ? undefined
@@ -203,12 +206,17 @@ export function buildSceneEvidence(input: {
   botAliases?: readonly string[];
   /** 兴趣匹配用的文本（缺省取本轮消息文本） */
   text?: string;
+  /** 本次是"让路后到期重查"时，指明被唤醒的那个对象（见 contract.ts） */
+  waitWakeup?: SceneEvidence['waitWakeup'];
 }): SceneEvidence {
   const { state, trigger, now } = input;
   const text = input.text ?? input.message?.text ?? '';
   const topicId = state.topicId(now);
   const botSpeaks = state.botSpeaks(now);
   const startedAt = Number.parseInt((topicId ?? '').replace('topic:', ''), 10);
+  // 台账读一次就够：挂起清单既要进结构化事实（给模型看对象 id），
+  // 也要算计数。分两次读会让"计数与清单不一致"成为可能。
+  const pending = state.pendingQuestions(now);
 
   return {
     convKey: state.convKey,
@@ -231,7 +239,15 @@ export function buildSceneEvidence(input: {
         }),
     recentMessageCount: state.messageCount(now),
     recentHumanCount: state.humanParticipants(now),
-    pendingQuestionCount: state.pendingQuestions(now).length,
+    pendingQuestionCount: pending.length,
+    pendingQuestions: pending.map((question) => ({
+      id: question.id,
+      askerLabel: question.askerName ?? question.askerId,
+      text: question.text,
+      silentSeconds: Math.max(0, Math.round((now - question.askedAt) / 1000)),
+      probes: question.probes,
+    })),
+    ...(input.waitWakeup === undefined ? {} : { waitWakeup: input.waitWakeup }),
     matchedInterestIds: input.interests?.matchIds(text) ?? [],
     unansweredStreak: state.unansweredStreak,
   };

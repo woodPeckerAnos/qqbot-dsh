@@ -120,6 +120,13 @@ export interface ProactiveFileConfig {
   topicRollMs?: number;
   /** 问题挂起多久后探针（场景 3 的答案窗口） */
   questionProbeMs?: number;
+  /**
+   * 每个挂起问题最多"让路"几次（默认 1）。硬上限 3——超出按 3 处理并 warn，
+   * 因为"让路只能让一次"是**代码级**约束，不是 prompt 里的请求。
+   */
+  maxWaitPerItem?: number;
+  /** "让路"理由的等待时长（毫秒；默认 45000，范围 15000–120000） */
+  waitYieldMs?: number;
   /** 判定调用超时（毫秒）；与 topic.timeoutMs 分开，见 config.ts 的说明 */
   judgeTimeoutMs?: number;
   /** 旁听缓冲上限（条）与最长保留时长（毫秒） */
@@ -285,6 +292,8 @@ const PROACTIVE_SPEC: SectionSpec = {
   topicRollMessages: 'int',
   topicRollMs: 'int',
   questionProbeMs: 'int',
+  maxWaitPerItem: 'int',
+  waitYieldMs: 'int',
   judgeTimeoutMs: 'int',
   bufferMaxMessages: 'int',
   bufferMaxAgeMs: 'int',

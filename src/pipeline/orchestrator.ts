@@ -81,7 +81,21 @@ export class Orchestrator {
   constructor(readonly deps: OrchestratorDeps) {}
 
   snapshotStats(): PipelineStatsSnapshot {
-    return { ...this.deps.stats, ...this.deps.status() };
+    const {
+      proactiveWaitTickets,
+      proactiveWaitTicketCreatedByReason,
+      proactiveWaitDeclined,
+      ...rest
+    } = this.deps.stats;
+    return {
+      ...rest,
+      // 三个按理由拆开的分布映射成**数字**：`dispatcher` 的对外契约是
+      // "字段全为数字"（RUNBOOK 在用），分布另在 health 的 proactive 段给。
+      proactiveWaitTickets: sumValues(proactiveWaitTickets),
+      proactiveWaitTicketCreatedByReason: sumValues(proactiveWaitTicketCreatedByReason),
+      proactiveWaitDeclined: sumValues(proactiveWaitDeclined),
+      ...this.deps.status(),
+    };
   }
 
   /** 入口：处理一个归一化事件。永不抛错（所有失败都转成回复或日志）。 */
@@ -188,4 +202,11 @@ export class Orchestrator {
 
     await runStages(this.deps.stages, ctx, () => this.deps.terminal(ctx));
   }
+}
+
+/** 把"按理由拆开的分布"折成一个数字（见 snapshotStats 的注释）。 */
+function sumValues(map: Record<string, number>): number {
+  let total = 0;
+  for (const value of Object.values(map)) total += value;
+  return total;
 }
