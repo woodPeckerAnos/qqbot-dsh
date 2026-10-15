@@ -1,7 +1,7 @@
 ---
 doc: wait-convergence-requirement
 kind: requirement
-status: 待实施
+status: 已实施
 scope: 主动介入的 wait（延迟重查）机制
 touches:
   - 场景 3 判据（judge/judge.ts 的 SCENE_3_CRITERIA）
@@ -24,6 +24,13 @@ stats:
   - wait_ticket_unchanged
   - wait_ticket_invalid_target
   - wait_declined
+implemented:
+  - src/pipeline/proactive/contract.ts（WaitReason 三态 / WaitTarget / WaitTicketTerminal / 硬上限常量）
+  - src/pipeline/proactive/judge/judge.ts（场景 3 判据三态 + 对象引用 + prompt 渲染）
+  - src/pipeline/proactive/veto/veto.ts（decideWait：wait 的唯一入口）
+  - src/pipeline/proactive/scene/watcher.ts（每会话一个唤醒点 + 两道本地检查 + 关闭即取消）
+  - src/pipeline/proactive/scene/state.ts（yieldBudgetUsed / lastEvaluatedAt / 关闭通知）
+  - tests/proactive-wait.test.ts（验收 1–11 的专项用例）
 ---
 
 # 原始需求
@@ -239,3 +246,31 @@ stats:
 4. **指标与触发标签**（验收 11 的账目闭合 + `wait-wakeup` 独立标签）；
 5. 灰度一周后**对着 `wait_ticket_*` 决定这个机制是保留还是删掉**——
    若 `resolved` 长期为 0，正确答案可能是"直接把 `yielding` 也按 silent 处理"。
+
+# 实施记录（落地时的三处补充判断）
+
+需求写完后在实现里补了三个判断，都记在这里，免得下一轮再讨论一遍：
+
+1. **`WaitTarget` 必须有 `exists`，不能只有 `open`**。
+   台账在"问题被答/过期"时会把它移出挂起清单，于是"模型幻觉了一个 id"与
+   "对象曾存在但刚被关掉"在只看当前清单时长得一模一样。两者必须分开计数
+   （`wait_ticket_invalid_target` 说明判据要更明确；`stale` 是**好事**，
+   说明本地检查省下了一次调用），所以上下文里显式带 `exists`。
+
+2. **`lastEvaluatedAt` 记的是"跑到判定的那一刻"，不是"建票据那一刻"**。
+   用建票据时刻当基准，会让唤醒时的"转录有新增"包含判定自己的触发消息，
+   两道本地检查等于白设。`markEvaluated` 因此写在发起判定调用之前，
+   且只前进不回退。
+
+3. **唤醒路径上的对象 id 以票据为准**。
+   重判发生在对象**仍挂起**时（否则早就按 `stale` 作废了），但模型可能选择
+   不回抄 `q:<id>`。此时不能判"引用无效"——那会把一次正常的重查变成静默，
+   所以唤醒路径优先用票据自己的 `targetId`（`exists:true`）。
+
+另外两处口径说明：
+
+- **`wait_ticket_stale` 同时覆盖两件事**：到期唤醒时发现对象已关闭，
+  以及问题关闭时就地取消唤醒（验收 6）。两者都只能记 `stale`，
+  否则验收 11 的等式不成立——"取消"也是这张票据的终局；
+- **`resolved` 只在"唤醒后判成立"这一处**计数：那是"等待熬到了成立"，
+  也是判断这个机制要不要保留的唯一依据。

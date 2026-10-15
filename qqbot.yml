@@ -306,6 +306,18 @@ proactive:
   topicRollMs: 300000
   # 问题挂起多久后探针（场景 3）：先给群里留出回答时间。
   questionProbeMs: 90000
+  # 「让路」的预算与时长（场景 3 的 wait）：判定说"有人在答"时，
+  # 只把**下一次唤醒提前一点**，而不是另起一台独立于对象的等待机器。
+  #   maxWaitPerItem：同一个挂起问题最多让路几次。**默认 1（只能让一次）**，
+  #                   硬上限 3——配得更大按 3 处理并在日志里 warn，因为
+  #                   "把收敛改回不收敛"不该只需要改一行配置。
+  #   waitYieldMs   ：让路后多久重查（毫秒，范围 15000–120000）。重查前有两道
+  #                   **本地**检查（对象还在吗 / 转录有新增吗），任何一道不过
+  #                   都不花判定调用；问题一旦被回答，等待当场作废。
+  # 指标：wait_ticket_created / _resolved / _spent / _stale / _unchanged
+  #       + wait_declined{reason}（/metrics 的 proactive 段）。
+  maxWaitPerItem: 1
+  waitYieldMs: 45000
   # 判定调用超时。刻意与 topic.timeoutMs 分开：话题判定只输出一个布尔值
   # （10 秒够），而主动介入要逐场景输出多段 JSON——借用 10 秒会频繁超时，
   # 而超时 = 沉默，表现就是「它从来不主动说话」。
