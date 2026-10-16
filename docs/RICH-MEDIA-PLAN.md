@@ -146,6 +146,10 @@ file_type=1 可能被平台拒绝——"以文件形式收到的 svg"用户能�
 5. **只发本轮产物**：扫描按 `notBeforeMs`（= 本条消息进入管线的时间）过滤
    mtime。上轮发送失败/超额的遗留文件不再被下轮重扫重发；persona 约定
    "重发旧文件 = 复制一份进 outbox（复制即刷新 mtime）"。
+   比较留 `MTIME_TOLERANCE_MS`（1s）容差：**文件时间戳是粗粒度的**——Linux 的
+   inode 时间戳按 tick 取整（HZ=250 时约 4ms），"刚写入"的文件 mtime 可能比
+   `Date.now()` 早几毫秒；不留容差就会把本轮刚产出的文件当旧文件静默丢掉
+   （CI 上稳定复现，机制见 `src/pipeline/egress/outbox.ts`）。
 
 ### OneBot 平台
 

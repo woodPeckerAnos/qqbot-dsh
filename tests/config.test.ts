@@ -33,6 +33,7 @@ describe('loadConfig', () => {
       enabled: true,
       maxImages: 4,
       maxImageBytes: 8 * 1024 * 1024,
+      maxImageTiles: 12,
       downloadTimeoutMs: 15_000,
       forward: {
         enabled: true,
@@ -141,16 +142,19 @@ describe('loadConfig', () => {
     expect(config.attachments.maxImages).toBe(4);
 
     const fromFile = loadConfig(baseEnv, {
-      attachments: { maxImages: 2, maxImageBytes: 1024 * 1024, downloadTimeoutMs: 3_000 },
+      attachments: { maxImages: 2, maxImageBytes: 1024 * 1024, maxImageTiles: 3, downloadTimeoutMs: 3_000 },
     });
     expect(fromFile.attachments).toMatchObject({
       maxImages: 2,
       maxImageBytes: 1024 * 1024,
+      maxImageTiles: 3,
       downloadTimeoutMs: 3_000,
     });
 
     expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_IMAGES: '99' })).toThrow(ConfigError);
     expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_BYTES: '10' })).toThrow(ConfigError);
+    // 21 > runtime 单条 prompt 的 20 张上限：越界必须在启动期就被拒
+    expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_IMAGE_TILES: '21' })).toThrow(ConfigError);
   });
 
   it('缺少必填项时报错并给出修复提示', () => {
