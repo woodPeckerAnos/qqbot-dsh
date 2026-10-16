@@ -20,7 +20,7 @@ import type { Config } from '../config.js';
 import type { MediaBytes, MediaFetchOptions, RemoteMedia } from '../core/connector.js';
 import { messageImageParts, messageMediaParts } from '../core/content.js';
 import { ingestFiles, type DocumentExtractor, type FileIngestResult } from '../dsh/files.js';
-import { buildImageBlocks } from '../dsh/media.js';
+import { buildImageBlocks, describeImageRejection } from '../dsh/media.js';
 import type { RuntimeEntry, RuntimePool } from '../dsh/pool.js';
 import type {
   PromptContentBlock,
@@ -421,7 +421,7 @@ export class TurnRunner {
     workspacePath: string,
   ): Promise<PreparedPrompt> {
     const { config, logger } = this.deps;
-    const { enabled, maxImages, maxImageBytes, downloadTimeoutMs } = config.attachments;
+    const { enabled, maxImages, maxImageBytes, maxImageTiles, downloadTimeoutMs } = config.attachments;
     const images = messageImageParts(ctx.message);
     const total = images.length;
     const notes: string[] = [];
@@ -464,6 +464,7 @@ export class TurnRunner {
         const result = await buildImageBlocks(images, {
           maxImages,
           maxBytes: maxImageBytes,
+          maxTiles: maxImageTiles,
           timeoutMs: downloadTimeoutMs,
           ...(fetchMedia !== undefined ? { fetchMedia } : {}),
           logger,
@@ -500,9 +501,10 @@ export class TurnRunner {
    * 派发 prompt；带图片时若被 runtime 拒绝，**退回纯文本重试一次**。
    *
    * 为什么必须有这一层：图片能不能被收下最终由 runtime 的准入决定
-   * （逐图字节、解码像素、边长、base64 规范性），我们在下载侧只能挡住一部分
-   * （我们不做图片解码，拿不到真实像素）。没有这层回退，一张巨图会让整轮失败，
-   * 用户连文字回答都拿不到——这比"看不到图"糟得多。
+   * （逐图字节、解码像素、边长、base64 规范性）。我们在下载侧已经尽量把图压到
+   * 准入范围以内（见 dsh/image.ts 的降采样与切片），但那是尽力而为——平台给的
+   * 字节可能根本解不开、模型侧的策略也可能比我们假设的更紧。没有这层回退，
+   * 一张巨图会让整轮失败，用户连文字回答都拿不到。
    */
   private async dispatchPrompt(
     entry: RuntimeEntry,
@@ -515,6 +517,9 @@ export class TurnRunner {
     } catch (error) {
       if (prepared.inlinedImages === 0) throw error;
       const reason = error instanceof Error ? error.message : String(error);
+      // 日志留英文原文（排障要能对上 runtime 的错误码），prompt 里给中文说明：
+      // 那句话会被模型原样转述给用户，`Image exceeds the configured per-side
+      // pixel limit.` 对用户来说等于没说。
       logger.warn('带图片的 prompt 被 runtime 拒绝，退回纯文本重试', {
         error: reason,
         images: prepared.inlinedImages,
@@ -524,7 +529,7 @@ export class TurnRunner {
       await entry.runtime.prompt(sessionId, [
         {
           type: 'text',
-          text: `${body}\n（${prepared.inlinedImages} 张图片未能被模型接收：${reason}）`,
+          text: `${body}\n（${prepared.inlinedImages} 张图片未能被模型接收：${describeImageRejection(reason)}。请直接告诉用户这些图没读进来，不要猜测图里的内容。）`,
         },
       ]);
       stats.imagesSkipped += prepared.inlinedImages;

@@ -4,6 +4,8 @@
  * 全部离线：图片下载用注入的 fetchMedia 替身，不触网。
  */
 
+import { randomBytes } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
 import { buildMessageParts } from '../src/adapters/qq-official/content.js';
@@ -16,7 +18,7 @@ import {
   messageImageParts,
 } from '../src/core/content.js';
 import type { MessagePart, NormalizedMessage } from '../src/core/connector.js';
-import { buildImageBlocks, sniffImageMimeType } from '../src/dsh/media.js';
+import { buildImageBlocks, describeImageRejection, sniffImageMimeType } from '../src/dsh/media.js';
 import { createNullLogger } from '../src/logger.js';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
@@ -26,6 +28,33 @@ const WEBP = new Uint8Array([
   0x52, 0x49, 0x46, 0x46, 0x10, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
 ]);
 const NOT_AN_IMAGE = new Uint8Array([0x3c, 0x68, 0x74, 0x6d, 0x6c, 0x3e]);
+
+/**
+ * 真图夹具：降采样/切片要真的解码，用"只有魔数的假 PNG"测不出任何东西。
+ * 尺寸刻意取小（8×8 / 400×400 / 1080×9000），生成代价可控。
+ */
+async function makePng(width: number, height: number): Promise<Uint8Array> {
+  const sharp = (await import('sharp')).default;
+  return new Uint8Array(
+    await sharp({ create: { width, height, channels: 3, background: '#3a7bd5' } })
+      .png()
+      .toBuffer(),
+  );
+}
+
+/** 噪声图：PNG 压不动，用来验证"字节超限 → 降采样/重编码压回限内" */
+async function makeNoisyPng(width: number, height: number): Promise<Uint8Array> {
+  const sharp = (await import('sharp')).default;
+  const noise = randomBytes(width * height * 3);
+  return new Uint8Array(
+    await sharp(noise, { raw: { width, height, channels: 3 } }).png().toBuffer(),
+  );
+}
+
+/** 长截图夹具：恒定色块，压出来很小，但行数（像素）是真的 */
+async function makeTallPng(width: number, height: number): Promise<Uint8Array> {
+  return makePng(width, height);
+}
 
 // ---------------------------------------------------------------------------
 // core/content：扁平化与图片收集
@@ -275,18 +304,25 @@ describe('图片嗅探', () => {
 
 describe('prompt blocks 组装', () => {
   const logger = createNullLogger();
-  const baseOptions = { maxImages: 4, maxBytes: 1024 * 1024, timeoutMs: 1_000, logger };
+  const baseOptions = {
+    maxImages: 4,
+    maxBytes: 1024 * 1024,
+    maxTiles: 4,
+    timeoutMs: 1_000,
+    logger,
+  };
 
   it('成功下载的图片编码成 base64 image block', async () => {
+    const png = await makePng(8, 8);
     const result = await buildImageBlocks([{ type: 'image', url: 'https://x/a.png' }], {
       ...baseOptions,
-      fetchMedia: async () => ({ data: PNG, mimeType: 'image/jpeg' }),
+      fetchMedia: async () => ({ data: png, mimeType: 'image/jpeg' }),
     });
     expect(result.notes).toEqual([]);
     expect(result.blocks).toHaveLength(1);
     expect(result.blocks[0]).toMatchObject({ type: 'image', mimeType: 'image/png' });
     // MIME 以字节嗅探为准，不信平台/响应头声明
-    expect(Buffer.from((result.blocks[0] as { data: string }).data, 'base64')).toEqual(Buffer.from(PNG));
+    expect(Buffer.from((result.blocks[0] as { data: string }).data, 'base64')).toEqual(Buffer.from(png));
   });
 
   it('下载失败只降级成文字说明，不抛错', async () => {
@@ -308,35 +344,64 @@ describe('prompt blocks 组装', () => {
     expect(result.notes[0]).toContain('格式不支持内联');
   });
 
-  it('超过字节上限的图片被跳过', async () => {
-    const big = new Uint8Array(2048);
-    big.set(PNG.subarray(0, 8));
+  it('字节超限的图片会被降采样压回限内，而不是丢掉', async () => {
+    const noisy = await makeNoisyPng(400, 400);
+    expect(noisy.byteLength).toBeGreaterThan(200_000);
     const result = await buildImageBlocks([{ type: 'image', url: 'https://x/big.png' }], {
       ...baseOptions,
-      maxBytes: 1024,
-      fetchMedia: async () => ({ data: big }),
+      maxBytes: 200_000,
+      fetchMedia: async () => ({ data: noisy }),
+    });
+    expect(result.blocks).toHaveLength(1);
+    const bytes = Buffer.from((result.blocks[0] as { data: string }).data, 'base64');
+    expect(bytes.byteLength).toBeLessThanOrEqual(200_000);
+    expect(sniffImageMimeType(new Uint8Array(bytes))).toBeDefined();
+  });
+
+  it('连质量阶梯都压不进字节上限时缩一档，注记说明是"体积超限"', async () => {
+    // 噪声图 + 极紧的字节上限：JPEG 最低档也放不下，只能缩尺寸
+    const noisy = await makeNoisyPng(1000, 1000);
+    const result = await buildImageBlocks([{ type: 'image', url: 'https://x/noise.png' }], {
+      ...baseOptions,
+      maxBytes: 50_000,
+      fetchMedia: async () => ({ data: noisy }),
+    });
+    expect(result.blocks).toHaveLength(1);
+    const bytes = Buffer.from((result.blocks[0] as { data: string }).data, 'base64');
+    expect(bytes.byteLength).toBeLessThanOrEqual(50_000);
+    // "体积超过上限"而不是"超出模型可读上限"：尺寸本来就合规，写成后者会让
+    // 模型以为拿到的是缩略图
+    expect(result.notes[0]).toContain('体积超过上限');
+  });
+
+  it('解不开的字节不内联（否则 runtime 会拒掉整条 prompt）', async () => {
+    const broken = new Uint8Array([...PNG, 1, 2, 3, 4]);
+    const result = await buildImageBlocks([{ type: 'image', url: 'https://x/broken.png' }], {
+      ...baseOptions,
+      fetchMedia: async () => ({ data: broken }),
     });
     expect(result.blocks).toEqual([]);
-    expect(result.notes[0]).toContain('超过');
+    expect(result.notes[0]).toContain('无法解码');
   });
 
   it('张数超过上限时只送前 N 张并提示', async () => {
+    const png = await makePng(8, 8);
     const result = await buildImageBlocks(
       [
         { type: 'image', url: 'https://x/1.png' },
         { type: 'image', url: 'https://x/2.png' },
         { type: 'image', url: 'https://x/3.png' },
       ],
-      { ...baseOptions, maxImages: 2, fetchMedia: async () => ({ data: PNG }) },
+      { ...baseOptions, maxImages: 2, fetchMedia: async () => ({ data: png }) },
     );
     expect(result.blocks).toHaveLength(2);
     expect(result.notes).toEqual(['（另有 1 张图片超出单条消息上限，未读入）']);
   });
 
-  it('声明尺寸超过 runtime 准入上限的图片直接跳过（不浪费一次下载）', async () => {
+  it('声明尺寸大到解不动时直接跳过（不浪费一次下载）', async () => {
     let fetched = false;
     const result = await buildImageBlocks(
-      [{ type: 'image', url: 'https://x/tall.png', width: 1080, height: 20000 }],
+      [{ type: 'image', url: 'https://x/huge.png', width: 40000, height: 40000 }],
       {
         ...baseOptions,
         fetchMedia: async () => {
@@ -347,7 +412,39 @@ describe('prompt blocks 组装', () => {
     );
     expect(fetched).toBe(false);
     expect(result.blocks).toEqual([]);
-    expect(result.notes[0]).toContain('尺寸过大');
+    expect(result.notes[0]).toContain('超出可解码范围');
+  });
+
+  it('长图按配额切片送入，切不完的部分在注记里说明', async () => {
+    // 1080×9000：单块最多 floor(64万/1080)=592 像素高，读全需要 16 块，
+    // 配额只给 3 块 —— 正是"宁可按原分辨率读一部分，也不整张糊成一团"的场景。
+    const tall = await makeTallPng(1080, 9000);
+    const result = await buildImageBlocks([{ type: 'image', url: 'https://x/tall.png' }], {
+      ...baseOptions,
+      maxTiles: 3,
+      fetchMedia: async () => ({ data: tall }),
+    });
+    expect(result.blocks).toHaveLength(3);
+    expect(result.notes).toHaveLength(1);
+    expect(result.notes[0]).toContain('长图');
+    expect(result.notes[0]).toContain('未读入');
+    // 每一块都必须是能独立解码的图片
+    for (const block of result.blocks) {
+      const bytes = Buffer.from((block as { data: string }).data, 'base64');
+      expect(sniffImageMimeType(new Uint8Array(bytes))).toBeDefined();
+    }
+  }, 60_000);
+});
+
+describe('describeImageRejection', () => {
+  it('把 runtime 的英文准入错误翻成中文，认不出的原样返回', () => {
+    expect(describeImageRejection('Image exceeds the configured per-side pixel limit.')).toBe(
+      '图片单边像素超过模型上限',
+    );
+    expect(describeImageRejection('Image exceeds the configured decoded-pixel limit.')).toBe(
+      '图片总像素超过模型上限',
+    );
+    expect(describeImageRejection('something else')).toBe('something else');
   });
 });
 

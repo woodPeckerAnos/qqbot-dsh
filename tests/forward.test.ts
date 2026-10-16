@@ -74,6 +74,72 @@ describe('转发段归一化', () => {
     expect(extracted.forwardRefs).toEqual([{ index: 0, id: 'fwd-2' }]);
   });
 
+  it('forward 段带内联 content 时，直接解析成待渲染的逐条发言（不必回查）', () => {
+    const extracted = extractMessageContent(
+      [
+        {
+          type: 'forward',
+          data: {
+            id: 'fwd-inline',
+            content: [
+              { type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '在吗' } }] } },
+              { type: 'node', data: { nickname: '李四', content: [{ type: 'text', data: { text: '在' } }] } },
+            ],
+          },
+        },
+      ],
+      10000,
+    );
+    expect(extracted.forwardRefs).toEqual([
+      {
+        index: 0,
+        id: 'fwd-inline',
+        nodes: [
+          { author: '张三', parts: [{ type: 'text', text: '在吗' }] },
+          { author: '李四', parts: [{ type: 'text', text: '在' }] },
+        ],
+      },
+    ]);
+    expect(extracted.parts).toEqual([{ type: 'forward', parts: [] }]);
+  });
+
+  it('只有内联 content、没有 id 时不再退化成 [聊天记录]', () => {
+    const extracted = extractMessageContent(
+      [
+        {
+          type: 'forward',
+          data: {
+            content: [
+              { type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '没有 id' } }] } },
+            ],
+          },
+        },
+      ],
+      10000,
+    );
+    expect(extracted.forwardRefs).toEqual([
+      { index: 0, nodes: [{ author: '张三', parts: [{ type: 'text', text: '没有 id' }] }] },
+    ]);
+  });
+
+  it('内联 content 解析不出东西时仍退回按 id 回查', () => {
+    const extracted = extractMessageContent(
+      [{ type: 'forward', data: { id: 'fwd-x', content: [null, 42, {}] } }],
+      10000,
+    );
+    expect(extracted.forwardRefs).toEqual([{ index: 0, id: 'fwd-x' }]);
+  });
+
+  it('顶层 node 段（单条消息转发）按一个条目的转发块处理', () => {
+    const extracted = extractMessageContent(
+      [{ type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '单条转发' } }] } }],
+      10000,
+    );
+    expect(extracted.forwardRefs?.[0]?.nodes).toEqual([
+      { author: '张三', parts: [{ type: 'text', text: '单条转发' }] },
+    ]);
+  });
+
   it('@ 惰性：转发块本身不构成"被 @ "，只有顶层 at 段才算', () => {
     const onlyForward = normalizeOneBotEvent({
       post_type: 'message',
@@ -911,5 +977,194 @@ describe('引用与转发的合并顺序', () => {
     expect(content).toContain('[引用 张三]');
     expect(content).toContain('1. 被引用的转发内容');
     expect(content).not.toContain('内容未读入');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 真机回归：id 精度与内联内容
+//
+// 这两条都来自同一个真机现象——群里发"聊天记录"，bot 回"我只看到一个
+// [聊天记录] 占位"。原因是回查必然失败：19 位 msgId 被 Number() 截断后，
+// NapCat 的 `payload.message_id || payload.id` 恰好优先取被截断的那个。
+// ---------------------------------------------------------------------------
+
+/** 19 位十进制消息 id：超过 2^53，Number() 一定改写末位 */
+const BIG_MSG_ID = '7477882741027621893';
+
+describe('转发块的 id 精度与内联内容', () => {
+  let connector: OnebotConnector | undefined;
+  const clients: WebSocket[] = [];
+  afterEach(async () => {
+    for (const ws of clients.splice(0)) ws.close();
+    await connector?.stop();
+    connector = undefined;
+  });
+
+  it('夹具本身成立：这个 id 过一遍 Number() 会被改写', () => {
+    expect(String(Number(BIG_MSG_ID))).not.toBe(BIG_MSG_ID);
+    expect(Number.isSafeInteger(Number(BIG_MSG_ID))).toBe(false);
+  });
+
+  it('19 位 id：get_forward_msg 的 message_id 必须是原样字符串（真机 bug 的根因）', async () => {
+    const { connector: c, events } = makeConnector(0);
+    connector = c;
+    await connector.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+
+    ws.send(groupForwardMessage(201, BIG_MSG_ID));
+    const action = await new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    expect(action['action']).toBe('get_forward_msg');
+    // 关键断言：不是 number，也不是被截断的数字
+    expect(action['params']).toMatchObject({ id: BIG_MSG_ID, message_id: BIG_MSG_ID });
+    expect(typeof (action['params'] as { message_id: unknown }).message_id).toBe('string');
+
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: action['echo'],
+        data: { messages: [{ type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '这是聊天记录里的内容' } }] } }] },
+      }),
+    );
+    await sleep(120);
+
+    expect(contentOf(events)).toContain('1. 张三: 这是聊天记录里的内容');
+    expect(contentOf(events)).not.toContain('[聊天记录]');
+  });
+
+  it('短数字 id 仍按数字下发（go-cqhttp 系的入参类型是整数）', async () => {
+    const { connector: c } = makeConnector(0);
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+
+    ws.send(groupForwardMessage(202, '123456789'));
+    const action = await new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    expect(action['params']).toMatchObject({ id: '123456789', message_id: 123456789 });
+    expect(typeof (action['params'] as { message_id: unknown }).message_id).toBe('number');
+  });
+
+  it('上报已内联 content 时零回查，直接展开（NapCat 的 forward.data.content）', async () => {
+    const { connector: c, events } = makeConnector(0);
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+    const frames = collectFrames(ws);
+
+    ws.send(
+      JSON.stringify({
+        post_type: 'message',
+        message_type: 'group',
+        sub_type: 'normal',
+        self_id: 10000,
+        message_id: 203,
+        group_id: 8888,
+        user_id: 12345,
+        time: 1_700_000_000,
+        message: [
+          { type: 'at', data: { qq: '10000' } },
+          {
+            type: 'forward',
+            data: {
+              id: BIG_MSG_ID,
+              content: [
+                { type: 'node', data: { user_id: 111, nickname: '张三', content: [{ type: 'text', data: { text: '今晚吃什么' } }] } },
+                { type: 'node', data: { user_id: 222, nickname: '李四', content: [{ type: 'text', data: { text: '随便' } }] } },
+              ],
+            },
+          },
+        ],
+        sender: { user_id: 12345, nickname: '小明' },
+      }),
+    );
+    await sleep(150);
+
+    expect(frames.filter((frame) => frame['action'] === 'get_forward_msg')).toHaveLength(0);
+    expect(contentOf(events)).toBe(
+      [
+        '[转发消息 共 2 条]',
+        FORWARD_UNTRUSTED_OPEN,
+        '1. 张三: 今晚吃什么',
+        '2. 李四: 随便',
+        FORWARD_UNTRUSTED_CLOSE,
+      ].join('\n'),
+    );
+  });
+
+  it('只有内联内容、没有 id 时也能展开（不再退化成 [聊天记录]）', async () => {
+    const { connector: c, events } = makeConnector(0);
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+    const frames = collectFrames(ws);
+
+    ws.send(
+      JSON.stringify({
+        post_type: 'message',
+        message_type: 'private',
+        sub_type: 'friend',
+        self_id: 10000,
+        message_id: 204,
+        user_id: 12345,
+        time: 1_700_000_000,
+        message: [
+          {
+            type: 'forward',
+            data: {
+              content: [
+                { type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '没有 id 的聊天记录' } }] } },
+              ],
+            },
+          },
+        ],
+        sender: { user_id: 12345, nickname: '小明' },
+      }),
+    );
+    await sleep(150);
+
+    expect(frames.filter((frame) => frame['action'] === 'get_forward_msg')).toHaveLength(0);
+    const message = events.find((e): e is NormalizedMessage => e.kind === 'c2c-message');
+    expect(message?.content).toContain('1. 张三: 没有 id 的聊天记录');
+  });
+
+  it('引用回查的 message_id 同样不能被截断', async () => {
+    const { connector: c } = makeConnector(0);
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+
+    ws.send(
+      JSON.stringify({
+        post_type: 'message',
+        message_type: 'group',
+        sub_type: 'normal',
+        self_id: 10000,
+        message_id: 205,
+        group_id: 8888,
+        user_id: 12345,
+        time: 1_700_000_000,
+        message: [
+          { type: 'at', data: { qq: '10000' } },
+          { type: 'reply', data: { id: BIG_MSG_ID } },
+          { type: 'text', data: { text: '这条怎么说' } },
+        ],
+        sender: { user_id: 12345, nickname: '小明' },
+      }),
+    );
+
+    const action = await new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    expect(action['action']).toBe('get_msg');
+    expect((action['params'] as { message_id: unknown }).message_id).toBe(BIG_MSG_ID);
   });
 });

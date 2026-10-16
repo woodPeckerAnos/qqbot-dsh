@@ -217,8 +217,10 @@ export interface AttachmentsConfig {
   enabled: boolean;
   /** 单条消息最多内联几张图（含引用消息里的图片） */
   maxImages: number;
-  /** 单张图片最大字节数，超过则只留文字说明 */
+  /** 单张图片最大字节数（内联上限；超限会先尝试降采样） */
   maxImageBytes: number;
+  /** 一张长图最多切成几块送入模型（BOT_ATTACHMENT_MAX_IMAGE_TILES） */
+  maxImageTiles: number;
   /** 单张图片下载超时（毫秒） */
   downloadTimeoutMs: number;
   /** 转发消息块（合并转发 / 聊天记录）的展开配额 */
@@ -711,6 +713,11 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       // 而 QQ 单图硬上限是 200MB，绝不能照抄。
       maxImages: pickInt(env, 'BOT_ATTACHMENT_MAX_IMAGES', attachmentsFile.maxImages, 4, { min: 0, max: 20 }, 'attachments.maxImages'),
       maxImageBytes: pickInt(env, 'BOT_ATTACHMENT_MAX_BYTES', attachmentsFile.maxImageBytes, 8 * 1024 * 1024, { min: 1024, max: 200 * 1024 * 1024 }, 'attachments.maxImageBytes'),
+      // 长截图只有切成小块才读得清：模型对**每张图**只有 64 万像素的预算
+      // （deepseek-flash 的 imagePixelBudget），整张缩下去文字就糊成一团。
+      // 12 块 ≈ 一张 1080×7100 的聊天记录，token 代价约 1 万；上限 20 是 runtime
+      // 单条 prompt 的图片张数上限，不能越过。
+      maxImageTiles: pickInt(env, 'BOT_ATTACHMENT_MAX_IMAGE_TILES', attachmentsFile.maxImageTiles, 12, { min: 1, max: 20 }, 'attachments.maxImageTiles'),
       downloadTimeoutMs: pickInt(env, 'BOT_ATTACHMENT_TIMEOUT_MS', attachmentsFile.downloadTimeoutMs, 15_000, { min: 1_000, max: 120_000 }, 'attachments.downloadTimeoutMs'),
       forward: {
         enabled: pickBool(env, 'BOT_ATTACHMENT_FORWARD_ENABLED', attachmentsFile.forward?.enabled, true),
