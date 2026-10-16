@@ -73,9 +73,9 @@ interface Harness {
   /**
    * 让会话里出现一个**挂起问题**（场景 3 的判定对象），返回它的 id。
    *
-   * 顺带让场景 1 成为候选（bot 在这个话题里说过话）——否则"每条消息"那条
-   * 触发面在本地就被短路了，判定根本不跑。探针由 `questionProbeMs` 决定，
-   * 因此调用方要用 `advance(questionProbeMs)` 把它推到判定面前。
+   * ⚠️ 刻意**不**调 `notifyBotSpoke`：那会让场景 1 成为候选，于是这两条消息各自
+   * 触发一次消息面判定（多花两次 LLM 调用，本用例只关心探针那条路径）。
+   * 场景 3 的候选只依赖"台账里有挂起问题"，与场景 1 无关。
    */
   armQuestion(text?: string): string;
   /**
@@ -241,9 +241,9 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proac
       }`;
     },
     armQuestion(text = '有没有人知道这个接口的分页参数怎么传？') {
-      // 先让 bot 在这个话题里说过话（场景 1 的候选条件），再提一个挂起问题
-      watcher.observe(makeObserved('u1', '帮我看看这个报错', clock));
-      watcher.notifyBotSpoke(GROUP_KEY);
+      // 只登记一个**挂起问题**（场景 3 的判定对象），刻意不触发消息面判定：
+      // 探针到点时它会成为唯一的候选，判定因此只看这一个对象。
+      watcher.observe(makeObserved('u1', '先问一句：这个报错怎么看？', clock));
       const id = `${makeObserved('u2', '', clock).msgId}@${clock}`;
       watcher.observe(makeObserved('u2', text, clock));
       return id;
@@ -429,12 +429,16 @@ describe('降级：判定失败一律沉默，且不刷 API', () => {
 // ---------------------------------------------------------------------------
 
 describe('否决层在链条里的位置', () => {
-  it('验收11：判定全不成立 → no-scene 计数，不投递', async () => {
+  it('验收11：判定全不成立 → no-session 计数，不投递', async () => {
     const h = setup();
     h.setVerdicts([]);
     h.observe('u1', '机器人帮我看下');
     await settle();
-    expect(h.snapshot().vetoed['no-scene']).toBe(1);
+    // 没有 session、模型也没判"值得" → 这一次唤醒在账上算"被 session 闸门挡住"。
+    // 若已有 session，同一情形记 `no-scene`（模型自己说这次没什么可补）。
+    expect(h.snapshot().vetoed['no-session']).toBe(1);
+    expect(h.snapshot().sessions.noSession).toBe(1);
+    expect(h.snapshot().sessions.opened).toBe(0);
     expect(h.delivered).toHaveLength(0);
   });
 
@@ -478,21 +482,35 @@ describe('否决层在链条里的位置', () => {
     expect(h.snapshot().vetoed['rate-limit']).toBe(1);
   });
 
-  it('验收14：同一个话题里说过一次就不再重复（每话题一次）', async () => {
-    const h = setup({ vetoPolicy: { maxPerTopic: 1 } });
+  it('验收14：同一个 session 里间隔没到就不再开口（session 闸门接替了每话题一次）', async () => {
+    const h = setup({ sessionBudget: 2, sessionMinGapMs: 45_000 });
     h.setVerdicts(['scene-4']);
     h.observe('u1', '机器人帮我看下');
     await settle();
     expect(h.delivered).toHaveLength(1);
 
+    // 同一 session、同一话题，5 秒后又说：这次被"最小间隔"挡住，且**不消耗预算**
+    h.advance(5_000);
     h.observe('u2', '机器人也在吗');
     await settle();
-    // 同一活动窗口内 bot 已说过 1 次 → topic-spent（即使限流还没到）
-    expect(h.snapshot().vetoed['topic-spent']).toBe(1);
+    expect(h.snapshot().vetoed['min-gap']).toBe(1);
+    expect(h.delivered).toHaveLength(1);
+    expect(h.watcher.stateFor(GROUP_KEY).session?.budgetLeft).toBe(1);
+
+    // 过了间隔就能接着说（预算还剩 1 点）——这正是取代"每话题一次"的行为
+    h.advance(45_000);
+    h.observe('u3', '机器人再帮我看下');
+    await settle();
+    expect(h.delivered).toHaveLength(2);
+    // 预算用完 → 会话**留着**（不因预算关闭），只是此后这个话题不再放行
+    const session = h.watcher.stateFor(GROUP_KEY).session;
+    expect(session?.budgetLeft).toBe(0);
+    expect(h.snapshot().sessions.spent).toBe(1);
+    expect(h.snapshot().sessions.closedBy['budget-exhausted']).toBeUndefined();
   });
 
   it('验收15：没人理我就停——连续两次主动发言无人回应后，连判定都不跑', async () => {
-    const h = setup({ vetoPolicy: { maxUnansweredStreak: 2, maxPerTopic: 5 } });
+    const h = setup({ vetoPolicy: { maxUnansweredStreak: 2 }, sessionBudget: 5 });
     // 判定先设好（observe 是 fire-and-forget，设晚了这次评估就拿到旧判定）
     h.setVerdicts(['scene-4']);
     h.observe('u1', '机器人帮我看下这个报错');

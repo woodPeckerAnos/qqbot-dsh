@@ -319,3 +319,84 @@ describe('缓冲边界与注册表', () => {
     expect(store.for('ob11:g1').convKey).toBe('ob11:g1');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 话题 session（主动发言的唯一放行闸门，见 docs/TOPIC-SESSION-REQUIREMENT.md）
+// ---------------------------------------------------------------------------
+
+describe('话题 session 的状态机', () => {
+  it('验收19：开 → 扣预算 → 关：三字段就是全部状态，且关闭只通知一次', () => {
+    const s = state();
+    const closed: Array<{ cause: string; budgetLeft: number }> = [];
+    s.onSessionClosed((event) => {
+      closed.push({ cause: event.cause, budgetLeft: event.session.budgetLeft });
+    });
+
+    // 没开之前一切为"没有"
+    expect(s.session).toBeUndefined();
+    expect(s.consumeSessionBudget(T0)).toBe(false); // 没有 session 时扣不动
+    expect(s.closeSession('idle')).toBe(false);
+
+    expect(s.openSession(T0, 2)).toBe(true);
+    expect(s.session).toEqual({ openedAt: T0, budgetLeft: 2 });
+    // 已有 session 时**拒绝覆盖**（正常路径不会发生；静默覆盖会把上一本的账吞掉）
+    expect(s.openSession(T0 + 1, 5)).toBe(false);
+    expect(s.session?.openedAt).toBe(T0);
+
+    expect(s.consumeSessionBudget(T0 + 1_000)).toBe(true);
+    expect(s.session).toEqual({ openedAt: T0, budgetLeft: 1, lastSpokeAt: T0 + 1_000 });
+    expect(s.consumeSessionBudget(T0 + 2_000)).toBe(true);
+    expect(s.session?.budgetLeft).toBe(0); // 减到 0 不在这里关闭（关闭要通知监听者）
+    expect(s.consumeSessionBudget(T0 + 3_000)).toBe(true);
+    expect(s.session?.budgetLeft ?? -1).toBe(0); // 也不会变成负数
+
+    // 关闭原因由调用方给（预算**不在**其中：耗尽只闭嘴、不关会话）
+    expect(s.closeSession('llm-closed')).toBe(true);
+    expect(s.session).toBeUndefined();
+    // 幂等：重复关闭不重复通知（账目等式 `closed === Σ closedBy` 靠这一条）
+    expect(s.closeSession('llm-closed')).toBe(false);
+    expect(closed).toEqual([{ cause: 'llm-closed', budgetLeft: 0 }]);
+  });
+
+  it('验收20：Store 把任意会话的 session 关闭事件带 convKey 转发出来；dispose 连带关闭', () => {
+    const store = new ConversationStateStore();
+    const seen: Array<{ convKey: string; cause: string }> = [];
+    store.onSessionClosed((convKey, event) => seen.push({ convKey, cause: event.cause }));
+
+    const a = store.for('ob11:g1');
+    a.openSession(T0, 2);
+    a.closeSession('llm-closed');
+    expect(seen).toEqual([{ convKey: 'ob11:g1', cause: 'llm-closed' }]);
+
+    // 会话状态被清理 → session 连带关闭（原因 conversation-gone），并摘掉监听器
+    const b = store.for('ob11:g2');
+    b.openSession(T0, 2);
+    expect(store.dispose('ob11:g2')).toBe(true);
+    expect(seen.at(-1)).toEqual({ convKey: 'ob11:g2', cause: 'conversation-gone' });
+    expect(store.size).toBe(1);
+    expect(store.dispose('ob11:g2')).toBe(false);
+  });
+
+  it('验收21：会话级判定时刻只前进不回退；"有没有新增"看时间戳也看转录末尾', () => {
+    const s = state();
+    expect(s.lastEvaluatedAt).toBeUndefined();
+    // 还没判定过 → 一律按"有新增"处理（宁可多查一次）
+    expect(s.hasNewContentSinceLastEvaluation()).toBe(true);
+
+    s.observe(msg('m1', 'u1', '第一句', T0));
+    s.markEvaluatedAt(T0 + 1_000);
+    expect(s.lastEvaluatedAt).toBe(T0 + 1_000);
+    s.markEvaluatedAt(T0 + 500); // 乱序/并发调用不该把标记拉回去
+    expect(s.lastEvaluatedAt).toBe(T0 + 1_000);
+    expect(s.hasNewContentSinceLastEvaluation()).toBe(false);
+
+    // 平台事件时间可能是**秒**：同一毫秒内到达的新消息时间戳并不更大，
+    // 但转录末尾换了人 → 仍然算"有新增"（否则消息面会被整体吞掉）
+    s.observe(msg('m2', 'u2', '第二句', T0 + 1_000));
+    expect(s.hasNewContentSinceLastEvaluation()).toBe(true);
+
+    // 时间戳判据本身保持严格大于（wait 票据用它，语义不能变）
+    expect(s.hasNewContentSince(T0 + 1_000)).toBe(false);
+    expect(s.hasNewContentSince(T0)).toBe(true);
+  });
+});

@@ -248,6 +248,66 @@ describe('loadConfig', () => {
     ).toBe(5);
   });
 
+  it('主动发言：话题 session 的三个参数（预算 2 / 静默 10 分钟 / 最小间隔 45 秒）', () => {
+    const bare = loadConfig(baseEnv);
+    expect(bare.proactive.sessionBudget).toBe(2);
+    expect(bare.proactive.sessionIdleMs).toBe(600_000); // 与活动窗口同值
+    expect(bare.proactive.sessionMinGapMs).toBe(45_000);
+
+    // 配置文件层同样可覆盖
+    const fromFile = loadConfig(baseEnv, {
+      proactive: { sessionBudget: 3, sessionIdleMs: 120_000, sessionMinGapMs: 60_000 },
+    });
+    expect(fromFile.proactive).toMatchObject({
+      sessionBudget: 3,
+      sessionIdleMs: 120_000,
+      sessionMinGapMs: 60_000,
+    });
+
+    // env 优先
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '1' }).proactive.sessionBudget,
+    ).toBe(1);
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '60000' }).proactive.sessionIdleMs,
+    ).toBe(60_000);
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '300000' }).proactive
+        .sessionMinGapMs,
+    ).toBe(300_000);
+
+    // ⚠️ 预算配成 9 **不报错**：按硬上限 5 处理并 warn（验收 9），
+    // 与 maxWaitPerItem 同一口径——硬上限是运行期约束，不是配置语法错误。
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '9' }).proactive.sessionBudget,
+    ).toBe(9);
+    // 三个参数的两端都有校验（静默时长 1–60 分钟、最小间隔 10–300 秒）
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '0' })).toThrowError(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '1000' })).toThrowError(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '99999999' })).toThrowError(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '100' })).toThrowError(
+      ConfigError,
+    );
+    expect(() =>
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '999999' }),
+    ).toThrowError(ConfigError);
+  });
+
+  it('主动发言：session 参数写在配置文件里也要过范围校验，未知键启动期报错', () => {
+    expect(() =>
+      loadConfig(baseEnv, { proactive: { sessionBudget: 0 } }),
+    ).toThrowError(/proactive.sessionBudget/);
+    expect(() =>
+      loadConfig(baseEnv, { proactive: { sessionMinGapMs: 1 } }),
+    ).toThrowError(/proactive.sessionMinGapMs/);
+  });
+
   it('主动发言：别名太短或太多、滚动周期越界都在启动期被拒（安静故障要拦住）', () => {
     expect(() => loadConfig({ ...baseEnv, BOT_BOT_ALIASES: '助' })).toThrowError(ConfigError);
     expect(() =>

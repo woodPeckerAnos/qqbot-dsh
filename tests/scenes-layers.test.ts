@@ -22,6 +22,7 @@ import {
   type SceneCandidate,
   type SceneEvidence,
   type SceneVerdict,
+  type TopicSession,
   type VetoContext,
 } from '../src/pipeline/proactive/contract.js';
 import type { NormalizedMessage } from '../src/core/connector.js';
@@ -105,9 +106,17 @@ function vetoContext(overrides: Partial<VetoContext> = {}): VetoContext {
     now: 1_000_000,
     spokeCount10Min: 0,
     spokeCount1Hour: 0,
-    topicBotSpeaks: 0,
+    // 默认**没有** session：闸门在没有 session 时放行（那一次发言会开一个），
+    // 想验"有 session 时怎么判"就用下面的 `sessionFact()` 覆盖。
     ...overrides,
   };
+}
+
+/** 一个开启中的话题 session（三字段，见 docs/TOPIC-SESSION-REQUIREMENT.md §一）。 */
+function sessionFact(
+  overrides: Partial<{ openedAt: number; budgetLeft: number; lastSpokeAt?: number }> = {},
+): TopicSession {
+  return { openedAt: 900_000, budgetLeft: 2, ...overrides };
 }
 
 /** 一条"让路"判定：引用 `q:<id>`，理由是三态里的 `yielding`。 */
@@ -479,27 +488,60 @@ describe('③ 否决层：顺序、额度与终局', () => {
     );
     expect(hourly).toMatchObject({ action: 'silent', reason: 'rate-limit' });
 
+    // session 闸门接替了"每话题一次"的位置，但语义相反：**有 session 时仍可发言**
+    // （预算是"还能说几句"，不是"这个话题说过了"）。
+    const inSession = evaluateVeto(
+      {
+        candidates: [candidate('scene-4')],
+        verdicts: [verdict('scene-4')],
+        context: vetoContext({ session: sessionFact({ budgetLeft: 1, lastSpokeAt: 900_000 }) }),
+      },
+      DEFAULT_VETO_POLICY,
+    );
+    expect(inSession).toMatchObject({ action: 'speak', scene: 'scene-4' });
+
+    // 间隔没到 → min-gap（它仍然**先于**顺序/分位数预算）
+    const gap = evaluateVeto(
+      {
+        candidates: [candidate('scene-4')],
+        verdicts: [verdict('scene-4')],
+        context: vetoContext({ session: sessionFact({ budgetLeft: 1, lastSpokeAt: 999_000 }) }),
+      },
+      DEFAULT_VETO_POLICY,
+    );
+    expect(gap).toMatchObject({ action: 'silent', reason: 'min-gap' });
+
+    // 预算为 0 → budget-exhausted（**主路径**：预算不关会话，只让它闭嘴）
     const spent = evaluateVeto(
       {
         candidates: [candidate('scene-4')],
         verdicts: [verdict('scene-4')],
-        context: vetoContext({ topicBotSpeaks: 1 }),
+        context: vetoContext({ session: sessionFact({ budgetLeft: 0, lastSpokeAt: 900_000 }) }),
       },
       DEFAULT_VETO_POLICY,
     );
-    expect(spent).toMatchObject({ action: 'silent', reason: 'topic-spent' });
+    expect(spent).toMatchObject({ action: 'silent', reason: 'budget-exhausted' });
   });
 
-  it('验收16：无候选直接 silent（省一次 LLM 调用）；全判不成立 → no-scene', () => {
+  it('验收16：无候选直接 silent（省一次 LLM 调用）；全判不成立 → 看有没有 session', () => {
     expect(evaluateVeto({ candidates: [], verdicts: [], context: vetoContext() })).toMatchObject({
       action: 'silent',
       reason: 'no-candidate',
     });
+    // 没有 session：模型没判"值得"，这一次唤醒算"被 session 闸门挡住"
     expect(
       evaluateVeto({
         candidates: [candidate('scene-4')],
         verdicts: [verdict('scene-4', { satisfied: false })],
         context: vetoContext(),
+      }),
+    ).toMatchObject({ action: 'silent', reason: 'no-session' });
+    // 有 session：模型自己说这次没什么可补 → no-scene（session 保持开启）
+    expect(
+      evaluateVeto({
+        candidates: [candidate('scene-4')],
+        verdicts: [verdict('scene-4', { satisfied: false })],
+        context: vetoContext({ session: sessionFact() }),
       }),
     ).toMatchObject({ action: 'silent', reason: 'no-scene' });
   });
@@ -552,11 +594,15 @@ describe('③ 否决层：顺序、额度与终局', () => {
     const veto = (
       v: SceneVerdict,
       wait?: { id: string; exists: boolean; open: boolean; yieldBudgetUsed: number },
+      session?: TopicSession,
     ) =>
       evaluateVeto({
         candidates: [candidate('scene-3')],
         verdicts: [v],
-        context: vetoContext(wait === undefined ? {} : { wait }),
+        context: vetoContext({
+          ...(wait === undefined ? {} : { wait }),
+          ...(session === undefined ? {} : { session }),
+        }),
       });
 
     // `not-yet` / `watching` 不是"被否决"，是"模型说不用等" → wait-declined
@@ -588,11 +634,17 @@ describe('③ 否决层：顺序、额度与终局', () => {
     expect(veto(yieldingVerdict(id))).toMatchObject({ action: 'silent', reason: 'wait-declined' });
     expect(veto(yieldingVerdict(id))).toHaveProperty('detail', expect.stringContaining('invalid-target'));
 
-    // 没有任何"等一等"的判定 → 就是旧的 no-scene
+    // 没有任何"等一等"的判定：没有 session → no-session（模型没判"值得"就不会开）；
+    // 有 session → no-scene（模型自己说这次没什么可补，session 保持开启）
     expect(veto(verdict('scene-3', { satisfied: false }))).toMatchObject({
       action: 'silent',
-      reason: 'no-scene',
+      reason: 'no-session',
     });
+    expect(
+      veto(verdict('scene-3', { satisfied: false }), undefined, {
+        session: sessionFact(),
+      }),
+    ).toMatchObject({ action: 'silent', reason: 'no-scene' });
 
     // 旧版布尔位只为存量回放数据保留：等价于 yielding
     const legacy = veto(

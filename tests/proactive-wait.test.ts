@@ -775,10 +775,12 @@ describe('指标：账目必须闭合', () => {
     await h.settle();
 
     // ④ invalid_target：让路但引用台账里不存在的对象 → 不建票据。
-    //    计划要在**这条消息的探针触发之前**设好，所以先发一句让探针武装起来。
-    h.observe('u8', '问题四：这个库叫什么？');
-    await h.settle();
+    //
+    //    ⚠️ 计划必须设在探针**触发之前**：探针是这条路径上唯一会看场景 3 的判定面
+    //    （消息面只挑场景 1/4，本夹具也只给 scene-3 生成 waitReason）。
     h.setPlan({ scene3: 'unsatisfied', waitReason: 'yielding', reference: 'bogus' });
+    h.armQuestion('问题四：这个库叫什么？');
+    await h.settle();
     h.advance(1_000);
     await h.settle();
 
