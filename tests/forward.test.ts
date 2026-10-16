@@ -51,9 +51,11 @@ describe('转发段归一化', () => {
       ],
       10000,
     );
+    // 占位片段带上 `refId`：旁听消息里的聊天记录不进 content，被 @ 且这次的问题
+    // 明确提到它时才凭这个 id 去回查（见 store/window.ts 与 BotConnector.fetchForward）
     expect(extracted.parts).toEqual([
       { type: 'text', text: '看看这个' },
-      { type: 'forward', parts: [] },
+      { type: 'forward', parts: [], refId: 'fwd-1' },
     ]);
     expect(extracted.forwardRefs).toEqual([{ index: 1, id: 'fwd-1' }]);
     // 未展开时正文是"读不到内容"的显式占位，不是空白
@@ -100,7 +102,7 @@ describe('转发段归一化', () => {
         ],
       },
     ]);
-    expect(extracted.parts).toEqual([{ type: 'forward', parts: [] }]);
+    expect(extracted.parts).toEqual([{ type: 'forward', parts: [], refId: 'fwd-inline' }]);
   });
 
   it('只有内联 content、没有 id 时不再退化成 [聊天记录]', () => {
@@ -1171,5 +1173,108 @@ describe('转发块的 id 精度与内联内容', () => {
     });
     expect(action['action']).toBe('get_msg');
     expect((action['params'] as { message_id: unknown }).message_id).toBe(BIG_MSG_ID);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 按需展开（旁听消息里的聊天记录 → 被 @ 且明确提及时才回查）
+// ---------------------------------------------------------------------------
+
+/**
+ * 旁听消息里的聊天记录**不进 content**（一条转发动辄几十条发言，当普通群聊上下文
+ * 灌进去既烧 token 又把真正在聊的事淹掉），只把 id 留在观察窗口里。被 @ 且这次的
+ * 问题明确提到它时，编排层才回调 `fetchForward`——这一组锁的就是这个回调。
+ */
+describe('按需展开聊天记录（BotConnector.fetchForward）', () => {
+  let connector: OnebotConnector | undefined;
+  const clients: WebSocket[] = [];
+  afterEach(async () => {
+    for (const ws of clients.splice(0)) ws.close();
+    await connector?.stop();
+    connector = undefined;
+  });
+
+  it('给 id 就回查，返回可渲染的转发片段（复用同一套上限与队列）', async () => {
+    const { connector: c } = makeConnector(0);
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+
+    const pending = c.fetchForward(
+      { platform: 'onebot', kind: 'group', id: '8888', key: 'ob11:g8888' },
+      'fwd-late',
+    );
+    const action = await new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    expect(action['action']).toBe('get_forward_msg');
+    ws.send(
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: action['echo'],
+        data: {
+          messages: [
+            { type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '在吗' } }] } },
+            { type: 'node', data: { nickname: '李四', content: [{ type: 'text', data: { text: '在' } }] } },
+          ],
+        },
+      }),
+    );
+
+    const part = await pending;
+    expect(part?.type).toBe('forward');
+    expect(part?.nodeCount).toBe(2);
+    // 渲染形态与 @ 路径完全一致（带条号 + 不可信边界），模型看到的语义不变
+    expect(flattenParts([part!])).toBe(
+      [
+        '[转发消息 共 2 条]',
+        FORWARD_UNTRUSTED_OPEN,
+        '1. 张三: 在吗',
+        '2. 李四: 在',
+        FORWARD_UNTRUSTED_CLOSE,
+      ].join('\n'),
+    );
+  });
+
+  it('回查失败返回 undefined（调用方据此降级成"这条记录没读出来"）', async () => {
+    const { connector: c } = makeConnector(0);
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+
+    const pending = c.fetchForward(
+      { platform: 'onebot', kind: 'group', id: '8888', key: 'ob11:g8888' },
+      'fwd-missing',
+    );
+    const action = await new Promise<Record<string, unknown>>((resolve) => {
+      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+    });
+    ws.send(
+      JSON.stringify({
+        status: 'failed',
+        retcode: 1200,
+        echo: action['echo'],
+        message: '消息已过期或者为内层消息',
+      }),
+    );
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it('关掉转发展开时一个请求都不发（与 @ 路径同一个开关）', async () => {
+    const { connector: c } = makeConnector(0, { forward: { ...FORWARD_CONFIG, enabled: false } });
+    connector = c;
+    await c.start();
+    const ws = await connectClient(portOf(c));
+    clients.push(ws);
+    const frames = collectFrames(ws);
+
+    await expect(
+      c.fetchForward({ platform: 'onebot', kind: 'group', id: '8888', key: 'ob11:g8888' }, 'fwd-1'),
+    ).resolves.toBeUndefined();
+    await sleep(80);
+    expect(frames).toEqual([]);
   });
 });

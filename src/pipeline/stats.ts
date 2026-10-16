@@ -153,6 +153,16 @@ export class PipelineStats {
   /** 从滚窗上下文里取到字节的文件数（TurnRunner；摄取计数同时并进 filesFetched 等） */
   windowFilesFetched = 0;
   /**
+   * 按需展开的聊天记录条数（TurnRunner）。
+   *
+   * 这条通路**只在**话题判定认为"这次的问题明确提到了一条聊天记录"时才走
+   * （见 `store/window.ts` 的 `recordIds`）。长期为 0 = 那条规定太严或用户从不这么问；
+   * 与 `windowForwardsFailed` 一起读才知道"问了但读不到"的比例。
+   */
+  windowForwardsExpanded = 0;
+  /** 认定要展开、但最终没读出来的聊天记录条数（回查失败 / 平台不支持 / 超限） */
+  windowForwardsFailed = 0;
+  /**
    * 成功展开的转发消息块数（连接器回查 get_forward_msg 成功后）。
    * 只统计**顶层**块——嵌套块的条目会并进父块的渲染文本，两边都计会重复。
    */

@@ -14,6 +14,7 @@ import type { MessagePart, NormalizedMessage } from '../src/core/connector.js';
 import {
   ObservationWindowStore,
   collectWindowMedia,
+  latestPendingRecord,
   matchesGroupAllowlist,
   renderWindowBlock,
   DEFAULT_OBSERVATION_MAX_AGE_MS,
@@ -345,6 +346,52 @@ describe('条目里的媒体引用（旁听消息也留引用，写入时不取�
     const entry = windows.read(GROUP)[0]!;
     expect(entry.media?.images.map((part) => part.filename)).toEqual(['in-quote.png']);
     expect(entry.media?.files.map((part) => part.filename)).toEqual(['r.pdf']);
+  });
+
+  it('验收24b：未展开的聊天记录只留 id，正文里仍是"内容未读入"的占位', () => {
+    const windows = store();
+    windows.observe(
+      msg('m1', '看看这个\n[转发消息]（内容未读入）', T0, {
+        parts: [
+          { type: 'text', text: '看看这个' },
+          { type: 'forward', parts: [], refId: 'fwd-1' },
+        ],
+      }),
+    );
+    const entry = windows.read(GROUP)[0]!;
+    expect(entry.recordIds).toEqual(['fwd-1']);
+    // **不进正文**：一条转发动辄几十条发言，当普通上下文灌进去既烧 token 又跑题
+    expect(entry.text).toContain('（内容未读入）');
+    expect(renderWindowBlock([entry])).not.toContain('在吗');
+    // 展开过的转发（连接器补全后的形态）没有 refId，也就不会被当成待展开
+    windows.observe(
+      msg('m2', '[转发消息 共 1 条]', T0 + 1, {
+        parts: [{ type: 'forward', parts: [{ type: 'text', text: '1. 张三: 在吗' }], nodeCount: 1 }],
+      }),
+    );
+    expect(windows.read(GROUP)[1]!.recordIds).toBeUndefined();
+  });
+
+  it('验收24c：latestPendingRecord 取最近那条（"看看刚才那个记录"指的就是刚发的）', () => {
+    const record = (msgId: string, refId: string, ts: number, senderName = '小红') => ({
+      msgId,
+      eventId: `e-${msgId}`,
+      senderId: 'u2',
+      senderName,
+      text: '[转发消息]（内容未读入）',
+      ts,
+      addressed: false,
+      recordIds: [refId],
+    });
+    expect(latestPendingRecord([])).toBeUndefined();
+    expect(
+      latestPendingRecord([
+        record('m1', 'fwd-1', T0),
+        record('m2', 'fwd-2', T0 + 1_000, '小明'),
+        // 没有记录的消息照常跳过
+        { msgId: 'm3', eventId: 'e-m3', senderId: 'u1', text: '后来聊了别的', ts: T0 + 2_000, addressed: false },
+      ]),
+    ).toEqual({ refId: 'fwd-2', msgId: 'm2', sender: '小明' });
   });
 
   it('验收24：视频等非文件媒体不进窗口清单（与当前消息同一处理面，不制造"清单里有却没读"）', () => {

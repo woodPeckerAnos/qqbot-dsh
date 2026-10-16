@@ -1036,6 +1036,51 @@ export class OnebotConnector implements BotConnector {
   }
 
   /**
+   * 【按需展开】取一条聊天记录（合并转发）的内容。
+   *
+   * 与 `fetchMedia` 同一类能力，差别在"什么时候需要"：@ 消息里的转发在归一化后
+   * 立刻由连接器展开（`enrichEvent`），而**旁听**消息里的转发**不进 content**
+   * （一条转发动辄几十条发言，当普通上下文灌进去会烧掉大量 token），只把 id 留在
+   * 观察窗口里；被 @ 且这次的问题明确提到它时，才由编排层回调到这里（见
+   * `core/connector.ts` 的 `fetchForward` 说明）。
+   *
+   * 复用既有回查通路：同一套上限（`newForwardBudget`）、同一个 LRU 缓存、同一条
+   * 每会话串行队列。任何失败都返回 undefined，**绝不抛错**。
+   */
+  async fetchForward(
+    target: ConversationTarget,
+    refId: string,
+  ): Promise<MessageForwardPart | undefined> {
+    const config = this.options.forward;
+    // 关掉转发展开时**不发任何请求**（与 @ 路径同一个开关、同一条纪律）
+    if (config === undefined || !config.enabled || refId === '') return undefined;
+    let session: Session;
+    try {
+      // 必须用收到那条消息的连接：多连接下 pickAnySession 可能选到不在该群的号
+      session = this.pickSession(target.key);
+    } catch {
+      return undefined;
+    }
+    try {
+      const part = await this.expandForward(
+        session,
+        { index: 0, id: refId },
+        0,
+        this.newForwardBudget(),
+      );
+      // expandForward 在失败/超限时给的是 text 占位（`[聊天记录]`、`[转发消息（…）]`）：
+      // 那对调用方等于"没拿到"，如实返回 undefined，而不是把占位当内容传下去。
+      return part.type === 'forward' ? part : undefined;
+    } catch (error) {
+      this.options.logger.warn('按需展开聊天记录失败（降级为读不到）', {
+        forwardId: refId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  /**
    * 上报转发展开结果。
    *
    * 两条纪律：

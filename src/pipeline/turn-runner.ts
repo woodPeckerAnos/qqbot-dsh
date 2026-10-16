@@ -18,8 +18,13 @@
  */
 
 import type { Config } from '../config.js';
-import type { MediaBytes, MediaFetchOptions, RemoteMedia } from '../core/connector.js';
-import { messageImageParts, messageMediaParts } from '../core/content.js';
+import type {
+  MediaBytes,
+  MediaFetchOptions,
+  MessageForwardPart,
+  RemoteMedia,
+} from '../core/connector.js';
+import { flattenParts, messageImageParts, messageMediaParts } from '../core/content.js';
 import { ingestFiles, type DocumentExtractor, type FileIngestResult } from '../dsh/files.js';
 import { MAX_BLOCKS_PER_PROMPT, buildImageBlocks, describeImageRejection } from '../dsh/media.js';
 import type { RuntimeEntry, RuntimePool } from '../dsh/pool.js';
@@ -32,8 +37,12 @@ import { TurnAccumulator, type TurnOutcome } from '../dsh/turns.js';
 import type { Logger } from '../logger.js';
 import type { ConversationStore } from '../store/conversations.js';
 import { renderReplay } from '../store/conversations.js';
-import type { ObservationEntry, ObservationWindowStore } from '../store/window.js';
-import { collectWindowMedia, renderWindowBlock } from '../store/window.js';
+import type {
+  ObservationEntry,
+  ObservationWindowStore,
+  PendingRecordRef,
+} from '../store/window.js';
+import { collectWindowMedia, latestPendingRecord, renderWindowBlock } from '../store/window.js';
 import { cleanupInbox } from '../store/inbox.js';
 import type { SessionStore } from '../store/sessions.js';
 import { ensureWorkspace, type StorePaths } from '../store/paths.js';
@@ -190,7 +199,17 @@ export class TurnRunner {
       // （丢掉内存里的旧上下文）并跳过本次冷启动回放。注意记录 stage 已经把
       // 当前这条消息写进去了，送给判定器的历史要排除它。
       const judge = this.deps.topicJudge;
+      // 观察窗口**只读一次**，三个消费者共用：话题判定（要不要按需展开那条聊天
+      // 记录）、上下文正文、随本轮送入的媒体。各读一次会让"块里有那一行、图却没被
+      // 选中"这种不一致再也解释不清。
+      //
+      // 读在判定**之前**：判定需要知道"窗口里是不是真的躺着一条没展开的聊天记录"
+      // ——没得展开就不问那个问题（否则等于邀请模型无中生有，见 topic-judge.ts）。
+      const windowEntries = this.readWindowEntries(message, conversationKey);
+      const pendingRecord = latestPendingRecord(windowEntries);
+
       // /new 已经标记过新话题的不再重复判定（省一次 API 调用）
+      let expandRecord = false;
       if (judge !== undefined && !this.freshStartMarks.has(conversationKey)) {
         const history = conversations
           .readTail(conversationKey, config.topic.contextTurns + 1)
@@ -198,9 +217,15 @@ export class TurnRunner {
             (turn) =>
               !(turn.role === 'user' && turn.text === message.content && turn.ts === message.ts),
           );
-        if (history.length > 0) {
-          const related = await judge({ history, newMessage: message.content });
-          if (!related) {
+        // 没有历史时"话题是否延续"没有意义（没有可重置的上下文），但"这次的问题
+        // 有没有点名要看某条聊天记录"与历史无关——只要窗口里真有记录就值得问一次。
+        if (history.length > 0 || pendingRecord !== undefined) {
+          const verdict = await judge({
+            history,
+            newMessage: message.content,
+            ...(pendingRecord === undefined ? {} : { askAboutChatRecord: true }),
+          });
+          if (history.length > 0 && !verdict.related) {
             stats.topicResets += 1;
             logger.info('新消息与既有话题无关（LLM 判定），按新话题处理（重置上下文）', {
               conversation: conversationKey,
@@ -209,6 +234,8 @@ export class TurnRunner {
             this.freshStartMarks.add(conversationKey);
             await pool.drop(conversationKey).catch(() => {});
           }
+          // 判定说"明确提到了某条聊天记录"才展开——这是**唯一**的展开入口
+          expandRecord = pendingRecord !== undefined && verdict.mentionsChatRecord;
         }
       }
       const freshTopic = this.freshStartMarks.delete(conversationKey);
@@ -228,11 +255,20 @@ export class TurnRunner {
       }
 
       const coldStart = !entry.replayed && !freshTopic;
-      // 窗口**只读一次**，两处共用：渲染上下文正文（buildPrompt）与挑选随本轮送入
-      // 的媒体（buildPromptBlocks）。各读一次会让"块里有那一行、图却没被选中"
-      // 这种不一致再也解释不清。
-      const windowEntries = this.readWindowEntries(message, conversationKey);
-      const promptText = this.buildPrompt(message, conversationKey, session.generation, coldStart, windowEntries);
+      // 上下文里那条聊天记录：**只有**判定说"这次的问题明确提到它"时才去取
+      // （取不到就降级成一句"这条记录没读出来"，让模型如实说，而不是猜）。
+      const recordBlock =
+        expandRecord && pendingRecord !== undefined
+          ? await this.expandPendingRecord(ctx, pendingRecord)
+          : '';
+      const promptText = this.buildPrompt(
+        message,
+        conversationKey,
+        session.generation,
+        coldStart,
+        windowEntries,
+        recordBlock,
+      );
       // 图片在派发前下载并编码：放在这里（而不是适配器归一化时）是因为
       // 被去重/闸拦掉的消息不该产生网络 IO。上下文里的媒体同理——**注入时才取字节**，
       // 旁听期间一张图都不下载（见 store/window.ts 的 ObservationMedia）。
@@ -426,12 +462,75 @@ export class TurnRunner {
     });
   }
 
+  /**
+   * 按需展开上下文里那条聊天记录。
+   *
+   * **只有一条路径能走到这里**：话题判定（同一次 LLM 调用）判定"这次的问题明确
+   * 提到了某条聊天记录"。这不是省钱的小聪明，而是产品口径：聊天记录一条动辄
+   * 几十条别人的发言，当普通群聊上下文灌进去既烧 token 又把真正在聊的事淹掉
+   * （见 `store/window.ts` 的 `recordIds`）。
+   *
+   * 返回值直接拼进 prompt：
+   *   - 成功 = 一句指认来源的前言 + 展开后的记录（`renderForward` 自带不可信边界）；
+   *   - 失败/平台不支持 = 一句如实说明，让模型告诉用户"这条记录我没读到"。
+   *     宁可说读不到，也不要让它对着 `[转发消息]（内容未读入）` 猜内容。
+   */
+  private async expandPendingRecord(
+    ctx: MessageContext,
+    record: PendingRecordRef,
+  ): Promise<string> {
+    const { stats, logger } = this.deps;
+    const conversation = ctx.message.target.key;
+    const what = `[${record.sender}] 那条消息里的聊天记录`;
+    const fetchForward = ctx.connector.fetchForward;
+    if (fetchForward === undefined) {
+      logger.info('该平台不支持按需展开聊天记录', { conversation, refId: record.refId });
+      stats.windowForwardsFailed += 1;
+      return `（你这次问到了上下文里 ${what}，但这个平台取不到它的内容）`;
+    }
+
+    let part: MessageForwardPart | undefined;
+    try {
+      part = await fetchForward.call(ctx.connector, ctx.message.target, record.refId);
+    } catch (error) {
+      // 适配器的契约是"失败返回 undefined、绝不抛错"；这里再兜一层，因为
+      // "记录没读到"绝不该让整轮失败——用户至少能拿到文字回答。
+      logger.warn('展开聊天记录时适配器抛错（降级为读不到）', {
+        conversation,
+        refId: record.refId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (part === undefined) {
+      stats.windowForwardsFailed += 1;
+      logger.info('上下文里的聊天记录未能展开', { conversation, refId: record.refId });
+      return (
+        `（你这次问到了上下文里 ${what}，但它没能读出来` +
+        '——请如实告诉用户你看不到这条记录，不要猜测里面的内容）'
+      );
+    }
+
+    stats.windowForwardsExpanded += 1;
+    logger.info('按需展开上下文里的聊天记录', {
+      conversation,
+      refId: record.refId,
+      nodes: part.parts.length,
+      truncated: part.truncated === true,
+    });
+    return [
+      `（你这次明确问到了上下文里 ${what}，下面把它读出来供你回答）`,
+      flattenParts([part]),
+    ].join('\n');
+  }
+
   private buildPrompt(
     message: MessageContext['message'],
     conversationKey: string,
     generation: number,
     coldStart: boolean,
     windowEntries: readonly ObservationEntry[],
+    recordBlock: string,
   ): string {
     const { conversations, config } = this.deps;
     const speaker = message.username ?? message.senderId;
@@ -481,7 +580,9 @@ export class TurnRunner {
       }
     }
 
-    const blocks = [context, replay, current].filter((block) => block !== '');
+    // 顺序：群聊上下文 → 其中那条被点名的聊天记录（读出来了才在）→ 冷启动回放
+    // → 当前这条。记录紧跟上下文，模型读到的就是"上文里那条、下面是它的内容"。
+    const blocks = [context, recordBlock, replay, current].filter((block) => block !== '');
     return blocks.join('\n\n');
   }
 

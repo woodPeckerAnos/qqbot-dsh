@@ -191,3 +191,34 @@ export function messageImageParts(message: NormalizedMessage): MessageImagePart[
 export function messageMediaParts(message: NormalizedMessage): MessageMediaPart[] {
   return collectMediaParts(messageParts(message));
 }
+
+/**
+ * 消息里**还没展开**的聊天记录 id（含引用里的，按出现顺序）。
+ *
+ * 用途：观察窗口把它留着当"按需展开"的凭据——旁听消息里的聊天记录不进 `content`
+ * （见 `core/connector.ts` 的 `MessageForwardPart.refId`），只有被 @ 且这次的问题
+ * 明确提到它时才去回查。
+ *
+ * **不下钻已在手上的转发块**：展开过的转发里若还嵌着未展开的转发，那些 id 属于
+ * 展开期的预算（`ForwardBudget`），不该被这里再收一遍——否则"一条转发里嵌十条
+ * 转发"会让窗口记住一串谁也不认识的 id。
+ */
+export function collectForwardRefIds(parts: readonly MessagePart[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: readonly MessagePart[]): void => {
+    for (const part of list) {
+      if (part.type === 'forward') {
+        if (part.refId !== undefined && part.refId !== '') ids.push(part.refId);
+      } else if (part.type === 'quote') {
+        walk(part.parts);
+      }
+    }
+  };
+  walk(parts);
+  return ids;
+}
+
+/** 消息里未展开的聊天记录 id（含引用里的）。 */
+export function messageForwardRefIds(message: NormalizedMessage): string[] {
+  return collectForwardRefIds(messageParts(message));
+}

@@ -359,6 +359,16 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 模型可以继续用工具深挖；上下文里的文件在说明里带 `[谁] 那条消息里的 ` 前缀——
 群里的同名文件靠它区分。
 
+**聊天记录（合并转发）**默认**不展开**成上下文（一条转发动辄几十条发言，灌进去
+既烧 token 又跑题）：只有在被 @ 且这次的问题明确提到它时，才由话题判定那一次调用
+顺带判出来并回查。排障看这两个计数：
+
+| 现象 | 字段 | 处置 |
+|---|---|---|
+| "看看刚才那个聊天记录"但 bot 说看不到 | `windowForwardsExpanded` = 0 | 先看那轮日志里有没有"按需展开上下文里的聊天记录"：没有就是**判定没判成**（判据刻意窄，拿不准一律不展开；`topic.enabled=false` 或没配 `DEEPSEEK_API_KEY` 时整条通路关闭） |
+| 判成了但没读到 | `windowForwardsFailed` 增长 + 日志"上下文里的聊天记录未能展开" | 回查失败（消息过期 / 框架不支持 `get_forward_msg`）或转发展开被关（`BOT_ATTACHMENT_FORWARD_ENABLED=false`）。prompt 里已如实告诉模型"这条记录没读出来"，不会让它猜 |
+| @ 消息**自带**的记录没展开 | `forwardsExpanded` 不变 + 日志"回查转发消息失败" | 那是另一条路径（@ 消息里的转发在归一化后立刻展开），见上面几张表与 DESIGN §11.6 |
+
 按平台排除：
 
 | 平台 | 常见原因 | 验证方式 |
@@ -631,6 +641,7 @@ docker system df
 | 10 | 单聊 `msg_type=2`(markdown) 渲染效果 | 与群聊共用 `QQ_MSG_TYPE`；同样默认纯文本 |
 | 11 | 官方多媒体 CDN 是否强制 `Authorization: QQBot <token>` | 实况文档未写死。程序先带 token，仅在 401/403 时裸请求一次兜底，两种形态都能过 |
 | 12 | DS 模型对 image block 的真实支持面 | SDK 协议支持内联图片（`SdkEncodedImageBlock`），但具体模型是否都吃图未逐一实测。看不到图先看 `/metrics` 的 `imagesInlined`/`imagesSkipped`；不支持就设 `BOT_ATTACHMENT_ENABLED=false` |
+| 14 | 话题判定对"这次的问题有没有明确提到一条聊天记录"的判准 | 判据刻意窄（拿不准一律不展开），因此**会漏**：漏了的表现是 bot 说"那条记录我没读到"，用户可以重发那条记录或把要点贴出来。误判成 true 的代价只是一次回查 + 几十条发言的 token。`windowForwardsExpanded`/`windowForwardsFailed` 给出实际命中率，见 4.5 |
 | 13 | OneBot 上报的图片 URL 容器可达性 | 框架在宿主时可能上报 `http://127.0.0.1:<port>/...`，容器内不可达。**已缓解**：URL 缺失或 GET 失败时会自动用 `get_file`/`get_image` 动作回查（base64 或刷新 URL）；仍失败才退化为 `[图片]` 占位，见 4.5 |
 | 14 | `get_forward_msg` 的入参与响应形状 | 参数名在各实现间不一致（NapCat 用 `id`、go-cqhttp 用 `message_id`），响应可能是 node 段数组、裸消息段数组、CQ 码字符串数组、被序列化成 JSON 的字符串、或包着 `data` 的形态。程序**一次请求带两个参数**（`message_id` 的类型按能否无损往返决定：19 位消息 id 一旦过 `Number()` 就会丢精度，而 NapCat 恰好优先取 `message_id`）、解析器容忍上述形状，认不出的条目跳过。**已修**：上报自带 `forward.data.content` 时优先内联展开，零回查。真机上若转发块仍只显示 `[聊天记录]`，看 debug 日志 `get_forward_msg 失败` 与 `/metrics` 的 `forwardsFailed` |
 | 15 | 官方是否存在聊天记录类 `message_type` | 现行官方文档的接收侧只有 0/3/103，早期代码注释里的 101/102 查无实据。程序对它们做**防御性兼容**（见到就把 `msg_elements` 当转发块渲染）。若官方后续开放转发能力，接缝已留好；在此之前官方侧不作为承诺 |

@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildMessageParts } from '../src/adapters/qq-official/content.js';
 import {
+  collectForwardRefIds,
   collectImageParts,
   collectMediaParts,
   flattenParts,
@@ -506,6 +507,29 @@ describe('prompt blocks 组装', () => {
     );
     expect(result.blocks).toHaveLength(2);
     expect(result.inlinedIndexes).toEqual([0, 2]);
+  });
+});
+
+describe('collectForwardRefIds（未展开的聊天记录 id）', () => {
+  it('只收**未展开**的转发，引用里的也算；展开过的块不再产生 id', () => {
+    expect(
+      collectForwardRefIds([
+        { type: 'text', text: '看看这个' },
+        { type: 'forward', parts: [], refId: 'fwd-1' },
+        // 展开过的转发（连接器补全后的形态）：没有 refId，不该被当成待展开
+        { type: 'forward', parts: [{ type: 'text', text: '1. 张三: 在吗' }], nodeCount: 1 },
+        {
+          type: 'quote',
+          author: '小红',
+          parts: [{ type: 'forward', parts: [], refId: 'fwd-2' }],
+        },
+      ]),
+    ).toEqual(['fwd-1', 'fwd-2']);
+  });
+
+  it('空 id / 没有转发时返回空数组', () => {
+    expect(collectForwardRefIds([{ type: 'text', text: '你好' }])).toEqual([]);
+    expect(collectForwardRefIds([{ type: 'forward', parts: [], refId: '' }])).toEqual([]);
   });
 });
 

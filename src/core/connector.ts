@@ -140,6 +140,15 @@ export interface MessageForwardPart {
   /** 是否因条数/字符/深度上限被截断（渲染时在尾部显式说明） */
   truncated?: boolean;
   parts: MessagePart[];
+  /**
+   * 平台侧 id（合并转发的回查凭据）：**只在内容还没展开时才有**。
+   *
+   * 为什么它要挂在片段上：旁听消息里的聊天记录**不进 `content`**（那是"普通群聊
+   * 上下文"，见 `store/window.ts` 的说明），但 id 必须留下来——被 @ 且这次的问题
+   * 明确提到那条记录时，才知道该去回查哪一条（`BotConnector.fetchForward`）。
+   * 展开之后这个字段自然消失：`resolveForwardRefs` 会把整个占位片段换掉。
+   */
+  refId?: string;
 }
 
 /**
@@ -362,6 +371,21 @@ export interface BotConnector {
    * timeoutMs，失败时返回 undefined（由调用方降级成文字说明），不要抛错打断整轮。
    */
   fetchMedia?(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined>;
+  /**
+   * 【按需展开】取一条**聊天记录（合并转发）**的内容。
+   *
+   * 与 `fetchMedia` 同一类能力：平台专有的取件方式（OneBot 走 `get_forward_msg`
+   * 动作、带 LRU 缓存与配额），编排层只说"我要 `refId` 这条记录的内容"。
+   *
+   * 为什么是**按需**而不是像 @ 消息那样在归一化期就展开：旁听消息里的聊天记录
+   * 不该被当作普通群聊上下文（一条转发动辄几十条发言，灌进上下文既烧 token 又把
+   * 真正在聊的事淹掉）。只有被 @ 且这次的问题**明确提到**了它时才取（由话题判定
+   * 那一次 LLM 调用顺带判断，见 `pipeline/topic-judge.ts`）。
+   *
+   * 纪律与 `fetchMedia` 一致：返回 undefined 表示"取不到"，**绝不抛错**——调用方
+   * 会把它降级成一句"这条记录没读出来"，让模型如实告诉用户而不是猜。
+   */
+  fetchForward?(target: ConversationTarget, refId: string): Promise<MessageForwardPart | undefined>;
 }
 
 /**

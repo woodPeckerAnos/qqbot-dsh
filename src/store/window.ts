@@ -51,7 +51,7 @@ import type {
   MessageMediaPart,
   NormalizedMessage,
 } from '../core/connector.js';
-import { flattenParts, messageImageParts, messageMediaParts } from '../core/content.js';
+import { flattenParts, messageForwardRefIds, messageImageParts, messageMediaParts } from '../core/content.js';
 
 // ---------------------------------------------------------------------------
 // 白名单（纯函数：介入层与本模块共用同一份判据）
@@ -108,6 +108,14 @@ export interface ObservationEntry {
    * 不足以让模型看到那张图。
    */
   readonly media?: ObservationMedia;
+  /**
+   * 这条消息里**还没展开**的聊天记录 id（合并转发；按出现顺序）。
+   *
+   * 刻意不进 `text`：聊天记录一条动辄几十条发言，当"普通群聊上下文"灌进去既烧
+   * token 又把真正在聊的事淹掉。只有被 @ 且这次的问题**明确提到**它时，才凭这个
+   * id 去回查（见 {@link latestPendingRecord} 与 `BotConnector.fetchForward`）。
+   */
+  readonly recordIds?: readonly string[];
 }
 
 /**
@@ -153,6 +161,7 @@ export interface ObservationMedia {
 export function toObservationEntry(message: NormalizedMessage, addressed: boolean): ObservationEntry {
   const images = messageImageParts(message);
   const files = messageMediaParts(message).filter((part) => part.mediaKind === 'file');
+  const records = messageForwardRefIds(message);
   return {
     msgId: message.msgId,
     eventId: message.eventId,
@@ -162,6 +171,7 @@ export function toObservationEntry(message: NormalizedMessage, addressed: boolea
     ts: Number.isFinite(message.ts) ? message.ts : Date.now(),
     addressed,
     ...(images.length === 0 && files.length === 0 ? {} : { media: { images, files } }),
+    ...(records.length === 0 ? {} : { recordIds: records }),
   };
 }
 
@@ -571,6 +581,46 @@ export function collectWindowMedia(
   images.reverse();
   files.reverse();
   return { images, files, imagesSkipped, filesSkipped };
+}
+
+// ---------------------------------------------------------------------------
+// 待展开的聊天记录（按需，不当作普通上下文）
+// ---------------------------------------------------------------------------
+
+/** 窗口里等着被展开的一条聊天记录（最近的优先）。 */
+export interface PendingRecordRef {
+  /** 平台侧 id：交给 `BotConnector.fetchForward` 回查 */
+  refId: string;
+  /** 来自哪条消息（说明文本里指认"是谁发的那条"） */
+  msgId: string;
+  /** 发送者显示名（缺省退到 id） */
+  sender: string;
+}
+
+/**
+ * 窗口里**最近一条**还没展开的聊天记录（没有则 undefined）。
+ *
+ * 为什么只取一条：聊天记录是"用户点名要看的资料"，一次问句几乎只指向一条；
+ * 展开多条既没有语义依据，也会让 prompt 被几十条别人的发言灌满。
+ *
+ * 为什么要"最近"：与 `collectWindowMedia` 同一条理由——"看看刚才那个聊天记录"
+ * 指的就是刚发的那条。
+ */
+export function latestPendingRecord(
+  entries: readonly ObservationEntry[],
+): PendingRecordRef | undefined {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i]!;
+    const ids = entry.recordIds;
+    if (ids === undefined || ids.length === 0) continue;
+    // 同一条消息里有多条记录时取最后一条（与"最近优先"同口径）
+    return {
+      refId: ids[ids.length - 1]!,
+      msgId: entry.msgId,
+      sender: entry.senderName ?? entry.senderId,
+    };
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
