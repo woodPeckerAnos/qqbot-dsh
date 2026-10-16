@@ -461,6 +461,7 @@ docker stats qqbot-dsh
 | 日志太吵 | `QQ_LOG_LEVEL=warn` |
 | 图片烧 token / 模型不支持图片 | `BOT_ATTACHMENT_ENABLED=false`（消息照收，图片变成 `[图片]` 占位） |
 | 图片太多/太大读不进来 | `BOT_ATTACHMENT_MAX_IMAGES`（默认 4）、`BOT_ATTACHMENT_MAX_BYTES`（默认 8MB）；排查看 `/metrics` 里的 `imagesInlined`/`imagesSkipped`，见 [RUNBOOK 4.5](RUNBOOK.md) |
+| 群里刚发的图/文件，@ bot 后它说"看不到" | 那是**上下文（滚窗）**里的媒体：`BOT_OBSERVATION_INJECT_IMAGES`（默认 2）、`BOT_OBSERVATION_INJECT_FILES`（默认 1），0 = 不读；排查看 `/metrics` 里的 `windowImagesInlined`/`windowImagesSkipped`/`windowFilesFetched` |
 | 想给某个会话定规矩 | 在该会话工作区目录下写 `AGENTS.md`，DSH 会自动加载（改规则不用重建镜像） |
 
 ---

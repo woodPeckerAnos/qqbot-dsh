@@ -137,6 +137,22 @@ export class PipelineStats {
   /** 读取失败/超限/格式不支持/解不开而跳过的**源图**张数（TurnRunner） */
   imagesSkipped = 0;
   /**
+   * 滚窗**上下文**里成功内联的 image block 数（TurnRunner；`imagesInlined` 的补充，
+   * 不是它的子集——两者按来源分开计）。
+   *
+   * 为什么要单独计：被 @ 时上下文里的图（"群里先发图、再 @ 问这是什么"）走的是一条
+   * 独立通路（写入时只存引用、注入时才取字节，见 `store/window.ts`）。混进
+   * `imagesInlined` 就再也答不上"模型看不到的到底是刚发的那张，还是背景里的那张"。
+   */
+  windowImagesInlined = 0;
+  /**
+   * 滚窗上下文里**没能送进 prompt** 的源图张数（配额不够 / 下载失败 / 格式不支持 /
+   * 解不开都会计进来）。
+   */
+  windowImagesSkipped = 0;
+  /** 从滚窗上下文里取到字节的文件数（TurnRunner；摄取计数同时并进 filesFetched 等） */
+  windowFilesFetched = 0;
+  /**
    * 成功展开的转发消息块数（连接器回查 get_forward_msg 成功后）。
    * 只统计**顶层**块——嵌套块的条目会并进父块的渲染文本，两边都计会重复。
    */

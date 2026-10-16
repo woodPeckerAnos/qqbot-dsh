@@ -434,6 +434,79 @@ describe('prompt blocks 组装', () => {
       expect(sniffImageMimeType(new Uint8Array(bytes))).toBeDefined();
     }
   }, 60_000);
+
+  // 多来源共享预算：一轮 prompt 里的 image block 上限是**整条**的。当前这条消息与
+  // 滚窗上下文各按 20 裁剪，加起来就会撞爆 runtime 的上限——代价是整条 prompt 被拒，
+  // 连文字一起陪葬（见 TurnRunner.dispatchPrompt 的纯文本回退）。
+  it('maxBlocks 把本次调用的块数压进给定预算，超出的只留注记', async () => {
+    const png = await makePng(8, 8);
+    const result = await buildImageBlocks(
+      [
+        { type: 'image', url: 'https://x/1.png' },
+        { type: 'image', url: 'https://x/2.png' },
+        { type: 'image', url: 'https://x/3.png' },
+      ],
+      { ...baseOptions, maxBlocks: 2, fetchMedia: async () => ({ data: png }) },
+    );
+    expect(result.blocks).toHaveLength(2);
+    expect(result.inlinedIndexes).toEqual([0, 1]);
+    expect(result.notes.join('\n')).toContain('图片过多');
+  });
+
+  it('maxBlocks=0 时一块都不送，也不浪费一次下载', async () => {
+    const png = await makePng(8, 8);
+    let fetched = false;
+    const result = await buildImageBlocks([{ type: 'image', url: 'https://x/1.png' }], {
+      ...baseOptions,
+      maxBlocks: 0,
+      fetchMedia: async () => {
+        fetched = true;
+        return { data: png };
+      },
+    });
+    expect(result.blocks).toEqual([]);
+    expect(fetched).toBe(false);
+  });
+
+  it('indexLabel 与 sourceLabel 让注记能指认"哪一张、哪来的"', async () => {
+    const result = await buildImageBlocks(
+      [
+        { type: 'image', url: 'https://x/1.png' },
+        { type: 'image', url: 'https://x/2.png' },
+        { type: 'image', url: 'https://x/3.png' },
+      ],
+      {
+        ...baseOptions,
+        maxImages: 2,
+        indexLabel: (index, total) => (total > 1 ? `上下文附图 #${index + 1}：` : '上下文附图：'),
+        sourceLabel: '群聊上下文',
+        fetchMedia: async () => undefined,
+      },
+    );
+    expect(result.notes).toEqual([
+      '（群聊上下文另有 1 张图片超出单条消息上限，未读入）',
+      '（上下文附图 #1：读取失败，未读入）',
+      '（上下文附图 #2：读取失败，未读入）',
+    ]);
+  });
+
+  it('inlinedIndexes 精确反映"哪几张真的进来了"（中间一张失败时不错位）', async () => {
+    const png = await makePng(8, 8);
+    const result = await buildImageBlocks(
+      [
+        { type: 'image', url: 'https://x/ok1.png' },
+        { type: 'image', url: 'https://x/bad.png' },
+        { type: 'image', url: 'https://x/ok2.png' },
+      ],
+      {
+        ...baseOptions,
+        fetchMedia: async (media) =>
+          media.url === 'https://x/bad.png' ? { data: NOT_AN_IMAGE } : { data: png },
+      },
+    );
+    expect(result.blocks).toHaveLength(2);
+    expect(result.inlinedIndexes).toEqual([0, 2]);
+  });
 });
 
 describe('describeImageRejection', () => {

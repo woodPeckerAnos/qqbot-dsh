@@ -343,6 +343,21 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 | `imagesInlined` 一直是 0 | — | `attachments.enabled=false`，或模型侧不支持图片 | 打开 `BOT_ATTACHMENT_ENABLED`；prompt 里会明说"已关闭图片读取" |
 | 长图只读进来一部分 | prompt 注记里有"共需 R 块，本次只送入前 N 块" | 切片块数受 `attachments.maxImageTiles`（默认 12）与 runtime 单条 prompt 20 张上限约束 | 调大 `BOT_ATTACHMENT_MAX_IMAGE_TILES`（token 代价随之上升），或让用户分段发送 |
 | 引用内容为空 | 日志 `回查引用消息失败` | OneBot 侧 `get_msg` 失败（框架不支持/超时） | 该条按未引用继续处理；检查框架是否支持 `get_msg` |
+| **"群里先发图、再 @ bot"**，bot 说"只收到占位符/看不到图" | `windowImagesInlined` 为 0 | 上下文（滚窗）里的媒体配额为 0，或该图超配额/下载失败 | 见下一小节 |
+
+**上下文（滚窗）里的图片/文件**走的是与当前消息**同一条**通路，但配额独立，且
+只在被 @ 时才取字节（旁听期间不下载任何东西）。排障按这三个字段定位：
+
+| 现象 | 字段 | 处置 |
+|---|---|---|
+| 上下文里的图一张都没进 | `windowImagesInlined` = 0 且 `windowImagesSkipped` = 0 | 说明**根本没选中**：`BOT_OBSERVATION_INJECT_IMAGES`/`injectFiles` 被配成 0，或该会话不在 `BOT_LISTEN_GROUPS` 里（没进滚窗） |
+| 只进来一部分 | `windowImagesSkipped` > 0 + 日志"上下文里的部分图片未能读入" | 超配额（只取**最近**的 N 张，调大 `BOT_OBSERVATION_INJECT_IMAGES`）或单张下载失败（按下面的平台表排除） |
+| 上下文里的文件没进 | `windowFilesFetched` = 0 + `filesSkipped` 增长 | `BOT_OBSERVATION_INJECT_FILES=0`，或类型不在 `attachments.files.extractExtensions` 白名单里 |
+| 整轮图片都进不去（连刚发的那张也没了） | `windowImagesSkipped` 与 `imagesSkipped` 同时增长，日志有"带图片的 prompt 被 runtime 拒绝" | 撞上了单条 prompt 20 张的硬上限：当前消息先取、上下文只能用剩下的——调小两侧配额或 `BOT_ATTACHMENT_MAX_IMAGE_TILES` |
+
+文件被读进来的原文落在会话工作区的 `inbox/`，prompt 里会给出路径（`inbox/xxx.pdf`），
+模型可以继续用工具深挖；上下文里的文件在说明里带 `[谁] 那条消息里的 ` 前缀——
+群里的同名文件靠它区分。
 
 按平台排除：
 

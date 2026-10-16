@@ -259,6 +259,34 @@ describe('loadConfig', () => {
     // 两个键都没配 → 默认值，且没有任何迁移提示
     expect(loadConfig(baseEnv).observation.deprecations).toEqual([]);
 
+    // --- 上下文里的媒体配额（滚窗里的图/文件最多送几个）------------------------
+    // 默认刻意保守：图片 2 张（"发一张图再 @ 问"是常态，再多是拿背景烧 token）、
+    // 文件 1 个（要下载 + 落盘 + 可能起抽取子进程）。0 = 这条通路关掉。
+    expect(bare.observation.injectImages).toBe(2);
+    expect(bare.observation.injectFiles).toBe(1);
+    expect(
+      loadConfig({
+        ...baseEnv,
+        BOT_OBSERVATION_INJECT_IMAGES: '4',
+        BOT_OBSERVATION_INJECT_FILES: '3',
+      }).observation,
+    ).toMatchObject({ injectImages: 4, injectFiles: 3 });
+    // 0 是合法值，负数与越界值都是配置错误（env 与配置文件两条路都要挡住）
+    expect(
+      loadConfig({ ...baseEnv, BOT_OBSERVATION_INJECT_IMAGES: '0' }).observation.injectImages,
+    ).toBe(0);
+    expect(() => loadConfig({ ...baseEnv, BOT_OBSERVATION_INJECT_IMAGES: '-1' })).toThrowError(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_OBSERVATION_INJECT_FILES: '99' })).toThrowError(
+      ConfigError,
+    );
+    expect(loadConfig(baseEnv, { observation: { injectImages: 20, injectFiles: 0 } }).observation)
+      .toMatchObject({ injectImages: 20, injectFiles: 0 });
+    expect(() => loadConfig(baseEnv, { observation: { injectImages: 21 } })).toThrowError(
+      ConfigError,
+    );
+
     // 「让路」参数：默认保守（1 次 / 45 秒），且两端都有校验
     expect(
       loadConfig({ ...baseEnv, BOT_PROACTIVE_MAX_WAIT_PER_ITEM: '2' }).proactive.maxWaitPerItem,

@@ -41,6 +41,30 @@ export interface BuildImageBlocksOptions {
   maxTiles: number;
   /** 单张图片下载超时（毫秒） */
   timeoutMs: number;
+  /**
+   * 本次调用最多可往 prompt 里加几个 image block（缺省 {@link MAX_BLOCKS_PER_PROMPT}）。
+   *
+   * 存在的理由：张数上限是**整条 prompt** 的，而一轮 prompt 可能有多个来源
+   * （当前这条消息 + 滚窗上下文）。各自按 20 裁剪，两份加起来就会撞爆 runtime 的
+   * 上限，代价是整条 prompt 被拒、连文字一起陪葬（见 `TurnRunner.dispatchPrompt`
+   * 的纯文本回退）。所以预算是**共享的**，由调用方传剩下的额度。
+   */
+  maxBlocks?: number;
+  /**
+   * 逐图标签（缺省「第 N 张图：」，单图不带标签）。
+   *
+   * 多来源时必须有区分度：滚窗来源用「上下文附图 #N」，失败注记与调用方写的
+   * 成功说明才能对上同一个编号。
+   */
+  indexLabel?: (index: number, total: number) => string;
+  /**
+   * 来源说明（缺省空串 = "当前这条消息"的口径），只用在"超出上限"这类**批量注记**里。
+   * 例：`群聊上下文` → 「（群聊上下文另有 1 张图片超出单条消息上限，未读入）」。
+   *
+   * 为什么值得单开一个参数：同一句话在"你刚发的图"和"群里别人的图"两种语境下
+   * 该说的对象完全不同，而这句话是模型转述给用户的依据。
+   */
+  sourceLabel?: string;
   /** 平台侧取字节（官方需要带 access_token）。缺省时用普通 GET。 */
   fetchMedia?: (media: RemoteMedia, options: MediaFetchOptions) => Promise<MediaBytes | undefined>;
   logger: Logger;
@@ -51,6 +75,13 @@ export interface ImageBlocksResult {
   blocks: PromptContentBlock[];
   /** 未能送进模型的图片说明（调用方拼进 prompt 文本，让模型知道"这里原本有图"） */
   notes: string[];
+  /**
+   * 成功内联的**源图**在本批 `images` 里的下标（升序）。
+   *
+   * 调用方据此写"哪几张真的进来了"的说明（滚窗来源必须说清"这张是谁发的那条
+   * 消息里的"）。只返回下标而不是计数：注记里的编号就是按这个下标编的。
+   */
+  inlinedIndexes: number[];
 }
 
 /**
@@ -69,8 +100,11 @@ const MAX_IMAGE_DOWNLOAD_BYTES = 32 * 1024 * 1024;
  * 单条 prompt 的图片张数硬上限，对齐 `dsh-attachment-local` 的
  * `maxImagesPerMessage`（默认 20）：超了整条 prompt 会被拒收，连文字都拿不到。
  * 长图切片最容易撞上它——块数是"多张图"，不是一张。
+ *
+ * 导出是为了让调用方算"剩下的额度"：一轮 prompt 里的多个来源（当前消息与滚窗
+ * 上下文）共享这个上限，见 {@link BuildImageBlocksOptions.maxBlocks}。
  */
-const MAX_BLOCKS_PER_PROMPT = 20;
+export const MAX_BLOCKS_PER_PROMPT = 20;
 
 /**
  * 按字节魔数判断真实图片类型。
@@ -124,9 +158,16 @@ export async function buildImageBlocks(
   const { maxImages, maxBytes, maxTiles, timeoutMs, fetchMedia, logger } = options;
   const blocks: PromptContentBlock[] = [];
   const notes: string[] = [];
+  const inlinedIndexes: number[] = [];
+  // 共享预算：调用方给的额度与全局硬上限取小（给 0 也不会把上限解释成"不限"）
+  const maxBlocks = Math.min(options.maxBlocks ?? MAX_BLOCKS_PER_PROMPT, MAX_BLOCKS_PER_PROMPT);
+  const indexLabel =
+    options.indexLabel ?? ((index: number, total: number) => (total > 1 ? `第 ${index + 1} 张图：` : ''));
+  /** 批量注记的来源前缀（缺省空串 = 与既有文案逐字一致） */
+  const source = options.sourceLabel ?? '';
 
   if (images.length > maxImages) {
-    notes.push(`（另有 ${images.length - maxImages} 张图片超出单条消息上限，未读入）`);
+    notes.push(`（${source}另有 ${images.length - maxImages} 张图片超出单条消息上限，未读入）`);
   }
 
   // 降采样能力（sharp）在容器里由 DSH 自带；拿不到就退回"只预筛、不处理"的旧行为，
@@ -137,12 +178,12 @@ export async function buildImageBlocks(
   for (const [index, image] of images.slice(0, maxImages).entries()) {
     // 一条消息里有多张图时，注记必须指明"是哪一张"：长图切片的注记不带主语时，
     // 模型会把"共需 34 块"错记到旁边的照片上。
-    const label = images.length > 1 ? `第 ${index + 1} 张图：` : '';
-    if (blocks.length >= MAX_BLOCKS_PER_PROMPT) {
+    const label = indexLabel(index, images.length);
+    if (blocks.length >= maxBlocks) {
       // 只提示一次：长图切片最容易撞上它（块数是"多张图"），而剩下的源图可能还有好几张
       if (!notedBlockCap) {
         notedBlockCap = true;
-        notes.push('（图片过多，超出单条消息可送入的张数上限，其余未读入）');
+        notes.push(`（${source}图片过多，超出单条消息可送入的张数上限，其余未读入）`);
       }
       break;
     }
@@ -205,7 +246,7 @@ export async function buildImageBlocks(
       continue;
     }
 
-    const remaining = MAX_BLOCKS_PER_PROMPT - blocks.length;
+    const remaining = maxBlocks - blocks.length;
     const prepared = canPrepare
       ? await prepareImageForPrompt(bytes.data, {
           maxBytes,
@@ -215,14 +256,16 @@ export async function buildImageBlocks(
       : ({ kind: 'unavailable' } as const);
 
     if (prepared.kind === 'prepared') {
+      const before = blocks.length;
       for (const tile of prepared.tiles) {
-        if (blocks.length >= MAX_BLOCKS_PER_PROMPT) break;
+        if (blocks.length >= maxBlocks) break;
         blocks.push({
           type: 'image',
           data: Buffer.from(tile.data).toString('base64'),
           mimeType: tile.mimeType as PromptImageMimeType,
         });
       }
+      if (blocks.length > before) inlinedIndexes.push(index);
       for (const note of prepared.notes) notes.push(withImageLabel(note, label));
       continue;
     }
@@ -252,9 +295,10 @@ export async function buildImageBlocks(
       data: Buffer.from(bytes.data).toString('base64'),
       mimeType,
     });
+    inlinedIndexes.push(index);
   }
 
-  return { blocks, notes };
+  return { blocks, notes, inlinedIndexes };
 }
 
 /**

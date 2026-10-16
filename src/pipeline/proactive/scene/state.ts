@@ -33,6 +33,7 @@ import type { NormalizedMessage } from '../../../core/connector.js';
 import {
   ObservationWindow,
   ObservationWindowStore,
+  toObservationEntry,
   type ObservationEntry,
 } from '../../../store/window.js';
 import type { SessionCloseCause, SessionClosedEvent, TopicSession } from '../contract.js';
@@ -239,15 +240,7 @@ export class ConversationState {
    * `addressed` 固定为 false。判定层把两者都看作"群里有人说话了"。
    */
   observe(message: NormalizedMessage): void {
-    this.observeEntry({
-      msgId: message.msgId,
-      eventId: message.eventId,
-      senderId: message.senderId,
-      ...(message.username !== undefined ? { senderName: message.username } : {}),
-      text: message.content,
-      ts: Number.isFinite(message.ts) ? message.ts : Date.now(),
-      addressed: false,
-    });
+    this.observeEntry(toObservationEntry(message, false));
   }
 
   /**
@@ -256,15 +249,7 @@ export class ConversationState {
    * （它已经直接问 bot 了，不属于"无人应答"，见 `noteHumanMessage` 的说明）。
    */
   observeAddressed(message: NormalizedMessage): void {
-    this.observeEntry({
-      msgId: message.msgId,
-      eventId: message.eventId,
-      senderId: message.senderId,
-      ...(message.username !== undefined ? { senderName: message.username } : {}),
-      text: message.content,
-      ts: Number.isFinite(message.ts) ? message.ts : Date.now(),
-      addressed: true,
-    });
+    this.observeEntry(toObservationEntry(message, true));
   }
 
   /** 记一条窗口条目（`addressed` 由调用方标）——被动回复路径与判定层共用的写入口。 */

@@ -61,6 +61,21 @@ export interface FileIngestOptions {
   downloadTimeoutMs: number;
   /** 平台侧取件凭据（OneBot 群文件直链申请必须带群号） */
   context?: { groupId?: string; userId?: string };
+  /**
+   * 来源描述，只用在**批量注记**里（缺省 `这条消息`）。
+   *
+   * 滚窗上下文里的文件与本次 @ 携带的文件会走**同一条**摄取通路，但说明文本里
+   * 必须分得清："这条消息里的 2 个文件未读入"和"群聊上下文里的 2 个文件未读入"
+   * 对用户是两件事——前者是他刚发的，后者是背景资料。
+   */
+  sourceLabel?: string;
+  /**
+   * 逐条说明的前缀（缺省空串）。
+   *
+   * 滚窗来源用它把"谁发的那条消息"写进每一条说明：文件名相同的两个 PDF
+   * （`report.pdf` 是群里的常态）不带来源就只能靠猜。
+   */
+  labelPrefix?: (part: MessageMediaPart) => string;
   /** 平台侧取字节；缺省时用普通 GET */
   fetchMedia?: (media: RemoteMedia, options: MediaFetchOptions) => Promise<MediaBytes | undefined>;
   /** 文本抽取；缺省表示只落盘不解析 */
@@ -131,9 +146,12 @@ export async function ingestFiles(options: FileIngestOptions): Promise<FileInges
   const files = options.parts.filter((part) => part.mediaKind === 'file');
   if (files.length === 0) return result;
 
+  // 批量注记里的来源（`这条消息里` / `群聊上下文里`）：缺省与既有文案逐字一致。
+  const where = options.sourceLabel ?? '这条消息';
+
   if (!config.enabled) {
     result.skipped += files.length;
-    result.notes.push(`（本服务已关闭文件读取，这条消息里的 ${files.length} 个文件未读入）`);
+    result.notes.push(`（本服务已关闭文件读取，${where}里的 ${files.length} 个文件未读入）`);
     return result;
   }
 
@@ -141,10 +159,11 @@ export async function ingestFiles(options: FileIngestOptions): Promise<FileInges
   if (files.length > selected.length) {
     const extra = files.length - selected.length;
     result.skipped += extra;
-    result.notes.push(`（另有 ${extra} 个文件超出单条消息上限，未读取）`);
+    result.notes.push(`（${where}里另有 ${extra} 个文件超出单条消息上限，未读取）`);
   }
 
   for (const file of selected) {
+    const prefix = options.labelPrefix?.(file) ?? '';
     try {
       result.notes.push(await ingestOne(file, options, result));
     } catch (error) {
@@ -153,7 +172,7 @@ export async function ingestFiles(options: FileIngestOptions): Promise<FileInges
         fileName: file.filename,
         error: error instanceof Error ? error.message : String(error),
       });
-      result.notes.push(`${fileLabel(file)}（处理失败，未读入）`);
+      result.notes.push(`${prefix}${fileLabel(file)}（处理失败，未读入）`);
     }
   }
 
@@ -166,7 +185,7 @@ async function ingestOne(
   result: FileIngestResult,
 ): Promise<string> {
   const { config, logger } = options;
-  const label = fileLabel(file);
+  const label = `${options.labelPrefix?.(file) ?? ''}${fileLabel(file)}`;
   const fileName = file.filename ?? '';
   const ext = extensionOf(fileName);
 

@@ -27,6 +27,8 @@ import { ConfigError } from './config-error.js';
 import type { FileConfig, ObservationFileConfig, ProactiveFileConfig } from './config-file.js';
 import { DEFAULT_ACTIVITY_WINDOW_MS } from './pipeline/proactive/scene/state.js';
 import {
+  DEFAULT_OBSERVATION_INJECT_FILES,
+  DEFAULT_OBSERVATION_INJECT_IMAGES,
   DEFAULT_OBSERVATION_MAX_AGE_MS,
   DEFAULT_OBSERVATION_MAX_MESSAGES,
 } from './store/window.js';
@@ -346,6 +348,22 @@ export interface ObservationConfig {
    * 这里直接复用那个口径，不再造第二个。
    */
   injectWindowMs: number;
+  /**
+   * 被 @ 时，最多把上下文里的几张图片内联进 prompt（0 = 不内联，只留占位文本）。
+   *
+   * 为什么需要它：上下文里的 `[图片: x.jpg]` 只是占位，模型看不到图——而"群里先
+   * 发一张图、再 @ bot 问这是什么"是最常见的用法（见 `store/window.ts` 的
+   * `ObservationMedia`）。代价是 token：图片按像素烧，所以配额刻意小于
+   * `attachments.maxImages`，且**只取最近的几张**（"看看这个"的对象几乎总是刚发的那张）。
+   */
+  injectImages: number;
+  /**
+   * 被 @ 时，最多摄取几个上下文里的文件（0 = 不摄取）。
+   *
+   * 比图片更保守（缺省 1）：文件要下载、落 inbox、可能起 pdftotext 子进程，
+   * 而"翻背景资料"通常只需要最近那一个。
+   */
+  injectFiles: number;
   /**
    * 迁移提示（旧键 → 新键）：配置层不持有 logger，只生成句子，由启动摘要打出来。
    * 空数组 = 用户没配旧键。
@@ -753,11 +771,13 @@ function pickOptionalInt(
 /**
  * 观察窗口（滚窗）配置。
  *
- * 三件事在这里定下来：
+ * 四件事在这里定下来：
  *   1. **范围** = `BOT_LISTEN_GROUPS`，与介入层**共用同一个变量**（见 ObservationConfig）；
  *   2. **保留期**（`maxMessages` / `maxAgeMs`）与**注入宽度**（`injectWindowMs`）
  *      是两件事：前者是"记得多久"，后者是"被 @ 时给多少"；
- *   3. **旧键兼容**：`proactive.bufferMaxMessages` / `proactive.bufferMaxAgeMs` /
+ *   3. **媒体配额**（`injectImages` / `injectFiles`）：窗口里留下的媒体引用要在
+ *      注入时才会被取字节（见 `store/window.ts`），这两个数就是那道闸；
+ *   4. **旧键兼容**：`proactive.bufferMaxMessages` / `proactive.bufferMaxAgeMs` /
  *      `BOT_PROACTIVE_BUFFER_MAX_*` 仍然生效，但 `observation.*` 优先并 warn
  *      ——默认配置文件里本来就是旧键，硬切会让所有人的记忆长度悄悄回到默认值。
  */
@@ -808,12 +828,35 @@ function buildObservationConfig(
     'observation.injectWindowMs',
   );
 
+  // 上下文里的媒体配额：**刻意小于 `attachments.maxImages` / `files.maxFiles`**。
+  // 那两份配额回答的是"用户这次发来的东西最多读多少"，而这两份回答的是"为了听懂
+  // 他在说什么，最多额外翻多少背景资料"——后者是背景，不该压过前者，更不该因为
+  // 群里刷了一晚上图就让每一次 @ 都拖着一串图片进 prompt（token 是这么烧掉的）。
+  const injectImages = pickInt(
+    env,
+    'BOT_OBSERVATION_INJECT_IMAGES',
+    file?.injectImages,
+    DEFAULT_OBSERVATION_INJECT_IMAGES,
+    { min: 0, max: 20 },
+    'observation.injectImages',
+  );
+  const injectFiles = pickInt(
+    env,
+    'BOT_OBSERVATION_INJECT_FILES',
+    file?.injectFiles,
+    DEFAULT_OBSERVATION_INJECT_FILES,
+    { min: 0, max: 10 },
+    'observation.injectFiles',
+  );
+
   return {
     // 白名单只认 env（个人标识不进配置文件），与介入层读的是同一个变量
     allowlist: pickList(env, 'BOT_LISTEN_GROUPS', undefined),
     maxMessages,
     maxAgeMs,
     injectWindowMs,
+    injectImages,
+    injectFiles,
     deprecations,
   };
 }
@@ -1291,6 +1334,8 @@ export function describeConfig(config: Config): Record<string, unknown> {
       maxMessages: config.observation.maxMessages,
       maxAgeMs: config.observation.maxAgeMs,
       injectWindowMs: config.observation.injectWindowMs,
+      injectImages: config.observation.injectImages,
+      injectFiles: config.observation.injectFiles,
       ...(config.observation.deprecations.length === 0
         ? {}
         : { deprecations: config.observation.deprecations }),

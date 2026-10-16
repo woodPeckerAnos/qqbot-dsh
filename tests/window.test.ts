@@ -10,9 +10,10 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { NormalizedMessage } from '../src/core/connector.js';
+import type { MessagePart, NormalizedMessage } from '../src/core/connector.js';
 import {
   ObservationWindowStore,
+  collectWindowMedia,
   matchesGroupAllowlist,
   renderWindowBlock,
   DEFAULT_OBSERVATION_MAX_AGE_MS,
@@ -26,7 +27,7 @@ function msg(
   msgId: string,
   content: string,
   ts = T0,
-  options: { senderId?: string; username?: string; key?: string } = {},
+  options: { senderId?: string; username?: string; key?: string; parts?: MessagePart[] } = {},
 ): NormalizedMessage {
   const key = options.key ?? GROUP;
   return {
@@ -37,6 +38,8 @@ function msg(
     senderId: options.senderId ?? 'u1',
     ...(options.username !== undefined ? { username: options.username } : {}),
     content,
+    // parts 缺省不给：适配器只归一化出文本的形态（编排层按 content 处理）
+    ...(options.parts !== undefined ? { parts: options.parts } : {}),
     ts,
     raw: {},
   };
@@ -272,5 +275,205 @@ describe('渲染（喂被动回复的上下文块）', () => {
   it('验收20：判定层的 addressed 标记**不泄漏**进回复路径的正文', () => {
     const block = renderWindowBlock(entries);
     expect(block).not.toContain('(对我说的)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ⑤ 媒体（滚窗里的图 / 文件 → 被 @ 时随本轮送入）
+// ---------------------------------------------------------------------------
+
+/**
+ * 这一组用例锁的是一个真机 bug：群里**先发图、再 @ bot 问"这是什么"**时，模型只
+ * 拿到 `[图片: DF77A739.jpg]` 这种占位（原话："这张图没到我这儿——工作区里也没有
+ * 对应的文件"）。根因是滚窗条目只留了扁平化文本，媒体引用根本没留下来——与图片
+ * 尺寸、下载上限都无关：**从来没有人为旁听消息取过字节**。
+ */
+describe('条目里的媒体引用（旁听消息也留引用，写入时不取字节）', () => {
+  const img = (name: string, url = `https://cdn.example.com/${name}`) =>
+    ({ type: 'image', url, filename: name }) as const;
+
+  it('验收21：旁听消息的图片被留成引用，无媒体的消息不写 media 字段', () => {
+    const windows = store();
+    windows.observe(
+      msg('m1', '看这个\n[图片: a.png]', T0, {
+        parts: [{ type: 'text', text: '看这个' }, img('a.png')],
+      }),
+    );
+    windows.observe(msg('m2', '纯文本', T0 + 1));
+
+    const [first, second] = windows.read(GROUP);
+    expect(first!.media?.images).toHaveLength(1);
+    expect(first!.media?.images[0]).toMatchObject({
+      url: 'https://cdn.example.com/a.png',
+      filename: 'a.png',
+    });
+    // 没有媒体的条目形状不变：不写 `media`，而不是写一个空对象
+    expect(second!.media).toBeUndefined();
+  });
+
+  it('验收22：被 @ 的消息（走判定层那条写入路径）同样带引用——转换点只有一处', () => {
+    const windows = store();
+    windows.observeAddressed(
+      msg('m1', '看看\n[图片: q.png]', T0, {
+        parts: [{ type: 'text', text: '看看' }, img('q.png')],
+      }),
+    );
+    expect(windows.read(GROUP)[0]!.media?.images[0]).toMatchObject({ filename: 'q.png' });
+  });
+
+  it('验收23：引用消息里的图与文件都在（与当前消息同一套收集规则）', () => {
+    const windows = store();
+    windows.observe(
+      msg('m1', '[引用 小红] 看这个 [图片: in-quote.png]', T0, {
+        parts: [
+          {
+            type: 'quote',
+            author: '小红',
+            parts: [
+              img('in-quote.png'),
+              {
+                type: 'media',
+                mediaKind: 'file',
+                url: 'https://cdn.example.com/r.pdf',
+                filename: 'r.pdf',
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const entry = windows.read(GROUP)[0]!;
+    expect(entry.media?.images.map((part) => part.filename)).toEqual(['in-quote.png']);
+    expect(entry.media?.files.map((part) => part.filename)).toEqual(['r.pdf']);
+  });
+
+  it('验收24：视频等非文件媒体不进窗口清单（与当前消息同一处理面，不制造"清单里有却没读"）', () => {
+    const windows = store();
+    windows.observe(
+      msg('m1', '[视频]', T0, {
+        parts: [{ type: 'media', mediaKind: 'video', url: 'https://cdn.example.com/v.mp4' }],
+      }),
+    );
+    expect(windows.read(GROUP)[0]!.media).toBeUndefined();
+  });
+});
+
+describe('collectWindowMedia（挑哪几张送给模型）', () => {
+  const imageEntry = (msgId: string, names: string[], ts: number, senderName = '小明') => ({
+    msgId,
+    eventId: `e-${msgId}`,
+    senderId: 'u1',
+    senderName,
+    text: names.map((name) => `[图片: ${name}]`).join('\n'),
+    ts,
+    addressed: false,
+    media: {
+      images: names.map((name) => ({
+        type: 'image' as const,
+        url: `https://cdn/${name}`,
+        filename: name,
+      })),
+      files: [],
+    },
+  });
+  const fileEntry = (msgId: string, name: string, ts: number, senderName = '小红') => ({
+    msgId,
+    eventId: `e-${msgId}`,
+    senderId: 'u2',
+    senderName,
+    text: `[文件: ${name}]`,
+    ts,
+    addressed: false,
+    media: {
+      images: [],
+      files: [
+        {
+          type: 'media' as const,
+          mediaKind: 'file' as const,
+          url: `https://cdn/${name}`,
+          filename: name,
+        },
+      ],
+    },
+  });
+
+  it('验收25：默认什么都不选（配额缺省 0），给了配额才选', () => {
+    const entries = [imageEntry('m1', ['a.png'], T0), fileEntry('m2', 'r.pdf', T0 + 1)];
+    expect(collectWindowMedia(entries)).toMatchObject({ images: [], files: [] });
+    const selected = collectWindowMedia(entries, { maxImages: 1, maxFiles: 1 });
+    expect(selected.images).toHaveLength(1);
+    expect(selected.files).toHaveLength(1);
+  });
+
+  it('验收26：从最近往前挑（"看看这个"指的就是刚发的那张），但输出保持时间顺序', () => {
+    const entries = [
+      imageEntry('m1', ['old.png'], T0),
+      imageEntry('m2', ['mid.png'], T0 + 1_000),
+      imageEntry('m3', ['new.png'], T0 + 2_000),
+    ];
+    const selected = collectWindowMedia(entries, { maxImages: 2 });
+    // 选中的是最新的两张，顺序仍是 mid → new（与上下文块的行序一致）
+    expect(selected.images.map((ref) => ref.part.filename)).toEqual(['mid.png', 'new.png']);
+    expect(selected.imagesSkipped).toBe(1);
+  });
+
+  it('验收27：同一条消息里的多张图保持原有顺序，不被倒序挑乱', () => {
+    const entries = [imageEntry('m1', ['a.png', 'b.png', 'c.png'], T0)];
+    const selected = collectWindowMedia(entries, { maxImages: 3 });
+    expect(selected.images.map((ref) => ref.part.filename)).toEqual(['a.png', 'b.png', 'c.png']);
+  });
+
+  it('验收28：引用里已经要送的那张不再从窗口送第二遍（按 url 排重）', () => {
+    const entries = [imageEntry('m1', ['dup.png', 'other.png'], T0)];
+    const selected = collectWindowMedia(entries, {
+      maxImages: 2,
+      exclude: { urls: new Set(['https://cdn/dup.png']), fileIds: new Set() },
+    });
+    expect(selected.images.map((ref) => ref.part.filename)).toEqual(['other.png']);
+    // 被排除的**不占配额**：它压根不该出现在这一轮的候选里
+    expect(selected.imagesSkipped).toBe(0);
+  });
+
+  it('验收29：同一个人重发同一张图只取最近那次，且只算一次"没选中"', () => {
+    const entries = [
+      imageEntry('m1', ['same.png'], T0),
+      imageEntry('m2', ['same.png'], T0 + 1_000),
+      imageEntry('m3', ['newer.png'], T0 + 2_000),
+    ];
+    const selected = collectWindowMedia(entries, { maxImages: 1 });
+    expect(selected.images.map((ref) => ref.part.filename)).toEqual(['newer.png']);
+    // same.png 的两次出现只算一条"超出配额"，不是两条
+    expect(selected.imagesSkipped).toBe(1);
+  });
+
+  it('验收30：取不到字节的（既无 url 也无 fileId）不占配额，也不算"没选中"', () => {
+    const entries = [
+      {
+        ...imageEntry('m1', ['no-url.png'], T0),
+        media: { images: [{ type: 'image' as const, filename: 'no-url.png' }], files: [] },
+      },
+      imageEntry('m2', ['real.png'], T0 + 1),
+    ];
+    const selected = collectWindowMedia(entries, { maxImages: 1 });
+    expect(selected.images.map((ref) => ref.part.filename)).toEqual(['real.png']);
+    expect(selected.imagesSkipped).toBe(0);
+  });
+
+  it('验收31：返回的占位文本与上下文块里的那一行逐字一致（模型才能对号入座）', () => {
+    const entries = [
+      imageEntry('m1', ['shot.jpg'], T0, '小明'),
+      fileEntry('m2', 'report.pdf', T0 + 1, '小红'),
+    ];
+    const selected = collectWindowMedia(entries, { maxImages: 1, maxFiles: 1 });
+    const block = renderWindowBlock(entries);
+    expect(selected.images[0]).toMatchObject({ sender: '小明', msgId: 'm1' });
+    expect(block).toContain(selected.images[0]!.placeholder);
+    expect(block).toContain(selected.files[0]!.placeholder);
+    // 没有显示名时退到 senderId，说明文本仍然指认得清
+    const anonymous = collectWindowMedia(
+      [{ ...imageEntry('m3', ['x.png'], T0), senderName: undefined }],
+      { maxImages: 1 },
+    );
+    expect(anonymous.images[0]!.sender).toBe('u1');
   });
 });

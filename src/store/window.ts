@@ -37,9 +37,21 @@
  *   - **保留期**（`maxMessages` / `maxAgeMs`）与**读取范围**（`activityWindowMs`）
  *     是两个概念：前者决定我们记得多久，后者决定"当前话题"有多长。判定层要宽窗
  *     （宁可多读），被动注入只要当前话题（见 `TurnRunner.buildPrompt`）。
+ *
+ * ## 媒体（图片 / 文件）
+ *
+ * 条目里除了扁平化文本，还留着**媒体引用**（`ObservationMedia`）：被 @ 时注入的
+ * 群聊上下文如果只有 `[图片: x.jpg]` 这种占位，模型就永远看不到"群里刚发的那张
+ * 图"——而这正是最常被 @ 的场景。引用在写入时只存不取，由 `collectWindowMedia`
+ * 在注入时按配额挑出来，再交给与当前消息**同一条**下载/降采样/落盘通路。
  */
 
-import type { NormalizedMessage } from '../core/connector.js';
+import type {
+  MessageImagePart,
+  MessageMediaPart,
+  NormalizedMessage,
+} from '../core/connector.js';
+import { flattenParts, messageImageParts, messageMediaParts } from '../core/content.js';
 
 // ---------------------------------------------------------------------------
 // 白名单（纯函数：介入层与本模块共用同一份判据）
@@ -89,6 +101,68 @@ export interface ObservationEntry {
   readonly addressed: boolean;
   /** 是否是 bot 自己的发言（被动回复或主动发言）。渲染时标成「我」。 */
   readonly isBot?: boolean;
+  /**
+   * 这条消息里的**媒体引用**（只有地址/标识，没有字节）。
+   *
+   * 见 {@link ObservationMedia}：`text` 里的 `[图片: x.jpg]` 只是占位，光有它
+   * 不足以让模型看到那张图。
+   */
+  readonly media?: ObservationMedia;
+}
+
+/**
+ * 一条消息里能取到字节的媒体引用。
+ *
+ * ## 为什么窗口要留下它
+ *
+ * `text` 是给人（和模型）看的**扁平化文本**：图片只剩 `[图片: DF77A739.jpg]`。
+ * 而被 @ 时注入的群聊上下文只有这一份文本，于是"群里刚发的那张图，@ 一下让 bot
+ * 看看"必然失败——模型如实回答"我这边只收到一个占位符"，工作区里也没有文件，
+ * 因为**从来没有人为旁听消息取过字节**（`TurnRunner.buildPromptBlocks` 只读
+ * 当前这条消息的 `parts`）。@ 时直接携带的图没有这个问题：它走的就是那条路径。
+ *
+ * 所以窗口除了文本，还要留下**能重新取到字节的东西**（url 快路径 + fileId 回查，
+ * 与当前消息完全同一套，见 `dsh/media.ts` 与 `dsh/files.ts`）。取字节发生在注入时
+ * （见 {@link collectWindowMedia} 的调用方），不是写入时：
+ *
+ *   - 写入时不产生任何 IO——群里的图不该因为我们旁听就被下载；
+ *   - 读取时按配额取，只有真的被 @ 且真的用得上才付出代价。
+ *
+ * 纪律与窗口本体一致：**只存引用、不存字节、不落盘**。
+ */
+export interface ObservationMedia {
+  /** 图片（含引用消息里的图片；转发块里的不在这里，见 `core/content.ts` 的说明） */
+  images: readonly MessageImagePart[];
+  /**
+   * 文件（`mediaKind === 'file'`）。
+   *
+   * 视频等其它形态**刻意不收**：当前消息的处理面也只到"渲染成一行标记"，
+   * 窗口里多留一份只会让"清单里有的却没读"看起来像 bug。
+   */
+  files: readonly MessageMediaPart[];
+}
+
+/**
+ * 把一条归一化消息变成窗口条目——**唯一的转换点**。
+ *
+ * 为什么必须收在一处：写入窗口有两条路（`ObservationWindow.observe*` 与
+ * 判定层的 `ConversationState.observe*`，后者绕过前者直接写 `observeEntry`）。
+ * 两边各拼一份的话，"旁听消息带不带媒体引用"就会有两个答案，而这类分叉的表现是
+ * "旁听消息的图能进来、@ 消息的图进不来"这种没人能解释的状态。
+ */
+export function toObservationEntry(message: NormalizedMessage, addressed: boolean): ObservationEntry {
+  const images = messageImageParts(message);
+  const files = messageMediaParts(message).filter((part) => part.mediaKind === 'file');
+  return {
+    msgId: message.msgId,
+    eventId: message.eventId,
+    senderId: message.senderId,
+    ...(message.username !== undefined ? { senderName: message.username } : {}),
+    text: message.content,
+    ts: Number.isFinite(message.ts) ? message.ts : Date.now(),
+    addressed,
+    ...(images.length === 0 && files.length === 0 ? {} : { media: { images, files } }),
+  };
 }
 
 export interface ObservationPolicy {
@@ -103,6 +177,22 @@ export interface ObservationPolicy {
 /** 保留期的默认值（沿用介入层搬过来的原值，避免行为漂移）。 */
 export const DEFAULT_OBSERVATION_MAX_MESSAGES = 200;
 export const DEFAULT_OBSERVATION_MAX_AGE_MS = 30 * 60_000;
+
+/**
+ * 被 @ 时最多内联几张上下文里的图片（`observation.injectImages`）。
+ *
+ * 2 的取法：最常见的形态是"发一张图 + @ 一句问"，第二张用于"这两张哪个好"；
+ * 再往上就是拿背景图片烧 token 了——而真正被问的那张几乎总是最近的。
+ */
+export const DEFAULT_OBSERVATION_INJECT_IMAGES = 2;
+
+/**
+ * 被 @ 时最多摄取几个上下文里的文件（`observation.injectFiles`）。
+ *
+ * 1 而不是 2：文件要下载 + 落 inbox + 可能起抽取子进程，"翻背景资料"通常
+ * 只需要最近那一个（"这个 PDF 讲的是什么"）。
+ */
+export const DEFAULT_OBSERVATION_INJECT_FILES = 1;
 
 /** 读取窗口的选项。三个条件同时生效（先按时间/条数裁，再排除指定消息）。 */
 export interface ReadWindowOptions {
@@ -146,15 +236,7 @@ export class ObservationWindow {
 
   /** 记一条**旁听**消息（群里没 @ bot 的那条）。 */
   observe(message: NormalizedMessage): void {
-    this.observeEntry({
-      msgId: message.msgId,
-      eventId: message.eventId,
-      senderId: message.senderId,
-      ...(message.username !== undefined ? { senderName: message.username } : {}),
-      text: message.content,
-      ts: this.resolveTs(message.ts),
-      addressed: false,
-    });
+    this.observeEntry(toObservationEntry(message, false));
   }
 
   /**
@@ -164,15 +246,7 @@ export class ObservationWindow {
    * "这个人问的是哪件事"。
    */
   observeAddressed(message: NormalizedMessage): void {
-    this.observeEntry({
-      msgId: message.msgId,
-      eventId: message.eventId,
-      senderId: message.senderId,
-      ...(message.username !== undefined ? { senderName: message.username } : {}),
-      text: message.content,
-      ts: this.resolveTs(message.ts),
-      addressed: true,
-    });
+    this.observeEntry(toObservationEntry(message, true));
   }
 
   /**
@@ -282,10 +356,6 @@ export class ObservationWindow {
     if (first === undefined || last === undefined) return 0;
     return Math.max(0, last.ts - first.ts);
   }
-
-  private resolveTs(ts: number): number {
-    return Number.isFinite(ts) ? ts : Date.now();
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +443,134 @@ export class ObservationWindowStore {
   keys(): readonly string[] {
     return [...this.windows.keys()];
   }
+}
+
+// ---------------------------------------------------------------------------
+// 媒体选择（滚窗 → prompt 的这一段）
+// ---------------------------------------------------------------------------
+
+/** 滚窗里被选中送入 prompt 的一条媒体：带来源，说明文本才能指认"这是谁发的那张"。 */
+export interface WindowMediaRef<T> {
+  part: T;
+  /** 来自哪条消息（说明文本用 sender + placeholder 指认；这个给排障与测试用） */
+  msgId: string;
+  /** 发送者显示名（缺省退到 id） */
+  sender: string;
+  /**
+   * 这条媒体在窗口正文里的**原样占位文本**（`[图片: x.jpg]` / `[文件: a.pdf]`）。
+   *
+   * 说明文本里必须用它指认（而不是"第几张图"这种自造编号）：模型要能把它与
+   * `<群聊上下文>` 里那一行**逐字对上**——多个群友都发过图时，没有这个对应关系
+   * 就只能猜哪张是谁发的。
+   */
+  placeholder: string;
+}
+
+export interface WindowMediaSelection {
+  /** 选中的图片，**时间顺序**（与上下文块一致） */
+  images: WindowMediaRef<MessageImagePart>[];
+  /** 选中的文件，时间顺序 */
+  files: WindowMediaRef<MessageMediaPart>[];
+  /** 因配额没被选中的张数 / 个数（说明文本要如实说出来，不能让模型以为只有这些） */
+  imagesSkipped: number;
+  filesSkipped: number;
+}
+
+export interface CollectWindowMediaOptions {
+  /** 最多选几张图（缺省 0 = 不选） */
+  maxImages?: number;
+  /** 最多选几个文件（缺省 0 = 不选） */
+  maxFiles?: number;
+  /**
+   * 已经随**当前这条消息**进来的媒体（url / fileId）。
+   *
+   * 为什么要排重：同一条消息既被 @ 又带图时它不在窗口里（注入时按 msgId 排除），
+   * 但**引用**场景会重叠——用户引用别人那条带图的消息再 @ bot，引用里的图按
+   * `messageImageParts` 已经要进来了，而那条被引用的消息十有八九也在窗口里。
+   * 送两遍既烧 token，又会让模型以为群里发了两张一样的图。
+   */
+  exclude?: { readonly urls: ReadonlySet<string>; readonly fileIds: ReadonlySet<string> };
+}
+
+/**
+ * 从窗口条目里挑出要随本轮 prompt 送入的媒体（**纯函数**，不下载、不落盘）。
+ *
+ * 两条排序纪律：
+ *   - **从最近往前挑**：被 @ 时最可能指的就是刚发的那张图 / 那个文件
+ *     （"看看这个"的对象几乎总是紧邻的上一条），配额不够时先丢老的；
+ *   - 选完**反过来**，让送进 prompt 的顺序仍是时间顺序——与 `<群聊上下文>` 的
+ *     行序一致，模型对号入座才不用做心理排序。
+ *
+ * 取不到字节的（既没有 url 也没有 fileId）**直接跳过且不占配额**：它们注定失败，
+ * 让它们挤掉能读的图只会把"看不到"从一个换成另一个。同一条媒体在窗口里出现
+ * 两次（同一个人重发同一张图）也只取最近的那次。
+ */
+export function collectWindowMedia(
+  entries: readonly ObservationEntry[],
+  options: CollectWindowMediaOptions = {},
+): WindowMediaSelection {
+  const maxImages = Math.max(0, options.maxImages ?? 0);
+  const maxFiles = Math.max(0, options.maxFiles ?? 0);
+  const excluded = options.exclude;
+  const seen = { urls: new Set<string>(), fileIds: new Set<string>() };
+  const images: WindowMediaRef<MessageImagePart>[] = [];
+  const files: WindowMediaRef<MessageMediaPart>[] = [];
+  let imagesSkipped = 0;
+  let filesSkipped = 0;
+
+  /**
+   * 这条媒体是否值得占一个名额。
+   *
+   * ⚠️ **有副作用**：第一次判定为"值得"时就把它记进 `seen`，无论后面配额够不够。
+   * 否则同一个 url 在更旧的那条消息里会被再数一次 skipped——"重发同一张图"会被
+   * 报成"有两张图没读进来"。
+   */
+  const claim = (part: { url?: string; fileId?: string }): boolean => {
+    if (part.url === undefined && part.fileId === undefined) return false;
+    if (part.url !== undefined && (excluded?.urls.has(part.url) === true || seen.urls.has(part.url))) {
+      return false;
+    }
+    if (
+      part.fileId !== undefined &&
+      (excluded?.fileIds.has(part.fileId) === true || seen.fileIds.has(part.fileId))
+    ) {
+      return false;
+    }
+    if (part.url !== undefined) seen.urls.add(part.url);
+    if (part.fileId !== undefined) seen.fileIds.add(part.fileId);
+    return true;
+  };
+
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i]!;
+    const media = entry.media;
+    if (media === undefined) continue;
+    const sender = entry.senderName ?? entry.senderId;
+    // 同一条消息内部**从后往前**挑，选完再整体 reverse：多张图是一组，
+    // 时间顺序必须原样保留（倒序挑只是为了让"配额不够丢最老的"这条规则统一）。
+    for (let j = media.images.length - 1; j >= 0; j -= 1) {
+      const part = media.images[j]!;
+      if (!claim(part)) continue;
+      if (images.length >= maxImages) {
+        imagesSkipped += 1;
+        continue;
+      }
+      images.push({ part, msgId: entry.msgId, sender, placeholder: flattenParts([part]) });
+    }
+    for (let j = media.files.length - 1; j >= 0; j -= 1) {
+      const part = media.files[j]!;
+      if (!claim(part)) continue;
+      if (files.length >= maxFiles) {
+        filesSkipped += 1;
+        continue;
+      }
+      files.push({ part, msgId: entry.msgId, sender, placeholder: flattenParts([part]) });
+    }
+  }
+
+  images.reverse();
+  files.reverse();
+  return { images, files, imagesSkipped, filesSkipped };
 }
 
 // ---------------------------------------------------------------------------

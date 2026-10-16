@@ -35,6 +35,7 @@ import {
   type NormalizedMessage,
 } from '../src/core/connector.js';
 import { createNullLogger } from '../src/logger.js';
+import { collectWindowMedia, toObservationEntry } from '../src/store/window.js';
 
 // ---------------------------------------------------------------------------
 // 归一化（纯函数）
@@ -117,6 +118,37 @@ describe('OneBot 归一化', () => {
     expect(result.event.kind).toBe('group-message');
     // 内容形态由 core/content.ts 决定（带文件名），这里只断言"非空且有占位语义"
     expect(result.event.content).toContain('[图片');
+  });
+
+  /**
+   * 旁听消息必须带着**能重新取到字节的东西**（url + fileId）进滚窗，否则"群里先发
+   * 图、再 @ bot 问这是什么"永远只能拿到 `[图片: x.jpg]` 这种占位——真机上就是
+   * "这张图没到我这儿，工作区里也没有对应的文件"。
+   *
+   * 这条用例守的是**契约**：滚窗挑媒体（`store/window.ts` 的 `collectWindowMedia`）
+   * 依赖旁听事件里的 image 片段。哪天有人"顺手"把旁听消息的 parts 裁掉，这里会先红。
+   */
+  it('群消息：旁听事件的图片片段带 url 与 fileId，可直接交给滚窗的媒体注入', () => {
+    const result = normalizeOneBotEvent({
+      post_type: 'message',
+      message_type: 'group',
+      sub_type: 'normal',
+      self_id: 10000,
+      message_id: 2,
+      group_id: 8888,
+      user_id: 12345,
+      message: [{ type: 'image', data: { file: 'DF77A739.jpg', url: 'https://cdn/x.jpg' } }],
+    });
+    expect(result.type).toBe('event');
+    if (result.type !== 'event') return;
+    const entry = toObservationEntry(result.event, false);
+    expect(entry.media?.images).toEqual([
+      { type: 'image', url: 'https://cdn/x.jpg', fileId: 'DF77A739.jpg', filename: 'DF77A739.jpg' },
+    ]);
+    // url 过期（NapCat 约 2 小时）时还有 fileId 回查这条路
+    expect(collectWindowMedia([entry], { maxImages: 1 }).images[0]!.part.fileId).toBe(
+      'DF77A739.jpg',
+    );
   });
 
   it('群消息：机器人自己发的消息忽略（防自触发循环）', () => {

@@ -389,6 +389,19 @@ observation:
   # 与判定层的活动窗口同值：回答"在吗，帮我看看这个"时，把半小时前另一个话题的
   # 200 条灌进去只会稀释注意力。
   injectWindowMs: 600000
+  # 被 @ 时最多把上下文里的几张图片内联进 prompt（默认 2，范围 0–20，
+  # 环境变量：BOT_OBSERVATION_INJECT_IMAGES）。
+  # 为什么需要它：上下文里的 `[图片: x.jpg]` 只是占位，**光有占位模型看不到图**——
+  # "群里先发一张图、再 @ bot 问这是什么"因此只会得到"这张图没到我这儿"。
+  # 取的是**最近**的几张（"看看这个"指的就是刚发的那张）。0 = 不内联，只留占位文本。
+  # ⚠️ 图片按像素烧 token：它与 attachments.maxImages 一起决定单轮的图片预算上界，
+  # 两者还共享模型单条 20 张的硬上限（见 docs/RUNBOOK.md 4.5）。
+  injectImages: 2
+  # 被 @ 时最多摄取几个上下文里的文件（默认 1，范围 0–10，
+  # 环境变量：BOT_OBSERVATION_INJECT_FILES）。
+  # 比图片更保守：文件要下载、落 inbox、可能起 pdftotext 子进程。
+  # 0 = 不摄取（上下文里仍显示 `[文件: x.pdf]` 占位）。
+  injectFiles: 1
 
 # 群白名单 → 在 .env 里配 BOT_LISTEN_GROUPS（群号是个人标识，不进本文件）：
 #   BOT_LISTEN_GROUPS=onebot:123456,ob11:g987654

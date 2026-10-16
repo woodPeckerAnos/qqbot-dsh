@@ -156,6 +156,15 @@ export interface ObservationFileConfig {
    * 另一个话题的内容灌进去只会稀释注意力。
    */
   injectWindowMs?: number;
+  /**
+   * 被 @ 时最多内联几张上下文里的图片（默认 2；0 = 不内联，只留 `[图片]` 占位）。
+   *
+   * 上下文里的图在窗口里只有占位文本，没有这个配额就永远看不到——"群里先发图、
+   * 再 @ bot 问这是什么"因此必然失败（见 `store/window.ts` 的 `ObservationMedia`）。
+   */
+  injectImages?: number;
+  /** 被 @ 时最多摄取几个上下文里的文件（默认 1；0 = 不摄取） */
+  injectFiles?: number;
 }
 
 /** 富媒体输入配额（与平台无关，官方/OneBot 共用）。 */
@@ -332,6 +341,8 @@ const OBSERVATION_SPEC: SectionSpec = {
   maxMessages: 'int',
   maxAgeMs: 'int',
   injectWindowMs: 'int',
+  injectImages: 'int',
+  injectFiles: 'int',
 };
 const ATTACHMENTS_SPEC: SectionSpec = {
   enabled: 'bool',
