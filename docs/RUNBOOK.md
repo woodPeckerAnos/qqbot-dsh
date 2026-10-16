@@ -398,7 +398,7 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 | 现象 | 字段 | 原因 | 处置 |
 |---|---|---|---|
-| 转发块只显示 `[聊天记录]` | `forwardsFailed` 增长 | 回查失败/超时/响应解析不出条目 | 看 debug 日志 `get_forward_msg 失败`；确认框架支持该动作（见第 7 节 #14）。注意**关掉 `BOT_ATTACHMENT_FORWARD_ENABLED` 不计入**这个数（主动关闭不是失败） |
+| 转发块只显示 `[聊天记录]` | `forwardsFailed` 增长 | 回查失败/超时/响应解析不出条目 | 看 debug 日志 `get_forward_msg 失败`；确认框架支持该动作（见第 8 节 #14）。注意**关掉 `BOT_ATTACHMENT_FORWARD_ENABLED` 不计入**这个数（主动关闭不是失败） |
 | 转发块只显示 `[聊天记录]`，但 `forwardsFailed` **不涨** | — | 上报里既没有内联内容也没有 id（`forward` 段只有 type） | 框架问题：让它按 OneBot 规范上报 `forward.data.id`（NapCat 会同时给 `content`） |
 | 转发块"共 N 条"但只列出前几条 | `forwardNodesInlined` 小于 N | 命中上限（正常降级，不是故障） | 提高 `BOT_ATTACHMENT_FORWARD_MAX_NODES` / `_MAX_CHARS` |
 | 完全不想展开转发 | — | — | `BOT_ATTACHMENT_FORWARD_ENABLED=false`（关掉后**不发任何回查请求**，内联内容也不展开） |
@@ -416,12 +416,12 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 ---
 
-## 4.5 主动发言相关（它不主动说话 / 它说得不对）
+## 5. 主动发言相关（它不主动说话 / 它说得不对）
 
 主动介入是**独立于 @ 回复**的一条链路：旁听群消息 → 判定要不要插话 → 主动发言。
 它的开关、白名单、灰度与 @ 路径完全无关，排障时先分清"是它决定不说"还是"链路没通"。
 
-### 4.5.1 分诊：看 health 的 `proactive` 段
+### 5.1 分诊：看 health 的 `proactive` 段
 
 ```bash
 curl -s localhost:8080/health | jq .proactive
@@ -449,14 +449,14 @@ curl -s localhost:8080/health | jq .proactive
 | `sessions.noSession` 很高 | 大量唤醒因为"没有会话"被挡 = 覆盖率低 | **这是本设计的预期**（以覆盖率换精度）；要提覆盖只能改判据或调 session 参数 |
 | `deliveryDegraded: {"unsupported": N}` | **官方通道不支持主动发言**（主动推送已停用） | 预期行为，不是故障；OneBot 才有这个能力 |
 
-### 4.5.2 "它为什么说了这句"
+### 5.2 "它为什么说了这句"
 
 每次判定都会记 `satisfiedByScene`（哪个场景被判成立）与 `vetoed`（被什么否掉）。
 日志里按 `component: proactive-watcher` 过滤，能看到评估、否决、投递三个阶段，
 其中 `主动介入已发言` / `主动介入（dryRun：本应发言）` 两条会带 `scene` 字段
 （`scene-1`…`scene-5`，含义见 `src/pipeline/proactive/interests/SCENES.md`）。
 
-### 4.5.3 "它为什么不说话"（按链条从后往前查）
+### 5.3 "它为什么不说话"（按链条从后往前查）
 
 1. **平台能力**：官方通道恒为 `unsupported`（见上表）。要主动发言必须走 OneBot。
 2. **投递开关**：总开关关了 / 灰度没关（`dryRun`）/ 该群不在白名单。
@@ -476,7 +476,7 @@ curl -s localhost:8080/health | jq .proactive
    - 场景 2：近窗是否 ≥2 人且 ≥2 条消息；
    - 场景 5：`interests.yml` 里有没有对应的关键词命中。
 
-### 4.5.4 旁听能力的平台前提
+### 5.4 旁听能力的平台前提
 
 - **OneBot**：需要框架推送**全量群消息**（NapCat 等默认就推）；
   非 @ 群消息在归一化阶段变成旁听消息，`stats.observed` 会涨。
@@ -485,7 +485,7 @@ curl -s localhost:8080/health | jq .proactive
   （`GROUP_MESSAGE_CREATE` 不会推）。开通后它会归一到旁听消息，
   **不会**再像从前那样把每条群消息都当触发消息——那个隐患已修。
 
-### 4.5.5 隐私与留存
+### 5.5 隐私与留存
 
 旁听内容**只在内存**（每会话一个有界 ring buffer，默认 200 条 / 30 分钟），
 进程重启即清空，不落盘；判定用的转录只在调用 LLM 时构造，不写文件。
@@ -493,7 +493,7 @@ curl -s localhost:8080/health | jq .proactive
 
 ---
 
-## 5. 重启后"失忆"
+## 6. 重启后"失忆"
 
 预期行为是：**DSH 会话是新建的，上下文由对话记录回放恢复。**
 （原因见 `docs/DESIGN.md` 2.3——DSH 的 `session/prompt` 没有 resume 语义。）
@@ -517,9 +517,9 @@ docker compose logs qqbot | grep "冷启动回放历史"
 
 ---
 
-## 6. 沙箱相关
+## 7. 沙箱相关
 
-### 6.0 compose 报 `can't set distinct values on 'pids_limit' and 'deploy.resources.limits.pids'`
+### 7.0 compose 报 `can't set distinct values on 'pids_limit' and 'deploy.resources.limits.pids'`
 
 ```
 services.qqbot: can't set distinct values on 'pids_limit' and
@@ -558,7 +558,7 @@ CapDrop={{.HostConfig.CapDrop}} User={{.Config.User}}'
 期望看到：`PidsLimit=512 Memory=2147483648 NanoCpus=2000000000
 ReadonlyRootfs=true CapDrop=[ALL] User=qqbot`。
 
-### 6.1 日志出现大量 `sandbox escalation auto-approved`
+### 7.1 日志出现大量 `sandbox escalation auto-approved`
 
 含义：工作区内操作本不该提权，但 DSH 请求了提权到 `danger-full-access`，
 **实际权限此时等于完全访问**。
@@ -576,13 +576,13 @@ docker inspect qqbot-dsh --format '{{json .HostConfig}}' | python3 -m json.tool 
   grep -E 'ReadonlyRootfs|CapDrop|PidsLimit|SecurityOpt|Memory'
 ```
 
-### 6.2 agent 想写工作区外的文件被拒
+### 7.2 agent 想写工作区外的文件被拒
 
 这是**预期行为**（`workspace-write` 生效）。如果确实需要放宽，正确做法是给
 该项目单独开一个工作区，而不是关掉沙箱——每个会话的工作区目录由会话键
 哈希决定，无法手工指定（群聊用 `group_openid`，单聊用 `c2c:<user_openid>`）。
 
-### 6.3 容器把磁盘写满
+### 7.3 容器把磁盘写满
 
 ```sh
 docker compose exec qqbot du -sh /data/* 
@@ -597,7 +597,7 @@ docker system df
 
 ---
 
-## 7. 已知的未实测项
+## 8. 已知的未实测项
 
 以下事实**无法从官方文档确认**，属于需要在真机联调时验证的项。如果遇到相关
 现象，先怀疑这里：
@@ -625,7 +625,7 @@ docker system df
 
 ---
 
-## 8. 升级/回滚 DSH 版本后出问题
+## 9. 升级/回滚 DSH 版本后出问题
 
 本项目对 DSH 的依赖面很窄：只用 stdio JSON-RPC 的 3 个方法 + 4 个通知，
 并在 `initialize` 时**校验服务端身份**：
@@ -647,7 +647,7 @@ initialize 返回了意外的服务端身份 {...}，预期 name=deepseek-harnes
 
 ---
 
-## 9. 需要上报问题时请附带
+## 10. 需要上报问题时请附带
 
 ```sh
 docker compose logs --tail=200 qqbot > /tmp/qqbot.log

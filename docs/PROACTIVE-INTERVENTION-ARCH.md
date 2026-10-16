@@ -4,7 +4,7 @@
 > 实施进度：① 旁听事件（适配器 + 编排分流）✅ ② 会话级旁听状态 ✅
 > ③ 判定接线（`judge/` + `scene/watcher.ts` 唯一 runner）✅
 > ④ 装配（`main.ts`：兴趣池 / 投递器 / 判定器 / watcher / health）✅
-> ⑤ 文档与排障（`SCENES.md` / README / RUNBOOK §4.5）✅
+> ⑤ 文档与排障（`SCENES.md` / README / RUNBOOK §5）✅
 > 尚未实现：仲裁记录与离线回放（S4）、话题聚簇（当前用活动窗口近似，见 §3.1）、
 > 兴趣池由 role-play 动态设定（维护者已预告的后续迭代）。
 >

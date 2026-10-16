@@ -20,7 +20,7 @@
 >      "本应发言"（health 里的 `wouldSend`），不会真的说话。
 > 也就是说：**要让 bot 真的主动开口，需要同时配置 `enabled: true` +
 > `dryRun: false` + `BOT_LISTEN_GROUPS`**。排障见
-> [docs/RUNBOOK.md](../../../../docs/RUNBOOK.md) §4.5。
+> [docs/RUNBOOK.md](../../../../docs/RUNBOOK.md) §5。
 >
 > 已知的简化（刻意，不是未完成）：场景 1/2/5 的"话题"用**活动窗口**近似
 > （静默超过 10 分钟算翻篇），不做话题聚簇；架构讨论见

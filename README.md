@@ -106,7 +106,7 @@ cp src/pipeline/proactive/interests/interests.yml.example interests.yml
 `sessionBudget`、夜间静默）。
 灰度期间看 `curl -s localhost:8080/health | jq .proactive` 的 `wouldSend` 与
 `sessions`（`opened` / `closedBy` / `spokeInSession`——后者回答"预算 2 到底对不对"）；
-"它为什么不说话"的排查顺序见 **[RUNBOOK §4.5](docs/RUNBOOK.md)**。
+"它为什么不说话"的排查顺序见 **[RUNBOOK §5](docs/RUNBOOK.md)**。
 
 ---
 
@@ -152,7 +152,7 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 |---|---|
 | [docs/DESIGN.md](docs/DESIGN.md) | 方案设计：架构、多接入模型、协议契约、硬约束落地、权限与安全 |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | 部署手册：从零到跑通，含框架选型与调参建议 |
-| [docs/RUNBOOK.md](docs/RUNBOOK.md) | 排障手册：按症状组织的排查流程（主动发言见 §4.5） |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | 排障手册：按症状组织的排查流程（主动发言见 §5） |
 | [SCENES.md](src/pipeline/proactive/interests/SCENES.md) | **主动介入场景的自然语言真相源**：什么情况下会说、典型对话、红线 |
 | [proactive/README](src/pipeline/proactive/README.md) | 主动发言模块：能力收敛、三层判定架构、降级链 |
 | [proactive/AGENT-CONTRACT](src/pipeline/proactive/AGENT-CONTRACT.md) | 扩展契约（给 agent 读）：新增介入规则 / 新增平台 / 改场景表 |
