@@ -26,6 +26,25 @@ import type { Logger } from '../../logger.js';
 /** 已发送文件的归档子目录名（隐藏目录，扫描时天然被跳过）。 */
 export const SENT_DIR_NAME = '.sent';
 
+/**
+ * mtime 比较的容差（毫秒）。
+ *
+ * **别删**。Linux 的 inode 时间戳由**粗粒度时钟**打戳（`current_time()` 走
+ * `ktime_get_coarse_real_ts64()`，按 tick 取整，HZ=250 时约 4ms），而
+ * `Date.now()` 是精确值。于是"在 notBeforeMs 之后 0.1ms 写入"的文件，mtime
+ * 可能比 notBeforeMs 还小几毫秒——用精确时间比它，会把**本轮刚产出的文件**
+ * 当成上轮遗留静默跳过（用户永远收不到文件）。
+ *
+ * 这不是理论风险：CI（Linux runner）上 `tests/responder-media.test.ts` 就是
+ * 因为这个稳定变红，而本机 macOS（APFS 纳秒时间戳）全绿——同一份代码、同一份
+ * 测试，只差文件系统时间戳的粒度。
+ *
+ * 代价的取舍：容差只会让"上一轮刚结束、下一轮立刻开始"时把上次没发出去的文件
+ * 再试一次。发送成功的文件早已归档进 `.sent/`（不会重发），而失败件重试一次
+ * 本来就是用户想要的——比"本轮文件被静默丢掉"好得多。
+ */
+export const MTIME_TOLERANCE_MS = 1000;
+
 export interface OutboxScanOptions {
   /** 单附件体积上限（字节），超出的进 oversize 名单 */
   maxFileBytes: number;
@@ -38,6 +57,8 @@ export interface OutboxScanOptions {
    * 重扫会把它们再发一遍（"旧文件反复拆分发送"的生产问题）。早于此时间的
    * 文件静默跳过（只在 debug 日志留痕）——要重发旧文件，persona 已约定
    * "复制一份进 outbox"（复制即刷新 mtime）。
+   *
+   * 比较时留 `MTIME_TOLERANCE_MS` 的容差，理由见该常量：文件系统时间戳是粗粒度的。
    */
   notBeforeMs?: number;
   logger: Logger;
@@ -101,8 +122,12 @@ export async function scanOutbox(dir: string, options: OutboxScanOptions): Promi
         result.skipped.push(entry.name);
         continue;
       }
-      // 旧文件（非本轮产物）：静默跳过，避免上轮遗留被反复重发
-      if (options.notBeforeMs !== undefined && info.mtimeMs < options.notBeforeMs) {
+      // 旧文件（非本轮产物）：静默跳过，避免上轮遗留被反复重发。
+      // 比较留容差：文件时间戳是粗粒度的，可能比写入时刻早几毫秒（见 MTIME_TOLERANCE_MS）
+      if (
+        options.notBeforeMs !== undefined &&
+        info.mtimeMs < options.notBeforeMs - MTIME_TOLERANCE_MS
+      ) {
         options.logger.debug('outbox 旧文件跳过（非本轮产物）', {
           name: entry.name,
           mtimeMs: info.mtimeMs,
