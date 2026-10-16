@@ -1,7 +1,7 @@
 ---
 doc: topic-session-requirement
 kind: requirement
-status: 待实施
+status: 已实施
 supersedes: NEW-CONTENT-REQUIREMENT.md
 scope: 用「话题 session + 发言预算」替代 topic-spent 的每话题一次，并作为主动介入的唯一放行闸门
 params:
@@ -14,6 +14,9 @@ params:
   - name: sessionMinGapMs
     default: 45000
     meaning: 同一 session 内两次发言之间的最小间隔（毫秒）
+amended:
+  - 预算不驱动 session（耗尽只闭嘴、不关会话；new-topic 是唯一的预算重置正门）
+  - 唯一的本地闸只装滚动收敛，问题探针免闸
 stats:
   - proactiveSessionOpened
   - proactiveSessionClosed
@@ -21,6 +24,15 @@ stats:
   - proactiveSpokeInSession
   - proactiveNoSession
   - proactiveBudgetExhausted
+implemented:
+  - src/pipeline/proactive/contract.ts（TopicSession 三字段 / SessionCloseCause / SessionDirective / 三个参数常量与硬上限裁剪）
+  - src/pipeline/proactive/scene/state.ts（session 的开关与扣预算 / 会话级 lastEvaluationAt / 关闭通知 / dispose）
+  - src/pipeline/proactive/veto/veto.ts（session 闸门接替旧分支：no-session / budget-exhausted / min-gap）
+  - src/pipeline/proactive/scene/watcher.ts（开关与扣预算接线 / idle 定时器 / 唯一的本地闸 / 6 个计数）
+  - src/pipeline/proactive/judge/judge.ts（判据新增「什么时候该关」+ 输出契约加 session 字段 + 结构化事实带 session）
+  - src/config.ts / src/config-file.ts / qqbot.yml（三个 session* 参数）
+  - src/pipeline/stats.ts / src/health.ts / src/main.ts（观测接线）
+  - tests/proactive-session.test.ts（验收 1–14 的专项用例）、tests/scene-state.test.ts（状态机）
 ---
 
 # 原始需求
@@ -141,30 +153,45 @@ hasNewContentSince(lastEvaluationAt) === false  →  直接返回，不调 LLM
 
 ## 五、session 的关闭条件（四条，穷举）
 
+> ⚠️ 本节已按维护者的口径修正重写（原始版本见文末「实施记录 §6」）：
+> **预算不再关闭 session**。
+
 | 关闭原因 | 触发者 | 机制 |
 |---|---|---|
-| `budget-exhausted` | 代码 | `budgetLeft` 减到 0 时立即关闭 |
-| `llm-closed` | LLM | 每次判定问一句"这个 session 还该继续吗"，答 `session: 'close'` 即关 |
+| `llm-closed` | LLM | 判定说这个话题**收口了**（`session: 'close'`） |
+| `topic-changed` | LLM | 判定说**换话题了**（`session: 'new-topic'`）：旧会话为新话题让位 |
 | `idle` | 代码 | 距 `lastSpokeAt`（无则 `openedAt`）超过 `sessionIdleMs` 自动关闭 |
 | `conversation-gone` | 代码 | 无关本需求；会话状态被清理时连带关闭 |
 
+**预算不在这个表里**：`budgetLeft` 减到 0 **不关闭** session，只让它在当前话题里
+闭嘴（闸门报 `budget-exhausted`）。理由是维护者的口径——
+**session 的驱动动机只能是话题，不能是预算**。
+
 **关闭后**：下次唤醒回到流程 ① —— 需要 LLM 重新判"值得"才会再开。
-**不做** `topicChange`：话题换了由 LLM 在判定时输出 `session: 'close'` 关闭旧 session，
-下一次唤醒再重开。中间的覆盖率损失是**已知且接受的**。
 
 ## 六、判定层的输出契约（只加一个字段）
 
 ```ts
 verdict = { scene, satisfied, confidence, reason, evidence, directive,
-            session: 'keep-open' | 'close' }   // 说完了要不要继续跟着这个话题
+            session: 'keep-open' | 'close' | 'new-topic' }
 ```
 
 - `session` 字段只在**本次判定有场景成立（要发言）**时才有意义；
-- 判据正文（prompt）必须新增一段说清"什么时候该关"：
-  - 话题已经收口（问题被答、讨论有结论）→ `close`
-  - 话题转向了别的主题、当前内容已无增量 → `close`
-  - 话题仍在延续、但这次没什么可补 → `satisfied: false`（不开/不续 session 由
-    闸门决定，不需要额外表达）
+- 判据正文（prompt）必须新增一段说清三态怎么选：
+
+| 值 | 模型想说的 | 代码做什么 |
+|---|---|---|
+| `keep-open` | 还是刚才那个话题，会话该继续 | 没有会话就开一个；已有就继续用（**已耗尽时仍然闭嘴**） |
+| `close` | 刚才那个话题收口了 | 关掉（`llm-closed`）；本次该说的这句照样说 |
+| `new-topic` | 已经换到另一个话题了 | 关旧（`topic-changed`）+ 为新话题开一个（**预算重置**） |
+
+- **冲突时的聚合**：`new-topic` > `close` > `keep-open`（任一判定说了就算），
+  唯一实现在 `contract.ts` 的 `aggregateSessionDirective()`，否决层与调度层共用它；
+- **`new-topic` 只重置预算，不重置节奏**：最小间隔（`sessionMinGapMs`）照样要过。
+  否则模型只要一直说"换话题了"就能连着刷，上限又回到模型手里。
+- 为什么必须是三态：`close` 只能说"旧的结束"，说不出"新的开始"；两态时预算重启
+  只能靠"关掉旧的 → 下一次唤醒再开"，于是**预算一重置就能接着说**（实测：51 秒内
+  说了 3 句，`sessionBudget=2`）。
 
 ## 七、与既有闸门的关系
 
@@ -172,7 +199,8 @@ verdict = { scene, satisfied, confidence, reason, evidence, directive,
 |---|---|---|
 | `rate-limit`（10 分钟 ≤3 / 1 小时 ≤8） | 保留 | **不变**（它是频率约束，与"重不重复"正交） |
 | `topic-spent`（每话题 ≤ `maxPerTopic`） | 每话题一次 | **删除**；`maxPerTopic` 参数一并删除，职责由 session 预算 + LLM 关闭接管 |
-| `sessionMinGapMs` | 不存在 | **新增**：session 内两次发言的最小间隔 |
+| `sessionMinGapMs` | 不存在 | **新增**：session 内两次发言的最小间隔（换话题也不例外） |
+| `budget-exhausted` | 不存在 | **新增**：本话题预算用尽 → 闭嘴但**不关会话**（`proactiveBudgetExhausted`） |
 | 顺序预算（`quantileBudget`） | 默认关 | 不变 |
 | 判定顺序 | rate-limit → topic-spent | rate-limit → **session 闸门**（`topic-spent` 位置由它接替） |
 
@@ -183,6 +211,10 @@ verdict = { scene, satisfied, confidence, reason, evidence, directive,
 | `sessionBudget` | `2` | `1`–`5`（硬上限 5） | 一个 session 内允许的主动发言条数 |
 | `sessionIdleMs` | `600000` | `60000`–`3600000` | 静默多久自动关闭 session（默认 10 分钟，与活动窗口同值） |
 | `sessionMinGapMs` | `45000` | `10000`–`300000` | 同一 session 内两次发言的最小间隔 |
+
+**`sessionBudget` 的语义（口径修正后）**：它是"**一个话题**里还能说几句"的账，
+不是会话的寿命。说满之后该话题闭嘴，直到模型说换话题（`new-topic`）或会话结束
+（`close` / `idle`）——两条路都由话题驱动，代码里没有"因为预算所以重开"的路径。
 
 **要删掉的参数**：`maxPerTopic`——已核对其真实引用点（实现时逐个清掉）：
 
@@ -207,8 +239,10 @@ verdict = { scene, satisfied, confidence, reason, evidence, directive,
    下次唤醒仍从"需要 LLM 重新判值得"开始；
 3. session 开启后再次唤醒 → **不再要求"有新内容"**，直接过闸门进入判定
    （这是本需求的核心行为变化，必须有专门用例）；
-4. 预算减到 0 → **立即关闭 session**（`budget-exhausted`），此后唤醒一律
-   `silent('no-session')`，直到 LLM 重新开一个；
+4. 预算减到 0 → **不关闭 session**（`sessions.spent` +1），此后同一话题的唤醒
+   一律 `silent('budget-exhausted')`，计 `proactiveBudgetExhausted`，
+   **不新开 session**、也不消耗预算；要重新开口只能由话题驱动：
+   模型说 `new-topic`（关旧开新、预算重置），或会话 `close` / `idle` 结束；
 5. LLM 输出 `session: 'close'` → 关闭 session（`llm-closed`），
    且**本次发言照常发出**（关闭不影响这一条）；
 6. 距上次发言（无发言则 `openedAt`）超过 `sessionIdleMs` → 自动关闭（`idle`），
@@ -221,11 +255,16 @@ verdict = { scene, satisfied, confidence, reason, evidence, directive,
     session 预算放宽）；
 11. `proactiveSessionClosed === Σ proactiveSessionClosedBy{reason}`（账目闭合）；
 12. `topic-spent` / `maxPerTopic` 在代码中**不再存在**（用 grep 断言，防止残留）；
-13. session 关闭后再次唤醒，若 LLM 又判成立 → **重新开启新 session**
-    （`openedAt` 更新，预算重置）；
-14. session 期间**话题换了**（LLM 未输出 `close`）→ 本次仍按旧 session 走
+13. 因 **`close` / `idle` / `topic-changed`** 而结束的会话，之后唤醒若 LLM 又判成立
+    → **重新开启新 session**（`openedAt` 更新，预算重置）；
+    但"**因预算耗尽而闭嘴**"的那种状态不算结束——它只有在模型说换话题、
+    说收口或静默超时之后才会回到可开启状态；
+14. session 期间**话题换了**（LLM 未输出 `close` / `new-topic`）→ 本次仍按旧 session 走
     （覆盖率损失，**已知并接受**；用例只断言"不崩溃、行为与旧 session 一致"，
-    不要求它识别话题切换）。
+    不要求它识别话题切换）；
+15. 模型输出 `session: 'new-topic'` → 关旧会话（`topic-changed`）+ 为新话题开一个
+    （预算重置），且**本次发言照常发出**；但**最小间隔仍然生效**——
+    间隔没到时按 `min-gap` 挡下，不关旧也不开新。
 
 # 边界与反例
 
@@ -234,7 +273,8 @@ verdict = { scene, satisfied, confidence, reason, evidence, directive,
 | 话题换了但 LLM 没输出 `close` | 继续用旧 session，直到预算耗尽或 idle 关闭 | **这是明确接受的覆盖率损失**（维护者决策：不做 topicChange） |
 | session 开着，但群里一直没人说话 | `idle` 到点关闭；期间每次唤醒被"转录未增长"挡住，不调 LLM | 零成本兜底，不产生空转调用 |
 | bot 说完一句后收到反驳 | 仍在新唤醒里判定（有新消息 → 过本地闸；有 session → 过闸门） | 这正是"闸门开着"的价值 |
-| 预算用完，但话题明明显得还该聊 | **不再开口**，直到 LLM 在下一次唤醒重开 session | 预算是防刷屏的主闸；宁可少说 |
+| 预算用完，但话题明明显得还该聊 | **不再开口**（会话仍开着），直到模型说换话题 / 说收口 / 静默超时 | 预算是防刷屏的主闸；宁可少说 |
+| 预算用完，同一话题又来一条消息 | 闸门报 `budget-exhausted`，**不新开 session** | 预算不能被"再问一次"重置——那是预算驱动，不是话题驱动 |
 | LLM 连续两次判"成立"但 `sessionMinGapMs` 未到 | 第二次被闸门挡下，**不消耗预算** | 预算是"说了几句"的账，不是"想过几次"的账 |
 | LLM 输出 `close` 且本次不发言（`satisfied: false`） | 关闭 session，不发言 | `close` 与"要不要说"是两个维度 |
 | 判定失败（超时/解析） | 不开、不关 session；计 `proactiveJudgeFailures` | 判定失败不改变 session 状态——它没有表达过任何意见 |
@@ -247,10 +287,10 @@ verdict = { scene, satisfied, confidence, reason, evidence, directive,
 | 计数（代码侧字段名） | 回答什么 | 期望形态 |
 |---|---|---|
 | `proactiveSessionOpened` | 一天开了几个 session | 与 `proactiveSpoke` 一起看：开得多说得少 = 判据松 |
-| `proactiveSessionClosedBy{reason}` | 怎么关的 | `llm-closed` 高 = 判据的关闭指引有效；`budget-exhausted` 高 = 预算偏紧或模型话多 |
+| `proactiveSessionClosedBy{reason}` | 怎么关的 | `llm-closed` 高 = 判据的关闭指引有效；`topic-changed` 高 = 模型在主动切话题（预算靠它重置）；`idle` 高 = 都是没人接话自然结束的 |
 | `proactiveSpokeInSession` | 每个 session 里说了几句（分布） | 分布集中在 1 = 预算 2 用不满，可考虑降为 1；集中在 2 = 预算卡着 |
 | `proactiveNoSession` | 有多少次唤醒因为"没有 session"被挡 | 高 = session 开得太少（覆盖率低，符合预期但要看得见） |
-| `proactiveBudgetExhausted` | 有多少次唤醒因为预算用完被挡 | 高 = 预算该加；低 = 2 条足够 |
+| `proactiveBudgetExhausted` | 有多少次唤醒因为**本话题额度用尽**被挡（会话还开着） | 高 = 预算该加；低 = 2 条足够。**注意它不等于"它不说话了"**：会话没关，只是没额度 |
 | `proactiveMinGap` | 最小间隔挡了多少次 | 异常高说明 LLM 想说的话被间隔压住了 |
 
 **面板建议**：`sessionOpened × spokeInSession` 的联合分布是本需求的核心指标——
@@ -292,3 +332,94 @@ verdict = { scene, satisfied, confidence, reason, evidence, directive,
 5. **观测**：6 个计数 + `closedBy` 拆分，接进 health 快照；
 6. 灰度一周后**只看两个数**：`spokeInSession` 分布（预算 2 对不对）、
    `closedBy` 分布（LLM 会不会关）。
+
+# 实施记录（落地时判定的五处口径）
+
+需求与代码对账后有五处需要**当场定口径**的地方，都记在这里，免得下一轮重开讨论。
+
+### 1. 唯一的本地闸只装在**定时唤醒**上，不装在 `message` 上
+
+需求 §三给了闸门本体（`hasNewContentSince(lastEvaluationAt)`），§二的流程图把
+`message` 也列在唤醒源里。实现时**没有**把它装在 `message` 那条路上，理由是可判的：
+
+- 一条旁听消息**到达本身**就是"转录有新增"的证据，再比一次时间戳不增加信息；
+- 而它会**引入假阴性**：OneBot 的事件时间是**秒**（`time * 1000`，
+  见 `adapters/onebot/normalize.ts`），而 `lastEvaluationAt` 是本机毫秒时钟
+  ——同一秒内到达的后续消息其 `ts` 并不更大，于是**最高频的那条触发面会被整体吞掉**
+  （表现就是"它从不主动说话"）；
+- 需求给的理由也只针对定时唤醒："若不检查就重问，wait 机制会退化成群里完全安静时
+  每 30 秒问一次同样的问题"。
+
+另外，为了让"同一秒内的新消息"在**定时唤醒**上也能被认出来，
+`ConversationState.hasNewContentSinceLastEvaluation()` 是两条判据取或：
+时间戳（与 wait 票据共用 `hasNewContentSince`）+ **转录末尾是否换人**
+（判定那一刻的末尾 eventId 变了就说明有新增）。时间戳那条的严格大于边界不变。
+
+**已修正（见 §6）**：初版把探针也闸掉了，实测后果是——只要 bot 刚主动开过口
+（活动窗口打开，于是每条消息都触发一次消息面判定，把"上次评估"推到最新），
+"有人提问 → 90 秒后把问题接过来"这条链在**整个话题窗口内完全不会发生**；
+连"再有人顶一句"都救不了（那句顶话自己就会触发一次判定）。
+维护者口径：**探针免闸**，本地闸只装滚动收敛。
+
+### 2. 预算与 session 的关系（**已被维护者修正，见 §6**）
+
+初版按验收 4 实现成"预算减到 0 → 立即关闭"，于是 §四的闸门表与验收 4 互斥：
+session 已经没了，后续唤醒只能记 `no-session`，`proactiveBudgetExhausted` 恒为 0。
+
+更要紧的是实测发现：**那样实现的预算根本不是刹车**。会话关掉之后，下一次唤醒
+只要模型再判一次"值得"就能开一个新的，而新会话的第一句不受最小间隔约束
+（口径是"同一 session 内"）——实测 `sessionBudget=2`、`sessionMinGapMs=45s` 时
+**51 秒内说了 3 句**，"预算耗尽"只是换了一本账。
+
+维护者据此定了新口径（§6），本文件已按新口径改写。
+
+### 3. `session` 字段的聚合口径：任一判定说 `close` 就关
+
+`session` 是**会话级**字段，但按 §六的输出契约它挂在每条逐场景判定上，模型重复
+五次难免不一致。聚合取**更保守的一侧**（`some(close)`）：误关的代价是"少说一句"，
+误留的代价是"接着说"。`close` 与 `satisfied` 无关地生效（边界表：
+"`close` 与'要不要说'是两个维度"），但 `wait` 那一支不动 session——模型此刻说的是
+"有人在答、过几十秒再看"，真要收口，重判那次会给 `close`。
+
+### 4. `conversation-gone` 有落点，但当前运行期没有生产者
+
+需求 §五把四条关闭原因写成穷举，因此 `ConversationStateStore.dispose(convKey)` 是
+第四条原因的唯一落点（关闭 session + 摘监听器 + 移出注册表），并有单测。
+但**当前没有任何调用方**：会话状态一旦创建就常驻到进程结束（旁听状态本来就不落盘）。
+留着它是为了将来加状态淘汰时不必再想一遍 session 怎么收口——不是为了凑满四条。
+
+### 5. 判定层新增的那段正文放在 system 段，不重复进五个场景
+
+`session` 与会话有关、与"哪个场景成立"无关，所以"什么时候该关"写成
+`judge.ts` 的 `SESSION_CRITERIA` 一段（随 `renderJudgeCriteria()` 进 system 段），
+而不是抄进五份判据正文——抄五遍只会让口径漂移。结构化事实块里同时给出
+"本话题会话已开启 N 秒 / 上次发言 N 秒前 / 预算还剩几句"，模型才有依据回答它。
+
+### 6. 维护者的口径修正（实施后拍板，已回写全文）
+
+原话：
+
+> 口径2我觉得需要禁止耗尽后纯为了预算新开session，session不应该被预算驱动，
+> 它的驱动动机应该只是话题。
+
+落地方式（与需求初版的差异，逐条）：
+
+| 项 | 初版 | 修正后 |
+|---|---|---|
+| 预算减到 0 | 立即关闭 session（`budget-exhausted`） | **不关闭**：会话留着、闸门报 `budget-exhausted`（验收 4 已改写） |
+| 重新开口 | 下次唤醒 LLM 再判"值得"就能开新 session | 必须**话题驱动**：模型说 `new-topic`（预算重置），或会话 `close` / `idle` 结束后重开（验收 13 已改写） |
+| `session` 字段 | 两态 `keep-open` / `close` | **三态**，加 `new-topic`（"已经换到另一个话题了"）——它是预算重启的唯一正门 |
+| 关闭原因 | 四条（含 `budget-exhausted`） | 四条，但预算**不在其中**：`llm-closed` / `topic-changed` / `idle` / `conversation-gone` |
+| `new-topic` 的边界 | —— | 只重置**预算**，不重置**节奏**：`min-gap` 照样要过（否则"一直说换话题"就能连刷） |
+| 本地闸 | 所有定时唤醒 | 只装滚动收敛（`topic-roll`）；**问题探针免闸**（口径 1，见 §1 的实测） |
+
+两条实测依据（都写进了用例，防回归）：
+
+1. `tests/proactive-session.test.ts` 验收 4：同一话题连发 4 条消息、模型每次都判成立，
+   发言数恒为 1（旧口径下每次都能靠"关掉旧的 → 再开一个"绕过去）；
+2. 同文件验收 4b：`new-topic` 在间隔没到时照样被 `min-gap` 挡住，
+   间隔到了才关旧开新、预算重置。
+
+另外，口径修正顺带解决了 §2 记的那个矛盾：`proactiveBudgetExhausted` 现在是
+**活的主路径计数**（预算耗尽不关会话，所以每次被额度挡下都会记一次），
+它才真正回答"预算该不该加"；`closedBy` 里不再有预算这一项。

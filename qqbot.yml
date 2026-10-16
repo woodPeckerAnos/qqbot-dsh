@@ -318,6 +318,31 @@ proactive:
   #       + wait_declined{reason}（/metrics 的 proactive 段）。
   maxWaitPerItem: 1
   waitYieldMs: 45000
+  # --- 话题 session（主动发言的**唯一放行闸门**）------------------------------
+  # 一次唤醒（主动/被动）→ LLM 判断 → 输出；判定说"值得"时**额外开一个话题
+  # session**，在这个 session 下打开主动发言闸门，直到预算用完或被关闭。
+  # 取舍已拍板：**放弃介入话题的覆盖率，换精度**——不是所有值得聊的话题都会
+  # 介入，话题切换时也可能漏掉一轮机会（已知并接受，不做 topicChange）。
+  # 观测：health 的 proactive.sessions（opened / closedBy / spokeInSession）。
+  #
+  #   sessionBudget  ：一个话题里允许的主动发言条数。默认 2，
+  #                    **硬上限 5**——配得更大按 5 处理并在日志里 warn
+  #                    （"少说两句"是产品决策，不该被一行配置改回去）。
+  #                    ⚠️ 预算用完**不关闭 session**，只让它在当前话题里闭嘴
+  #                    （预算不该驱动会话的生死）。要重新开口只有两条路，都由
+  #                    **话题**驱动：模型说"换话题了"（new-topic，预算重置），
+  #                    或者会话收口 / 静默超时后由下一次判定重新开一个。
+  #                    指标：`proactive.sessions.budgetExhausted` = 被额度挡下的次数。
+  #   sessionIdleMs  ：静默多久自动关闭 session（毫秒，范围 60000–3600000）。
+  #                    锚点是 bot **自己**上次在这个 session 里发言的时间
+  #                    （没说过则是开启时刻），刻意不被群消息刷新。
+  #                    它同时也是"话题翻篇"的口径：会话结束后预算自然回到满值。
+  #   sessionMinGapMs：同一 session 内两次发言的最小间隔（毫秒，范围
+  #                    10000–300000）。间隔没到时闸门不过，且**不消耗预算**
+  #                    （预算是"说了几句"的账，不是"想过几次"的账）。
+  sessionBudget: 2
+  sessionIdleMs: 600000
+  sessionMinGapMs: 45000
   # 判定调用超时。刻意与 topic.timeoutMs 分开：话题判定只输出一个布尔值
   # （10 秒够），而主动介入要逐场景输出多段 JSON——借用 10 秒会频繁超时，
   # 而超时 = 沉默，表现就是「它从来不主动说话」。

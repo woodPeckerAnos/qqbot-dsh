@@ -424,7 +424,13 @@ curl -s localhost:8080/health | jq .proactive
 | `spoke == 0` 且 `vetoed` 全是 `no-candidate` | 本地预筛没命中：消息不是指代/续聊/问句，也没命中兴趣池 | 看 `SCENES.md` 的成立条件；兴趣池加条目 |
 | `spoke == 0` 且 `judgeFailures > 0` | 判定调用失败（超时/网络/密钥/解析） | 日志里搜「主动介入判定失败」；连续失败会 `suspended` |
 | `suspended > 0` | 判定连续失败达上限，该会话暂停评估 | 修好上游后重启进程（暂停状态不持久化） |
-| `vetoed` 里 `rate-limit` / `topic-spent` | 触发了限流或"每话题一次" | 这是设计行为；额度见 `qqbot.yml` 与 veto 策略 |
+| `vetoed` 里 `rate-limit` / `min-gap` | 触发了硬限流，或同一话题会话内两次发言间隔没到 | 这是设计行为；额度见 `qqbot.yml` 的 proactive 段 |
+| `sessions.opened` 涨、`spoke` 不涨 | 判定判"值得"但发言被后面几道闸门挡下 | 看 `vetoed` 是哪一类；`min-gap` / `rate-limit` / `budget-exhausted` 都不消耗预算 |
+| `sessions.closedBy['idle']` 占绝大多数 | 话题会话几乎都是"没人接话"被静默关闭的 | 正常兜底；若 `llm-closed` 长期为 0，说明判据里"什么时候该关"那一段没起作用 |
+| `sessions.budgetExhausted` 高 | 同一个话题里"还想说、但额度没了"被挡了很多次 | 高 = 预算偏紧（模型还想接着聊）；低 = 2 句够用。**注意它不等于"它不说话了"**：会话还开着，只是闭嘴 |
+| `sessions.spent > 0` | 有话题的额度已用尽、正在闭嘴（会话没关） | 这是正常状态；`idle` 到点或模型说换话题后它会消失 |
+| `sessions.spokeInSession` 集中在 `"1"` | 每个话题只说得出一句，预算 2 用不满 | 可把 `proactive.sessionBudget` 降为 1（更省），或说明模型偏保守 |
+| `sessions.noSession` 很高 | 大量唤醒因为"没有会话"被挡 = 覆盖率低 | **这是本设计的预期**（以覆盖率换精度）；要提覆盖只能改判据或调 session 参数 |
 | `deliveryDegraded: {"unsupported": N}` | **官方通道不支持主动发言**（主动推送已停用） | 预期行为，不是故障；OneBot 才有这个能力 |
 
 ### 4.5.2 "它为什么说了这句"
@@ -439,7 +445,12 @@ curl -s localhost:8080/health | jq .proactive
 1. **平台能力**：官方通道恒为 `unsupported`（见上表）。要主动发言必须走 OneBot。
 2. **投递开关**：总开关关了 / 灰度没关（`dryRun`）/ 该群不在白名单。
 3. **否决层**：`vetoed` 里有 `rate-limit`（10 分钟 3 次、1 小时 8 次）、
-   `topic-spent`（同一话题已说过）、`no-response`（连续两次介入没人理，保险生效）。
+   `no-session`（没有开启中的话题会话：模型没判"值得"，或上一个会话已经关了）、
+   `min-gap`（同一会话内距上次发言不足 `sessionMinGapMs`）、
+   `budget-exhausted`（**本话题的发言预算已用尽**：会话还在，只是不放行——
+   等模型说"换话题了"/"收口了"或静默超时）、`no-response`（连续两次介入没人理，保险生效）。
+   另有 `skippedUnchanged`：被"转录自上次判定以来无新增"挡下、连 LLM 都没调的次数
+   ——这个数高说明群里本来就没新消息，不是判据把它们否了。
 4. **判定层**：`judgeFailures` 涨 = 判定没跑通；`satisfiedByScene` 全空 =
    模型认为没有一个场景成立（看 `SCENES.md` 的成立门槛，多数是判据真的不成立）。
 5. **搜集层**：全是 `no-candidate` = 本地预筛就没命中。逐条对照：

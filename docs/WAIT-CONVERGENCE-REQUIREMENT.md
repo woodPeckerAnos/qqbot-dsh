@@ -274,3 +274,18 @@ implemented:
   否则验收 11 的等式不成立——"取消"也是这张票据的终局；
 - **`resolved` 只在"唤醒后判成立"这一处**计数：那是"等待熬到了成立"，
   也是判断这个机制要不要保留的唯一依据。
+
+## 后续修订（TOPIC-SESSION-REQUIREMENT 落地时补的第三处口径）
+
+需求里写的"该检查应共用同一实现（同一次 `hasNewContentSince`）"已经落地为
+**两处消费同一份实现**：
+
+- wait 票据的到期唤醒用**票据自己的** `evaluatedAt`（对象级，见 `wakeWaitTickets`）；
+- 话题 session 的**滚动收敛**唤醒用**会话级的** `lastEvaluationAt`（口径修正后这道闸
+  只装 `topic-roll`：问题探针是时间触发、且天生有界，免闸——见 TOPIC-SESSION 文档
+  §6），入口是
+  `ConversationState.hasNewContentSinceLastEvaluation()`——它内部仍然调用本需求引入的
+  `hasNewContentSince(since)`，只是额外多加了一条**与时间无关**的判据
+  （判定那一刻的转录末尾是否换人）：OneBot 的事件时间是**秒**（`time * 1000`），
+  同一秒内到达的新消息其 `ts` 并不大于本机毫秒时钟的判定时刻，只比时间戳会把它
+  误判成"没有新增"。时间戳那条的边界仍是**严格大于**，本需求的语义不变。

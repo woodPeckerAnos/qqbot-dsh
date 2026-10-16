@@ -15,7 +15,8 @@
 #   - note     选填，额外的发言约束（进 prompt，例如"只给结论别讲原理"）
 #
 # 不进本文件的配置（避免两套账）：
-#   - 每话题最多说几次 → `VetoPolicy.maxPerTopic`（否决层，对所有场景统一）
+#   - 还能主动说几句 → 话题 session 的 `sessionBudget`（`qqbot.yml` 的 proactive 段，
+#                       对所有场景统一，见 docs/TOPIC-SESSION-REQUIREMENT.md）
 #   - 开关 / 临时停用   → `qqbot.yml` 的 `proactive.interestsEnabled`
 #
 # 上限：最多 20 条（超出启动报错）。理由是整份兴趣池会进 prompt，

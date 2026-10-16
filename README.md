@@ -8,7 +8,7 @@
 |---|---|---|
 | ⚙️ | **完整 agent 能力** | 内核是 [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh)：每个会话一个独立进程 + 独立工作区，能真的写代码、跑命令、读文件、多步干活并交付产物 |
 | 🔌 | **一套服务，多套出口** | 官方开放平台与社区框架（OneBot v11）**可同时在线**，编排层以上只有一条代码路径；接入差异全部收在适配器里 |
-| 💬 | **主动发言** | 不只对 @ 反应：旁听群聊 → 判断该不该开口 → 五类场景下主动插话，带限流、每话题一次、「没人理我就停」等硬闸门 |
+| 💬 | **主动发言** | 不只对 @ 反应：旁听群聊 → 判断该不该开口 → 五类场景下主动插话，带限流、**话题会话发言预算**、「没人理我就停」等硬闸门 |
 
 ```mermaid
 flowchart LR
@@ -92,8 +92,10 @@ cp src/pipeline/proactive/interests/interests.yml.example interests.yml
 
 它**会在什么情况下开口**，用人话写在
 **[SCENES.md](src/pipeline/proactive/interests/SCENES.md)**：五类场景（指代 / 续聊追问 /
-无人应答 / 持续讨论 / 兴趣话题）+ 全局闸门（没人理我就停、限流、每话题一次、夜间静默）。
-灰度期间看 `curl -s localhost:8080/health | jq .proactive` 的 `wouldSend`；
+无人应答 / 持续讨论 / 兴趣话题）+ 全局闸门（没人理我就停、限流、话题会话
+`sessionBudget`、夜间静默）。
+灰度期间看 `curl -s localhost:8080/health | jq .proactive` 的 `wouldSend` 与
+`sessions`（`opened` / `closedBy` / `spokeInSession`——后者回答"预算 2 到底对不对"）；
 "它为什么不说话"的排查顺序见 **[RUNBOOK §4.5](docs/RUNBOOK.md)**。
 
 ---
@@ -141,7 +143,7 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 | [proactive/AGENT-CONTRACT](src/pipeline/proactive/AGENT-CONTRACT.md) | 扩展契约（给 agent 读）：新增介入规则 / 新增平台 / 改场景表 |
 | [PROACTIVE-INTERVENTION-ARCH](docs/PROACTIVE-INTERVENTION-ARCH.md) | 主动介入架构方案：5 场景 → 三段式架构、取舍与未实现项 |
 | [WAIT-CONVERGENCE-REQUIREMENT](docs/WAIT-CONVERGENCE-REQUIREMENT.md) | 需求：`wait`（延迟重查）的收敛——票据化、三类理由、唤醒前本地判断、11 条验收 |
-| [TOPIC-SESSION-REQUIREMENT](docs/TOPIC-SESSION-REQUIREMENT.md) | 需求：用「话题 session + 发言预算」替代 `topic-spent` 的每话题一次（预算 2 / 静默 10 分钟关闭 / 不做 topicChange） |
+| [TOPIC-SESSION-REQUIREMENT](docs/TOPIC-SESSION-REQUIREMENT.md) | 需求（**已实施**）：用「话题 session + 发言预算」替代旧的每话题一次闸门（预算 2 / 静默 10 分钟关闭 / 不做 topicChange） |
 | [NEW-CONTENT-REQUIREMENT](docs/NEW-CONTENT-REQUIREMENT.md) | ~~已作废~~：本地信号集方案（被上一份取代，保留作"被否掉的方案"记录） |
 
 ## 开发

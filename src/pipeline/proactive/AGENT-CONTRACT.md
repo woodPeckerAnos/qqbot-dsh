@@ -250,6 +250,15 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
   `VetoContext.order`；
 - 新增额度约束时，**只收紧不放宽**，并加进 `VETO_REASON_ORDER`（排查顺序）
   与对应单测；
+- **话题 session 闸门**（`VetoContext.session` + `VetoPolicy.sessionMinGapMs`）
+  接替了旧的"每话题一次"：它只读 `ConversationState.session` 的三个字段
+  （`openedAt` / `budgetLeft` / `lastSpokeAt`），**开与关都由 runner 负责**
+  （`scene/watcher.ts`），否决层保持纯函数。硬上限在 `contract.ts` 的
+  `effectiveSessionBudget()` 里，配得再大也按 5 处理；
+- ⚠️ **预算不驱动 session**（维护者口径）：`budgetLeft` 减到 0 只让闸门报
+  `budget-exhausted`，会话仍然开着；要重置预算只有"模型说换话题"
+  （`new-topic` → 关旧开新）或会话结束（`close` / `idle`）两条路。
+  改这一层时别把"预算耗尽即关闭"写回来——它会顺手把预算变成一句空话；
 - 分位数预算默认关闭（`quantileBudget: false`）：它依赖 `sceneRates`
   回放统计，没数据时开启等于用先验值赌运气。
 
@@ -294,7 +303,7 @@ git diff                                   # 复核：有没有偷偷改到别�
 | 本地预筛占用"正在评估"标记 | 异步评估短暂占用标记，而消息触发很密 → 紧随其后的滚动收敛被**静默丢弃**（实测：第一条消息触发一次无候选评估，第三条的收敛因此永不生效） | 预筛必须在占标记**之前**跑完；无候选同步返回 |
 | 先入状态再做保险判断 | `state.observe` 会把无人回应计数清零 → "没人理我就停"永远读到 0、保险形同失效 | `observe()` 里**先**用旧状态预筛，**再**入状态 |
 | 兴趣匹配只看触发的那一条消息 | 场景 5 的典型对话是"这个折线图怎么画" + "要不换个图？"，只看后一条命中不了任何条目 | 用 `watcher.matchText()`（最近 5 条拼接） |
-| 以为新窗口里 bot 的第一句发言会被计数 | `startWindow` 会清零话题额度 → 顺序写反等于"每话题一次"失效 | `recordBotSpoke` 先计数再判窗口 |
+| 以为新窗口里 bot 的第一句发言会被计数 | `startWindow` 会清零窗口内的发言计数 → 顺序写反会让场景 2/5 的"bot 还没说过话"预筛失真 | `recordBotSpoke` 先计数再判窗口 |
 | 在转录里找不到 bot 自己刚说的话 | 旁听缓冲只收非 @ 消息，bot 的 @ 回复不进缓冲 | 场景 1 的判定需要 `<bot最近发言>` 块（见架构方案 §3.6） |
 
 ---

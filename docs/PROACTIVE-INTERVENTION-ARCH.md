@@ -11,10 +11,12 @@
 > 已单独立项的需求（均由一周灰度数据触发）：
 > - [WAIT-CONVERGENCE-REQUIREMENT.md](WAIT-CONVERGENCE-REQUIREMENT.md)
 >   ——`vetoed.wait` 占全部判定的 46%（1682 次）且产出为零；给出收敛方案
->   （票据化 + 三类理由 + 唤醒前本地判断）与 11 条验收标准；
+>   （票据化 + 三类理由 + 唤醒前本地判断）与 11 条验收标准；**已实施**；
 > - [TOPIC-SESSION-REQUIREMENT.md](TOPIC-SESSION-REQUIREMENT.md)
->   ——`topic-spent` 拦掉了模型意图的 90%（494/550）；改用「话题 session +
+>   ——旧的"每话题一次"闸门拦掉了模型意图的 90%（494/550）；改用「话题 session +
 >   发言预算」（预算 2、静默 10 分钟关闭、不做 topicChange），明确以覆盖换精度；
+>   **已实施**（`ConversationState.session` 三字段 + `veto.ts` 的 session 闸门 +
+>   `scene/watcher.ts` 的开关与静默定时器）；
 >   更早的本地信号集方案（[NEW-CONTENT-REQUIREMENT.md](NEW-CONTENT-REQUIREMENT.md)）
 >   已在代码对账中被否，保留为记录。
 >
@@ -440,8 +442,10 @@ export type ProactiveDecision =
 | 2 持续讨论 | 成立 = 三判据至少一个成立（可提供能力 / 有可答问题 / 有事实性错误）**且**有信息增量；纯观点碰撞、情绪话题 → 不成立 |
 | 5 兴趣 / 性格 | 成立 = 话题停在**没有结论或没人动手**处，且 bot 能补一句可立即使用的结果 |
 
-「每话题至多 1 次」这类**额度**约束不写在 criteria 里——它是 ③ 层的事
-（`VetoPolicy.maxPerTopic`）；写进 prompt 会让额度无法配置、无法回放对比。
+「一个话题会话里至多说几句」这类**额度**约束不写在 criteria 里——它是 ③ 层的事
+（`VetoPolicy.sessionMinGapMs` 与调度层的 `sessionBudget`，见
+[TOPIC-SESSION-REQUIREMENT.md](./TOPIC-SESSION-REQUIREMENT.md)）；
+写进 prompt 会让额度无法配置、无法回放对比。
 同理，`waitReason` 只是模型的**建议**，是否真的等待由 ③ 层按
 `maxWaitPerItem` 决定（且只有 `yielding` 会建票据、排一次唤醒；
 `not-yet` / `watching` 分别交给既有的问题探针与"下一条人类消息"——

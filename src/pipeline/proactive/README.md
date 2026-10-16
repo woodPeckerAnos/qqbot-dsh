@@ -73,7 +73,7 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
                          └─▶ ProactiveWatcher.observe()
                                ① 本地预筛（零 LLM 成本）→ 无候选就到此为止
                                ② 有候选才调判定（LLM）
-                               ③ 否决层（顺序 / 限流 / 每话题一次 / 无人回应保险）
+                               ③ 否决层（顺序 / 限流 / **话题 session 闸门** / 无人回应保险）
                                ④ ProactiveSpeaker.deliver() → 适配器
 ```
 
@@ -101,7 +101,7 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 |---|---|---|---|
 | ① 搜集 | `scene/collect.ts` | 本地、零成本地找出候选场景；执行全局保险（没人理我就停） | 语义判断、调 LLM、决定谁赢 |
 | ② LLM | `judge/judge.ts` | 对**每个候选**回答"成立吗"（多标签 + 置信度 + 理由 + 证据） | 做优先级/预算裁决、产生候选外的场景 |
-| ③ 否决 | `veto/veto.ts` | 顺序、硬限流、话题预算、wait 采纳 → 唯一的终局 | 读原始消息文本、调 LLM、任何语义判断 |
+| ③ 否决 | `veto/veto.ts` | 顺序、硬限流、**session 闸门**（预算 / 最小间隔）、wait 采纳 → 唯一的终局 | 读原始消息文本、调 LLM、任何语义判断 |
 | 投递 | `deliver/speaker.ts` | 唯一出口 + 降级链 + 记账（§6） | 做额度判断（避免两套账） |
 
 **为什么「取第一个」必须在第三层**：它是资源分配（把有限发言机会给谁），
@@ -165,6 +165,9 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 | `proactive.interestsFile` | `interests.yml` | 兴趣池文件路径（`QQ_INTERESTS_FILE` 可覆盖）。**不存在 = 空池**，格式错 = 启动报错 |
 | `proactive.botAliases` | `[]` | bot 在本群的别名（场景 4 指代检测）；至少 2 字、最多 5 个 |
 | `proactive.topicRollMessages` / `topicRollMs` | `30` / `300000` | 话题滚动周期（场景 2/5 的入口；消息数或时间先到者） |
+| `proactive.sessionBudget` | `2`（硬上限 5） | **一个话题里**允许的主动发言条数；说满即**闭嘴**（会话不关，直到模型说换话题/收口或静默超时） |
+| `proactive.sessionIdleMs` | `600000` | 静默多久自动关闭 session（锚点 = bot 自己上次发言的时刻） |
+| `proactive.sessionMinGapMs` | `45000` | 同一 session 内两次发言的最小间隔（没过闸门**不消耗预算**；换话题也不例外） |
 
 **给场景 5 加兴趣条目**：`cp src/pipeline/proactive/interests/interests.yml.example interests.yml`
 然后按字段加——完整说明见 [interests/SCENES.md](interests/SCENES.md) 的
