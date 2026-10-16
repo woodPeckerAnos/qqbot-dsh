@@ -339,8 +339,9 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 | 现象 | 字段 | 原因 | 处置 |
 |---|---|---|---|
-| 图片完全没进 prompt | `imagesSkipped` 增长、日志有"部分图片未能读入" | 下载失败 / 超限 / 格式不支持 | 见下表逐项排除 |
+| 图片完全没进 prompt | `imagesSkipped` 增长、日志有"部分图片未能读入" | 下载失败 / 格式不支持 / 字节超限且压不下来 / 解不开 | 见下表逐项排除 |
 | `imagesInlined` 一直是 0 | — | `attachments.enabled=false`，或模型侧不支持图片 | 打开 `BOT_ATTACHMENT_ENABLED`；prompt 里会明说"已关闭图片读取" |
+| 长图只读进来一部分 | prompt 注记里有"共需 R 块，本次只送入前 N 块" | 切片块数受 `attachments.maxImageTiles`（默认 12）与 runtime 单条 prompt 20 张上限约束 | 调大 `BOT_ATTACHMENT_MAX_IMAGE_TILES`（token 代价随之上升），或让用户分段发送 |
 | 引用内容为空 | 日志 `回查引用消息失败` | OneBot 侧 `get_msg` 失败（框架不支持/超时） | 该条按未引用继续处理；检查框架是否支持 `get_msg` |
 
 按平台排除：
@@ -349,11 +350,25 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 |---|---|---|
 | 官方 | 附件 CDN 需要鉴权，但 token 取不到 | 日志 `取 access_token 失败`；先修 2.1 |
 | 官方 | 图片格式不在 png/jpeg/webp/gif 内（如 bmp/heic） | 日志"格式不支持内联"，属预期降级 |
-| 官方 | 图片太大 | 提高 `BOT_ATTACHMENT_MAX_BYTES`（默认 8MB） |
+| 官方 | 图片太大 | 无需再调配置：超限图会自动降采样/切片；仍想放宽就调 `BOT_ATTACHMENT_MAX_BYTES`（内联上限） |
 | OneBot | 图片只有本地路径 / 文件标识（NapCat 有头形态常见） | **已自动回查**：连接器会用 `get_file` / `get_image` 动作经 WS 取字节（base64 或刷新后的 URL），无需配置；仍失败看 debug 日志里 `get_file 回查失败` 的原因 |
 | OneBot | 图片 URL 过期（NapCat 的 URL 约 2 小时过期，报 `url expired`） | **已自动刷新**：GET 失败后同样回退 `get_file`/`get_image` 拿新 URL/base64 |
 | OneBot | 框架上报的图片 URL 指向宿主 `127.0.0.1:<port>`，容器访问不到 | GET 失败后会回退动作回查；若仍失败，确认 NapCat 版本支持 `get_file`（v4.8+） |
 | 两者 | 就想要纯文本 | 设 `BOT_ATTACHMENT_ENABLED=false`，行为回到只有 `[图片]` 占位 |
+
+**图片链路的准入限值**（排障时对照，全部来自 runtime，不由本项目配置）：
+
+| 闸 | 阈值 | 越界表现 |
+|---|---|---|
+| 源图字节 | 20MiB（本项目另有 8MiB 内联上限，超限先降采样） | `IMAGE_TOO_LARGE` |
+| 源图总像素 | 6400 万（先判） | `IMAGE_TOO_MANY_PIXELS`「图片总像素超过模型上限」 |
+| 源图单边 | 8192（后判） | `IMAGE_DIMENSION_TOO_LARGE`「图片单边像素超过模型上限」 |
+| 单条 prompt 张数 | 20 | `TOO_MANY_IMAGES` |
+| 模型侧**每张图**预算 | 64 万像素 / 1MiB（`deepseek-flash` 的 `imagePixelBudget`） | 不报错——静默降采样，长图会因此糊掉（这正是切片要解决的问题） |
+
+这些错误原文本是英文，`dsh/media.ts` 的 `describeImageRejection` 会把它们翻成
+中文再写进 prompt（原文留在日志里），所以用户在 QQ 里看到的不会再是
+`Image exceeds the configured per-side pixel limit.`。
 
 ### 4.6 长任务把会话卡住 / 后台任务没结果
 
@@ -384,8 +399,9 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 | 现象 | 字段 | 原因 | 处置 |
 |---|---|---|---|
 | 转发块只显示 `[聊天记录]` | `forwardsFailed` 增长 | 回查失败/超时/响应解析不出条目 | 看 debug 日志 `get_forward_msg 失败`；确认框架支持该动作（见第 7 节 #14）。注意**关掉 `BOT_ATTACHMENT_FORWARD_ENABLED` 不计入**这个数（主动关闭不是失败） |
+| 转发块只显示 `[聊天记录]`，但 `forwardsFailed` **不涨** | — | 上报里既没有内联内容也没有 id（`forward` 段只有 type） | 框架问题：让它按 OneBot 规范上报 `forward.data.id`（NapCat 会同时给 `content`） |
 | 转发块"共 N 条"但只列出前几条 | `forwardNodesInlined` 小于 N | 命中上限（正常降级，不是故障） | 提高 `BOT_ATTACHMENT_FORWARD_MAX_NODES` / `_MAX_CHARS` |
-| 完全不想展开转发 | — | — | `BOT_ATTACHMENT_FORWARD_ENABLED=false`（关掉后**不发任何回查请求**） |
+| 完全不想展开转发 | — | — | `BOT_ATTACHMENT_FORWARD_ENABLED=false`（关掉后**不发任何回查请求**，内联内容也不展开） |
 | 文件"不解析该类型" | `filesSkipped` 增长 | 扩展名不在白名单 | 加进 `BOT_ATTACHMENT_FILE_EXTENSIONS`；Office 三件套本期刻意不解析 |
 | 文件"读取失败" | `filesSkipped` 增长 | 取字节失败（URL 过期 / 直链申请失败 / 框架动作不支持） | 看 debug 日志 `申请直链失败`；确认框架支持 `get_group_file_url`（见 #17） |
 | 文件"没有可提取的文本层" | `filesSavedOnly` 增长 | 扫描版 PDF（无文本层） | 属预期：原文已在 `inbox/`，可以请 agent 用工具处理；OCR 不在范围内 |
@@ -601,7 +617,7 @@ docker system df
 | 11 | 官方多媒体 CDN 是否强制 `Authorization: QQBot <token>` | 实况文档未写死。程序先带 token，仅在 401/403 时裸请求一次兜底，两种形态都能过 |
 | 12 | DS 模型对 image block 的真实支持面 | SDK 协议支持内联图片（`SdkEncodedImageBlock`），但具体模型是否都吃图未逐一实测。看不到图先看 `/metrics` 的 `imagesInlined`/`imagesSkipped`；不支持就设 `BOT_ATTACHMENT_ENABLED=false` |
 | 13 | OneBot 上报的图片 URL 容器可达性 | 框架在宿主时可能上报 `http://127.0.0.1:<port>/...`，容器内不可达。**已缓解**：URL 缺失或 GET 失败时会自动用 `get_file`/`get_image` 动作回查（base64 或刷新 URL）；仍失败才退化为 `[图片]` 占位，见 4.5 |
-| 14 | `get_forward_msg` 的入参与响应形状 | 参数名在各实现间不一致（NapCat 用 `id`、go-cqhttp 用 `message_id`），响应可能是 node 段数组、CQ 码字符串数组、或包着 `data` 的形态。程序**一次请求带两个参数**、解析器容忍上述形状，认不出的条目跳过。真机上若转发块始终只显示 `[聊天记录]`，看 debug 日志 `get_forward_msg 失败` 与 `/metrics` 的 `forwardsFailed` |
+| 14 | `get_forward_msg` 的入参与响应形状 | 参数名在各实现间不一致（NapCat 用 `id`、go-cqhttp 用 `message_id`），响应可能是 node 段数组、裸消息段数组、CQ 码字符串数组、被序列化成 JSON 的字符串、或包着 `data` 的形态。程序**一次请求带两个参数**（`message_id` 的类型按能否无损往返决定：19 位消息 id 一旦过 `Number()` 就会丢精度，而 NapCat 恰好优先取 `message_id`）、解析器容忍上述形状，认不出的条目跳过。**已修**：上报自带 `forward.data.content` 时优先内联展开，零回查。真机上若转发块仍只显示 `[聊天记录]`，看 debug 日志 `get_forward_msg 失败` 与 `/metrics` 的 `forwardsFailed` |
 | 15 | 官方是否存在聊天记录类 `message_type` | 现行官方文档的接收侧只有 0/3/103，早期代码注释里的 101/102 查无实据。程序对它们做**防御性兼容**（见到就把 `msg_elements` 当转发块渲染）。若官方后续开放转发能力，接缝已留好；在此之前官方侧不作为承诺 |
 | 16 | `pdftotext` 对中文 PDF 的实际抽取质量与 `-layout` 取舍 | `-layout` 保留版式（表格更可读），代价是中文行内会多出对齐空格。若实测发现空格干扰严重，去掉 `-layout` 即可（`src/dsh/document.ts` 的参数数组） |
 | 17 | OneBot 群文件直链申请的**返回字段** | 入参已与[官方文档](https://doc.napneko.icu/develop/file)核对一致（`get_group_file_url{file_id, group}`、`get_private_file_url{file_id}`）；**返回体里直链的字段名**未见示例，程序读 `url`，取不到就退回 `get_file`。真机上若文件始终"读取失败"，看 debug 日志 `申请直链失败` 与返回体字段名 |

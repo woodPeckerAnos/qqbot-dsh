@@ -54,6 +54,7 @@ import {
   quotedAuthorFromGetMsg,
   quotedContentFromGetMsg,
   type ForwardRef,
+  type ForwardNode,
   type NormalizeResult,
 } from './normalize.js';
 import type { OneBotActionResponse, OneBotEvent } from './types.js';
@@ -656,10 +657,9 @@ export class OnebotConnector implements BotConnector {
     conversationKey: string,
     budget: ForwardBudget,
   ): Promise<MessageQuotePart | undefined> {
-    const numericId = Number(quotedMessageId);
     try {
       const data = await this.callAction(session, 'get_msg', {
-        message_id: Number.isFinite(numericId) ? numericId : quotedMessageId,
+        message_id: exactActionId(quotedMessageId),
       });
       const extracted = quotedContentFromGetMsg(data, session.selfId ?? 0);
       if (extracted.parts.length === 0) return undefined;
@@ -706,13 +706,19 @@ export class OnebotConnector implements BotConnector {
     for (const ref of refs) {
       const placeholder = resolved[ref.index];
       if (placeholder === undefined || placeholder.type !== 'forward') continue;
-      resolved[ref.index] = await this.expandForward(session, ref.id, depth, budget);
+      resolved[ref.index] = await this.expandForward(session, ref, depth, budget);
     }
     return resolved;
   }
 
   /**
-   * 展开一个转发块。
+   * 展开一个转发块：**能用平台已内联的内容就不发回查**。
+   *
+   * 内容有两条来源，优先级是刻意的：
+   *   1. `ref.nodes`——上报里已经带上逐条发言（NapCat 的 `forward.data.content`
+   *      在官方 schema 里标注为 [收]）。用它既省一次往返，也不受 NapCat
+   *      "消息 id 约 5000 条后被 LRU 淘汰"的影响；
+   *   2. `ref.id`——只有 id 时才调 get_forward_msg（go-cqhttp / Lagrange 等）。
    *
    * 每个**顶层**转发块一份预算（`newForwardBudget`），嵌套块共用外层预算——
    * "这个块最多读 20 条"是维护者能理解、能预测的语义；按块各自重置会让
@@ -720,12 +726,14 @@ export class OnebotConnector implements BotConnector {
    */
   private async expandForward(
     session: Session,
-    forwardId: string,
+    ref: ForwardRef,
     depth: number,
     budget: ForwardBudget,
   ): Promise<MessagePart> {
     const config = this.options.forward;
-    // 关掉 / 没配：保持既有行为（`[聊天记录]`），不做任何网络请求
+    // 关掉 / 没配：保持既有行为（`[聊天记录]`），不做任何网络请求。
+    // 内联内容也一并不展开——这个开关的语义是"别在聊天记录上花成本"，
+    // 与内容是否已经在手上无关（官方侧同理，见 content.ts 的说明）。
     if (config === undefined || !config.enabled) return { type: 'text', text: '[聊天记录]' };
     // `depth` 只统计**嵌套**层数：最外层恒为 0 且永远展开，maxDepth=0 表示
     // "只展开最外层"而不是"什么都不展开"（后者会让这个取值毫无意义）。
@@ -737,23 +745,40 @@ export class OnebotConnector implements BotConnector {
       this.reportForward(depth, { ok: false, nodes: 0 });
       return { type: 'text', text: '[转发消息（超出本次读取上限，未展开）]' };
     }
-    // 回查次数与总耗时是独立于条目数的两道闸（见 ForwardBudget 的说明）
-    if (budget.lookupsLeft <= 0 || this.now() >= budget.expiresAt) {
+    // 回查有次数与总墙钟两道闸（见 ForwardBudget 的说明）。内容已内联时不占
+    // 回查额度——它是零成本的；墙钟仍要看，因为它同时是"这条消息别把串行
+    // 队列堵太久"的兜底。
+    if (this.now() >= budget.expiresAt) {
       this.reportForward(depth, { ok: false, nodes: 0 });
       return { type: 'text', text: '[转发消息（超出本次读取上限，未展开）]' };
     }
-    budget.lookupsLeft -= 1;
 
-    const data = await this.getForwardData(session, forwardId);
-    if (data === undefined) {
-      this.reportForward(depth, { ok: false, nodes: 0 });
-      this.options.logger.warn('回查转发消息失败（降级为 [聊天记录]）', { forwardId });
-      return { type: 'text', text: '[聊天记录]' };
-    }
-    const nodes = parseForwardNodes(data, session.selfId ?? 0);
-    if (nodes.length === 0) {
-      this.reportForward(depth, { ok: false, nodes: 0 });
-      return { type: 'text', text: '[聊天记录]' };
+    const inline = ref.nodes;
+    let nodes: ForwardNode[];
+    if (inline !== undefined && inline.length > 0) {
+      nodes = inline;
+    } else {
+      if (ref.id === undefined) {
+        this.reportForward(depth, { ok: false, nodes: 0 });
+        return { type: 'text', text: '[聊天记录]' };
+      }
+      if (budget.lookupsLeft <= 0) {
+        this.reportForward(depth, { ok: false, nodes: 0 });
+        return { type: 'text', text: '[转发消息（超出本次读取上限，未展开）]' };
+      }
+      budget.lookupsLeft -= 1;
+
+      const data = await this.getForwardData(session, ref.id);
+      if (data === undefined) {
+        this.reportForward(depth, { ok: false, nodes: 0 });
+        this.options.logger.warn('回查转发消息失败（降级为 [聊天记录]）', { forwardId: ref.id });
+        return { type: 'text', text: '[聊天记录]' };
+      }
+      nodes = parseForwardNodes(data, session.selfId ?? 0);
+      if (nodes.length === 0) {
+        this.reportForward(depth, { ok: false, nodes: 0 });
+        return { type: 'text', text: '[聊天记录]' };
+      }
     }
 
     const outParts: MessagePart[] = [];
@@ -794,7 +819,8 @@ export class OnebotConnector implements BotConnector {
     };
     this.reportForward(depth, { ok: true, nodes: outParts.length });
     this.options.logger.debug('转发块已展开', {
-      forwardId,
+      forwardId: ref.id ?? '(内联)',
+      source: inline !== undefined && inline.length > 0 ? 'inline' : 'lookup',
       declared: nodes.length,
       expanded: outParts.length,
       truncated,
@@ -826,11 +852,11 @@ export class OnebotConnector implements BotConnector {
     }
 
     // 参数名在实现之间不一致：NapCat 用 id，go-cqhttp 用 message_id。
-    // 一次请求同时带上两个，避免"先试一个再试另一个"把失败路径的延迟翻倍。
-    const numericId = Number(forwardId);
+    // 一次请求同时带上两个，避免"先试一个再试另一个"把失败路径的延迟翻倍；
+    // 但 message_id 的类型必须**原样**（见 exactActionId 的说明）。
     const params: Record<string, unknown> = {
       id: forwardId,
-      message_id: Number.isFinite(numericId) ? numericId : forwardId,
+      message_id: exactActionId(forwardId),
     };
 
     const timeoutMs = this.options.forward?.timeoutMs;
@@ -1163,4 +1189,22 @@ export class OnebotConnector implements BotConnector {
 /** 只有用户消息带 parts/引用；系统事件（进群/加好友）走另一条路径。 */
 function isMessage(event: NormalizedEvent): event is NormalizedMessage {
   return event.kind === 'group-at-message' || event.kind === 'c2c-message';
+}
+
+/**
+ * 把平台侧消息 id 原样（或无损地）交给动作调用。
+ *
+ * **踩过的坑，别改回去**：QQ 的消息 id 是 19 位十进制（如 `7477882741027621893`），
+ * 超过 2^53 之后 `Number()` 会静默改写末位。而 NapCat 的 `get_forward_msg` 是
+ * `payload.message_id || payload.id`——**message_id 优先**。于是"两个参数都带"
+ * 这种看似稳妥的写法，反而用被截断的数字顶掉了正确的字符串 id：回查必然失败
+ * （retcode 1200「消息已过期或者为内层消息」），用户侧表现为**聊天记录只剩
+ * `[聊天记录]` 占位**，而 debug 日志里只有一句语焉不详的 `get_forward_msg 失败`。
+ *
+ * 所以只有**能无损往返**的短数字 id 才转成 number（go-cqhttp 系的入参类型是
+ * 整数，字符串会被判参数错误），其余一律保持字符串。
+ */
+function exactActionId(id: string): number | string {
+  const numeric = Number(id);
+  return id !== '' && Number.isSafeInteger(numeric) && String(numeric) === id ? numeric : id;
 }

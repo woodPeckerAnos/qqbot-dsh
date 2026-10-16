@@ -70,19 +70,26 @@ export interface ExtractedContent {
   /** `reply` 段引用的消息 id */
   quotedMessageId?: string;
   /**
-   * 待回查的转发块：`index` 是它在 `parts` 里的位置（占位片段），
-   * `id` 是 get_forward_msg 的入参。
+   * 待展开的转发块：`index` 是它在 `parts` 里的位置（占位片段），
+   * `id` 是 get_forward_msg 的入参，`nodes` 是平台**已经随事件推过来**的逐条内容。
    *
-   * 为什么不在归一化时就把内容取回来：这里是纯函数（无 IO，单测友好），
-   * 回查属于连接器的职责（与 `reply` 段的 get_msg 回查同构）。
+   * 为什么不在归一化时就把内容渲染成最终片段：限额（条数/字符/深度）属于连接器的
+   * 配置，渲染必须和回查路径共用同一套限额，否则"内联"与"回查"两条路的成本不一样。
+   * 解析（纯函数）在这里做，渲染与限额在连接器做。
+   *
+   * 为什么 `id` 与 `nodes` 都可选：两者至少有一个（都没有时归一化直接给
+   * `[聊天记录]` 文本占位）；只有 nodes 的形态见 `case 'node'` 与部分实现。
    */
   forwardRefs?: ForwardRef[];
 }
 
-/** 转发块占位片段在 parts 中的位置 + 平台侧 id */
+/** 转发块占位片段在 parts 中的位置 + 平台侧 id / 已内联的逐条内容 */
 export interface ForwardRef {
   index: number;
-  id: string;
+  /** get_forward_msg 的入参；平台没给 id 且有内联内容时不写 */
+  id?: string;
+  /** 平台随事件推来的逐条发言（NapCat 的 `forward.data.content`）；有就不必回查 */
+  nodes?: ForwardNode[];
 }
 
 /** 转发块里的一条发言（已解析成片段，可能自己还带转发/引用） */
@@ -254,15 +261,32 @@ export function extractMessageContent(
         parts.push({ type: 'text', text: '[表情]' });
         break;
       case 'forward': {
-        // 合并转发：段里只有 id，内容要回查 get_forward_msg（连接器负责）。
-        // 这里放一个占位片段并记下它的下标，回查成功后原地替换；失败则换成
-        // `[聊天记录]`（保持"以前是什么样，失败后还是什么样"）。
+        // 合并转发：内容有两种到手方式，**优先用已经在手上的那份**。
+        //   1. 内联：多数实现（NapCat 的 `forward.data.content` 标注为 [收]）把逐条
+        //      发言随事件一起推来——不需要网络、不怕 id 过期，直接解析；
+        //   2. 回查：只有 id 时留给连接器调 get_forward_msg（占位片段 + 下标）。
+        // 两者都没有时退化成 `[聊天记录]`：这是唯一"读不到"的诚实形态。
         const id = asString(data['id']) ?? asString(data['message_id']);
-        if (id === undefined) {
+        const inline = inlineForwardNodes(data, selfId);
+        const ref = forwardRef(parts.length, id, inline);
+        if (ref === undefined) {
           parts.push({ type: 'text', text: '[聊天记录]' });
           break;
         }
-        forwardRefs.push({ index: parts.length, id });
+        forwardRefs.push(ref);
+        parts.push({ type: 'forward', parts: [] });
+        break;
+      }
+      case 'node': {
+        // 单条消息的"转发"（部分实现直接给一个 node 段）：它就是一条发言，
+        // 按只有一个条目的转发块处理，不必为它发明新的片段类型。
+        const inline = parseForwardNodes([segment], selfId);
+        const ref = forwardRef(parts.length, asString(data['id']), inline);
+        if (ref === undefined) {
+          parts.push({ type: 'text', text: '[聊天记录]' });
+          break;
+        }
+        forwardRefs.push(ref);
         parts.push({ type: 'forward', parts: [] });
         break;
       }
@@ -337,6 +361,65 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * 把"被序列化成 JSON 的容器"还原回结构；不是 JSON 就返回 undefined。
+ *
+ * 存在的理由：少数实现把 `data.messages` 甚至整个响应体当字符串透传
+ * （`"{\"messages\":[...]}"`）。不还原的话它会被当成一段普通文本塞进 prompt——
+ * 用户看到的就是一坨带转义符的 JSON，而模型也读不出"这是聊天记录"。
+ * 只认 `{` / `[` 开头的内容，避免把普通文本误判成结构。
+ */
+function parseJsonContainer(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return undefined;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 组装一个转发占位：`id`（待回查）与 `nodes`（已内联）至少要有一个。
+ *
+ * 返回 undefined 表示"这条转发既没有 id 也没有内容"——调用方据此退化成
+ * `[聊天记录]` 文本占位，而不是留下一个永远展开不了的 forward 片段。
+ */
+function forwardRef(
+  index: number,
+  id: string | undefined,
+  nodes: ForwardNode[] | undefined,
+): ForwardRef | undefined {
+  const inline = nodes !== undefined && nodes.length > 0 ? nodes : undefined;
+  if (id === undefined && inline === undefined) return undefined;
+  return {
+    index,
+    ...(id !== undefined ? { id } : {}),
+    ...(inline !== undefined ? { nodes: inline } : {}),
+  };
+}
+
+/**
+ * 从 `forward` 段里取**已经内联**的逐条内容（有就不必回查）。
+ *
+ * 键名按实现而异：NapCat 的 `content` 在官方 schema 里明确标注为 `[收]`，
+ * 另有实现给 `message` / `nodes`。只从这三个键里取，避免把段里其他数组
+ * （比如未来的扩展字段）误当成发言列表。
+ */
+function inlineForwardNodes(
+  data: Record<string, unknown>,
+  selfId: number,
+): ForwardNode[] | undefined {
+  for (const key of ['content', 'message', 'nodes']) {
+    const value = data[key];
+    if (Array.isArray(value) && value.length > 0) {
+      const nodes = parseForwardNodes(value, selfId);
+      if (nodes.length > 0) return nodes;
+    }
+  }
+  return undefined;
+}
+
+/**
  * 从响应里取出"逐条发言"的数组。
  *
  * 已知形状（必须都容忍，见 docs/FORWARD-FILE-INGRESS-PLAN.md §3.1）：
@@ -348,20 +431,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function forwardListOf(data: unknown, depth = 0): unknown[] {
   if (Array.isArray(data)) return data;
-  if (!isRecord(data) || depth > 3) return [];
+  if (!isRecord(data) || depth > 3) {
+    // 整个响应/字段被序列化成 JSON 字符串的形态：还原一次再按原规则剥。
+    // 深度上限同样适用——畸形载荷不能靠层层 JSON.parse 把栈打穿。
+    const parsed = typeof data === 'string' ? parseJsonContainer(data) : undefined;
+    return parsed === undefined ? [] : forwardListOf(parsed, depth + 1);
+  }
   for (const key of ['messages', 'message', 'nodes']) {
     const value = data[key];
     if (Array.isArray(value)) return value;
+    const parsed = typeof value === 'string' ? parseJsonContainer(value) : undefined;
+    if (parsed !== undefined) return forwardListOf(parsed, depth + 1);
   }
   const nested = data['data'];
   return isRecord(nested) ? forwardListOf(nested, depth + 1) : [];
 }
 
 /** 把一条 node 里的 `message` / `content` 字段交给常规解析（它自己可能是 CQ 码字符串）。 */
-function forwardNodeOf(item: unknown, selfId: number): ForwardNode | undefined {
+function forwardNodeOf(item: unknown, selfId: number, depth = 0): ForwardNode | undefined {
   // 形状 A：整条就是一个 CQ 码字符串（go-cqhttp 的 messages 是字符串数组）
   if (typeof item === 'string') {
+    // 也可能是被序列化的 node 对象/数组（`"{\"type\":\"node\",...}"`）
+    const parsed = depth <= 3 ? parseJsonContainer(item) : undefined;
+    if (parsed !== undefined) return forwardNodeOf(parsed, selfId, depth + 1);
     const extracted = extractMessageContent(item, selfId);
+    if (extracted.parts.length === 0) return undefined;
+    return withForwardRefs({ parts: extracted.parts }, extracted.forwardRefs);
+  }
+  // 形状 A2：整条就是一段消息段数组（有的实现直接把 message 摊平进列表）
+  if (Array.isArray(item)) {
+    const extracted = extractMessageContent(item as OneBotSegment[], selfId);
     if (extracted.parts.length === 0) return undefined;
     return withForwardRefs({ parts: extracted.parts }, extracted.forwardRefs);
   }

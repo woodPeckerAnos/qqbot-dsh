@@ -57,7 +57,19 @@ import type {
 // ---------------------------------------------------------------------------
 
 /** 8 字节 PNG 魔数：体积无关紧要，只要能被嗅探成 image/png。 */
-const FAKE_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/**
+ * 真 PNG（8×8 纯色）。
+ *
+ * 为什么不能再用"只有魔数的假 PNG"：图片链路现在会真的解码（探测真实像素 →
+ * 超限的降采样或切片），解不开的字节会被判为 undecodable 而**不内联**——
+ * 假夹具会让"图片被内联"这类断言全部失真。
+ */
+const FAKE_PNG = new Uint8Array(
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVQImWOwqr6KFTEMLQkAVkJigdwyFrUAAAAASUVORK5CYII=',
+    'base64',
+  ),
+);
 const FAKE_PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]);
 
 /** 假的 runtime：记录 prompt（content blocks），允许测试手动注入事件与状态。 */

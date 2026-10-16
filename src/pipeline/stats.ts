@@ -126,9 +126,15 @@ export class PipelineStats {
   backgroundDelivered = 0;
   /** 因 sessionId 不匹配被过滤掉的子会话事件数（TurnRunner，串扰防护命中计数） */
   childEventsFiltered = 0;
-  /** 成功内联进 prompt 的图片数（TurnRunner） */
+  /**
+   * 成功内联进 prompt 的图片**块**数（TurnRunner）。
+   *
+   * 计的是 block：一张长图按可读分辨率切成 N 块时算 N（见 dsh/image.ts），
+   * 所以它可能大于这一轮消息里的源图张数——想知道"用户发了几张图"，看
+   * TurnRunner 日志里的 `total`。
+   */
   imagesInlined = 0;
-  /** 读取失败/超限/格式不支持而跳过的图片数（TurnRunner） */
+  /** 读取失败/超限/格式不支持/解不开而跳过的**源图**张数（TurnRunner） */
   imagesSkipped = 0;
   /**
    * 成功展开的转发消息块数（连接器回查 get_forward_msg 成功后）。

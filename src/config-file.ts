@@ -163,6 +163,7 @@ export interface AttachmentsFileConfig {
   enabled?: boolean;
   maxImages?: number;
   maxImageBytes?: number;
+  maxImageTiles?: number;
   downloadTimeoutMs?: number;
   forward?: AttachmentsForwardFileConfig;
   files?: AttachmentsFilesFileConfig;
@@ -336,6 +337,7 @@ const ATTACHMENTS_SPEC: SectionSpec = {
   enabled: 'bool',
   maxImages: 'int',
   maxImageBytes: 'int',
+  maxImageTiles: 'int',
   downloadTimeoutMs: 'int',
 };
 /**
