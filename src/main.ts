@@ -319,6 +319,11 @@ async function main(): Promise<void> {
         questionProbeMs: config.proactive.questionProbeMs,
         maxWaitPerItem: config.proactive.maxWaitPerItem,
         waitYieldMs: config.proactive.waitYieldMs,
+        // 话题 session（主动发言的唯一放行闸门）的三个参数。越界值由 watcher
+        // 在构造期按硬上限裁剪并 warn（预算 5 / 静默 1–60 分钟 / 间隔 10–300 秒）。
+        sessionBudget: config.proactive.sessionBudget,
+        sessionIdleMs: config.proactive.sessionIdleMs,
+        sessionMinGapMs: config.proactive.sessionMinGapMs,
         stateOptions: {
           maxEntries: config.proactive.bufferMaxMessages,
           maxAgeMs: config.proactive.bufferMaxAgeMs,
@@ -378,6 +383,19 @@ async function main(): Promise<void> {
           stats.proactiveWaitInvalidTarget += 1;
           logger.debug('主动介入：模型引用了不存在的挂起问题', { scene });
         },
+        // 话题 session：账目**必须闭合**（`opened === closed === Σ closedBy`）。
+        // `spokeInSession` 的分布是"预算 2 到底对不对"的唯一答案来源。
+        sessionOpened: (scene) => {
+          stats.proactiveSessionOpened += 1;
+          logger.debug('主动介入：开启话题 session', { scene });
+        },
+        sessionClosed: (cause, speaks) => {
+          stats.proactiveSessionClosed += 1;
+          stats.proactiveSessionClosedBy[cause] = (stats.proactiveSessionClosedBy[cause] ?? 0) + 1;
+          stats.proactiveSpokeInSession[String(speaks)] =
+            (stats.proactiveSpokeInSession[String(speaks)] ?? 0) + 1;
+          logger.debug('主动介入：话题 session 关闭', { cause, speaks });
+        },
       },
     });
 
@@ -413,6 +431,23 @@ async function main(): Promise<void> {
         },
         waitTicketsCreatedByReason: snapshot?.waitTicketsCreatedByReason ?? {},
         waitDeclined: snapshot?.waitDeclined ?? {},
+        // session 的生效参数即使没装配 watcher 也从配置回填：这样"我改的值到底
+        // 生效了没有"在 health 上一眼可见（硬上限裁剪发生在 watcher 内部）。
+        sessions: snapshot?.sessions ?? {
+          open: 0,
+          spent: 0,
+          opened: 0,
+          closed: 0,
+          closedBy: {},
+          spokeInSession: {},
+          noSession: 0,
+          budgetExhausted: 0,
+          minGap: 0,
+          budget: config.proactive.sessionBudget,
+          idleMs: config.proactive.sessionIdleMs,
+          minGapMs: config.proactive.sessionMinGapMs,
+        },
+        skippedUnchanged: snapshot?.skippedUnchanged ?? 0,
         evaluatedByTrigger: snapshot?.evaluatedByTrigger ?? {},
         satisfiedByScene: snapshot?.satisfiedByScene ?? {},
         vetoed: snapshot?.vetoed ?? {},
@@ -425,6 +460,10 @@ async function main(): Promise<void> {
       interests: interests.size,
       botAliases: config.proactive.botAliases.length,
       judge: judge === undefined ? '未配置判定（只听不说）' : 'ready',
+      // 生效值（硬上限裁剪之后）：配成 9 时这里显示 5，与 health 一致
+      session: `${proactive.snapshot().sessions.budget} 句 / 静默 ${
+        config.proactive.sessionIdleMs / 1000
+      }s 关闭 / 间隔 ${config.proactive.sessionMinGapMs / 1000}s`,
     });
   }
 

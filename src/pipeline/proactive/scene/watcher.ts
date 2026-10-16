@@ -32,6 +32,24 @@
  * 票据挂在**挂起问题**上、每张只有一次唤醒机会、每会话只有一个唤醒点，
  * 且唤醒前的两道本地检查（对象还在吗 / 转录有新增吗）只要有一道不过
  * 就**不调 LLM**。
+ *
+ * ## 话题 session（见 docs/TOPIC-SESSION-REQUIREMENT.md）
+ *
+ * 主动发言的**唯一放行闸门**，本文件是它全部副作用的持有者：
+ *
+ * - **开**：判定判"值得"、而当时没有 session、且这一句真的说出去了 → 开一个
+ *   （`budgetLeft = sessionBudget`，本次发言消耗 1 点）；
+ * - **扣**：每说一句扣 1 点；扣到 0 **不关闭**，只让它在当前话题里闭嘴
+ *   （闸门报 `budget-exhausted`）——**预算不驱动 session 的生死**；
+ * - **关**：四种原因穷举（`SessionCloseCause`：`llm-closed` / `topic-changed` /
+ *   `idle` / `conversation-gone`），关闭只有一个出口
+ *   （`ConversationState.closeSession` → 监听器 → 记账），因此账目必然闭合；
+ * - **重启**：模型说"换话题了"（`new-topic`）→ 关旧（`topic-changed`）开新、预算重置。
+ *   这是预算**唯一**的重置正门（`min-gap` 照样要过，节奏不归模型管）；
+ * - **静默**：距 `lastSpokeAt`（无则 `openedAt`）超过 `sessionIdleMs` 自动关闭，
+ *   **不调 LLM**（定时器 + 唤醒路径上的兜底检查，双保险）。
+ *
+ * 唯一没有 session 也能做的事：`wait` 票据（它挂在**挂起问题**上，与会话无关）。
  */
 
 import type { ConversationTarget, NormalizedMessage } from '../../../core/connector.js';
@@ -54,10 +72,18 @@ import {
   type ProactiveTrigger,
 } from '../deliver/speaker.js';
 import {
+  aggregateSessionDirective,
   DEFAULT_MAX_WAIT_PER_ITEM,
+  DEFAULT_SESSION_BUDGET,
+  DEFAULT_SESSION_IDLE_MS,
+  DEFAULT_SESSION_MIN_GAP_MS,
   DEFAULT_WAIT_YIELD_MS,
   effectiveMaxWaitPerItem,
+  effectiveSessionBudget,
+  effectiveSessionIdleMs,
+  effectiveSessionMinGapMs,
   effectiveWaitYieldMs,
+  MAX_SESSION_BUDGET_CAP,
   MAX_WAIT_PER_ITEM_CAP,
   type ProactiveDecision,
   type SceneCandidate,
@@ -65,6 +91,8 @@ import {
   type SceneId,
   type SceneTrigger,
   type SceneVerdict,
+  type SessionCloseCause,
+  type TopicSession,
   type VetoContext,
   type VetoPolicy,
   type WaitReason,
@@ -101,6 +129,22 @@ export interface ProactiveWatcherConfig {
   maxWaitPerItem: number;
   /** "让路"理由的等待时长（毫秒；默认 45000，范围 15000–120000） */
   waitYieldMs: number;
+  /**
+   * 一个 session 内允许的主动发言条数（默认 2；硬上限 `MAX_SESSION_BUDGET_CAP` = 5）。
+   *
+   * 它是"防刷屏"的主闸：预算用完即关闭 session，之后要 LLM 重新判"值得"才会开
+   * 新的。配得比硬上限大时按硬上限处理并 warn——否则"少说两句"只需改一行配置。
+   */
+  sessionBudget: number;
+  /**
+   * 静默多久自动关闭 session（毫秒；默认 600000 = 10 分钟，与活动窗口同值）。
+   *
+   * 锚点是 `lastSpokeAt`（还没说过则是 `openedAt`）——**不**被群里的新消息刷新：
+   * "session 该不该继续"是 bot 自己说话的节奏，不是群消息的密度。
+   */
+  sessionIdleMs: number;
+  /** 同一 session 内两次发言的最小间隔（毫秒；默认 45000），闸门三道检查之一 */
+  sessionMinGapMs: number;
   /** 判定连续失败多少次后暂停该会话的评估（避免往坏掉的 API 刷请求） */
   maxJudgeFailures: number;
   /** 每会话限流窗口：10 分钟 / 1 小时内的主动发言上限（与 veto 策略同口径） */
@@ -121,6 +165,9 @@ export const DEFAULT_WATCHER_CONFIG = {
   maxQuestionProbes: 2,
   maxWaitPerItem: DEFAULT_MAX_WAIT_PER_ITEM,
   waitYieldMs: DEFAULT_WAIT_YIELD_MS,
+  sessionBudget: DEFAULT_SESSION_BUDGET,
+  sessionIdleMs: DEFAULT_SESSION_IDLE_MS,
+  sessionMinGapMs: DEFAULT_SESSION_MIN_GAP_MS,
   maxJudgeFailures: 3,
   rateLimit10Min: 3,
   rateLimit1Hour: 8,
@@ -162,6 +209,19 @@ export interface WatcherMetrics {
   waitDeclined(reason: string, scene: SceneId): void;
   /** 模型引用的挂起问题不存在（或它压根没给引用） */
   waitInvalidTarget(scene: SceneId): void;
+  /**
+   * **开了一个话题 session**（LLM 判"值得"且该次发言真的发出/本应发出时）。
+   *
+   * 与 `spoke` 一起看：开得多、说得少 = 判据偏松（每开一个只敢说一句就关）。
+   */
+  sessionOpened(scene: SceneId): void;
+  /**
+   * **关了一个话题 session**（四种原因之一；`speaks` = 这个 session 里说了几句）。
+   *
+   * 账目纪律：`Σ sessionClosed === sessionOpened`（每次开启只有一个终局）。
+   * `speaks` 的分布是回答"预算 2 到底对不对"的核心数据。
+   */
+  sessionClosed(cause: SessionCloseCause, speaks: number): void;
 }
 
 export const NULL_WATCHER_METRICS: WatcherMetrics = {
@@ -175,6 +235,8 @@ export const NULL_WATCHER_METRICS: WatcherMetrics = {
   waitTicketCreated: () => {},
   waitDeclined: () => {},
   waitInvalidTarget: () => {},
+  sessionOpened: () => {},
+  sessionClosed: () => {},
 };
 
 /** 一次投放的记录（`/metrics` 与 RUNBOOK 排障用）。 */
@@ -258,6 +320,51 @@ export interface WatcherSnapshot {
   waitTicketsCreatedByReason: Record<string, number>;
   /** 模型想等、但被否决层按下的次数（按理由：not-yet / watching / 理由无效 / …） */
   waitDeclined: Record<string, number>;
+  /**
+   * **话题 session 的账目与闸门**（本需求的核心观测面）。
+   *
+   * 一条等式必须成立：`opened === closed === Σ closedBy{reason}`。
+   * `spokeInSession` 是"每个 session 里说了几句"的分布（键是句数）——
+   * 它与 `opened` 的联合分布能一眼回答"预算 2 到底对不对"（需求「可观测性」）。
+   */
+  sessions: {
+    /** 当前开启中的 session 数（**含预算已耗尽的**：预算不关会话，只让它闭嘴） */
+    open: number;
+    /** 其中预算已用尽、正在这个话题里闭嘴的会话数（`open - spent` = 还能开口的） */
+    spent: number;
+    /** 一天开了几个 session（`proactiveSessionOpened`） */
+    opened: number;
+    /** 关了几个（`proactiveSessionClosed`，等于 `Σ closedBy`） */
+    closed: number;
+    /** 按原因拆开（`proactiveSessionClosedBy{reason}`，四种原因穷举） */
+    closedBy: Record<string, number>;
+    /** 「每个 session 里说了几句」的分布：`{"1": N, "2": M}` */
+    spokeInSession: Record<string, number>;
+    /** 因为"没有 session"被挡的唤醒次数（`proactiveNoSession`） */
+    noSession: number;
+    /**
+     * 因为"本话题的发言预算已用尽"被挡的次数（`proactiveBudgetExhausted`）。
+     *
+     * 它是本机制的**主路径之一**：预算耗尽不关会话，所以同一个话题里"还想说、
+     * 但额度没了"会一次次记在这里（高 = 预算偏紧；低 = 预算够用）。
+     */
+    budgetExhausted: number;
+    /** 因为"最小间隔没到"被挡的次数（`proactiveMinGap`） */
+    minGap: number;
+    /** 生效的三个参数（硬上限裁剪之后的值；health 里直接可读） */
+    budget: number;
+    idleMs: number;
+    minGapMs: number;
+  };
+  /**
+   * 被**唯一的本地闸**挡下的次数：转录自上次进入判定以来没有新增，连 LLM 都不调
+   * （只装在滚动收敛 `topic-roll` 上，见 `kick()` 里的说明）。
+   *
+   * 需求说它"不单独计数（属未进入判定）"，所以它**不进 `vetoed`**；单列一个数字
+   * 是为了排障时能回答"它为什么一直不说话"——这个数高说明群里根本没新消息，
+   * 而不是判据把它们全否了。
+   */
+  skippedUnchanged: number;
 }
 
 /** 兴趣匹配看最近多少条消息（话题是"这几句话在聊什么"，不是单条）。 */
@@ -323,6 +430,20 @@ export class ProactiveWatcher {
   /** 待唤醒的票据（会话键 → 对象 id → 票据） */
   private readonly waitTickets = new Map<string, Map<string, WaitTicket>>();
 
+  /**
+   * 每会话一个**静默关闭定时器**（`sessionIdleMs`；锚点 = `lastSpokeAt ?? openedAt`）。
+   *
+   * 为什么必须是定时器而不是"下次唤醒时顺便看一眼"：群里彻底安静时根本不会再有
+   * 唤醒（唯一的本地闸会把定时唤醒全挡掉），于是 session 会带着剩余预算永远活着，
+   * 下一次有人说话时它已经"过期两小时"却还算数。到点关闭是**零 LLM 成本**的兜底
+   * （验收 6：`idle` 关闭不调 LLM）。
+   */
+  private readonly idleTimers = new Map<string, () => void>();
+
+  /** 生效的三个 session 参数（构造期就把硬上限裁剪做掉，双保险：否决层还有一道） */
+  private readonly sessionBudget: number;
+  private readonly sessionIdleMs: number;
+
   private readonly counters = {
     evaluatedByTrigger: new Map<string, number>(),
     satisfiedByScene: new Map<string, number>(),
@@ -330,11 +451,16 @@ export class ProactiveWatcher {
     deliveryDegraded: new Map<string, number>(),
     waitDeclined: new Map<string, number>(),
     waitTicketsCreatedByReason: new Map<string, number>(),
+    sessionClosedBy: new Map<string, number>(),
+    spokeInSession: new Map<string, number>(),
     collectedOnly: 0,
     judgeCalls: 0,
     spoke: 0,
     wouldSend: 0,
     judgeFailures: 0,
+    sessionOpened: 0,
+    sessionClosed: 0,
+    skippedUnchanged: 0,
     waitTickets: {
       created: 0,
       resolved: 0,
@@ -365,8 +491,21 @@ export class ProactiveWatcher {
       maxPer10Min: deps.config.rateLimit10Min,
       maxPerHour: deps.config.rateLimit1Hour,
       maxWaitPerItem,
+      sessionMinGapMs: effectiveSessionMinGapMs(deps.config.sessionMinGapMs),
       ...(deps.config.vetoPolicy ?? {}),
     };
+    // session 预算同样在**装配时**就把硬上限做掉（验收 9：配成 9 按 5 处理并 warn）。
+    // 理由是同一句纪律：把"少说两句"改回"多说几句"不该只需要改一行配置。
+    const configuredBudget = deps.config.sessionBudget;
+    this.sessionBudget = effectiveSessionBudget(configuredBudget);
+    if (Number.isFinite(configuredBudget) && configuredBudget > MAX_SESSION_BUDGET_CAP) {
+      deps.logger.warn('proactive:sessionBudget 超过硬上限，按硬上限处理', {
+        configured: configuredBudget,
+        effective: this.sessionBudget,
+        cap: MAX_SESSION_BUDGET_CAP,
+      });
+    }
+    this.sessionIdleMs = effectiveSessionIdleMs(deps.config.sessionIdleMs);
     this.now = deps.now ?? (() => Date.now());
     this.schedule =
       deps.schedule ??
@@ -388,6 +527,33 @@ export class ProactiveWatcher {
         cause: event.cause,
       });
     });
+    // session 关闭 → 记账（验收 11 的账目等式只有一个来源）+ 撤掉静默定时器。
+    // 订阅同样必须在**创建会话状态之前**完成，否则早期关闭事件会丢。
+    this.states.onSessionClosed((convKey, event) => {
+      this.onSessionClosed(convKey, event.cause, event.session);
+    });
+  }
+
+  /**
+   * session 关闭的唯一收口（四种原因都从这里过）。
+   *
+   * `speaks` 用 `预算 - budgetLeft` 反算：session 的三个字段之外**不额外存计数器**
+   * （需求 §一：状态就是三个字段），而开启时预算恰好等于 `sessionBudget`。
+   */
+  private onSessionClosed(convKey: string, cause: SessionCloseCause, session: TopicSession): void {
+    this.cancelIdleTimer(convKey);
+    const speaks = Math.max(0, this.sessionBudget - session.budgetLeft);
+    this.counters.sessionClosed += 1;
+    this.bump(this.counters.sessionClosedBy, cause);
+    this.bump(this.counters.spokeInSession, String(speaks));
+    this.metrics.sessionClosed(cause, speaks);
+    this.deps.logger.debug('主动介入：话题 session 已关闭', {
+      conversation: convKey,
+      cause,
+      speaks,
+      openedAt: session.openedAt,
+      budgetLeft: session.budgetLeft,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -405,6 +571,12 @@ export class ProactiveWatcher {
 
     const ts = Number.isFinite(message.ts) ? message.ts : this.now();
     const state = this.states.for(message.target.key);
+
+    // session 静默超时的兜底（排在读状态**之前**：证据与闸门看到的状态必须一致）：
+    // 定时器到点是常态，但进程睡过去再醒来时它可能还没跑，而一个"过期两小时"的
+    // session 会让下面的判定以为话题还热着。这里只关、**不终止本次评估**——
+    // 一条刚到的消息本身就可能让 LLM 判"值得"，从而开一个新的（验收 13）。
+    this.closeExpiredSession(message.target.key);
 
     // ⚠️ 顺序要紧：**先**做本地预筛（读的是这条消息之前的状态），**再**入状态。
     // 反过来会让"没人理我就停"这一步永远失效——`state.observe` 会把
@@ -488,10 +660,18 @@ export class ProactiveWatcher {
     let buffered = 0;
     let pending = 0;
     let tickets = 0;
+    let openSessions = 0;
+    let spentSessions = 0;
     const now = this.now();
     for (const state of this.states.all()) {
       buffered += state.entries.length;
       pending += state.pendingQuestions(now).length;
+      if (state.session !== undefined) {
+        openSessions += 1;
+        // 预算已耗尽、正在这个话题里闭嘴的会话：它们**仍然开着**（预算不驱动
+        // session 的生命周期），单独报出来，免得 `open` 看起来像"还能说"
+        if (state.session.budgetLeft <= 0) spentSessions += 1;
+      }
     }
     for (const byTarget of this.waitTickets.values()) tickets += byTarget.size;
     return {
@@ -517,6 +697,26 @@ export class ProactiveWatcher {
       },
       waitTicketsCreatedByReason: Object.fromEntries(this.counters.waitTicketsCreatedByReason),
       waitDeclined: Object.fromEntries(this.counters.waitDeclined),
+      sessions: {
+        open: openSessions,
+        /** 其中预算已用尽、正在这个话题里闭嘴的（`open - spent` = 还能开口的） */
+        spent: spentSessions,
+        opened: this.counters.sessionOpened,
+        closed: this.counters.sessionClosed,
+        closedBy: Object.fromEntries(this.counters.sessionClosedBy),
+        spokeInSession: Object.fromEntries(this.counters.spokeInSession),
+        // 闸门三类不过**从 `vetoed` 派生**，不另立一本账：同一件事只有一个来源，
+        // 否则"计数对不上"的排查成本会立刻转移到观测面本身。
+        noSession: this.counters.vetoed.get('no-session') ?? 0,
+        // 这个数现在是**活的主路径**：预算耗尽不关会话，所以每次"还想说但额度没了"
+        // 的唤醒都会落在这里（维护者口径修正后，它才真正回答"预算该不该加"）。
+        budgetExhausted: this.counters.vetoed.get('budget-exhausted') ?? 0,
+        minGap: this.counters.vetoed.get('min-gap') ?? 0,
+        budget: this.sessionBudget,
+        idleMs: this.sessionIdleMs,
+        minGapMs: this.policy.sessionMinGapMs,
+      },
+      skippedUnchanged: this.counters.skippedUnchanged,
     };
   }
 
@@ -540,6 +740,46 @@ export class ProactiveWatcher {
     extra: { text?: string; waitWakeup?: SceneEvidence['waitWakeup'] } = {},
   ): void {
     if (this.suspended.has(convKey)) return;
+
+    // ① 唯一的本地闸（需求 §三）：转录自上次进入判定以来**没有新增** → 直接返回，
+    //    连 LLM 都不调。它不含任何语义判断，成本只有一次 `buffer.some()`；没有它，
+    //    定时唤醒会在群里完全安静时反复问同一个问题（上一轮花力气修掉的永动机）。
+    //
+    //    它装在**滚动收敛**（`topic-roll`）与 wait 的定时重查上，**不装**在另外两处：
+    //
+    //    - `message`：一条旁听消息的到达本身就是"转录有新增"的证据，再拿时间戳比
+    //      一次只会引入平台时钟粒度的假阴性——OneBot 的事件时间是**秒**
+    //      （`time * 1000`，见 adapters/onebot/normalize.ts），同一秒内到达的后续
+    //      消息会被误判成"没有新增"，最高频的那条触发面会被整体吞掉；
+    //    - `question-probe`：它是**时间**触发（"这问题挂了 90 秒还没人答"），沉默
+    //      本身就是它的信号，而不是它的反例；而且它天生有界（每个问题最多
+    //      `maxQuestionProbes` 次、且只由消息重新武装），不会变成"群里安静时反复
+    //      重问"的永动机——那正是这道闸门要防的东西。
+    //
+    //    ⚠️ 实测过的后果：把探针也闸掉时，"bot 刚主动开过口 → 有人提问 → 90 秒后
+    //    接过来"这条链在本话题的活动窗口内**完全不会发生**（窗口内每条消息都会
+    //    触发一次消息面判定，把"上次评估"推到最后一条消息上，探针永远"无新增"）。
+    //    维护者口径：探针免闸。
+    const state = this.states.for(convKey);
+    const gated = trigger === 'topic-roll';
+    if (gated && !state.hasNewContentSinceLastEvaluation()) {
+      this.counters.skippedUnchanged += 1;
+      this.deps.logger.debug('主动介入：转录自上次判定以来无新增，本次不调 LLM', {
+        conversation: convKey,
+        trigger,
+      });
+      return;
+    }
+    // ② session 静默超时的兜底（定时器没跑到时也不会让 session 越活越久）。
+    //    关闭后本次唤醒**到此为止**——验收 6：idle 关闭不调 LLM。
+    if (this.closeExpiredSession(convKey)) {
+      this.deps.logger.debug('主动介入：session 静默超时，已关闭且本次不调 LLM', {
+        conversation: convKey,
+        trigger,
+        sessionIdleMs: this.sessionIdleMs,
+      });
+      return;
+    }
 
     const evidence = this.buildEvidence(convKey, trigger, extra);
     const candidates = collectCandidates(evidence, {
@@ -872,6 +1112,155 @@ export class ProactiveWatcher {
   }
 
   // -------------------------------------------------------------------------
+  // 内部：话题 session 的生命周期（开关、扣预算、静默定时器）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 一次判定的结果落到 session 上（**唯一入口**，验收 1/5 与"换话题重置预算"都在这里兑现）。
+   *
+   * ```
+   * 说了（真的发出去 / dryRun 本应发出）
+   *     ├ 没有 session                 → 开一个（预算 = sessionBudget）
+   *     ├ 模型说换话题了（new-topic）   → 关旧（topic-changed）+ 为新话题开一个（预算重置）
+   *     └ 扣 1 点预算、记 lastSpokeAt  → 减到 0 **不关闭**，只是闭嘴（闸门下次报 budget-exhausted）
+   * 模型说这个话题收口了（close）
+   *     └ 关闭（llm-closed）——本次该说的那句**照样已经说了**（验收 5）
+   * ```
+   *
+   * 顺序要点：
+   *   1. **先开再扣**：验收 1 要求"开启时 budgetLeft = sessionBudget，该次发言消耗 1 点"；
+   *   2. **预算不驱动 session**（维护者口径）：预算减到 0 时这里**什么都不做**——
+   *      会话留着，闸门下一次唤醒报 `budget-exhausted`；要重置预算只有两条路，
+   *      都由话题驱动：模型明确说换了话题（`new-topic`），或会话自然结束
+   *      （`close` / `idle`）后由下一次判定重新开；
+   *   3. 没说出话（投递降级 / 平台不支持）时**不消耗预算、也不开 session**：
+   *      预算是"说了几句"的账，不是"想过几次"的账。
+   */
+  private applySessionOutcome(
+    convKey: string,
+    now: number,
+    scene: SceneId | undefined,
+    spoken: boolean,
+    directive: { restart: boolean; close: boolean },
+  ): void {
+    const state = this.states.for(convKey);
+    if (spoken) {
+      const current = state.session;
+      if (current === undefined) {
+        this.openTopicSession(convKey, now, scene);
+      } else if (directive.restart) {
+        // 模型明确说"换话题了"：旧会话为**新话题**让位。这是预算重启的唯一正门
+        // （闸门那一侧也已按 `new-topic` 放行），关闭原因记 `topic-changed`。
+        state.closeSession('topic-changed');
+        this.openTopicSession(convKey, now, scene);
+      }
+      state.consumeSessionBudget(now);
+      // ⚠️ 预算减到 0 **不关闭** session：它进入"已耗尽"状态，此后每次唤醒都被
+      // 闸门挡在 `budget-exhausted` 上。这正是"session 不由预算驱动"。
+    }
+    if (directive.close) {
+      // 验收 5：关闭不影响这一条（发言已经在上面的分支里发出去了）；
+      // 边界表：`close` 与"要不要说"是两个维度，没说不代表不关。
+      // （聚合规则保证 `restart` 与 `close` 不会同时为真。）
+      state.closeSession('llm-closed');
+      return;
+    }
+    if (spoken) this.armSessionIdle(convKey);
+  }
+
+  /** 开一个话题会话（唯一的开启入口——只有"真的说出去了一句"才会走到这里）。 */
+  private openTopicSession(convKey: string, now: number, scene: SceneId | undefined): void {
+    const state = this.states.for(convKey);
+    if (!state.openSession(now, this.sessionBudget)) {
+      // 正常路径下不可能发生（调用方已确认没有 session）；真发生了要留痕
+      this.deps.logger.warn('主动介入：已有 session 时又尝试开启，已忽略', {
+        conversation: convKey,
+        scene,
+      });
+      return;
+    }
+    this.counters.sessionOpened += 1;
+    // `scene` 只有"判定层说要发言"那条路径才给得出来；开启必然发生在那里，
+    // 这里只是让类型对上（真出现 undefined 也不该丢账）。
+    if (scene !== undefined) this.metrics.sessionOpened(scene);
+    this.deps.logger.debug('主动介入：开启话题 session', {
+      conversation: convKey,
+      scene,
+      budget: this.sessionBudget,
+    });
+  }
+
+  /**
+   * 按"距上次发言（无发言则开启）多久"排一个静默关闭定时器。
+   *
+   * 每次发言都会重排（锚点前移）；到点时**只关 session，不调 LLM**（验收 6）。
+   */
+  private armSessionIdle(convKey: string): void {
+    this.cancelIdleTimer(convKey);
+    const anchor = this.sessionAnchor(convKey);
+    if (anchor === undefined) return;
+    const delay = Math.max(0, anchor + this.sessionIdleMs - this.now());
+    this.idleTimers.set(
+      convKey,
+      this.schedule(() => {
+        this.idleTimers.delete(convKey);
+        this.closeIdleSession(convKey);
+      }, delay),
+    );
+  }
+
+  private cancelIdleTimer(convKey: string): void {
+    this.idleTimers.get(convKey)?.();
+    this.idleTimers.delete(convKey);
+  }
+
+  /** 静默计时的锚点：`lastSpokeAt ?? openedAt`（没有 session 时返回 undefined）。 */
+  private sessionAnchor(convKey: string): number | undefined {
+    const session = this.states.for(convKey).session;
+    if (session === undefined) return undefined;
+    return session.lastSpokeAt ?? session.openedAt;
+  }
+
+  /**
+   * 静默是否已经到点（**唯一的口径**，定时器与唤醒兜底共用它）。
+   *
+   * 边界取 `>=`：定时器就是按"锚点 + `sessionIdleMs`"排的，到点即过期。
+   * 两处各写一次比较会出现"定时器关了、兜底却认为没过期"这种只在毫秒边界
+   * 显形的分裂，所以这里只留一份。
+   */
+  private sessionIdleElapsed(convKey: string, now: number): boolean {
+    const anchor = this.sessionAnchor(convKey);
+    if (anchor === undefined) return false;
+    return now - anchor >= this.sessionIdleMs;
+  }
+
+  /** 定时器到点：确认仍然静默超时，然后关闭（`idle`）。 */
+  private closeIdleSession(convKey: string): void {
+    const state = this.states.for(convKey);
+    if (state.session === undefined) return;
+    if (!this.sessionIdleElapsed(convKey, this.now())) {
+      // 时钟被推进过 / 定时器早到：按剩余时间重排，不误关
+      this.armSessionIdle(convKey);
+      return;
+    }
+    state.closeSession('idle');
+  }
+
+  /**
+   * 唤醒路径上的兜底检查：session 已静默超时 → 就地关闭并**终止本次唤醒**。
+   *
+   * 返回 true 表示"刚关掉一个过期的 session"，调用方必须直接返回：
+   * 验收 6 要求 `idle` 关闭**不调 LLM**，而这次唤醒的全部意义已经被它用掉了。
+   */
+  private closeExpiredSession(convKey: string): boolean {
+    const state = this.states.for(convKey);
+    if (state.session === undefined) return false;
+    if (!this.sessionIdleElapsed(convKey, this.now())) return false;
+    state.closeSession('idle');
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
   // 内部：一次完整评估（collect → judge → veto → deliver）
   // -------------------------------------------------------------------------
 
@@ -905,7 +1294,11 @@ export class ProactiveWatcher {
 
     // 记账基准与判定调用**同一时刻**：唤醒时的"转录有没有新增"要跟
     // "上一次真正跑到判定的那一刻"比，而不是跟建票据那一刻比。
+    // 会话级与问题级**两个基准同刻写入**：它们各自服务一条唤醒路径
+    // （session 的定时唤醒 / wait 票据的到期唤醒），但必须共用同一份
+    // `hasNewContentSince` 实现（见 docs/TOPIC-SESSION-REQUIREMENT.md「关系」一节）。
     const evaluatedAt = this.now();
+    state.markEvaluatedAt(evaluatedAt);
     for (const question of wait?.pendingAtEval ?? []) {
       state.markEvaluated(question.id, evaluatedAt);
     }
@@ -946,7 +1339,12 @@ export class ProactiveWatcher {
       if (verdict.satisfied) this.bump(this.counters.satisfiedByScene, verdict.scene);
     }
 
-    // ③ 否决层（纯函数）：顺序、额度、wait 采纳都在这里。
+    // 判定层对"当前这个话题的 session 该怎么办"的回答（本次需求唯一新增的字段）。
+    // 聚合规则只有一处实现（`aggregateSessionDirective`），否决层的闸门与本层共用
+    // 它——否则会出现"闸门按 new-topic 放行了、本层却不认"这种只在冲突输出下显形的分裂。
+    const sessionOutcome = aggregateSessionDirective(verdicts);
+
+    // ③ 否决层（纯函数）：顺序、额度、session 闸门、wait 采纳都在这里。
     const decision = evaluateVeto(
       {
         candidates,
@@ -979,16 +1377,27 @@ export class ProactiveWatcher {
       if (trigger === 'question-probe') {
         for (const question of state.pendingQuestions(now)) state.markSilenced(question.id);
       }
+      // 本次不发言，但模型说"这个话题该收口了" → 照样关闭（边界表：
+      // `close` 与"要不要说"是两个维度）。`new-topic` 单独出现（没有发言）不做事：
+      // 它是"为现在这个话题重开会话"，没有发言就没有要重开的东西。
+      if (sessionOutcome.close) {
+        this.applySessionOutcome(convKey, now, undefined, false, sessionOutcome);
+      }
       return;
     }
     if (decision.action === 'wait') {
       this.bump(this.counters.vetoed, 'wait');
+      // "让路"这一支**不动 session**：模型此刻说的是"有人在答，过几十秒再看"，
+      // 与"这个话题还要不要继续"是两件事；真要收口，重判那次会给 close。
       this.createWaitTicket(convKey, target, decision.targetId, decision.reason, now, evaluatedAt);
       return;
     }
 
     // ④ 投递：唯一出口（dryRun / 平台能力差异都在它内部处理）。
-    await this.deliver(convKey, target, decision, now);
+    const spoken = await this.deliver(convKey, target, decision, now);
+    // ⑤ session 的收口（唯一入口）：开 / 换话题重建 / 扣预算（**不减到 0 就关**）/
+    //    按模型的建议收口。
+    this.applySessionOutcome(convKey, now, decision.scene, spoken, sessionOutcome);
   }
 
   /**
@@ -1085,9 +1494,10 @@ export class ProactiveWatcher {
       now,
       spokeCount10Min: list.filter((ts) => now - ts <= 600_000).length,
       spokeCount1Hour: list.filter((ts) => now - ts <= 3_600_000).length,
-      // 「每话题一次」的话题口径 = state 的活动窗口（静默超过窗口即翻篇，
-      // 由 state.botSpeaks 内部判定并归零），watcher 不再自己算一遍。
-      topicBotSpeaks: state.botSpeaks(now),
+      // session 闸门的全部依据（**只读**）：有没有开、预算还剩几句、上次发言多久前。
+      // 语义提醒：这里**没有**任何"话题"口径的计数——旧实现按活动窗口数"本话题
+      // 说过几次"，而话题是 LLM 之后才明确的东西，本地数不准（见需求 §技术方向）。
+      ...(state.session === undefined ? {} : { session: state.session }),
       ...(wait === undefined ? {} : { wait }),
     };
   }
@@ -1156,12 +1566,19 @@ export class ProactiveWatcher {
     return { id: targetId, exists: inLedger, open, yieldBudgetUsed: state.yieldBudget(targetId) };
   }
 
+  /**
+   * 投递：唯一出口（dryRun / 平台能力差异都在它内部处理）。
+   *
+   * 返回"**是不是真的说出去了**"（含 dryRun 的"本应发出"），调用方据此决定
+   * session 的走向：说了才扣预算、才开 session；投递降级（平台不支持 / 错误）
+   * 不算说过——预算是"说了几句"的账，不是"想过几次"的账。
+   */
   private async deliver(
     convKey: string,
     target: ConversationTarget,
     decision: Extract<ProactiveDecision, { action: 'speak' }>,
     now: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     // 内容：本模块**不写文案**，只把"该说什么"的要点交给投递层；
     // 真实措辞由 agent turn 生成（S1 之后接 TurnRunner 时替换这里）。
     const parts = [decision.directive ?? decision.reason];
@@ -1178,12 +1595,12 @@ export class ProactiveWatcher {
       if (dryRun) this.counters.wouldSend += 1;
       else this.counters.spoke += 1;
       this.metrics.spoke(decision.scene, dryRun);
-      // dryRun 也记账：否则"每话题一次"的观察结果会失真
+      // dryRun 也记账：否则"每次介入之后话题还算不算活着"的观察结果会失真
       this.notifyBotSpoke(convKey, now);
-      return;
+      return true;
     }
     // 走到这里只可能是 degraded（sent / would-send 已在上面 return）
-    if (outcome.status !== 'degraded') return;
+    if (outcome.status !== 'degraded') return false;
     this.bump(this.counters.deliveryDegraded, outcome.reason);
     this.metrics.deliveryDegraded(outcome.reason, decision.scene);
     if (outcome.reason === 'unsupported') {
@@ -1192,6 +1609,7 @@ export class ProactiveWatcher {
         scene: decision.scene,
       });
     }
+    return false;
   }
 
   private bump<T>(map: Map<T, number>, key: T): void {

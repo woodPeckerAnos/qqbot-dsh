@@ -194,6 +194,60 @@ export interface ProactiveHealthSnapshot {
    * 不单独计数的话"模型为什么没让 bot 说话"就完全不可见了。
    */
   waitDeclined: Record<string, number>;
+  /**
+   * **话题 session 的账目与闸门**（见 docs/TOPIC-SESSION-REQUIREMENT.md「可观测性」）。
+   *
+   * 它是"预算 2 到底对不对"的唯一直读面：`opened × spokeInSession` 的联合分布
+   * 回答"每个 session 说满了几句"，`closedBy` 回答"是 LLM 关的还是预算关的"。
+   *
+   * **账目必须闭合**：`opened === closed === Σ closedBy{reason}`。
+   */
+  sessions: {
+    /** 当前开启中的 session 数（多群部署时最多等于会话数；**含已耗尽的**） */
+    open: number;
+    /**
+     * 其中预算已用尽、正在这个话题里闭嘴的会话数（`open - spent` = 还能开口的）。
+     *
+     * 为什么会有"开着但耗尽"的会话：**预算不驱动 session 的生死**（维护者口径）——
+     * 减到 0 只是闭嘴，会话要等话题收口、换话题或静默超时才关。
+     */
+    spent: number;
+    opened: number;
+    closed: number;
+    /**
+     * 关闭原因分布（四种原因穷举）：`llm-closed`（话题收口）/ `topic-changed`
+     * （换话题，旧会话让位）/ `idle`（静默超时）/ `conversation-gone`（状态被清理）。
+     * **预算不在其中**——它只让会话闭嘴，不终结它。
+     */
+    closedBy: Record<string, number>;
+    /** 「每个 session 里说了几句」的分布：`{"1": N, "2": M}` */
+    spokeInSession: Record<string, number>;
+    /**
+     * 因为"没有 session"被挡的唤醒次数（覆盖率信号：高 = session 开得太少）。
+     */
+    noSession: number;
+    /**
+     * 因为"本话题的发言预算已用尽"被挡的次数（**主路径之一**）。
+     *
+     * 预算耗尽不关会话，所以同一个话题里"还想说、但额度没了"会一次次记在这里：
+     * 高 = 预算偏紧（模型还想接着聊），低 = 预算够用。要不要加预算看它，
+     * 而不是看 `closedBy`（那里不再有预算这一项）。
+     */
+    budgetExhausted: number;
+    /** 因为"最小间隔没到"被挡的次数（异常高 = 模型想说的话被间隔压住了） */
+    minGap: number;
+    /** 生效的三个参数（硬上限裁剪之后的值，便于确认配置真的生效了） */
+    budget: number;
+    idleMs: number;
+    minGapMs: number;
+  };
+  /**
+   * 被"转录自上次判定以来无新增"挡下、连 LLM 都没调的次数（唯一的本地闸）。
+   *
+   * 它只装在滚动收敛（`topic-roll`）上：消息面（到达即新增）与问题探针
+   * （时间触发、且天生有界）都不装这道闸。
+   */
+  skippedUnchanged: number;
   evaluatedByTrigger: Record<string, number>;
   satisfiedByScene: Record<string, number>;
   vetoed: Record<string, number>;

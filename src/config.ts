@@ -27,8 +27,16 @@ import { ConfigError } from './config-error.js';
 import type { FileConfig, ProactiveFileConfig } from './config-file.js';
 import {
   DEFAULT_MAX_WAIT_PER_ITEM,
-  DEFAULT_WAIT_YIELD_MS,
+  DEFAULT_SESSION_BUDGET,
+  DEFAULT_SESSION_IDLE_MS,
+  DEFAULT_SESSION_MIN_GAP_MS,
+  MAX_SESSION_BUDGET_CAP,
   MAX_WAIT_PER_ITEM_CAP,
+  SESSION_IDLE_MS_MAX,
+  SESSION_IDLE_MS_MIN,
+  SESSION_MIN_GAP_MS_MAX,
+  SESSION_MIN_GAP_MS_MIN,
+  DEFAULT_WAIT_YIELD_MS,
   WAIT_YIELD_MS_MAX,
   WAIT_YIELD_MS_MIN,
 } from './pipeline/proactive/contract.js';
@@ -253,6 +261,32 @@ export interface Config {
      * 它只是**把下一次唤醒提前一点**，不是一台新的等待机器。
      */
     waitYieldMs: number;
+    /**
+     * 一个话题 session 内允许的主动发言条数（BOT_PROACTIVE_SESSION_BUDGET /
+     * proactive.sessionBudget，默认 2，**硬上限 5**）。
+     *
+     * 它是"防刷屏"的主闸门：LLM 判"值得"时开一个 session，之后每说一句扣 1 点，
+     * 扣到 0 立即关闭；再要开口就得 LLM 重新判"值得"。配得比硬上限大时按硬上限
+     * 处理并 warn——"少说两句"是产品决策，不该被一行配置改回"多说几句"。
+     */
+    sessionBudget: number;
+    /**
+     * 静默多久自动关闭 session（BOT_PROACTIVE_SESSION_IDLE_MS /
+     * proactive.sessionIdleMs，默认 600000 = 10 分钟，与活动窗口同值；
+     * 范围 60000–3600000）。
+     *
+     * 锚点是 bot **自己**上次在这个 session 里发言的时间（没说过则是开启时刻），
+     * 刻意不被群消息刷新：这是"bot 说话的节奏"，不是"群消息的密度"。
+     */
+    sessionIdleMs: number;
+    /**
+     * 同一 session 内两次发言的**最小间隔**（BOT_PROACTIVE_SESSION_MIN_GAP_MS /
+     * proactive.sessionMinGapMs，默认 45000，范围 10000–300000）。
+     *
+     * 与 `waitYieldMs` 数值巧合地接近，但语义完全不同：那个是"让路后多久重查"
+     * （能不能再看一眼），这个是"两次开口至少隔多久"（闸门不让过，且**不消耗预算**）。
+     */
+    sessionMinGapMs: number;
     /**
      * 判定调用超时（BOT_PROACTIVE_JUDGE_TIMEOUT_MS / proactive.judgeTimeoutMs）。
      *
@@ -569,6 +603,35 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       DEFAULT_WAIT_YIELD_MS,
       { min: WAIT_YIELD_MS_MIN, max: WAIT_YIELD_MS_MAX },
       'proactive.waitYieldMs',
+    ),
+    // 话题 session（主动发言的唯一放行闸门）：
+    //
+    // ⚠️ `sessionBudget` 的 `max` 刻意**不是**硬上限（5）：配成 9 时正确的行为是
+    // "按 5 处理并 warn"（验收 9），而不是启动失败——与 `maxWaitPerItem` 同一口径。
+    // 真正的硬上限由 `effectiveSessionBudget` 在 watcher 层执行。
+    sessionBudget: pickInt(
+      env,
+      'BOT_PROACTIVE_SESSION_BUDGET',
+      file?.sessionBudget,
+      DEFAULT_SESSION_BUDGET,
+      { min: 1, max: MAX_SESSION_BUDGET_CAP * 20 },
+      'proactive.sessionBudget',
+    ),
+    sessionIdleMs: pickInt(
+      env,
+      'BOT_PROACTIVE_SESSION_IDLE_MS',
+      file?.sessionIdleMs,
+      DEFAULT_SESSION_IDLE_MS,
+      { min: SESSION_IDLE_MS_MIN, max: SESSION_IDLE_MS_MAX },
+      'proactive.sessionIdleMs',
+    ),
+    sessionMinGapMs: pickInt(
+      env,
+      'BOT_PROACTIVE_SESSION_MIN_GAP_MS',
+      file?.sessionMinGapMs,
+      DEFAULT_SESSION_MIN_GAP_MS,
+      { min: SESSION_MIN_GAP_MS_MIN, max: SESSION_MIN_GAP_MS_MAX },
+      'proactive.sessionMinGapMs',
     ),
     // 判定超时比话题判定宽一倍：输出是多段 JSON 而不是一个布尔值
     judgeTimeoutMs: pickInt(
@@ -1023,6 +1086,14 @@ export function describeConfig(config: Config): Record<string, unknown> {
       topicRoll: {
         messages: config.proactive.topicRollMessages,
         ms: config.proactive.topicRollMs,
+      },
+      // 话题 session（主动发言的唯一放行闸门）：启动摘要里给出用户配的原始值。
+      // **生效值**（硬上限裁剪之后）另在 health 的 `proactive.sessions` 里给——
+      // 配成 9 时这两处会不一样，那正是我们想要的可见性。
+      session: {
+        budget: config.proactive.sessionBudget,
+        idleMs: config.proactive.sessionIdleMs,
+        minGapMs: config.proactive.sessionMinGapMs,
       },
       judgeTimeoutMs: config.proactive.judgeTimeoutMs,
     },

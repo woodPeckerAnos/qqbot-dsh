@@ -189,6 +189,7 @@ export function scenesForTrigger(trigger: SceneTrigger): readonly SceneDefinitio
  * | `lastBotSpeakAt` / `inBotTopicWindow` / `topic` | `ConversationState` 的活动窗口 |
  * | `recentMessageCount` / `recentHumanCount` | 同上（按窗口过滤） |
  * | `pendingQuestionCount` | 未答问题台账（本地疑问句识别 + TTL） |
+ * | `session` | `ConversationState` 的话题 session（LLM 开的那一次，三字段） |
  * | `matchedInterestIds` | 兴趣池（本地关键词命中） |
  * | `unansweredStreak` | bot 发言计数 / 人类消息归零 |
  *
@@ -226,6 +227,9 @@ export function buildSceneEvidence(input: {
     botAliases: input.botAliases ?? [],
     ...(state.botLastSpoke === undefined ? {} : { lastBotSpeakAt: state.botLastSpoke }),
     inBotTopicWindow: state.inBotTopicWindow(now),
+    // 话题 session：判定层据此回答"说完了要不要继续跟着这个话题"
+    // （结构化事实块由 judge.ts 渲染，本层只如实透出状态）
+    ...(state.session === undefined ? {} : { session: state.session }),
     ...(topicId === undefined || Number.isNaN(startedAt)
       ? {}
       : {

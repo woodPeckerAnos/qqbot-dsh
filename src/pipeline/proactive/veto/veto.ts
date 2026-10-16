@@ -12,13 +12,41 @@
  * 决策顺序（短路，越靠前越"全局"）：
  *   no-candidate（本地没候选）→ no-scene（模型全判不成立）
  *   → **wait 的那一支**（见下）→ rate-limit（硬限流）
- *   → topic-spent（同一话题已说过）→ budget（顺序 / 分位数预算）→ speak
+ *   → **session 闸门**（没有则开、有则查预算与最小间隔）→ budget（顺序 / 分位数预算）→ speak
+ *
+ * ## session 闸门（本节对应 docs/TOPIC-SESSION-REQUIREMENT.md 判定二/四）
+ *
+ * 它接替的是原来"每话题一次"那一行**位置**，但语义完全不同：不再按"话题"
+ * 记账（话题是 LLM 之后才明确的东西，本地记不准），只按"LLM 开的那一次会话 +
+ * 预算"记账。四类不过（穷举）：
+ *
+ * | 原因 | 条件 | 计入 |
+ * |---|---|---|
+ * | `no-session` | 没有开启中的 session（模型也没判"值得"，否则本次就会开一个） | `proactiveNoSession` |
+ * | `budget-exhausted` | `budgetLeft <= 0`（**预算不关会话，只闭嘴**） | `proactiveBudgetExhausted` |
+ * | `min-gap` | `now - lastSpokeAt < sessionMinGapMs` | `proactiveMinGap` |
+ * | `no-new-content` | 转录自上次评估无新增 | 不单独计数（属"未进入判定"） |
+ *
+ * 最后一类**不在这里**：它在调度层就短路了（连判定都不发起），见 watcher.ts。
+ * 这里负责的是"判定跑完之后"的三类，且顺序恒为 rate-limit → session 闸门 → 预算
+ * （验收 10：10 分钟 3 次的上限不受 session 预算放宽）。
+ *
+ * ## 预算耗尽之后怎么办（维护者口径：session 不由预算驱动）
+ *
+ * 预算减到 0 **不关闭 session**：这个话题的会话继续开着，闸门只是一次次地不放行。
+ * 要重新开口，只有两条正门，**都由话题驱动**：
+ *   1. 模型说换话题了（`session:'new-topic'`）→ 关旧会话、为新话题开一个（预算重置）；
+ *   2. 静默到 `idle`（或模型说收口 `close`）→ 会话结束 → 下次唤醒由 LLM 决定要不要
+ *      为当前话题开一个新的。
+ *
+ * ⚠️ `new-topic` 只重置**预算**，**不**重置节奏：最小间隔照样要过（`min-gap`）。
+ * 否则模型只要一直说"换话题了"就能连着说——那就把上限挪回模型手里了。
  *
  * ## `wait` 的唯一入口（本节对应 docs/WAIT-CONVERGENCE-REQUIREMENT.md 判定二）
  *
  * ```
  * 候选为空                        → silent('no-candidate')
- * 无 satisfied 且无 waiter        → silent('no-scene')
+ * 无 satisfied 且无 waiter        → 有 session ? silent('no-scene') : silent('no-session')
  * 无 satisfied 且有 waiter：
  *     ├ waiter 引用无效 / 缺失    → silent（调度层计 wait_ticket_invalid_target）
  *     ├ waiter.reason ≠ yielding  → silent('wait-declined')  ← not-yet / watching
@@ -28,7 +56,7 @@
  *          └ 否则 → wait（建票据，计 wait_ticket_created）
  * ```
  *
- * `satisfied` 非空时的优先级**不变**（顺序 → 硬限流 → 每话题额度）——
+ * `satisfied` 非空时的优先级**不变**（顺序 → 硬限流 → session 闸门）——
  * wait 只是"没有场景成立"这一支的细化，不去抢成立场景的名额。
  *
  * 注意 `no-response`（没人理我就停）**不在这里**：它必须在调用 LLM 之前短路，
@@ -36,8 +64,10 @@
  */
 
 import {
+  aggregateSessionDirective,
   DEFAULT_VETO_POLICY,
   effectiveMaxWaitPerItem,
+  effectiveSessionMinGapMs,
   sceneOrder,
   type ProactiveDecision,
   type SceneCandidate,
@@ -119,10 +149,22 @@ export function evaluateVeto(
   if (satisfied.length === 0) {
     // 模型说"先别说"——**采纳与否只由这一支决定**（旧实现在这里排了一个
     // 与任何对象都无关的定时器，于是 wait 占比 46%、产出为零）。
-    return decideWait(verdicts, context, policy);
+    const decided = decideWait(verdicts, context, policy);
+    // "让路"这一支的终局**优先于** session 闸门：wait 票据挂在**挂起问题**上，
+    // 与有没有 session 无关。把它压在 `no-session` 之下，等于让"有人在答、
+    // 过 45 秒再看"这条唯一的等待机制整体失效。
+    if (!(decided.action === 'silent' && decided.reason === 'no-scene')) return decided;
+    // ③ 没有场景成立、也没有任何"让路"声明：本次唤醒什么都不会发生。
+    //    在账上它属于哪一类"没过闸门"，取决于当时有没有 session：
+    //      没有 session → `no-session`（模型没判"值得"，就不会开 session；验收 2）
+    //      有 session   → `no-scene`（模型自己说这次没什么可补；session 保持开启）
+    return context.session === undefined
+      ? silent('no-session', '没有开启中的 session（模型本次未判"值得"）')
+      : silent('no-scene');
   }
 
-  // ③ 硬限流：最保守的一道，先于一切"策略"
+  // ④ 硬限流：最保守的一道，先于一切"策略"（也先于 session 闸门——
+  //    10 分钟 3 次的上限**不因** session 预算放宽而放宽，见验收 10）
   if (context.spokeCount10Min >= policy.maxPer10Min) {
     return silent('rate-limit', `10 分钟已介入 ${context.spokeCount10Min} 次`);
   }
@@ -130,12 +172,40 @@ export function evaluateVeto(
     return silent('rate-limit', `1 小时已介入 ${context.spokeCount1Hour} 次`);
   }
 
-  // ④ 话题预算：同一话题已经说过就不再说（除非是新的话题）
-  if (context.topicBotSpeaks >= policy.maxPerTopic) {
-    return silent('topic-spent', `本话题已介入 ${context.topicBotSpeaks} 次`);
+  // ⑤ session 闸门（接替原来"每话题一次"的位置）：
+  //    - **没有 session** → 本次发言会**开**一个新 session（调度层写 budgetLeft），
+  //      这里不拦：LLM 刚判"值得"，那正是 session 的定义（验收 1）；
+  //    - 有 session → 两道确定性检查：预算还剩吗、距上次发言够久吗。
+  const session = context.session;
+  if (session !== undefined) {
+    // 模型明确说"换话题了"→ 这是一次**重启**：预算是新会话的（调度层会关旧开新），
+    // 因此预算那一道不适用。它只重置预算，不重置节奏（见下）。
+    const { restart } = aggregateSessionDirective(verdicts);
+    if (session.budgetLeft <= 0 && !restart) {
+      // 本话题的发言额度用尽 → **闭嘴，但不关会话**（维护者口径：session 不该被
+      // 预算驱动）。后续每次唤醒都会落在这里，直到模型说换话题（`new-topic`）、
+      // 说收口（`close`）或静默到 `idle` —— 那时才会由调度层关掉它。
+      return silent(
+        'budget-exhausted',
+        `本话题的发言预算已用尽（会话开启于 ${session.openedAt}）；` +
+          `等话题收口（close）、换新（new-topic）或静默超时`,
+      );
+    }
+    const lastSpokeAt = session.lastSpokeAt;
+    if (lastSpokeAt !== undefined) {
+      const gap = effectiveSessionMinGapMs(policy.sessionMinGapMs);
+      if (context.now - lastSpokeAt < gap) {
+        // ⚠️ 换话题（`new-topic`）**也**要过这一道：模型只有重置预算的权力，
+        // 没有重置节奏的权力。否则"一直说换话题"就能连着刷——上限又回到模型手里。
+        return silent(
+          'min-gap',
+          `距上次发言 ${context.now - lastSpokeAt}ms（下限 ${gap}ms），本次不消耗预算`,
+        );
+      }
+    }
   }
 
-  // ⑤ 顺序 / 分位数预算：**「取第一个」在这里落地**
+  // ⑥ 顺序 / 分位数预算：**「取第一个」在这里落地**
   const candidateByScene = new Map(candidates.map((item) => [item.scene, item]));
   const orderedIds =
     context.order === undefined

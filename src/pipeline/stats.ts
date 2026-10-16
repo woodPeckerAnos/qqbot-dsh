@@ -60,6 +60,38 @@ export class PipelineStats {
   proactiveWaitDeclined: Record<string, number> = {};
   /** 主动介入：模型引用了一个不存在（或没给）的挂起问题 */
   proactiveWaitInvalidTarget = 0;
+  /**
+   * 主动介入：**开了一个话题 session**（LLM 判"值得"且该次发言成立）。
+   *
+   * 与 `proactiveSpoke` 一起看：开得多、说得少 = 判据偏松；
+   * 与 `proactiveSpokeInSession` 的分布一起看 = "预算 2 到底对不对"。
+   */
+  proactiveSessionOpened = 0;
+  /**
+   * 主动介入：**关了一个话题 session**。
+   *
+   * 账目等式：`proactiveSessionOpened === proactiveSessionClosed`
+   * （每次开启只有一个终局），且 `=== Σ proactiveSessionClosedBy`。
+   */
+  proactiveSessionClosed = 0;
+  /**
+   * 主动介入：session 的关闭原因分布
+   * （`llm-closed` / `topic-changed` / `idle` / `conversation-gone`）。
+   *
+   * `llm-closed` 高 = 判据里"什么时候该关"那一段有效；
+   * `topic-changed` 高 = 模型在主动切话题（预算是靠它重置的）；
+   * **预算不在这个分布里**——它只让会话闭嘴（见 `proactiveBudgetExhausted`）。
+   */
+  proactiveSessionClosedBy: Record<string, number> = {};
+  /**
+   * 主动介入：**每个 session 里说了几句**的分布（键 = 句数，值 = 这样的 session 数）。
+   *
+   * 需求点名它是核心指标：集中在 1 = 预算 2 用不满（可考虑降为 1）；
+   * 集中在 2 = 预算卡着（每次都说满）。
+   */
+  proactiveSpokeInSession: Record<string, number> = {};
+  /** 主动介入：被"转录自上次判定以来无新增"挡下的次数（唯一的本地闸，不调 LLM） */
+  proactiveSkippedUnchanged = 0;
   /** 事件去重丢弃数（dedupe stage） */
   deduplicated = 0;
   /** 并发满员拒绝数（admission stage） */
@@ -147,6 +179,10 @@ export type PipelineStatsSnapshot = {
   proactiveWaitTicketCreatedByReason: number;
   /** 按下次数的总和（按理由的分布见 proactive.waitDeclined） */
   proactiveWaitDeclined: number;
+  /** session 关闭次数的总和（**必须等于 proactiveSessionClosed**；分布见 proactive.sessions.closedBy） */
+  proactiveSessionClosedBy: number;
+  /** 所有 session 里发言次数的总和（分布见 proactive.sessions.spokeInSession） */
+  proactiveSpokeInSession: number;
   inFlight: number;
   queued: number;
   offpeak: OffpeakSnapshot;

@@ -85,15 +85,19 @@ export class Orchestrator {
       proactiveWaitTickets,
       proactiveWaitTicketCreatedByReason,
       proactiveWaitDeclined,
+      proactiveSessionClosedBy,
+      proactiveSpokeInSession,
       ...rest
     } = this.deps.stats;
     return {
       ...rest,
-      // 三个按理由拆开的分布映射成**数字**：`dispatcher` 的对外契约是
+      // 按理由/按句数拆开的分布一律映射成**数字**：`dispatcher` 的对外契约是
       // "字段全为数字"（RUNBOOK 在用），分布另在 health 的 proactive 段给。
       proactiveWaitTickets: sumValues(proactiveWaitTickets),
       proactiveWaitTicketCreatedByReason: sumValues(proactiveWaitTicketCreatedByReason),
       proactiveWaitDeclined: sumValues(proactiveWaitDeclined),
+      proactiveSessionClosedBy: sumValues(proactiveSessionClosedBy),
+      proactiveSpokeInSession: sumValues(proactiveSpokeInSession),
       ...this.deps.status(),
     };
   }

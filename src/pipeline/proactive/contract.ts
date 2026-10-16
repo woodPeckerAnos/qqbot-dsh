@@ -81,6 +81,164 @@ export type SceneTrigger =
   | 'speak-followup';
 
 // ---------------------------------------------------------------------------
+// 话题 session：主动发言的**唯一放行闸门**（见 docs/TOPIC-SESSION-REQUIREMENT.md）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一个**话题 session**：LLM 判"值得聊"时开一次，之后只数预算。
+ *
+ * 三个字段就是全部状态——这是本机制的**唯一目的**：把上一版"5 个本地信号 +
+ * 锚点 + 台账交互"塌缩成三个字段。刻意**没有** `topicChange` 字段、没有话题指纹、
+ * 没有跨会话共享：话题是 LLM 之后才明确的东西，用本地启发式去划分它只会得到
+ * 假精确（与架构文档 §3.1 拒绝"话题聚簇"的理由同源）。
+ *
+ * ## 生命周期：开与关**都由话题驱动**，预算只决定"还能不能开口"
+ *
+ * 这是维护者拍过板的一条硬口径（`session 不应该被预算驱动，它的驱动动机应该
+ * 只是话题`）：
+ *
+ *   - `budgetLeft` 减到 0 **不关闭 session**：这个话题的会话仍然开着，只是
+ *     闸门不再放行（`silent('budget-exhausted')`）。预算因此是"这个话题还能说
+ *     几句"的账，不是会话的寿命；
+ *   - 关闭只有三种**话题级/时间级**的原因：模型说这个话题收口了（`llm-closed`）、
+ *     模型说换话题了（`topic-changed`，见 `SessionDirective`）、或者静默超时
+ *     （`idle`，本项目的"话题翻篇"口径）；会话状态被清理时连带关闭
+ *     （`conversation-gone`）。
+ *
+ * 存放位置：`ConversationState` 上，**每会话最多一个**（与既有"一会话一状态"一致）。
+ */
+export interface TopicSession {
+  /** LLM 判定"值得聊"的那一刻（也是 idle 计时的兜底锚点） */
+  readonly openedAt: number;
+  /**
+   * 这个话题还能主动说几句（= `sessionBudget`；每说一句减 1，减到 0 就闭嘴）。
+   *
+   * ⚠️ 减到 0 **不关闭 session**：它进入"已耗尽"状态——闸门不再放行，直到模型
+   * 说这个话题收口（`close`）、说换话题了（`new-topic`），或者静默到 `idle`。
+   */
+  readonly budgetLeft: number;
+  /** 最近一次在**这个 session 里**发言的时间（最小间隔 `sessionMinGapMs` 的锚点） */
+  readonly lastSpokeAt?: number;
+}
+
+/** session 的四种关闭原因（**穷举**；每次关闭只记一个，见需求验收 11 的账目闭合）。 */
+export type SessionCloseCause =
+  /** LLM：判定说这个话题收口了（`session:'close'`） */
+  | 'llm-closed'
+  /** LLM：判定说换话题了（`session:'new-topic'`）——旧会话为**新话题**让位 */
+  | 'topic-changed'
+  /** 代码：距 `lastSpokeAt`（无则 `openedAt`）超过 `sessionIdleMs` */
+  | 'idle'
+  /** 代码：会话状态被清理时连带关闭（当前运行期没有淘汰路径，留给将来的收口） */
+  | 'conversation-gone';
+
+export const SESSION_CLOSE_CAUSES: readonly SessionCloseCause[] = [
+  'llm-closed',
+  'topic-changed',
+  'idle',
+  'conversation-gone',
+];
+
+/** 一次 session 关闭的通知载荷（调度层据此记 `proactiveSessionClosedBy{reason}`）。 */
+export interface SessionClosedEvent {
+  readonly cause: SessionCloseCause;
+  /** 关闭时的 session 快照（用于算"这个 session 里说了几句"） */
+  readonly session: TopicSession;
+}
+
+/**
+ * LLM 对"**当前这个话题的 session 该怎么办**"的回答（判定输出的唯一新增字段）。
+ *
+ * 三态而不是两态，是因为"关掉旧的"与"为现在这个话题开一个新的"是两件不同的事
+ * ——而后者是**预算用尽之后唯一的重启正门**（维护者口径：session 不该被预算驱动，
+ * 它的驱动动机只能是话题）。两态时这两件事被挤进同一个 `close` 里，只能靠
+ * "关掉之后下一次唤醒再开"来近似，于是"预算一重置就能接着说"，预算形同虚设。
+ *
+ * | 值 | 模型想说的 | 代码做什么 |
+ * |---|---|---|
+ * | `keep-open` | 还是刚才那个话题，会话该继续 | 没有 session 就开一个；已有就继续用（**已耗尽时仍然闭嘴**） |
+ * | `close` | 刚才那个话题收口了 | 关掉会话（`llm-closed`）；本次该说的那句照样说（验收 5） |
+ * | `new-topic` | 已经换到另一个话题了 | 关掉旧会话（`topic-changed`）并为**新话题**开一个（预算重置） |
+ *
+ * 只在本次判定有场景成立（要发言）时才有意义；`close` 也允许与 `satisfied:false`
+ * 同时出现——"该收口了"与"这次没什么可补"是两个维度。
+ */
+export type SessionDirective = 'keep-open' | 'close' | 'new-topic';
+
+export const SESSION_DIRECTIVES: readonly SessionDirective[] = [
+  'keep-open',
+  'close',
+  'new-topic',
+];
+
+/** 是否是一个合法的 session 指令（解析模型输出时用它挡掉幻觉值）。 */
+export function isSessionDirective(value: unknown): value is SessionDirective {
+  return typeof value === 'string' && (SESSION_DIRECTIVES as readonly string[]).includes(value);
+}
+
+/**
+ * 把逐场景判定里的 `session` 字段**聚合成会话级的一个结论**（唯一实现，
+ * 否决层与调度层共用它，避免"闸门放行了、调度层却不认"这种只在冲突输出下显形的分裂）。
+ *
+ * 冲突时的优先级：`new-topic` > `close` > `keep-open`。
+ *
+ * - `new-topic` 最优先：它是**话题边界**这一更强的事实声明。把它限定成"必须所有
+ *   判定一致"会让这个能力在实际输出里几乎不可达，而它是预算重启的唯一正门；
+ *   放宽的风险由**代码侧**兜住——最小间隔（`sessionMinGapMs`）照样要过，
+ *   硬限流也照样先在前面拦（上限活在模型之下）。
+ * - `close` 次之：模型在任一条判定里说"收口了"，就按收口处理（保守一侧）。
+ *
+ * `keep-open` 是没有任何一个判定说别的时的默认值——即**多数情况下的常态**。
+ */
+export function aggregateSessionDirective(verdicts: readonly SceneVerdict[]): {
+  /** 模型明确说换话题了（预算重启的唯一正门） */
+  readonly restart: boolean;
+  /** 模型明确说这个话题收口了 */
+  readonly close: boolean;
+} {
+  const restart = verdicts.some((verdict) => verdict.session === 'new-topic');
+  const close = !restart && verdicts.some((verdict) => verdict.session === 'close');
+  return { restart, close };
+}
+
+/** `sessionBudget` 的硬上限：配得再大也按它处理（防止"预算"变成刷屏许可）。 */
+export const MAX_SESSION_BUDGET_CAP = 5;
+
+/** `sessionBudget` 的内置默认：**一个 session 里最多主动说两句**。 */
+export const DEFAULT_SESSION_BUDGET = 2;
+
+/** `sessionIdleMs`（静默关闭 session）的合法范围与默认值：默认 10 分钟，与活动窗口同值。 */
+export const SESSION_IDLE_MS_MIN = 60_000;
+export const SESSION_IDLE_MS_MAX = 3_600_000;
+export const DEFAULT_SESSION_IDLE_MS = 600_000;
+
+/** `sessionMinGapMs`（同一 session 内两次发言的最小间隔）的范围与默认值。 */
+export const SESSION_MIN_GAP_MS_MIN = 10_000;
+export const SESSION_MIN_GAP_MS_MAX = 300_000;
+export const DEFAULT_SESSION_MIN_GAP_MS = 45_000;
+
+/** 把任意配置值收敛成**生效的** session 预算（至少 1，硬上限 5）。 */
+export function effectiveSessionBudget(configured: number): number {
+  if (!Number.isFinite(configured)) return DEFAULT_SESSION_BUDGET;
+  return Math.min(Math.max(1, Math.trunc(configured)), MAX_SESSION_BUDGET_CAP);
+}
+
+/** 把任意配置值收敛成**生效的**静默关闭时长（毫秒）。 */
+export function effectiveSessionIdleMs(configured: number): number {
+  if (!Number.isFinite(configured)) return DEFAULT_SESSION_IDLE_MS;
+  return Math.min(Math.max(SESSION_IDLE_MS_MIN, Math.trunc(configured)), SESSION_IDLE_MS_MAX);
+}
+
+/** 把任意配置值收敛成**生效的**最小发言间隔（毫秒）。 */
+export function effectiveSessionMinGapMs(configured: number): number {
+  if (!Number.isFinite(configured)) return DEFAULT_SESSION_MIN_GAP_MS;
+  return Math.min(
+    Math.max(SESSION_MIN_GAP_MS_MIN, Math.trunc(configured)),
+    SESSION_MIN_GAP_MS_MAX,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ① 搜集层
 // ---------------------------------------------------------------------------
 
@@ -139,6 +297,14 @@ export interface SceneEvidence {
     /** 从"让路"那一刻到本次唤醒经过了多久（毫秒） */
     readonly yieldedForMs: number;
   };
+  /**
+   * 当前**开启中**的话题 session（没有则省略）。
+   *
+   * 为什么它必须进证据：判定层新增了"说完这句，这个话题还要不要继续跟"
+   * （`session: 'keep-open' | 'close'`），而模型要回答它就得知道"我已经在这个
+   * 话题里说过几句、预算还剩几句"——否则它只能靠转录里数，那是幻觉来源。
+   */
+  readonly session?: TopicSession;
   /** 命中的兴趣池条目 id（场景 5；空数组 = 无候选） */
   readonly matchedInterestIds: readonly string[];
   /** 连续「介入后无人回应」的次数（任何用户发言归零） */
@@ -259,6 +425,14 @@ export interface SceneVerdict {
    */
   readonly waitReason?: WaitReason;
   /**
+   * 模型对"当前这个话题的 session 该怎么办"的回答（本次需求唯一新增的字段）。
+   *
+   * 三态语义、冲突时的聚合规则、以及"为什么 `new-topic` 是预算重启的唯一正门"，
+   * 见 `SessionDirective` 与 `aggregateSessionDirective`。**是否真的开/关仍由代码
+   * 决定**——预算是代码里的硬闸门，模型只有建议权。
+   */
+  readonly session?: SessionDirective;
+  /**
    * 旧版布尔位，**仅为兼容存量回放数据而保留**（等价于 `waitReason:'yielding'`）。
    * 判据正文与 JSON 契约都已经改成三态，解析器不再产出它。
    */
@@ -271,6 +445,19 @@ export interface SceneVerdict {
 
 /** 被否决的原因（有序：数组顺序即排查顺序）。 */
 export type VetoReason =
+  /** 没有场景成立（LLM 全判不成立），而当时**也没有**开启中的 session */
+  | 'no-session'
+  /**
+   * 本话题的发言预算已经用尽（`budgetLeft <= 0`）。
+   *
+   * 这是闸门的**主路径之一**，不是防御性分支：预算耗尽**不关闭** session
+   * （维护者口径：session 不该被预算驱动），所以后续唤醒会一次次落在这里，
+   * 直到模型说这个话题收口（`close`）、说换话题了（`new-topic`，唯一的重启正门）
+   * 或者静默到 `idle`。
+   */
+  | 'budget-exhausted'
+  /** 同一 session 内距上次发言不足 `sessionMinGapMs`（不消耗预算） */
+  | 'min-gap'
   /** 没有场景成立（LLM 全判不成立） */
   | 'no-scene'
   /** 本地预筛没给出任何候选（连问都不用问 LLM） */
@@ -281,8 +468,6 @@ export type VetoReason =
   | 'budget'
   /** 硬限流（10 分钟 3 次 / 1 小时 8 次） */
   | 'rate-limit'
-  /** 同一话题已介入过 */
-  | 'topic-spent'
   /** 该挂起问题的"让路"预算已用尽（`maxWaitPerItem`，含唤醒后的那一次） */
   | 'wait-spent'
   /** 模型想等，但按下的理由不排唤醒 / 理由无效（`not-yet` / `watching` / 无目标） */
@@ -291,9 +476,11 @@ export type VetoReason =
 export const VETO_REASON_ORDER: readonly VetoReason[] = [
   'no-candidate',
   'no-scene',
+  'no-session',
   'no-response',
   'rate-limit',
-  'topic-spent',
+  'budget-exhausted',
+  'min-gap',
   'budget',
   'wait-spent',
   'wait-declined',
@@ -333,8 +520,15 @@ export interface VetoContext {
   /** 该会话在硬限流窗口内的主动发言次数 */
   readonly spokeCount10Min: number;
   readonly spokeCount1Hour: number;
-  /** 该话题已被介入的次数（话题记账） */
-  readonly topicBotSpeaks: number;
+  /**
+   * 当前**开启中的**话题 session（`undefined` = 没有）。
+   *
+   * 它是本层的**唯一放行闸门**：闸门的位置就是原来"每话题一次"那一行的位置
+   * （顺序 → 硬限流 → session 闸门 → 顺序/分位数预算）。四类不过见
+   * `VetoReason` 的 `no-session` / `budget-exhausted` / `min-gap`，
+   * 以及不进本层的 `no-new-content`（转录未增长，在调度层就短路了）。
+   */
+  readonly session?: TopicSession;
   /**
    * wait 的对象状态（模型引用的那个挂起问题）。
    * `undefined` = 模型没有给出对象引用，或引用的 id 在台账里不存在。
@@ -349,8 +543,15 @@ export interface VetoPolicy {
   readonly maxUnansweredStreak: number;
   readonly maxPer10Min: number;
   readonly maxPerHour: number;
-  /** 同一话题允许的主动介入次数（默认 1） */
-  readonly maxPerTopic: number;
+  /**
+   * 同一 session 内两次发言的**最小间隔**（毫秒，默认 45000）。
+   *
+   * 它是 session 闸门的三道检查之一。放在这一层是因为"顺序与额度的唯一实现"
+   * 在这儿：闸门过不过必须能被单测穷举，而不是散在 runner 的 if 里。
+   * （session 的**初始预算**不在这里：它由调度层在"开 session"时写入状态，
+   * 否决层只读 `context.session.budgetLeft`。）
+   */
+  readonly sessionMinGapMs: number;
   /** 是否启用按场景置信度加权的分位数预算（默认关：先用固定顺序，见 S4） */
   readonly quantileBudget: boolean;
   /** 每个窗口期望的发言次数（分位数预算的目标） */
@@ -368,7 +569,7 @@ export const DEFAULT_VETO_POLICY: VetoPolicy = {
   maxUnansweredStreak: 2,
   maxPer10Min: 3,
   maxPerHour: 8,
-  maxPerTopic: 1,
+  sessionMinGapMs: DEFAULT_SESSION_MIN_GAP_MS,
   quantileBudget: false,
   targetRate: 1.5,
   maxWaitPerItem: 1,

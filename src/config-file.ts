@@ -127,6 +127,15 @@ export interface ProactiveFileConfig {
   maxWaitPerItem?: number;
   /** "让路"理由的等待时长（毫秒；默认 45000，范围 15000–120000） */
   waitYieldMs?: number;
+  /**
+   * 一个话题 session 内允许的主动发言条数（默认 2）。硬上限 5——配得更大按 5
+   * 处理并 warn，因为"少说两句"是产品决策，不该被一行配置改回去。
+   */
+  sessionBudget?: number;
+  /** 静默多久自动关闭 session（毫秒；默认 600000，范围 60000–3600000） */
+  sessionIdleMs?: number;
+  /** 同一 session 内两次发言的最小间隔（毫秒；默认 45000，范围 10000–300000） */
+  sessionMinGapMs?: number;
   /** 判定调用超时（毫秒）；与 topic.timeoutMs 分开，见 config.ts 的说明 */
   judgeTimeoutMs?: number;
   /** 旁听缓冲上限（条）与最长保留时长（毫秒） */
@@ -294,6 +303,9 @@ const PROACTIVE_SPEC: SectionSpec = {
   questionProbeMs: 'int',
   maxWaitPerItem: 'int',
   waitYieldMs: 'int',
+  sessionBudget: 'int',
+  sessionIdleMs: 'int',
+  sessionMinGapMs: 'int',
   judgeTimeoutMs: 'int',
   bufferMaxMessages: 'int',
   bufferMaxAgeMs: 'int',

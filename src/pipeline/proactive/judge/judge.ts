@@ -11,6 +11,7 @@
  */
 
 import {
+  isSessionDirective,
   isWaitReason,
   SCENE_ORDER,
   sceneOrder,
@@ -18,6 +19,7 @@ import {
   type SceneEvidence,
   type SceneId,
   type SceneVerdict,
+  type SessionDirective,
 } from '../contract.js';
 
 // ---------------------------------------------------------------------------
@@ -63,6 +65,33 @@ const SCENE_3_CRITERIA = [
   '若给出 "yielding"，必须把你所指的那个挂起问题的 id（见【结构化事实】）原样写进',
   'evidence，例如 "q:msg-123@1700000000000"；给不出有效 id 时请改用 "not-yet"。',
   '不成立且不涉及等待：问题已被回答、问题面向特定某人、私人或情绪话题、超出 bot 能力域。',
+].join('\n');
+
+/**
+ * 话题 session 的**三态指引**（判定层新增的一段正文，见需求 §六）。
+ *
+ * 为什么单独抽成一段而不是重复进五个场景：`session` 是**会话级**字段，
+ * 与"哪个场景成立"无关——每个场景都抄一遍只会让判据变长、口径漂移。
+ *
+ * 为什么必须是三态（`new-topic` 那一档的由来）：维护者口径是"session 不由预算
+ * 驱动，它的驱动动机只是话题"。预算用尽后要重新开一个会话，就必须有人说明
+ * **话题已经换了**——那是语义判断，只有模型能做。两态时这句话无处表达，
+ * 只能靠"关掉旧会话、下次唤醒再开"，于是"预算一重置就能接着说"，预算形同虚设。
+ */
+const SESSION_CRITERIA = [
+  '关于「话题会话」（session，会话级，不是场景级）：',
+  '代码会记住"这次话题是 bot 主动开口聊起来的"，并给这个话题几句话的发言预算；',
+  '预算用完它就会在这个话题里闭嘴（代码里的硬闸门），要重新开口必须**换话题**。',
+  '每次判定你都要回答：**当前这段对话的话题，应该有一个怎样的会话**。三选一：',
+  '  - "keep-open"：还是刚才那个话题，会话该继续（没有会话就开一个）；',
+  '  - "close"   ：刚才那个话题已经收口——问题被答了、讨论有结论了。会话到此为止；',
+  '    注意：给 close 时，本次该说的这句**照样会说**，关闭只影响之后；',
+  '  - "new-topic"：**已经换到另一个话题了**（和你前面几句聊的不是一回事）。',
+  '    代码会关掉旧会话，并为现在这个新话题重新开始一个（预算重置）。',
+  '判断依据是**这段对话本身**（转录 + 结构化事实），不是时间过去了多久：',
+  '只是在同一件事上继续问、继续补充 → "keep-open"；说到另一件事上了 → "new-topic"。',
+  '即使这次没有场景成立，只要你认为话题收口了，也可以给 "close"。',
+  '拿不准就给 "keep-open"：预算与静默超时是代码里的硬闸门，不需要你替它省。',
 ].join('\n');
 
 const SCENE_4_CRITERIA = [
@@ -141,6 +170,26 @@ function renderFacts(evidence: SceneEvidence, candidates: readonly SceneCandidat
       );
     }
   }
+  if (evidence.session !== undefined) {
+    const openedSeconds = Math.max(0, Math.round((evidence.now - evidence.session.openedAt) / 1000));
+    const spoke =
+      evidence.session.lastSpokeAt === undefined
+        ? '还没在本会话里发过言'
+        : `上次发言 ${Math.max(0, Math.round((evidence.now - evidence.session.lastSpokeAt) / 1000))} 秒前`;
+    lines.push(
+      `本话题会话（session）：已开启 ${openedSeconds} 秒，${spoke}，` +
+        `本话题预算还剩 ${evidence.session.budgetLeft} 句`,
+    );
+    if (evidence.session.budgetLeft <= 0) {
+      lines.push(
+        '⚠️ 本话题的预算已用尽：代码会挡住你在**这个话题**里继续发言。' +
+          '若你判断话题已经换了，给 session="new-topic"（会重新开始一个会话）；' +
+          '若还是同一个话题，给 "keep-open" 即可（代码不会放行）。',
+      );
+    }
+  } else {
+    lines.push('本话题会话（session）：当前没有开启中的会话');
+  }
   if (evidence.topic !== undefined) {
     lines.push(
       `当前话题：${evidence.topic.id}（参与 ${evidence.topic.humanParticipants} 人，` +
@@ -195,7 +244,10 @@ export function renderJudgeCriteria(candidates: readonly SceneCandidate[]): stri
     '5. 如果你认为"现在不该说"，把该场景判 `satisfied:false` 并用 `waitReason` 说明',
     '   是**哪一种**先别说（三选一，见该场景判据）；是否真的等待、等多久，仍由代码决定；',
     '6. `waitReason` 只能是 "yielding" / "not-yet" / "watching" / ""（空串 = 不是在等）；',
-    '7. 宁缺勿滥：不确定就判不成立。',
+    '7. `session` 只能是 "keep-open" / "close" / "new-topic"（含义见下）；',
+    '8. 宁缺勿滥：不确定就判不成立。',
+    '',
+    SESSION_CRITERIA,
     '',
   ];
   for (const candidate of ordered) {
@@ -210,15 +262,20 @@ export function renderJudgeCriteria(candidates: readonly SceneCandidate[]): stri
 /**
  * 仲裁输出的 JSON 契约（由 gate-client 固定拼接在 system 段尾）。
  * 未知场景 id / 非法字段一律由 `parseSceneVerdicts` 丢弃，绝不整条降级。
+ *
+ * 相比上一版**只加了一个字段** `session`（需求 §六）。
  */
 export const JUDGE_OUTPUT_CONTRACT = [
   '你只能输出一个 JSON 对象，不要输出任何其他内容：',
   '{"verdicts":[{"scene":"scene-1","satisfied":true,"confidence":0.0,',
-  ' "reason":"<20字内理由>","evidence":"","directive":"","waitReason":""}]}',
+  ' "reason":"<20字内理由>","evidence":"","directive":"","waitReason":"",',
+  ' "session":"keep-open"}]}',
   'verdicts 必须覆盖上面列出的每一个候选场景 id，且只能是这些 id。',
   'satisfied 为布尔值；confidence 为 0..1 的数；evidence/directive 可为空字符串。',
   'waitReason 三选一或空串："yielding"（有人在答）/"not-yet"（还没到时候）',
   ' /"watching"（刚说完看反应）；只有 satisfied=false 时才可能有值。',
+  'session 三选一："keep-open"（这个话题继续）/"close"（这个话题收口了）',
+  ' /"new-topic"（已经换到另一个话题，会话应当重新开始）。',
 ].join('\n');
 
 // ---------------------------------------------------------------------------
@@ -279,6 +336,13 @@ export function parseSceneVerdicts(
     // 已经是 satisfied 的判定不再带理由——"成立"与"先别说"不可能同时为真。
     const rawReason = record['waitReason'];
     const waitReason = !satisfied && isWaitReason(rawReason) ? rawReason : undefined;
+    // session 指令（会话级）：与 satisfied 无关，两个方向都要如实收下——
+    // `close` + `satisfied:false` 是合法组合（"该收口了"与"这次没什么可补"
+    // 是两个维度，见需求边界表）。非法值一律丢弃。
+    const rawSession = record['session'];
+    const session: SessionDirective | undefined = isSessionDirective(rawSession)
+      ? rawSession
+      : undefined;
     const verdict: SceneVerdict = {
       scene: scene as SceneId,
       satisfied,
@@ -294,6 +358,7 @@ export function parseSceneVerdicts(
         ? {}
         : { directive: optionalString(record, 'directive') as string }),
       ...(waitReason === undefined ? {} : { waitReason }),
+      ...(session === undefined ? {} : { session }),
     };
     byScene.set(verdict.scene, verdict);
   }
