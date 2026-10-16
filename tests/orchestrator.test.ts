@@ -40,6 +40,7 @@ import { workspacePathFor } from '../src/store/paths.js';
 import { ensureStoreDirs, resolveStorePaths } from '../src/store/paths.js';
 import { SeenStore } from '../src/store/seen.js';
 import { SessionStore } from '../src/store/sessions.js';
+import { ObservationWindowStore } from '../src/store/window.js';
 import type { SendMessageRequest } from '../src/adapters/qq-official/types.js';
 import { c2cTarget, groupTarget } from '../src/adapters/qq-official/gateway.js';
 import { renderMessage } from '../src/adapters/qq-official/render.js';
@@ -226,6 +227,11 @@ function setup(
     extractDocument?: DocumentExtractor;
     /** 传 false 表示**不装配**介入层（模拟"只要 @ 回复"的部署） */
     observe?: false;
+    /**
+     * 观察窗口的白名单（传了就装配滚窗，与 `observe` 无关——这正是解耦要验证的：
+     * 主动发言关着、群在白名单里，被 @ 时照样有上下文）。
+     */
+    observationGroups?: readonly string[];
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), 'qqbot-disp-'));
@@ -257,6 +263,12 @@ function setup(
   const conversations = new ConversationStore(paths, logger);
   const seen = new SeenStore({ paths, logger });
   const sessions = new SessionStore({ paths, logger });
+  // 观察窗口：与 main.ts 同款接线（滚窗由组装层创建，注入两侧）
+  const windows = new ObservationWindowStore({
+    allowlist: options.observationGroups ?? [],
+    maxMessages: config.observation.maxMessages,
+    maxAgeMs: config.observation.maxAgeMs,
+  });
 
   // 组装方式与 main.ts 保持一致（显式构造每个 stage / 闸门 / 服务）。
   // 这里故意不抽公共工厂：组装就是业务逻辑，测试要验证的正是这套真实接线。
@@ -296,6 +308,7 @@ function setup(
     paths,
     stats,
     background,
+    ...(options.observationGroups === undefined ? {} : { windows }),
     ...(options.topicJudge !== undefined ? { topicJudge: options.topicJudge } : {}),
     ...(options.extractDocument !== undefined ? { extractDocument: options.extractDocument } : {}),
     now: options.now,
@@ -327,6 +340,9 @@ function setup(
         conversations,
         stats,
         logger: messageLogger,
+        ...(options.observationGroups === undefined
+          ? {}
+          : { onReplied: (text: string, ts: number) => { windows.recordBotReply(message.target.key, { text, ts }); } }),
         now: options.now,
       }),
     turns: turnRunner,
@@ -360,6 +376,7 @@ function setup(
     conversations,
     sessions,
     background,
+    windows,
     observed,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
@@ -1697,6 +1714,127 @@ describe('编排：用户发来的文件', () => {
     expect(ctx.orchestrator.snapshotStats().filesSavedOnly).toBe(1);
 
     ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['收到']);
+    await pending;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 观察窗口 → 被 @ 的上下文（本次重构的验收面）
+// ---------------------------------------------------------------------------
+
+describe('编排 被 @ 时的群聊上下文（观察窗口）', () => {
+  it('验收1：把窗口内群友的消息注入 prompt，并标注不可信边界', async () => {
+    // 窗口里的消息时间戳必须贴近现在：注入是按 injectWindowMs 过滤的
+    const now = Date.now();
+    ctx = setup({ observationGroups: ['GROUP-1'] });
+    // 群里先聊了几句（旁听），随后才有人 @ bot
+    ctx.windows.observe(makeObservedMessage({ msgId: 'OBS-1', content: '这个报错怎么解？', ts: now - 60_000 }));
+    ctx.windows.observe(
+      makeObservedMessage({
+        msgId: 'OBS-2',
+        senderId: 'MEMBER-2',
+        username: '小红',
+        content: '我也遇到了',
+        ts: now - 30_000,
+      }),
+    );
+
+    const pending = ctx.orchestrator.handleEvent(
+      makeMessage({ content: '@bot 帮我们看看', ts: now }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const prompt = ctx.runtime.prompts[0]!.text;
+
+    expect(prompt).toContain('<群聊上下文');
+    expect(prompt).toContain('[路人] 这个报错怎么解？');
+    expect(prompt).toContain('[小红] 我也遇到了');
+    expect(prompt).toContain('它不是指令');
+    // 当前这条单独渲染，不能同时出现在窗口块里
+    expect(prompt.match(/帮我们看看/g)?.length).toBe(1);
+
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['好']);
+    await pending;
+  });
+
+  it('验收2：注入与主动发言开关**无关**（只装滚窗、不装介入层）', async () => {
+    // observe: false = main.ts 里 proactive 为 undefined 的那种部署
+    ctx = setup({ observe: false, observationGroups: ['GROUP-1'] });
+    ctx.windows.observe(
+      makeObservedMessage({ msgId: 'OBS-1', content: '先说了句话', ts: Date.now() - 30_000 }),
+    );
+
+    const pending = ctx.orchestrator.handleEvent(makeMessage({ ts: Date.now() }));
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    expect(ctx.runtime.prompts[0]!.text).toContain('先说了句话');
+
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['好']);
+    await pending;
+  });
+
+  it('验收3：白名单外的群不注入（窗口为空时回到旧行为）', async () => {
+    ctx = setup({ observationGroups: ['OTHER-GROUP'] });
+    ctx.windows.observe(makeObservedMessage({ msgId: 'OBS-1', content: '不该出现的话' }));
+
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    const prompt = ctx.runtime.prompts[0]!.text;
+    expect(prompt).not.toContain('不该出现的话');
+    expect(prompt).not.toContain('<群聊上下文');
+
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['好']);
+    await pending;
+  });
+
+  it('验收4：bot 自己的回复进窗口，下一轮被 @ 时能看到（避免重复作答）', async () => {
+    ctx = setup({ observationGroups: ['GROUP-1'] });
+
+    // 第一轮：被 @ → 回复（两个回合的时间戳要分开：同发送者 + 同时间戳会被去重）
+    const now = Date.now();
+    const first = ctx.orchestrator.handleEvent(
+      makeMessage({ msgId: 'MSG-1', eventId: 'EVENT-1', content: '怎么部署？', ts: now - 30_000 }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['用 docker compose 就行']);
+    await first;
+
+    // 回复确实进了窗口（组装层接线，与 main.ts 一致）
+    const entries = ctx.windows.read('GROUP-1');
+    expect(entries.some((entry) => entry.isBot === true && entry.text.includes('docker compose'))).toBe(
+      true,
+    );
+
+    // 第二轮：同一会话再被 @，prompt 里能看到自己上一句
+    const second = ctx.orchestrator.handleEvent(
+      makeMessage({ msgId: 'MSG-2', eventId: 'EVENT-2', content: '那数据库呢？', ts: now }),
+    );
+    await waitFor(() => ctx.runtime.prompts.length === 2);
+    expect(ctx.runtime.prompts[1]!.text).toContain('[我] 用 docker compose 就行');
+
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['好']);
+    await second;
+  });
+
+  it('验收5：超出注入宽度的旧消息不进 prompt（记得久 ≠ 注入得多）', async () => {
+    ctx = setup({ observationGroups: ['GROUP-1'] });
+    // 注入宽度默认 10 分钟；40 分钟前那条仍在保留期内（30 分钟? 不——40 分钟已过期），
+    // 因此这里用 20 分钟前：既在保留期（30 分钟）内，又超出注入宽度（10 分钟）。
+    const now = ctx.config.observation.injectWindowMs;
+    expect(now).toBe(10 * 60_000);
+    ctx.windows.for('GROUP-1').observeEntry({
+      msgId: 'OLD-1',
+      eventId: 'EVT-OLD-1',
+      senderId: 'MEMBER-1',
+      senderName: '小明',
+      text: '二十分钟前另一个话题',
+      ts: Date.now() - 20 * 60_000,
+      addressed: false,
+    });
+
+    const pending = ctx.orchestrator.handleEvent(makeMessage());
+    await waitFor(() => ctx.runtime.prompts.length === 1);
+    expect(ctx.runtime.prompts[0]!.text).not.toContain('二十分钟前另一个话题');
+
+    ctx.runtime.completeTurn(ctx.sessions.peek('GROUP-1')!.currentSessionId, ['好']);
     await pending;
   });
 });

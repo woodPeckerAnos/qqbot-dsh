@@ -54,6 +54,18 @@ export interface ResponderOptions {  /** 触发本次回复的用户消息（tar
   logger: Logger;
   /** 富媒体出站（agent 产物回发）。缺省 = 不扫描 outbox，纯文本行为。 */
   media?: ResponderMediaOptions;
+  /**
+   * 一条回复**真的离开进程之后**的回调（组装层用它把这条回复写进观察窗口）。
+   *
+   * 与 `conversations.append`（对话记录）分开：
+   *   - 对话记录只关心"与 bot 的往来"，且**每条消息只写一次最终文本**；
+   *   - 观察窗口要的是"群里出现过这句话"，包括进度回执与错误提示——它们是群友
+   *     真实看到的内容。分段发送时每条都算，否则窗口里的对话会缺段。
+   *
+   * 调用时机是**发送之后**（而不是入队时）：写进窗口的事实必须是"群里真的看到了"。
+   * 回调内的异常由本模块吞掉（记账失败不该影响已经发出去的回复）。
+   */
+  onReplied?: (text: string, ts: number) => void;
   now?: () => number;
 }
 
@@ -372,6 +384,25 @@ export class Responder {
       length: out.text.length,
       attachments: out.attachments?.length ?? 0,
     });
+    this.noteReplied(out);
+  }
+
+  /**
+   * 把"群里刚出现了这句话"告诉组装层（写观察窗口）。
+   *
+   * 只发附件（无正文）的消息不记：窗口是**文本**上下文，一条没有文字的记录
+   * 在 prompt 里只会是一行空的 `[我]`。附件本身的消息在正文里会被提到。
+   */
+  private noteReplied(out: OutgoingMessage): void {
+    const onReplied = this.options.onReplied;
+    if (onReplied === undefined || out.text.trim() === '') return;
+    try {
+      onReplied(out.text, this.now());
+    } catch (error) {
+      this.options.logger.warn('写观察窗口失败（不影响已发出的回复）', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private now(): number {

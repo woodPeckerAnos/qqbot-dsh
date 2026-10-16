@@ -24,7 +24,12 @@ import { Intent, DEFAULT_INTENTS, describeIntents } from './adapters/qq-official
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import { ConfigError } from './config-error.js';
-import type { FileConfig, ProactiveFileConfig } from './config-file.js';
+import type { FileConfig, ObservationFileConfig, ProactiveFileConfig } from './config-file.js';
+import { DEFAULT_ACTIVITY_WINDOW_MS } from './pipeline/proactive/scene/state.js';
+import {
+  DEFAULT_OBSERVATION_MAX_AGE_MS,
+  DEFAULT_OBSERVATION_MAX_MESSAGES,
+} from './store/window.js';
 import {
   DEFAULT_MAX_WAIT_PER_ITEM,
   DEFAULT_SESSION_BUDGET,
@@ -295,12 +300,57 @@ export interface Config {
      * 借用话题判定的 10 秒会频繁超时——超时 = 沉默，表现为「它从来不说话」。
      */
     judgeTimeoutMs: number;
-    /** 旁听缓冲上限（条）：判定只需要近期上下文 */
-    bufferMaxMessages: number;
-    /** 旁听缓冲最长保留时长（毫秒） */
-    bufferMaxAgeMs: number;
+    /**
+     * 旁听缓冲上限（条）：判定只需要近期上下文。
+     *
+     * @deprecated 取值搬到 `Config.observation.maxMessages`（滚窗已成为两条唤醒
+     *   路径共享的设施，配置不该挂在 `proactive:` 段下）。这里保留**旧键的读取**
+     *   （`undefined` = 用户没配），由 `buildObservationConfig` 决定优先级并 warn
+     *   ——静默失效比报错更糟。
+     */
+    bufferMaxMessages?: number;
+    /** @deprecated 取值搬到 `Config.observation.maxAgeMs`，理由同上 */
+    bufferMaxAgeMs?: number;
   };
+  /**
+   * 观察窗口（旁听滚窗）：**与主动发言开关无关**。
+   *
+   * 它是"群里刚刚说了什么"的唯一来源，被 @ 的回复与主动发言判定读的是同一份。
+   * 因此配置放在顶层，而不是 `proactive:` 段下——放在那里会让人合理地以为
+   * "关掉主动发言就没有滚窗了"，而那正是这次重构要消灭的耦合。
+   */
+  observation: ObservationConfig;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
+}
+
+/** 观察窗口配置（见 Config.observation）。 */
+export interface ObservationConfig {
+  /**
+   * 观察范围（`BOT_LISTEN_GROUPS`，与介入层白名单**同一个变量**）。
+   *
+   * 空 = 不观察任何会话（fail-closed）。之所以与介入层共用一个白名单：两个
+   * 白名单会让"这个群到底算不算接入"有两个答案，而它们必须一致——滚窗记了
+   * 但判定不看，或反过来，都是没人能解释的状态。
+   */
+  allowlist: string[];
+  /** 每会话保留的消息条数上限（BOT_OBSERVATION_MAX_MESSAGES / observation.maxMessages） */
+  maxMessages: number;
+  /** 每条消息的最长保留时长（毫秒） */
+  maxAgeMs: number;
+  /**
+   * 注入给**被动唤醒**（被 @）的窗口宽度（毫秒）。
+   *
+   * 刻意**窄于保留期**：留 30 分钟是为了让判定能回看，而回答"在吗，帮我看看这个"
+   * 时把半小时前另一个话题的 200 条灌进去只会稀释注意力。缺省与活动窗口同值
+   * （`DEFAULT_ACTIVITY_WINDOW_MS`）——"当前话题有多长"在判定层已经定义过一次，
+   * 这里直接复用那个口径，不再造第二个。
+   */
+  injectWindowMs: number;
+  /**
+   * 迁移提示（旧键 → 新键）：配置层不持有 logger，只生成句子，由启动摘要打出来。
+   * 空数组 = 用户没配旧键。
+   */
+  deprecations: string[];
 }
 
 /** 富媒体出站配置（见 Config.media）。 */
@@ -642,27 +692,131 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       { min: 1_000, max: 120_000 },
       'proactive.judgeTimeoutMs',
     ),
-    bufferMaxMessages: pickInt(
+    // 旁听缓冲的两个限制：**取值搬到 `observation.*`**（滚窗不再属于介入层，
+    // 见 Config.observation 的说明），这里只保留**旧键的读取**（`undefined` = 用户
+    // 没配），由 `buildObservationConfig` 决定优先级并 warn。保留旧键的理由很实际：
+    // `qqbot.yml` 是随仓库提供的默认配置，用户手上那份里写的就是旧键名——静默失效
+    // 比报错更糟。
+    bufferMaxMessages: pickOptionalInt(
       env,
       'BOT_PROACTIVE_BUFFER_MAX_MESSAGES',
       file?.bufferMaxMessages,
-      200,
       { min: 10, max: 10_000 },
       'proactive.bufferMaxMessages',
     ),
-    bufferMaxAgeMs: pickInt(
+    bufferMaxAgeMs: pickOptionalInt(
       env,
       'BOT_PROACTIVE_BUFFER_MAX_AGE_MS',
       file?.bufferMaxAgeMs,
-      30 * 60_000,
       { min: 60_000, max: 72 * 3_600_000 },
       'proactive.bufferMaxAgeMs',
     ),
   };
 }
 
-/** 列表：env 用逗号分隔，配置文件用 YAML 数组；env 非空时以 env 为准。 */
-function pickList(env: Env, envKey: string, fileValue: string[] | undefined): string[] {
+/**
+ * 与 `pickInt` 同款，但**没有缺省值**：两处都没配时返回 `undefined`。
+ *
+ * 存在理由只有一个：让"用户到底配没配这个键"可判。用来读取那些**已迁移但必须
+ * 兼容**的旧键（读写两侧都要知道"这是用户显式写的，还是搬运期留下的默认值"）。
+ */
+function pickOptionalInt(
+  env: Env,
+  envKey: string,
+  fileValue: number | undefined,
+  range: { min: number; max: number },
+  filePath: string,
+): number | undefined {
+  const raw = envRaw(env, envKey);
+  if (raw === undefined && fileValue === undefined) return undefined;
+  if (raw !== undefined) {
+    const value = Number(raw);
+    if (!Number.isFinite(value) || !Number.isInteger(value)) {
+      throw new ConfigError(`${envKey} 必须是整数，收到 ${JSON.stringify(raw)}`);
+    }
+    if (value < range.min || value > range.max) {
+      throw new ConfigError(`${envKey} 必须在 [${range.min}, ${range.max}] 之间，收到 ${value}`);
+    }
+    return value;
+  }
+  const value = fileValue as number;
+  if (value < range.min || value > range.max) {
+    throw new ConfigError(
+      `配置文件里的 ${filePath} 必须在 [${range.min}, ${range.max}] 之间，收到 ${value}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * 观察窗口（滚窗）配置。
+ *
+ * 三件事在这里定下来：
+ *   1. **范围** = `BOT_LISTEN_GROUPS`，与介入层**共用同一个变量**（见 ObservationConfig）；
+ *   2. **保留期**（`maxMessages` / `maxAgeMs`）与**注入宽度**（`injectWindowMs`）
+ *      是两件事：前者是"记得多久"，后者是"被 @ 时给多少"；
+ *   3. **旧键兼容**：`proactive.bufferMaxMessages` / `proactive.bufferMaxAgeMs` /
+ *      `BOT_PROACTIVE_BUFFER_MAX_*` 仍然生效，但 `observation.*` 优先并 warn
+ *      ——默认配置文件里本来就是旧键，硬切会让所有人的记忆长度悄悄回到默认值。
+ */
+function buildObservationConfig(
+  env: Env,
+  file: ObservationFileConfig | undefined,
+  proactive: { bufferMaxMessages?: number; bufferMaxAgeMs?: number },
+): Config['observation'] {
+  const maxMessages = pickInt(
+    env,
+    'BOT_OBSERVATION_MAX_MESSAGES',
+    file?.maxMessages,
+    proactive.bufferMaxMessages ?? DEFAULT_OBSERVATION_MAX_MESSAGES,
+    { min: 10, max: 10_000 },
+    'observation.maxMessages',
+  );
+  const maxAgeMs = pickInt(
+    env,
+    'BOT_OBSERVATION_MAX_AGE_MS',
+    file?.maxAgeMs,
+    proactive.bufferMaxAgeMs ?? DEFAULT_OBSERVATION_MAX_AGE_MS,
+    { min: 60_000, max: 72 * 3_600_000 },
+    'observation.maxAgeMs',
+  );
+  // 配置层**不持有 logger**（它比日志先构造，报错走 stderr + exit 2）。所以旧键
+  // 这件事只在这里生成一句提示，由启动摘要打出来——比在 config.ts 里造一个
+  // "日志"要诚实得多。
+  const deprecations: string[] = [];
+  if (proactive.bufferMaxMessages !== undefined) {
+    deprecations.push(
+      `proactive.bufferMaxMessages → observation.maxMessages（当前生效：${maxMessages}）`,
+    );
+  }
+  if (proactive.bufferMaxAgeMs !== undefined) {
+    deprecations.push(
+      `proactive.bufferMaxAgeMs → observation.maxAgeMs（当前生效：${maxAgeMs}）`,
+    );
+  }
+
+  // 注入宽度与活动窗口同值：判定层已经定义过"当前话题有多长"（活动窗口），
+  // 被 @ 时注入的上下文用同一个口径，不另造一个数字。
+  const injectWindowMs = pickInt(
+    env,
+    'BOT_OBSERVATION_INJECT_WINDOW_MS',
+    file?.injectWindowMs,
+    DEFAULT_ACTIVITY_WINDOW_MS,
+    { min: 60_000, max: 3_600_000 },
+    'observation.injectWindowMs',
+  );
+
+  return {
+    // 白名单只认 env（个人标识不进配置文件），与介入层读的是同一个变量
+    allowlist: pickList(env, 'BOT_LISTEN_GROUPS', undefined),
+    maxMessages,
+    maxAgeMs,
+    injectWindowMs,
+    deprecations,
+  };
+}
+
+/** 列表：env 用逗号分隔，配置文件用 YAML 数组；env 非空时以 env 为准。 */function pickList(env: Env, envKey: string, fileValue: string[] | undefined): string[] {
   const raw = envRaw(env, envKey);
   if (raw !== undefined) {
     return raw
@@ -897,6 +1051,30 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     // 空串会被 extensionOf('') 之外的调用方当成"任意无扩展名文件都命中白名单"
     .filter((ext) => ext !== '');
 
+  // 先构造 proactive：观察窗口要读它读出来的**旧键**（`bufferMax*`）做兼容
+  const proactiveConfig = buildProactiveConfig(env, file.proactive);
+  const observationConfig = buildObservationConfig(env, file.observation, {
+    ...(proactiveConfig.bufferMaxMessages === undefined
+      ? {}
+      : { bufferMaxMessages: proactiveConfig.bufferMaxMessages }),
+    ...(proactiveConfig.bufferMaxAgeMs === undefined
+      ? {}
+      : { bufferMaxAgeMs: proactiveConfig.bufferMaxAgeMs }),
+  });
+
+  // ⚠️ 隐形耦合检查：判定层的"活动窗口计数"（条数/人头）读的是**观察窗口里的条目**。
+  // 如果窗口保留期比活动窗口还短，那些计数会**静默少算**——窗口里已经没有的条目
+  // 不会被统计，而判据仍以为自己看的是完整窗口。不是致命错误（判定照跑），
+  // 但必须让人知道，所以在这里出声而不是等线上发现判据偏了。
+  if (observationConfig.maxAgeMs < DEFAULT_ACTIVITY_WINDOW_MS) {
+    process.stderr.write(
+      `\n配置提示：observation.maxAgeMs（${observationConfig.maxAgeMs}ms）比判定层的活动窗口` +
+        `（${DEFAULT_ACTIVITY_WINDOW_MS}ms）还短，\n` +
+        '  判定看到的条数/人数会少算。建议 maxAgeMs ≥ 活动窗口，或把 proactive 的\n' +
+        '  活动窗口一并调小（ConversationStateOptions.activityWindowMs）。\n\n',
+    );
+  }
+
   return {
     connectors: enabledConnectors,
     admins,
@@ -1020,7 +1198,10 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     health: {
       port: pickInt(env, 'QQ_HEALTH_PORT', file.health?.port, 8080, { min: 0, max: 65_535 }, 'health.port'),
     },
-    proactive: buildProactiveConfig(env, file.proactive),
+    proactive: proactiveConfig,
+    // 观察窗口：**放在 proactive 之后**构造，因为旧键的兼容读取要拿到
+    // `buildProactiveConfig` 读出来的 `bufferMax*`（见 buildObservationConfig）。
+    observation: observationConfig,
     logLevel: pickEnum(env, 'QQ_LOG_LEVEL', file.logLevel, ['debug', 'info', 'warn', 'error'] as const, 'info', 'logLevel'),
   };
 }
@@ -1096,6 +1277,16 @@ export function describeConfig(config: Config): Record<string, unknown> {
         minGapMs: config.proactive.sessionMinGapMs,
       },
       judgeTimeoutMs: config.proactive.judgeTimeoutMs,
+    },
+    // 观察窗口（滚窗）：**与 proactive 并列**，因为它不随主动发言开关生死
+    observation: {
+      groups: config.observation.allowlist.length,
+      maxMessages: config.observation.maxMessages,
+      maxAgeMs: config.observation.maxAgeMs,
+      injectWindowMs: config.observation.injectWindowMs,
+      ...(config.observation.deprecations.length === 0
+        ? {}
+        : { deprecations: config.observation.deprecations }),
     },
     attachments: config.attachments,
     media: {

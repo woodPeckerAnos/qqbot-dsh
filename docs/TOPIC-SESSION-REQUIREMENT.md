@@ -282,6 +282,14 @@ verdict = { scene, satisfied, confidence, reason, evidence, directive,
 | 群白名单之外的会话 | 连状态都不入 | 与现状一致 |
 | 冷启动/进程重启 | session 不持久化（进程内状态） | 与旁听内容"不落盘"的隐私口径一致 |
 
+> **勘误（2025-10 重构后）**：两张表里"不落盘"的说法需要分开看——
+> `SessionStore`（sessionId 的映射）**是**落盘的，不落盘的只有"旁听内容"。
+> 旁听缓冲已从 `scene/state.ts` 搬到 `src/store/window.ts`（`ObservationWindowStore`）
+> 并**继续不落盘**，但它现在**不属于本机制**：它是被 @ 的回复与主动判定共用的
+> 上下文来源，与 session 的开关、预算、限流完全无关（见 `store/window.ts` 顶部）。
+> 也就是说：「被 @ 的被动回复路径不进入本机制」这一行**仍然成立**——它只是也开始
+> 读同一份滚窗了。
+
 # 可观测性
 
 | 计数（代码侧字段名） | 回答什么 | 期望形态 |

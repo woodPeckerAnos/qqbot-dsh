@@ -15,7 +15,7 @@ src/pipeline/proactive/
   interests/interests.yml.example  兴趣池样例（照它写 interests.yml）
   contract.ts          三层共享契约：SceneId / SCENE_ORDER / 触发面 / 判定 / 终局
   scene/collect.ts     ① 搜集层（本地预筛 + 证据组装）
-  scene/state.ts       会话级旁听状态（缓冲 / 未答问题台账 / 无人回应计数 / 活动窗口）
+  scene/state.ts       会话级**判定**状态（未答问题台账 / 无人回应计数 / 活动窗口 / 话题 session）
   scene/transcript.ts  转录与结构化事实渲染（含不可信边界）
   scene/watcher.ts     **唯一 runner**：三个触发面 + 定时器 + 成本闸 + 记账
   judge/judge.ts       ② LLM 层：判据文案 / prompt / 输出契约 / 容错解析（纯逻辑）
@@ -26,9 +26,15 @@ src/pipeline/proactive/
   README.md / AGENT-CONTRACT.md
 ```
 
+**消息缓冲不在这里**：滚窗住在 `src/store/window.ts`（`ObservationWindowStore`），
+由 `main.ts` 创建、注入给本模块与 `TurnRunner`。原因是它同时服务两条唤醒路径
+——把它留在 `scene/state.ts` 会让"被动回复有没有上下文"取决于主动发言的开关。
+`scene/state.ts` 只持有**判定**状态，读取时委托给窗口。
+
 **链路的唯一入口是 `scene/watcher.ts` 的 `observe()`**（由 `main.ts` 经
 `Orchestrator` 注入）。不要在别处新增第二个评估入口——那样会绕过成本闸
-与"同会话不并发评估"。
+与"同会话不并发评估"。（**写入**窗口是另一回事：接入层每条群消息都写，
+那是记录，不是评估。）
 
 ---
 
@@ -304,7 +310,9 @@ git diff                                   # 复核：有没有偷偷改到别�
 | 先入状态再做保险判断 | `state.observe` 会把无人回应计数清零 → "没人理我就停"永远读到 0、保险形同失效 | `observe()` 里**先**用旧状态预筛，**再**入状态 |
 | 兴趣匹配只看触发的那一条消息 | 场景 5 的典型对话是"这个折线图怎么画" + "要不换个图？"，只看后一条命中不了任何条目 | 用 `watcher.matchText()`（最近 5 条拼接） |
 | 以为新窗口里 bot 的第一句发言会被计数 | `startWindow` 会清零窗口内的发言计数 → 顺序写反会让场景 2/5 的"bot 还没说过话"预筛失真 | `recordBotSpoke` 先计数再判窗口 |
-| 在转录里找不到 bot 自己刚说的话 | 旁听缓冲只收非 @ 消息，bot 的 @ 回复不进缓冲 | 场景 1 的判定需要 `<bot最近发言>` 块（见架构方案 §3.6） |
+| 在转录里找不到 bot 自己刚说的话 | ~~旁听缓冲只收非 @ 消息~~ **已修**：滚窗现在也记 bot 的回复（`ObservationWindowStore.recordBotReply`，写入点是 `Responder.onReplied` 与 `notifyBotSpoke`） | 判定要不要看它由 `judgeSeesBotSpeaks` 决定——默认**关**（换掉判定的输入是行为变更，见架构方案 §3.6） |
+| 想让被 @ 时有群聊上下文，于是去读 `scene/state.ts` 的缓冲 | 那个缓冲已经搬走；直接依赖判定层状态会让"被动回复有没有上下文"绑死主动发言开关 | 读 `store/window.ts` 的 `ObservationWindowStore`（组装层注入；`TurnRunner` 已这么用） |
+| 用"是否在转录末尾"判断窗口有没有新内容 | 窗口现在**总是**收 bot 自己的回复，最后一条常常是 bot —— 判据会失真 | 用 `anySince(ts)`（严格大于）或 `state.hasNewContentSinceLastEvaluation()` |
 
 ---
 

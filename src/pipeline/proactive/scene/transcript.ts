@@ -13,7 +13,7 @@
  */
 
 import type { SceneEvidence } from '../contract.js';
-import type { ObservationEntry } from './state.js';
+import type { ObservationEntry } from '../../../store/window.js';
 
 /** 转录正文的字符上限（超出从头部截断，保留最近的）。 */
 export const TRANSCRIPT_MAX_CHARS = 4_000;

@@ -30,26 +30,25 @@
  */
 
 import type { NormalizedMessage } from '../../../core/connector.js';
+import {
+  ObservationWindow,
+  ObservationWindowStore,
+  type ObservationEntry,
+} from '../../../store/window.js';
 import type { SessionCloseCause, SessionClosedEvent, TopicSession } from '../contract.js';
 
 // ---------------------------------------------------------------------------
 // 数据类型
 // ---------------------------------------------------------------------------
 
-/** 旁听缓冲里的一条消息（只保留判定需要的字段，原始事件不留在内存里）。 */
-export interface ObservationEntry {
-  readonly msgId: string;
-  readonly eventId: string;
-  readonly senderId: string;
-  readonly senderName?: string;
-  readonly text: string;
-  readonly ts: number;
-  /**
-   * 这条消息是否**已经把疑问抛给 bot**（@ 了 bot 或接着 bot 的话说）。
-   * 由 watcher 在消息进入时判定：用于区分"有人问了但没人答"与"有人问 bot 了"。
-   */
-  readonly addressed: boolean;
-}
+/**
+ * 旁听缓冲的一条消息 = 观察窗口的一条消息：**类型与实现在 `store/window.ts`**。
+ *
+ * 这里曾经是本模块私有的接口与私有数组。抽出去的理由见 `store/window.ts` 顶部：
+ * 滚窗是所有唤醒路径共享的输入，不该由判定层的状态机拥有。保留这个 re-export
+ * 只是为了让既有 import 路径（`scene/state.js`）不突然断掉。
+ */
+export type { ObservationEntry };
 
 /** 未答问题台账的一条。 */
 export interface PendingQuestion {
@@ -127,10 +126,6 @@ export function looksLikeQuestion(text: string): boolean {
 // ---------------------------------------------------------------------------
 
 export interface ConversationStateOptions {
-  /** 旁听缓冲上限（条）。超出淘汰最旧的——判定只需要近期上下文。 */
-  maxEntries?: number;
-  /** 每条旁听消息在缓冲里的最长保留时间 */
-  maxAgeMs?: number;
   /** 活动窗口：多久没新消息就算"话题翻篇"（bot 参与窗口与计数一并失效） */
   activityWindowMs?: number;
   /** 未答问题台账上限 */
@@ -139,12 +134,16 @@ export interface ConversationStateOptions {
   questionTtlMs?: number;
 }
 
-/** 默认活动窗口（毫秒）：静默这么久就算话题翻篇。watcher 与 veto 上下文共用它。 */
+/**
+ * 默认活动窗口（毫秒）：静默这么久就算话题翻篇。watcher 与 veto 上下文共用它。
+ *
+ * ⚠️ 与观察窗口的**保留期**（`observation.maxMessages` / `maxAgeMs`）不是一个概念：
+ * 那个决定"我们记得多久"（由 `store/window.ts` 持有），这个决定"当前话题有多长"
+ * （判定层的口径）。前者宽、后者窄，是有意的——判定要能回看，计数只算当下。
+ */
 export const DEFAULT_ACTIVITY_WINDOW_MS = 10 * 60_000;
 
 export const DEFAULT_STATE_OPTIONS: Required<ConversationStateOptions> = {
-  maxEntries: 200,
-  maxAgeMs: 30 * 60_000,
   activityWindowMs: DEFAULT_ACTIVITY_WINDOW_MS,
   maxQuestions: 20,
   questionTtlMs: 30 * 60_000,
@@ -153,7 +152,14 @@ export const DEFAULT_STATE_OPTIONS: Required<ConversationStateOptions> = {
 export class ConversationState {
   readonly convKey: string;
   private readonly options: Required<ConversationStateOptions>;
-  private readonly buffer: ObservationEntry[] = [];
+  /**
+   * 共享的观察窗口（`store/window.ts`）。
+   *
+   * **本类不再自己持有缓冲**：滚窗是判定层与被动回复路径共用的输入，由组装层
+   * 创建并注入（`ConversationStateStore` 从 `ObservationWindowStore` 取）。
+   * 判定层自己的状态只剩三样：挂起问题台账、活动窗口计数、话题 session。
+   */
+  private readonly window: ObservationWindow;
   private readonly questions = new Map<string, PendingQuestion>();
 
   /** 最近一次人类发言时间（任何人类消息都刷新） */
@@ -214,21 +220,26 @@ export class ConversationState {
    */
   private readonly sessionClosedListeners = new Set<(event: SessionClosedEvent) => void>();
 
-  constructor(convKey: string, options: ConversationStateOptions = {}) {
+  constructor(
+    convKey: string,
+    window: ObservationWindow,
+    options: ConversationStateOptions = {},
+  ) {
     this.convKey = convKey;
+    this.window = window;
     this.options = { ...DEFAULT_STATE_OPTIONS, ...options };
   }
 
   // --- 写入 -----------------------------------------------------------------
 
   /**
-   * 记录一条旁听消息。
+   * 记一条旁听消息（**委托**给观察窗口，本类只做自己的记账）。
    *
-   * 副作用顺序刻意如此：**先归零无人回应计数**（有人说话了），再入缓冲、
-   * 刷新活动窗口、登记可能的问题。任何人类消息都算"群里有人理"。
+   * 与 `observeEntry` 的差别只有两处：文本从 `NormalizedMessage` 里取、
+   * `addressed` 固定为 false。判定层把两者都看作"群里有人说话了"。
    */
   observe(message: NormalizedMessage): void {
-    const entry: ObservationEntry = {
+    this.observeEntry({
       msgId: message.msgId,
       eventId: message.eventId,
       senderId: message.senderId,
@@ -236,31 +247,59 @@ export class ConversationState {
       text: message.content,
       ts: Number.isFinite(message.ts) ? message.ts : Date.now(),
       addressed: false,
-    };
-    this.observeEntry(entry);
+    });
   }
 
   /**
-   * 记录一条**已被 @** 的消息（用于转录完整性：场景 1 要看到"bot 回答了谁"）。
-   * 它同样算作"话题在延续"，因此也刷新活动窗口与参与人。
+   * 记一条**已被 @** 的消息（用于转录完整性：场景 1 要看到"bot 回答了谁"）。
+   * 它同样算作"话题在延续"，因此也刷新活动窗口与参与人——**但不登记挂起问题**
+   * （它已经直接问 bot 了，不属于"无人应答"，见 `noteHumanMessage` 的说明）。
    */
-  observeEntry(entry: ObservationEntry): void {
-    const startsWindow = this.isExpiredAt(entry.ts);
-    // 顺序要紧：**先**开窗口（它会清空上一窗口的参与人），**再**把本条消息的
-    // 发送者记进去。反过来写会把每个窗口的第一位发言者清掉，于是
-    // "有几个人在聊"永远比实际少一个（场景 2 的多人判据因此永远不成立）。
-    if (startsWindow) this.startWindow(entry.ts);
+  observeAddressed(message: NormalizedMessage): void {
+    this.observeEntry({
+      msgId: message.msgId,
+      eventId: message.eventId,
+      senderId: message.senderId,
+      ...(message.username !== undefined ? { senderName: message.username } : {}),
+      text: message.content,
+      ts: Number.isFinite(message.ts) ? message.ts : Date.now(),
+      addressed: true,
+    });
+  }
 
-    this.buffer.push(entry);
-    this.trim(entry.ts);
+  /** 记一条窗口条目（`addressed` 由调用方标）——被动回复路径与判定层共用的写入口。 */
+  observeEntry(entry: ObservationEntry): void {
+    this.window.observeEntry(entry);
+    this.noteHumanMessage(entry, entry.ts);
+  }
+
+  /**
+   * 人类消息到达时的**判定层记账**（与 `recordBotSpoke` 对称）。
+   *
+   * 副作用顺序刻意如此：**先开窗口**（它会清空上一窗口的参与人），**再**把本条
+   * 消息的发送者记进去。反过来写会把每个窗口的第一位发言者清掉，于是
+   * "有几个人在聊"永远比实际少一个（场景 2 的多人判据因此永远不成立）。
+   *
+   * `rawTs` 是**平台原始时间戳**：它与窗口里那条（可能被兜底成 `Date.now()` 的）
+   * 不完全一样，而"活动窗口"判的是真实时间，所以这里刻意用原始值。
+   */
+  private noteHumanMessage(entry: ObservationEntry, rawTs: number): void {
+    const ts = Number.isFinite(rawTs) ? rawTs : entry.ts;
+    if (this.isExpiredAt(ts)) this.startWindow(ts);
+
     this.unansweredStreakCount = 0;
     // 时钟只前进不回退：探针/延迟到达的旧消息不该把窗口整体拉回去
-    if (this.lastHumanAt === undefined || entry.ts > this.lastHumanAt) {
-      this.lastHumanAt = entry.ts;
+    if (this.lastHumanAt === undefined || ts > this.lastHumanAt) {
+      this.lastHumanAt = ts;
     }
-    this.participants.set(entry.senderId, entry.ts);
-    // 开窗口的那条消息同样可能是问题（"有人问了没人答"的第一现场就是它）
-    if (looksLikeQuestion(entry.text)) this.registerQuestion(entry);
+    this.participants.set(entry.senderId, ts);
+    // 开窗口的那条消息同样可能是问题（"有人问了没人答"的第一现场就是它）。
+    //
+    // ⚠️ **被 @ 的消息不登记**：它已经直接问 bot 了，不属于"无人应答"。在此之前
+    // 它借道 `observeEntry` 顺手登记进台账，于是每次被 @ 都会留一个挂起问题，
+    // 直到 90 秒后的探针才发现"这个问题问的就是 bot"。写入路径分开之后，这条
+    // 语义才第一次被显式表达出来（判定层的既有行为不变：@ 消息本来就不走探针）。
+    if (entry.addressed !== true && looksLikeQuestion(entry.text)) this.registerQuestion(entry);
   }
 
   /**
@@ -360,7 +399,7 @@ export class ConversationState {
       this.lastEvaluationAt = ts;
     }
     // 标记总是跟着"最近一次判定"走（它描述的是"那次判定看见了什么"）
-    this.lastEvaluationMarker = this.buffer[this.buffer.length - 1]?.eventId;
+    this.lastEvaluationMarker = this.window.entries[this.window.entries.length - 1]?.eventId;
   }
 
   /** 该会话上次进入判定的时刻（`undefined` = 还没判定过）。 */
@@ -381,7 +420,7 @@ export class ConversationState {
    */
   hasNewContentSince(since?: number): boolean {
     if (since === undefined) return true;
-    return this.buffer.some((entry) => entry.ts > since);
+    return this.window.anySince(since);
   }
 
   /**
@@ -401,14 +440,22 @@ export class ConversationState {
   hasNewContentSinceLastEvaluation(): boolean {
     if (this.lastEvaluationAt === undefined) return true;
     if (this.hasNewContentSince(this.lastEvaluationAt)) return true;
-    const tail = this.buffer[this.buffer.length - 1];
+    const entries = this.window.entries;
+    const tail = entries[entries.length - 1];
     return (tail?.eventId ?? undefined) !== this.lastEvaluationMarker;
   }
 
   // --- 读取（供 buildSceneEvidence 消费） ------------------------------------
 
+  /**
+   * 保留期内的全部条目（**跨活动窗口**，按时间升序）。
+   *
+   * 为什么不按活动窗口过滤：转录的用途是"理解话题"，翻篇那一刻把上一段的
+   * 上下文整段抹掉会让判定看不懂指代（"这个"指的是什么）。计数类
+   * （`messageCount` / `humanParticipants`）才按活动窗口过滤。
+   */
   get entries(): readonly ObservationEntry[] {
-    return this.buffer;
+    return this.window.entries;
   }
 
   get botLastSpoke(): number | undefined {
@@ -452,7 +499,8 @@ export class ConversationState {
   /** 旁听窗口内的消息条数（本活动窗口内）。 */
   messageCount(now: number): number {
     if (this.isExpiredAt(now)) return 0;
-    return this.buffer.filter((entry) => entry.ts >= (this.windowStartedAt ?? 0)).length;
+    const from = this.windowStartedAt ?? 0;
+    return this.window.read({ sinceTs: from }).length;
   }
 
   get unansweredStreak(): number {
@@ -571,8 +619,9 @@ export class ConversationState {
     // 作废并取消唤醒，而不是等定时器到点才发现对象已经不存在了。
     for (const id of [...this.questions.keys()]) this.closeQuestion(id, 'window-reset');
     this.questions.clear();
-    // 注意：不清 buffer——转录需要跨窗口的近期上下文；
-    // 计数类（条数/人头）在读取时按 windowStartedAt 过滤。
+    // 注意：不动观察窗口——转录需要跨窗口的近期上下文，而"记得多久"是窗口自己的
+    // 保留期（`observation.maxMessages` / `maxAgeMs`）；这里的计数类（条数/人头）
+    // 在读取时按 windowStartedAt 过滤。
   }
 
   /**
@@ -587,14 +636,6 @@ export class ConversationState {
     if (this.windowStartedAt === undefined) return true;
     const anchor = this.lastHumanAt ?? this.windowStartedAt;
     return ts - anchor > this.options.activityWindowMs;
-  }
-
-  private trim(now: number): void {
-    const cutoff = now - this.options.maxAgeMs;
-    while (this.buffer.length > 0 && (this.buffer[0] as ObservationEntry).ts < cutoff) {
-      this.buffer.shift();
-    }
-    while (this.buffer.length > this.options.maxEntries) this.buffer.shift();
   }
 
   private registerQuestion(entry: ObservationEntry): void {
@@ -634,10 +675,17 @@ export class ConversationState {
   }
 }
 
-/** 每会话一个状态的注册表（进程内；重启即清空）。 */
+/**
+ * 每会话一个状态的注册表（进程内；重启即清空）。
+ *
+ * ⚠️ 它**不拥有**消息缓冲：缓冲在注入的 `ObservationWindowStore` 里，与被动回复
+ * 路径共享。本注册表只管"每会话的判定层状态"（台账 / 活动窗口 / session）。
+ */
 export class ConversationStateStore {
   private readonly states = new Map<string, ConversationState>();
   private readonly options: ConversationStateOptions;
+  /** 共享的观察窗口注册表（由组装层创建；**不传就没有缓冲**，见构造器说明） */
+  private readonly windows: ObservationWindowStore;
   /** 问题关闭的统一分发（转发给每个会话自己的订阅者） */
   private readonly closers = new Set<(convKey: string, event: QuestionClosedEvent) => void>();
   /** session 关闭的统一分发（转发给每个会话自己的订阅者） */
@@ -645,7 +693,13 @@ export class ConversationStateStore {
   /** 每会话的取消订阅函数（会话被 `dispose` 时要一并摘掉，否则监听器泄漏） */
   private readonly unsubscribe = new Map<string, () => void>();
 
-  constructor(options: ConversationStateOptions = {}) {
+  /**
+   * @param windows 观察窗口注册表。**必填**：它曾经是本类内部的一个私有数组，
+   *   抽出去之后如果还留一个"没传就自己造一个"的兜底，就会重新出现两条互不
+   *   相干的缓冲——那正是这次重构要消灭的东西。组装层必须显式给。
+   */
+  constructor(windows: ObservationWindowStore, options: ConversationStateOptions = {}) {
+    this.windows = windows;
     this.options = options;
   }
 
@@ -653,7 +707,8 @@ export class ConversationStateStore {
   for(convKey: string): ConversationState {
     let state = this.states.get(convKey);
     if (state === undefined) {
-      state = new ConversationState(convKey, this.options);
+      // 每会话的窗口在这里**按需创建**（本模块不做白名单判断，见 store/window.ts）
+      state = new ConversationState(convKey, this.windows.for(convKey), this.options);
       // 每个会话的关闭事件都带上 convKey 转发出去——调度层据此作废票据 / 记
       // session 的关闭原因，而它只需要订阅一次（不必关心有多少个会话被创建过）。
       const offQuestion = state.onQuestionClosed((event) => {

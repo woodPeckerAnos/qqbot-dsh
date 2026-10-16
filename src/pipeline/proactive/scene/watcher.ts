@@ -54,6 +54,11 @@
 
 import type { ConversationTarget, NormalizedMessage } from '../../../core/connector.js';
 import type { Logger } from '../../../logger.js';
+import {
+  matchesGroupAllowlist,
+  type ObservationEntry,
+  type ObservationWindowStore,
+} from '../../../store/window.js';
 import type { InterestPool } from '../interests/pool.js';
 import { buildSceneEvidence, collectCandidates } from './collect.js';
 import {
@@ -250,6 +255,16 @@ export interface ProposedRecord {
 export interface ProactiveWatcherDeps {
   config: ProactiveWatcherConfig;
   speaker: ProactiveSpeaker;
+  /**
+   * 共享的观察窗口（滚窗）。
+   *
+   * **必填**：滚窗不再由本模块持有——它同时服务于被动回复路径
+   * （见 `store/window.ts` 顶部）。组装层创建一次，按需注入给两侧。
+   *
+   * ⚠️ 本模块**仍然**用 `config.whitelistGroups` 做准入判断（判定不该为白名单外
+   * 的群花一次 LLM）。两者用同一个 `matchesGroupAllowlist` 实现，因此不可能分叉。
+   */
+  windows: ObservationWindowStore;
   /** 判定能力；未注入 = 只收集不判定（"只听不说"的部署形态） */
   judge?: ProactiveJudge;
   interests?: InterestPool;
@@ -259,6 +274,18 @@ export interface ProactiveWatcherDeps {
   now?: () => number;
   /** 注入调度器（测试用手动时钟）；返回取消函数 */
   schedule?: (fn: () => void, delayMs: number) => () => void;
+  /**
+   * 判定用的转录里是否包含 **bot 自己的发言**（缺省 `false`）。
+   *
+   * 为什么默认关：`store/window.ts` 现在**总是**记录 bot 的回复（被动注入需要
+   * 它，否则模型看不到自己刚说过什么），但判定层要不要看它是另一件事——
+   * 打开会实打实改变场景 1「续聊追问」的判据输入（转录里第一次出现 bot 自己的
+   * 句子）。这是**行为变更**，不该混在一次"纯搬运"的重构里默认发生。
+   *
+   * 打开它的收益是明确的：`docs/PROACTIVE-INTERVENTION-ARCH.md` §3.6 记的
+   * "判定方在不知道自己刚才说了什么的情况下决定要不要接话"从此有一个直接开关。
+   */
+  judgeSeesBotSpeaks?: boolean;
 }
 
 /** health / 排障用的快照。 */
@@ -403,6 +430,15 @@ export class ProactiveWatcher {
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, delayMs: number) => () => void;
   private readonly metrics: WatcherMetrics;
+  /** 共享的观察窗口（组装层注入；滚窗的唯一持有者） */
+  private readonly windows: ObservationWindowStore;
+  /**
+   * 判定转录是否含 bot 自己的发言。
+   *
+   * 构造期就定成布尔值（而不是每次读 `deps`）：转录的形态不该在运行期漂移，
+   * 否则"同一段对话两次判定的输入不一致"会变成一件可能发生的事。
+   */
+  private readonly judgeSeesBotSpeaks: boolean;
 
   /** 每会话一个 in-flight 标记（同会话不并发评估） */
   private readonly evaluating = new Set<string>();
@@ -516,7 +552,10 @@ export class ProactiveWatcher {
         return () => clearTimeout(timer);
       });
     this.metrics = deps.metrics ?? NULL_WATCHER_METRICS;
-    this.states = new ConversationStateStore(deps.config.stateOptions ?? {});
+    this.windows = deps.windows;
+    this.judgeSeesBotSpeaks = deps.judgeSeesBotSpeaks === true;
+    // 判定层状态：**不再自己造缓冲**，共用组装层注入的观察窗口（见 store/window.ts）
+    this.states = new ConversationStateStore(deps.windows, deps.config.stateOptions ?? {});
     // 问题关闭 → 立即作废其票据并取消唤醒（第五节：本地可判的事不要等定时器到点）。
     // 订阅必须在这里完成：watcher 之后才创建各个会话的状态。
     this.states.onQuestionClosed((convKey, event) => {
@@ -567,6 +606,10 @@ export class ProactiveWatcher {
    * → 问题探针（场景 3）→ 滚动收敛（场景 2/5）。
    */
   observe(message: NormalizedMessage): void {
+    // ⚠️ 两道准入判断的是**同一件事**，不是重复：`windows.accepts` 决定"记不记进
+    // 滚窗"，`isAllowed` 决定"要不要为它花一次判定"。今天两者的白名单是同一个，
+    // 所以结果总是同时为真/假；分开写是为了让"记多久"与"要不要评估"能各自演化
+    // （例如将来允许某个群只旁听不插话）。
     if (!this.config.enabled || !this.isAllowed(message.target.key)) return;
 
     const ts = Number.isFinite(message.ts) ? message.ts : this.now();
@@ -579,9 +622,8 @@ export class ProactiveWatcher {
     this.closeExpiredSession(message.target.key);
 
     // ⚠️ 顺序要紧：**先**做本地预筛（读的是这条消息之前的状态），**再**入状态。
-    // 反过来会让"没人理我就停"这一步永远失效——`state.observe` 会把
-    // 无人回应计数清零，于是后面再读就永远是 0（实测踩过：连说两次没人接，
-    // 第三条消息照样会触发判定）。
+    // 反过来会让"没人理我就停"这一步永远失效——入状态会把无人回应计数清零，
+    // 于是后面再读就永远是 0（实测踩过：连说两次没人接，第三条消息照样会触发判定）。
     const evidence = buildSceneEvidence({
       state,
       trigger: 'message',
@@ -595,6 +637,7 @@ export class ProactiveWatcher {
       maxUnansweredStreak: this.policy.maxUnansweredStreak,
     });
 
+    // 入状态 = 写共享窗口 + 判定层记账（两者在 `state.observeEntry` 里收口）
     state.observe(message);
 
     // 场景 1/4：每条消息都可能命中，且本地预筛很廉价 → 立即评估
@@ -610,24 +653,31 @@ export class ProactiveWatcher {
    *
    * 理由：场景 1 的判据是"接续 bot 上一条"，而 bot 的回复与用户的 @ 消息
    * 都不在旁听流里。不记的话，判定看到的转录会缺掉对话的另一半。
+   *
+   * 写入的是**共享的**观察窗口（不是本模块私有的缓冲）：被动回复路径读的是
+   * 同一个窗口，所以"这个人问的是哪件事"两边看到的是同一份事实。
    */
   observeAddressed(message: NormalizedMessage): void {
     if (!this.config.enabled || !this.isAllowed(message.target.key)) return;
-    this.states.for(message.target.key).observeEntry({
-      msgId: message.msgId,
-      eventId: message.eventId,
-      senderId: message.senderId,
-      ...(message.username !== undefined ? { senderName: message.username } : {}),
-      text: message.content,
-      ts: Number.isFinite(message.ts) ? message.ts : this.now(),
-      addressed: true,
-    });
+    // 走判定层的写入路径（而不是直接写窗口）：@ 也必须刷新活动窗口与参与人、
+    // 并归零"没人理我"计数——它同样是"群里有人理我了"（见 scene-state 验收 7）。
+    this.states.for(message.target.key).observeAddressed(message);
   }
 
-  /** bot 在本群发了一条**主动**发言（组装层在投递成功后调用，用于记账）。 */
-  notifyBotSpoke(convKey: string, ts: number = this.now()): void {
+  /**
+   * bot 在本群发了一条**主动**发言（组装层在投递成功后调用，用于记账）。
+   *
+   * `text` 可选：给了就一并写进**共享观察窗口**（被动回复路径据此看到"bot 刚说过
+   * 什么"）。判定层要不要看它由 `judgeSeesBotSpeaks` 决定，本方法不做取舍。
+   */
+  notifyBotSpoke(convKey: string, ts: number = this.now(), text?: string): void {
     if (!this.config.enabled || !this.isAllowed(convKey)) return;
     this.states.for(convKey).recordBotSpoke(ts);
+    if (text !== undefined && text.trim() !== '') {
+      // 共享窗口也记一份（供被动回复路径读取）。写不进去（例如白名单外）就跳过：
+      // 窗口的准入由它自己判，调用方不重复判一次。
+      this.windows.recordBotReply(convKey, { text, ts });
+    }
     const list = this.proposals.get(convKey) ?? [];
     list.push(ts);
     // 只保留 1 小时窗口内的（限流窗口最长就是 1 小时）
@@ -638,17 +688,15 @@ export class ProactiveWatcher {
     );
   }
 
-  /** 该会话是否在介入范围内（白名单 + 总开关）。 */
+  /**
+   * 该会话是否在介入范围内（白名单 + 总开关）。
+   *
+   * 判据实现搬到了 `store/window.ts` 的 `matchesGroupAllowlist`：介入层与观察
+   * 窗口必须用**同一份**白名单解析（条目有 `onebot:123456` 与 `ob11:g123456`
+   * 两种写法，各写一份迟早分叉，而分叉的表现是"介入层认这个群、滚窗不认"）。
+   */
   isAllowed(convKey: string): boolean {
-    if (this.config.whitelistGroups.length === 0) return false;
-    const groupId = convKey.includes(':g') ? convKey.slice(convKey.indexOf(':g') + 2) : undefined;
-    return this.config.whitelistGroups.some((item) => {
-      const trimmed = item.trim();
-      if (trimmed === '' ) return false;
-      if (trimmed === convKey) return true;
-      const [, itemGroup] = trimmed.split(':');
-      return groupId !== undefined && (itemGroup === groupId || trimmed.endsWith(`g${groupId}`));
-    });
+    return matchesGroupAllowlist(convKey, this.config.whitelistGroups);
   }
 
   /** 取某会话的旁听状态（排障与测试；只读语义由调用方自觉）。 */
@@ -657,14 +705,12 @@ export class ProactiveWatcher {
   }
 
   snapshot(): WatcherSnapshot {
-    let buffered = 0;
     let pending = 0;
     let tickets = 0;
     let openSessions = 0;
     let spentSessions = 0;
     const now = this.now();
     for (const state of this.states.all()) {
-      buffered += state.entries.length;
       pending += state.pendingQuestions(now).length;
       if (state.session !== undefined) {
         openSessions += 1;
@@ -677,8 +723,11 @@ export class ProactiveWatcher {
     return {
       enabled: this.config.enabled,
       dryRun: this.config.dryRun,
-      conversations: this.states.size,
-      buffered,
+      // `conversations` / `buffered` 报的是**共享观察窗口**的口径（不是判定状态的
+      // 会话数）：滚窗现在服务两条唤醒路径，health 上要回答的是"我们记了多少"，
+      // 而不是"介入层给几个群建了状态"。
+      conversations: this.windows.size,
+      buffered: this.windows.buffered,
       pendingQuestions: pending,
       evaluating: this.evaluating.size,
       suspended: this.suspended.size,
@@ -846,6 +895,22 @@ export class ProactiveWatcher {
       .map((entry) => entry.text)
       .join('\n');
     return extraText === undefined ? recent : `${recent}\n${extraText}`;
+  }
+
+  /**
+   * 判定转录的条目来源（**唯一**一处决定判定能看到什么）。
+   *
+   * 从共享窗口读，而不是从某个私有缓冲：滚窗同时喂被动回复路径，两条路径看到
+   * 的必须是同一份事实（否则"判定说没人问过、回复时却看得到"这种不一致会成为
+   * 常驻现象）。
+   *
+   * bot 自己的发言**默认剔除**：窗口里现在总有它（被动注入需要），但判定层的转录
+   * 长期以来只含群友的话，把这个输入换掉是一次实打实的行为变更——由
+   * `judgeSeesBotSpeaks` 显式打开，不混在重构里默认发生（见 deps 的说明）。
+   */
+  private judgeTranscriptEntries(state: ConversationState): readonly ObservationEntry[] {
+    if (this.judgeSeesBotSpeaks) return state.entries;
+    return state.entries.filter((entry) => entry.isBot !== true);
   }
 
   /**
@@ -1310,7 +1375,9 @@ export class ProactiveWatcher {
     const verdicts = await judge.judge({
       candidates,
       evidence,
-      transcript: `${renderFacts(evidence, pendingTexts)}\n\n${renderTranscript(state.entries)}`,
+      transcript: `${renderFacts(evidence, pendingTexts)}\n\n${renderTranscript(
+        this.judgeTranscriptEntries(state),
+      )}`,
     });
     if (verdicts === undefined) {
       this.counters.judgeFailures += 1;
@@ -1583,9 +1650,10 @@ export class ProactiveWatcher {
     // 真实措辞由 agent turn 生成（S1 之后接 TurnRunner 时替换这里）。
     const parts = [decision.directive ?? decision.reason];
     if (decision.evidence !== undefined) parts.push(`（依据：${decision.evidence}）`);
+    const spokenText = parts.join('\n');
     const outcome = await this.deps.speaker.deliver({
       target,
-      content: { text: parts.join('\n') },
+      content: { text: spokenText },
       trigger: sceneTriggerName(decision.scene),
       reason: decision.reason,
     });
@@ -1595,8 +1663,10 @@ export class ProactiveWatcher {
       if (dryRun) this.counters.wouldSend += 1;
       else this.counters.spoke += 1;
       this.metrics.spoke(decision.scene, dryRun);
-      // dryRun 也记账：否则"每次介入之后话题还算不算活着"的观察结果会失真
-      this.notifyBotSpoke(convKey, now);
+      // dryRun 也记账：否则"每次介入之后话题还算不算活着"的观察结果会失真。
+      // 文本一并入**观察窗口**（`dryRun` 由窗口标成"灰度未发送"）——被动回复路径
+      // 读的是同一个窗口，它必须知道"这个话题上 bot 已经开过口"。
+      this.notifyBotSpoke(convKey, now, spokenText);
       return true;
     }
     // 走到这里只可能是 degraded（sent / would-send 已在上面 return）

@@ -199,7 +199,14 @@ describe('loadConfig', () => {
     expect(bare.proactive.dryRun).toBe(true); // 关键默认值：先观察，再发言
     expect(bare.proactive.whitelistGroups).toEqual([]); // 空 = 不接任何群
     expect(bare.proactive.questionProbeMs).toBe(90_000);
-    expect(bare.proactive.bufferMaxMessages).toBe(200);
+    // 旁听滚窗搬到了 observation.*（它不再属于介入层，见 store/window.ts）：
+    // 配置在顶层，且**与主动发言开关无关**——旧键不再出现在 proactive 段里。
+    expect(bare.proactive.bufferMaxMessages).toBeUndefined();
+    expect(bare.observation.maxMessages).toBe(200);
+    expect(bare.observation.maxAgeMs).toBe(30 * 60_000);
+    // 注入宽度与活动窗口同值（判定层已经定义过"当前话题有多长"）
+    expect(bare.observation.injectWindowMs).toBe(10 * 60_000);
+    expect(bare.observation.allowlist).toEqual([]); // 与介入层共用 BOT_LISTEN_GROUPS
     // 判定超时与话题判定**分开**：话题判定 10s，主动介入判定 20s
     // （多段 JSON 输出，沿用 10s 会频繁超时 → 沉默 → "它从来不说话"）
     expect(bare.proactive.judgeTimeoutMs).toBe(20_000);
@@ -226,6 +233,27 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_JUDGE_TIMEOUT_MS: '999' })).toThrowError(
       ConfigError,
     );
+
+    // --- 观察窗口的旧键兼容（它从 proactive.* 搬到了 observation.*）------------
+    // 默认配置文件（qqbot.yml）里曾长期是旧键，硬切会让所有人的记忆长度悄悄回到
+    // 默认值——所以旧键必须仍然生效，并留下迁移提示。
+    const legacy = loadConfig(baseEnv, {
+      proactive: { bufferMaxMessages: 77, bufferMaxAgeMs: 900_000 },
+    });
+    expect(legacy.observation.maxMessages).toBe(77);
+    expect(legacy.observation.maxAgeMs).toBe(900_000);
+    expect(legacy.observation.deprecations).toEqual([
+      expect.stringContaining('proactive.bufferMaxMessages'),
+      expect.stringContaining('proactive.bufferMaxAgeMs'),
+    ]);
+    // 新键优先（旧键同时存在时以新键为准）
+    const both = loadConfig(baseEnv, {
+      proactive: { bufferMaxMessages: 77 },
+      observation: { maxMessages: 33 },
+    });
+    expect(both.observation.maxMessages).toBe(33);
+    // 两个键都没配 → 默认值，且没有任何迁移提示
+    expect(loadConfig(baseEnv).observation.deprecations).toEqual([]);
 
     // 「让路」参数：默认保守（1 次 / 45 秒），且两端都有校验
     expect(

@@ -143,6 +143,21 @@ export interface ProactiveFileConfig {
   bufferMaxAgeMs?: number;
 }
 
+/** 观察窗口（旁听滚窗）的配置面（`observation:` 段）。 */
+export interface ObservationFileConfig {
+  /** 每会话保留的消息条数上限（默认 200） */
+  maxMessages?: number;
+  /** 每条消息的最长保留时长（毫秒；默认 1800000 = 30 分钟） */
+  maxAgeMs?: number;
+  /**
+   * 注入给**被动唤醒**（被 @）的窗口宽度（毫秒；默认 600000 = 10 分钟）。
+   *
+   * 窄于保留期是有意的：留 30 分钟是为了让判定能回看，回答当下这问题时把半小时前
+   * 另一个话题的内容灌进去只会稀释注意力。
+   */
+  injectWindowMs?: number;
+}
+
 /** 富媒体输入配额（与平台无关，官方/OneBot 共用）。 */
 export interface AttachmentsFileConfig {
   enabled?: boolean;
@@ -201,6 +216,7 @@ export interface FileConfig {
   media?: MediaFileConfig;
   health?: HealthFileConfig;
   proactive?: ProactiveFileConfig;
+  observation?: ObservationFileConfig;
   logLevel?: string;
 }
 
@@ -310,6 +326,12 @@ const PROACTIVE_SPEC: SectionSpec = {
   bufferMaxMessages: 'int',
   bufferMaxAgeMs: 'int',
 };
+/** 观察窗口（`observation:` 段；与主动发言的开关无关，见 config.ts 的说明）。 */
+const OBSERVATION_SPEC: SectionSpec = {
+  maxMessages: 'int',
+  maxAgeMs: 'int',
+  injectWindowMs: 'int',
+};
 const ATTACHMENTS_SPEC: SectionSpec = {
   enabled: 'bool',
   maxImages: 'int',
@@ -368,6 +390,7 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'media', field: 'media', spec: MEDIA_SPEC },
   { yamlKey: 'health', field: 'health', spec: HEALTH_SPEC },
   { yamlKey: 'proactive', field: 'proactive', spec: PROACTIVE_SPEC },
+  { yamlKey: 'observation', field: 'observation', spec: OBSERVATION_SPEC },
 ];
 
 /**

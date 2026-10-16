@@ -66,16 +66,26 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
 ```
 群消息（OneBot 全量推送 / 官方「接收所有消息」能力）
    │
+   ├─▶ **观察窗口**（store/window.ts）：静默记录每条群消息（含被 @ 的与 bot 自己的回复）
+   │      └─ 范围 = BOT_LISTEN_GROUPS；**与主动发言开关无关**；纯内存、不落盘
+   │
    ├─ 被 @ 或私聊 ──▶ Ingress 管线 → agent turn → reply（既有路径，不变）
-   │                     └─ 同时也记进旁听缓冲（判定要看到"bot 回答了谁"）
+   │                     └─ 读观察窗口：把「当前话题」注入 prompt（同一份事实，另一个渲染）
    │
    └─ 没 @ 的群消息 ──▶ **旁听消息**（core/connector.ts 的 kind='group-message'）
                          └─▶ ProactiveWatcher.observe()
                                ① 本地预筛（零 LLM 成本）→ 无候选就到此为止
-                               ② 有候选才调判定（LLM）
+                               ② 有候选才调判定（LLM，转录同样来自观察窗口）
                                ③ 否决层（顺序 / 限流 / **话题 session 闸门** / 无人回应保险）
                                ④ ProactiveSpeaker.deliver() → 适配器
 ```
+
+> **观察窗口是本模块的输入，不是它的私产**。在此之前缓冲住在 `scene/state.ts`
+> 里，于是它继承了介入层的开关：`BOT_PROACTIVE_ENABLED=false` 时，被 @ 的回复
+> 拿不到任何群聊上下文。现在窗口由组装层创建、两条唤醒路径共用——判定读**宽窗**
+> （保留期 30 分钟，宁可多给），被 @ 读**当前话题**（`observation.injectWindowMs`，
+> 默认 10 分钟）。写入点只有接入层与投递回调，读取方各自决定要多宽。
+> 实现与三条纪律见 `src/store/window.ts` 顶部。
 
 触发面与场景的对应（详细门槛见 [interests/SCENES.md](interests/SCENES.md)）：
 
@@ -160,7 +170,8 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 | `proactive.dryRun` | **`true`** | 灰度：判定照跑、只记 `wouldSend`，**不真的发言**。上线先观察一到两周 |
 | `BOT_LISTEN_GROUPS`（env） | 空 | 群白名单，**唯一入口**；条目必须带平台前缀（`onebot:123456`）；空 = 不接任何群 |
 | `proactive.questionProbeMs` | `90000` | 问题挂起多久后探针（场景 3） |
-| `proactive.bufferMaxMessages` / `bufferMaxAgeMs` | `200` / `30min` | 旁听缓冲（内存，不落盘） |
+| `observation.maxMessages` / `maxAgeMs` | `200` / `30min` | **观察窗口的保留期**（内存，不落盘）。⚠️ 已从 `proactive.bufferMax*` 搬来——旧键仍生效并 warn，但滚窗不再属于本模块 |
+| `observation.injectWindowMs` | `600000` | 被 @ 时注入多宽的窗口（**窄于保留期**：回答当下这问题时不必带半小时前的旧话题） |
 | `proactive.interestsEnabled` | `true` | 兴趣池总开关（场景 5） |
 | `proactive.interestsFile` | `interests.yml` | 兴趣池文件路径（`QQ_INTERESTS_FILE` 可覆盖）。**不存在 = 空池**，格式错 = 启动报错 |
 | `proactive.botAliases` | `[]` | bot 在本群的别名（场景 4 指代检测）；至少 2 字、最多 5 个 |

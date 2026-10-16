@@ -3,14 +3,15 @@
  *
  * 这是原 Dispatcher 收窄后的样子——只管 turn 生命周期：
  *   1. 取该会话的 DSH runtime（必要时新建进程 + 冷启动回放）
- *   2. session/prompt 派发（先注册在途 turn 再派发，避免事件早于注册到达）
- *   3. 起进度回执调度（经 Responder，策略来自该平台该会话类型的 ReplyPolicy）
- *   4. 消费事件：累积 assistant 文本、记 turn/end
- *   5. status 回 idle 且本轮已 turn/end → 结束；超时则回收 runtime 终止任务
- *   6. 结果经 Responder.deliver 发出并记录
+ *   2. 组装 prompt：**群聊上下文（观察窗口）+ 冷启动回放 + 当前这条**
+ *   3. session/prompt 派发（先注册在途 turn 再派发，避免事件早于注册到达）
+ *   4. 起进度回执调度（经 Responder，策略来自该平台该会话类型的 ReplyPolicy）
+ *   5. 消费事件：累积 assistant 文本、记 turn/end
+ *   6. status 回 idle 且本轮已 turn/end → 结束；超时则回收 runtime 终止任务
+ *   7. 结果经 Responder.deliver 发出并记录
  *
  * 不负责的事（都在别处）：去重、命令、闸、记录、并发/串行准入（Ingress
- * stage），配额/分段/发送（Responder）。
+ * stage），配额/分段/发送（Responder），滚窗的**写入**（接入层与投递回调）。
  *
  * 平台差异只通过一个接缝进入本文件：`ctx.policy` 的 turnTimeoutMs。
  * 本文件不允许 import 任何 adapters/* 内部实现。
@@ -31,6 +32,8 @@ import { TurnAccumulator, type TurnOutcome } from '../dsh/turns.js';
 import type { Logger } from '../logger.js';
 import type { ConversationStore } from '../store/conversations.js';
 import { renderReplay } from '../store/conversations.js';
+import type { ObservationWindowStore } from '../store/window.js';
+import { renderWindowBlock } from '../store/window.js';
 import { cleanupInbox } from '../store/inbox.js';
 import type { SessionStore } from '../store/sessions.js';
 import { ensureWorkspace, type StorePaths } from '../store/paths.js';
@@ -46,6 +49,18 @@ export interface TurnRunnerDeps {
   logger: Logger;
   pool: RuntimePool;
   conversations: ConversationStore;
+  /**
+   * 观察窗口（旁听滚窗）：**被 @ 时的群聊上下文来源**。
+   *
+   * 为什么需要它：本模块此前只有两种上下文——DSH runtime 自己的会话记忆（进程内，
+   * 回收即失忆）与 `ConversationStore` 的冷启动回放（只记与 bot 相关的轮次）。
+   * 两者都**不含群里的旁听内容**，于是"@ 了机器人但它不知道大家在聊什么"
+   * 是常态。窗口补上的正是这一段（见 store/window.ts）。
+   *
+   * 可选：不传 = 回到旧行为（只有当前这条 + 冷启动回放）。保留可选是为了让
+   * 单测能只装它关心的那部分依赖。
+   */
+  windows?: ObservationWindowStore;
   sessions: SessionStore;
   paths: StorePaths;
   stats: PipelineStats;
@@ -385,22 +400,52 @@ export class TurnRunner {
     const role = message.target.kind === 'c2c' ? '私聊用户' : '群成员';
     const current = `[${role} ${speaker}] ${message.content}`;
 
-    if (!coldStart || config.pool.replayTurns <= 0) return current;
+    // --- ① 群聊上下文（观察窗口）--------------------------------------------
+    //
+    // **不分冷启动与否**：runtime 活着的时候它的会话记忆里也只有与 bot 相关的那几
+    // 轮，群里别人之间的对话从来不在里面。每次被 @ 都补上"当前话题"这一段，
+    // 才是这个需求要的效果。
+    const window = this.deps.windows;
+    let context = '';
+    if (window !== undefined && window.accepts(conversationKey)) {
+      const entries = window.read(conversationKey, {
+        sinceTs: this.now() - config.observation.injectWindowMs,
+        // 当前这条会被单独渲染成下面那行；留在块里就是同一句话说两遍
+        excludeMsgId: message.msgId,
+      });
+      context = renderWindowBlock(entries);
+      if (context !== '') {
+        this.deps.logger.debug('注入群聊上下文', {
+          conversation: conversationKey,
+          messages: entries.length,
+          chars: context.length,
+        });
+      }
+    }
 
-    // 冷启动：把最近的对话记录作为上下文一并给出。
-    // 注意排除刚追加进去的当前这条，避免重复。
-    const history = conversations.readTail(conversationKey, config.pool.replayTurns * 2);
-    const withoutCurrent = history.filter(
-      (turn) => !(turn.role === 'user' && turn.text === message.content && turn.ts === message.ts),
-    );
-    const replay = renderReplay(withoutCurrent);
-    this.deps.logger.info('冷启动回放历史', {
-      conversation: conversationKey,
-      generation,
-      turns: withoutCurrent.length,
-    });
-    if (replay === '') return current;
-    return `${replay}\n\n${current}`;
+    // --- ② 冷启动回放（对话记录）--------------------------------------------
+    //
+    // 只在冷启动做：runtime 活着时它自己记得这些轮次，再回放一遍就成了重复注入。
+    // 与 ① 不重叠：那一份是**群里的旁听内容**，这一份是**与 bot 的往来**。
+    let replay = '';
+    if (coldStart && config.pool.replayTurns > 0) {
+      // 注意排除刚追加进去的当前这条，避免重复。
+      const history = conversations.readTail(conversationKey, config.pool.replayTurns * 2);
+      const withoutCurrent = history.filter(
+        (turn) => !(turn.role === 'user' && turn.text === message.content && turn.ts === message.ts),
+      );
+      replay = renderReplay(withoutCurrent);
+      if (withoutCurrent.length > 0) {
+        this.deps.logger.info('冷启动回放历史', {
+          conversation: conversationKey,
+          generation,
+          turns: withoutCurrent.length,
+        });
+      }
+    }
+
+    const blocks = [context, replay, current].filter((block) => block !== '');
+    return blocks.join('\n\n');
   }
 
   /**

@@ -56,6 +56,7 @@ import {
 import type { ProactiveHealthSnapshot } from './health.js';
 import { TurnRunner } from './pipeline/turn-runner.js';
 import { ConversationStore } from './store/conversations.js';
+import { ObservationWindowStore } from './store/window.js';
 import { SeenStore } from './store/seen.js';
 import { SessionStore } from './store/sessions.js';
 import { ensureStoreDirs, resolveStorePaths, workspacePathFor } from './store/paths.js';
@@ -192,6 +193,31 @@ async function main(): Promise<void> {
   const seen = new SeenStore({ paths, logger });
   const sessions = new SessionStore({ paths, logger });
 
+  // --- 观察窗口（旁听滚窗）---------------------------------------------------
+  //
+  // 这里是"群里刚刚说了什么"的**唯一**写入点，也是它与介入层解耦的地方：
+  //   - 只要群在 `BOT_LISTEN_GROUPS` 里就记录，**与 `BOT_PROACTIVE_ENABLED` 无关**
+  //     ——"只 @ 回复"的部署照样能拿到上下文；
+  //   - 记录是静默的（不判断、不调 LLM、不回复），写入失败不影响任何回复；
+  //   - 纯内存、不落盘：进程重启即清空，冷启动那一次靠 ConversationStore 的回放兜底。
+  //
+  // 两个消费者：主动介入的判定层（读宽窗）与被 @ 的被动回复（读活动窗口）。见
+  // store/window.ts 顶部。
+  const windows = new ObservationWindowStore({
+    allowlist: config.observation.allowlist,
+    maxMessages: config.observation.maxMessages,
+    maxAgeMs: config.observation.maxAgeMs,
+  });
+  for (const note of config.observation.deprecations) {
+    logger.warn('配置键已迁移（旧键仍生效）', { note });
+  }
+  logger.info('观察窗口就绪', {
+    groups: config.observation.allowlist.length,
+    maxMessages: config.observation.maxMessages,
+    maxAgeMs: config.observation.maxAgeMs,
+    injectWindowMs: config.observation.injectWindowMs,
+  });
+
   // --- 接入层（按配置建连接器，可多个并存） ----------------------------------
   // stats 提前到这里：连接器需要上报转发块回查结果（onForward 回调），
   // 而它是编排层与接入层之间唯一的"计数"通道。放在最前面也让它成为
@@ -324,12 +350,12 @@ async function main(): Promise<void> {
         sessionBudget: config.proactive.sessionBudget,
         sessionIdleMs: config.proactive.sessionIdleMs,
         sessionMinGapMs: config.proactive.sessionMinGapMs,
-        stateOptions: {
-          maxEntries: config.proactive.bufferMaxMessages,
-          maxAgeMs: config.proactive.bufferMaxAgeMs,
-        },
+        // ⚠️ 缓冲上限**不在这里**：它已搬到 `observation.*`，由组装层持有的
+        // 观察窗口执行（滚窗不再属于介入层，见 store/window.ts）。
       },
       speaker,
+      // 观察窗口：判定层与被动回复路径读同一份
+      windows,
       ...(judge === undefined ? {} : { judge }),
       interests,
       logger: logger.child({ component: 'proactive-watcher' }),
@@ -483,6 +509,8 @@ async function main(): Promise<void> {
     logger: logger.child({ component: 'turn-runner' }),
     pool,
     conversations,
+    // 被 @ 时的群聊上下文来源（与主动介入判定读的是同一个窗口；见 store/window.ts）
+    windows,
     sessions,
     paths,
     stats,
@@ -537,6 +565,14 @@ async function main(): Promise<void> {
         conversations,
         stats,
         logger: messageLogger,
+        // 被动回复也进观察窗口：否则被 @ 的回复路径看不到"bot 自己刚说过什么"，
+        // 模型会对着已经被回答过的问题重新组织一遍答案（见 store/window.ts）。
+        //
+        // ⚠️ 刻意**不带 `msgId`**：那是**用户那条**消息的 id，写进来会让"排除当前
+        // 消息"（TurnRunner 注入时按 msgId 排除）把 bot 自己的回复一起排掉。
+        onReplied: (text, ts) => {
+          windows.recordBotReply(message.target.key, { text, ts });
+        },
         // outbox 目录路径在这里拼好：Responder 不感知工作区布局，
         // 只拿一个"该扫哪个目录"的绝对路径（目录不存在 = 没有产物）。
         ...(config.media.enabled

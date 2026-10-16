@@ -74,9 +74,14 @@ docker compose logs -f
 
 默认**关闭**；即使打开也先进入**灰度观察**（判定照跑、只记录"本应发言"，不真的发）。
 
+> 🔎 **群白名单与主动发言是两件事。** `BOT_LISTEN_GROUPS` 同时决定「观察窗口」
+> 的范围——**只想要"被 @ 时能看懂大家在聊什么"也必须填它**，而
+> `BOT_PROACTIVE_ENABLED` 保持 `false` 即可（滚窗与主动发言已解耦，见
+> [store/window.ts](src/store/window.ts)）。
+
 ```ini
 # .env（群号是个人标识，只在这里配）
-BOT_LISTEN_GROUPS=onebot:123456      # 白名单；留空 = 不接任何群
+BOT_LISTEN_GROUPS=onebot:123456      # 白名单；留空 = 不接任何群、也不观察任何群
 BOT_PROACTIVE_ENABLED=true           # 总开关
 BOT_PROACTIVE_DRY_RUN=true           # 默认值：先观察，确认判据准了再改 false
 ```
@@ -108,6 +113,7 @@ QQ 机器人的约束比看起来紧得多。挑几条最有代表性的（完�
 |---|---|
 | 被动窗口只有**群聊 5 分钟 / 单聊 60 分钟**，每条消息最多回 **5 / 4 次** | 回复配额账本 + 进度回执，永远给最终答案留配额；`msg_seq` 统一分配避免平台去重 |
 | `session/prompt` **没有 resume 语义**，进程重启必失忆 | 桥接层自维护对话记录，runtime 重建时按边界标记回放 |
+| 被 @ 时**看不到群里刚才在聊什么**（DSH 只记得与 bot 的往来） | **观察窗口**：静默记录白名单群的每条消息（含 bot 自己的回复），被 @ 时把当前话题注入 prompt；纯内存、不落盘、不依赖主动发言开关 |
 | `initialize.cwd` 是**进程级**的 | 一会话一进程一工作区，会话之间互相看不到文件 |
 | 用户发来的**文件**是字节、模型读不了 | 落 `inbox/` 供 agent 深挖 + 抽取正文（PDF 走 `pdftotext`），以不可信内容边界进 prompt；解析器缺失自动降级 |
 | 一轮产出多个文件会刷屏 | 自动打包成单个 zip 发一条；只发本轮新产生的文件 |
@@ -191,9 +197,10 @@ src/dsh/                 DSH 桥接：JSON-RPC 客户端 / 子进程监督 / 进
 src/pipeline/            编排：调度 / 配额与进度 / 分段 / 并发原语（全平台共用一条链路）
 src/pipeline/proactive/  主动发言聚集地：SCENES.md + 兴趣池 + 搜集/判定/否决/投递四层
 src/store/               持久化：对话记录（JSONL）/ 事件去重 / 会话映射 / 路径布局
+                         ＋观察窗口（window.ts，内存滚窗：被 @ 与主动判定共用的上下文源）
 dsh-profile/             DSH profile 补丁 + 自动审批桩
 scripts/                 容器入口 + 验证脚本
-tests/                   离线单测（556 条）
+tests/                   离线单测（634 条）
 docs/                    方案设计 / 部署手册 / 排障手册
 ```
 

@@ -326,6 +326,14 @@ criteria 里枚举**能力域**（查资料 / 跑代码与脚本 / 数据与图�
 
 ### 3.6 一个必须补的输入缺口：**bot 自己的上一句不在转录里**
 
+> **状态：写入侧已修（2025-10），判定侧仍是开关。**
+> 滚窗搬到 `src/store/window.ts` 之后**总是**记录 bot 自己的发言
+> （`ObservationWindowStore.recordBotReply`，写入点是 `Responder.onReplied` 与
+> `ProactiveWatcher.notifyBotSpoke`），所以"转录里没有 bot 那句话"这件事在数据上
+> 已经不成立。但把它**放进判定转录**会实打实改变场景 1 的判据输入，属于行为变更，
+> 因此由 `ProactiveWatcherDeps.judgeSeesBotSpeaks` 显式打开，**默认关闭**。
+> 下面这段是当时的审计记录，保留以说明为什么这件事重要。
+
 审计发现的第一个、也是最致命的输入缺口，直接决定场景 1 能不能做：
 
 > 旁听缓冲只收**非 @ 消息**（`transcript.ts` 渲染时还会把已走 @ 路径的条目

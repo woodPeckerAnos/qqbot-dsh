@@ -13,8 +13,17 @@ import {
   ConversationStateStore,
   looksLikeQuestion,
 } from '../src/pipeline/proactive/scene/state.js';
+import { ObservationWindowStore } from '../src/store/window.js';
 
 const T0 = 1_700_000_000_000;
+
+/** 观察窗口注册表：本用例只关心判定层状态，白名单放行一切会话键。 */
+function windows(options: { maxMessages?: number; maxAgeMs?: number } = {}) {
+  return new ObservationWindowStore({
+    allowlist: ['ob11:g8888', 'ob11:g1', 'ob11:g2'],
+    ...options,
+  });
+}
 
 function msg(
   msgId: string,
@@ -37,7 +46,18 @@ function msg(
 }
 
 function state(options = {}) {
-  return new ConversationState('ob11:g8888', { activityWindowMs: 60_000, ...options });
+  // 缓冲（连同它的上限）现在归观察窗口持有，判定状态只拿一个引用
+  const { maxEntries, ...rest } = options as { maxEntries?: number } & Record<string, unknown>;
+  const store = windows(maxEntries === undefined ? {} : { maxMessages: maxEntries });
+  return new ConversationState('ob11:g8888', store.for('ob11:g8888'), {
+    activityWindowMs: 60_000,
+    ...rest,
+  });
+}
+
+/** 组装层实际使用的那条路径：状态从注册表取窗口（既有 `state()` 是单会话版）。 */
+function stateStore(options = {}) {
+  return new ConversationStateStore(windows(), { ...options, activityWindowMs: 60_000 });
 }
 
 describe('疑问句识别（场景 3 的入口）', () => {
@@ -284,7 +304,7 @@ describe('让路台账：预算、判定时刻与"问题关闭"通知', () => {
   });
 
   it('验收18：Store 把任意会话的问题关闭事件带 convKey 转发出来', () => {
-    const store = new ConversationStateStore({ activityWindowMs: 60_000 });
+    const store = stateStore();
     const seen: Array<{ convKey: string; id: string }> = [];
     store.onQuestionClosed((convKey, event) => seen.push({ convKey, id: event.id }));
 
@@ -310,7 +330,7 @@ describe('缓冲边界与注册表', () => {
   });
 
   it('验收14：Store 按会话键隔离（一个群的旁听不会串到另一个群）', () => {
-    const store = new ConversationStateStore({ activityWindowMs: 60_000 });
+    const store = stateStore();
     store.for('ob11:g1').observe(msg('m1', 'u1', 'A', T0));
     store.for('ob11:g2').observe(msg('m2', 'u2', 'B', T0));
     expect(store.size).toBe(2);
@@ -359,7 +379,7 @@ describe('话题 session 的状态机', () => {
   });
 
   it('验收20：Store 把任意会话的 session 关闭事件带 convKey 转发出来；dispose 连带关闭', () => {
-    const store = new ConversationStateStore();
+    const store = stateStore();
     const seen: Array<{ convKey: string; cause: string }> = [];
     store.onSessionClosed((convKey, event) => seen.push({ convKey, cause: event.cause }));
 

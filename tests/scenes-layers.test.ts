@@ -27,6 +27,7 @@ import {
 } from '../src/pipeline/proactive/contract.js';
 import type { NormalizedMessage } from '../src/core/connector.js';
 import { ConversationState } from '../src/pipeline/proactive/scene/state.js';
+import { ObservationWindowStore } from '../src/store/window.js';
 import {
   SCENE_REGISTRY,
   buildSceneEvidence,
@@ -50,6 +51,18 @@ import {
 
 /** 当前生效场景的**自然语言真相源**（人话版说明书）。 */
 const SCENES_DOC = '../src/pipeline/proactive/interests/SCENES.md';
+
+/**
+ * 判定状态 + 它的观察窗口（缓冲现在归窗口持有，见 `store/window.ts`）。
+ * 用例只关心判定层，所以白名单放行一切会话键。
+ */
+function stateFor(convKey: string, options: { activityWindowMs?: number } = {}) {
+  const windows = new ObservationWindowStore({ allowlist: [convKey] });
+  return new ConversationState(convKey, windows.for(convKey), {
+    activityWindowMs: 60_000,
+    ...options,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -243,7 +256,7 @@ describe('① 搜集层：本地、只判断可能、不做裁决', () => {
       'interests:\n  - {id: plotting, topic: 画图, keywords: [折线图]}',
       'test.yml',
     );
-    const state = new ConversationState('ob11:g1', { activityWindowMs: 60_000 });
+    const state = stateFor('ob11:g1');
     const now = 1_000_000;
     // 两个人来回聊，其中一条是没被回答的问题
     state.observe(makeObserved('m1', 'u1', '折线图怎么画才好看', now - 30_000));
@@ -278,7 +291,7 @@ describe('① 搜集层：本地、只判断可能、不做裁决', () => {
 
   it('验收7c：bot 发言后无人回应 → 保险生效；有人回应 → 场景 1 的参与窗口打开', () => {
     const now = 2_000_000;
-    const state = new ConversationState('ob11:g1', { activityWindowMs: 60_000 });
+    const state = stateFor('ob11:g1');
     state.observe(makeObserved('m1', 'u1', '帮我看看这个报错', now - 40_000));
     state.recordBotSpoke(now - 30_000);
 

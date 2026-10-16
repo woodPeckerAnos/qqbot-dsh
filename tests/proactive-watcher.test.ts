@@ -28,9 +28,18 @@ import {
   DEFAULT_WATCHER_CONFIG,
   type ProactiveWatcherConfig,
 } from '../src/pipeline/proactive/scene/watcher.js';
+import { ObservationWindowStore } from '../src/store/window.js';
 import { parseInterestPool } from '../src/pipeline/proactive/interests/pool.js';
 
 const GROUP_KEY = 'ob11:g8888';
+
+/**
+ * 观察窗口（滚窗的持有者）：介入层现在从组装层拿到它，而不是自己 new 一份缓冲。
+ * 用例只关心判定与投递，所以白名单放行这些会话键。
+ */
+function windowsFor(keys: readonly string[]): ObservationWindowStore {
+  return new ObservationWindowStore({ allowlist: [...keys] });
+}
 const GROUP_TARGET: ConversationTarget = {
   platform: 'onebot',
   kind: 'group',
@@ -192,6 +201,7 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proac
     config,
     speaker,
     judge,
+    windows: windowsFor(config.whitelistGroups),
     interests: parseInterestPool(
       'interests:\n  - {id: plotting, topic: 画图, keywords: [折线图]}',
       'test.yml',
