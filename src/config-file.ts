@@ -99,6 +99,25 @@ export interface HealthFileConfig {
   port?: number;
 }
 
+/** 预设风格前台（`personas:` 段）：/persona 命令可切换的每会话人设。 */
+export interface PersonasFileConfig {
+  /** 预设目录（每个 `<名>.md` 是一个可选人设） */
+  dir?: string;
+}
+
+/** 长任务提示注入（`hints.longTask`，见 pipeline/hints.ts）。 */
+export interface LongTaskHintFileConfig {
+  enabled?: boolean;
+  /** 命中这些子串的消息，prompt 里追加"耗时任务请后台派发"提示 */
+  patterns?: string[];
+  /** 自定义提示文本（默认文本见 pipeline/hints.ts） */
+  text?: string;
+}
+
+export interface HintsFileConfig {
+  longTask?: LongTaskHintFileConfig;
+}
+
 /**
  * 主动发言的配置面（`proactive:` 段）。
  *
@@ -227,6 +246,8 @@ export interface FileConfig {
   health?: HealthFileConfig;
   proactive?: ProactiveFileConfig;
   observation?: ObservationFileConfig;
+  personas?: PersonasFileConfig;
+  hints?: HintsFileConfig;
   logLevel?: string;
 }
 
@@ -318,6 +339,13 @@ const OFFPEAK_SPEC: SectionSpec = {
   holidays: 'stringList',
 };
 const HEALTH_SPEC: SectionSpec = { port: 'int' };
+const PERSONAS_SPEC: SectionSpec = { dir: 'string' };
+const LONG_TASK_HINT_SPEC: SectionSpec = {
+  enabled: 'bool',
+  patterns: 'stringList',
+  text: 'string',
+};
+const HINTS_SPEC: SectionSpec = {};
 const PROACTIVE_SPEC: SectionSpec = {
   enabled: 'bool',
   dryRun: 'bool',
@@ -404,6 +432,8 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'health', field: 'health', spec: HEALTH_SPEC },
   { yamlKey: 'proactive', field: 'proactive', spec: PROACTIVE_SPEC },
   { yamlKey: 'observation', field: 'observation', spec: OBSERVATION_SPEC },
+  { yamlKey: 'personas', field: 'personas', spec: PERSONAS_SPEC },
+  { yamlKey: 'hints', field: 'hints', spec: HINTS_SPEC },
 ];
 
 /**
@@ -416,6 +446,7 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
 const NESTED_SECTIONS: Record<string, Record<string, SectionSpec>> = {
   'qq-official': { c2c: QQ_OFFICIAL_C2C_SPEC },
   attachments: { forward: ATTACHMENTS_FORWARD_SPEC, files: ATTACHMENTS_FILES_SPEC },
+  hints: { longTask: LONG_TASK_HINT_SPEC },
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

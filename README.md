@@ -9,6 +9,7 @@
 | ⚙️ | **完整 agent 能力** | 内核是 [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh)：每个会话一个独立进程 + 独立工作区，能真的写代码、跑命令、读文件、多步干活并交付产物 |
 | 🔌 | **一套服务，多套出口** | 官方开放平台与社区框架（OneBot v11）**可同时在线**，编排层以上只有一条代码路径；接入差异全部收在适配器里 |
 | 💬 | **主动发言** | 不只对 @ 反应：旁听群聊 → 判断该不该开口 → 五类场景下主动插话，带限流、**话题会话发言预算**、「没人理我就停」等硬闸门 |
+| 🎭 | **可切换的人设前台** | 管理员发 `/persona <名>` 即可切换该会话的应答风格（预设 = `dsh-profile/personas/*.md`），写入工作区 AGENTS.md 标记区块，**下一条消息生效、无需重启**；长任务由后台子代理托管 + 长任务提示注入补强，会话不被卡死（[DESIGN §13–14](docs/DESIGN.md)） |
 
 ```mermaid
 flowchart LR
@@ -179,6 +180,11 @@ npm test                 # 离线单测：不触网、不启动 DSH 子进程
 | `.env`（密钥 / 开关 / 白名单） | `docker compose up -d` | 否 |
 | `qqbot.yml`、`interests.yml`（挂载的配置） | `docker compose restart qqbot` | 否 |
 | 某个会话的规矩（工作区里的 `AGENTS.md`） | 直接写文件，连重启都不用 | 否 |
+| 某个会话的人设风格（`/persona <名>` 命令） | 群里发命令，下一条消息生效 | 否 |
+| 新增人设预设（`dsh-profile/personas/*.md`） | 直接加文件，`/persona` 立刻列得出 | 否¹ |
+
+> ¹ `dsh-profile/` 打进镜像但预设目录默认经 `personas.dir` 指向它；用官方镜像时在容器里
+> 加文件（或把目录 mount 出来改），都不需要重建镜像。
 
 > `.env` 是**容器创建时**注入的：`restart` 不会重读它，所以那一行必须是 `up -d`。
 
@@ -192,6 +198,7 @@ docker compose run --rm --entrypoint node qqbot scripts/smoke-dsh.mjs       # �
 docker compose run --rm --entrypoint node qqbot scripts/smoke-web-fetch.mjs # 验证 web_fetch 真能抓到正文
 docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox.mjs  # 判定沙箱是否真闸
 docker compose run --rm --entrypoint node qqbot scripts/probe-dsh.mjs       # 诊断 profile 组合问题
+docker compose run --rm --entrypoint node qqbot scripts/probe-dual-session.mjs # 同进程双会话是否真并发（双通道方案前提）
 ```
 
 ## 目录结构
@@ -208,12 +215,15 @@ src/core/                接入层契约：BotConnector / 归一化事件 / 内�
 src/adapters/            接入平台：qq-official（官方）/ onebot（社区框架）
 src/dsh/                 DSH 桥接：JSON-RPC 客户端 / 子进程监督 / 进程池 / turn 归并 / 图片内联与长图切片
 src/pipeline/            编排：调度 / 配额与进度 / 分段 / 并发原语（全平台共用一条链路）
+                         ＋长任务提示注入（hints.ts，persona 纪律的桥接层补强）
 src/pipeline/proactive/  主动发言聚集地：SCENES.md + 兴趣池 + 搜集/判定/否决/投递四层
 src/store/               持久化：对话记录（JSONL）/ 事件去重 / 会话映射 / 路径布局
                          ＋观察窗口（window.ts，内存滚窗：被 @ 与主动判定共用的上下文源）
+                         ＋人设选择（personas.ts：预设目录 → 工作区 AGENTS.md 标记区块）
 dsh-profile/             DSH profile 补丁 + 自动审批桩
+dsh-profile/personas/    预设风格前台：每个 <名>.md 是一个 /persona 可切换的人设
 scripts/                 容器入口 + 验证脚本
-tests/                   离线单测（665 条）
+tests/                   离线单测（738 条）
 docs/                    方案设计 / 部署手册 / 排障手册
 ```
 

@@ -463,6 +463,8 @@ docker stats qqbot-dsh
 | 图片太多/太大读不进来 | `BOT_ATTACHMENT_MAX_IMAGES`（默认 4）、`BOT_ATTACHMENT_MAX_BYTES`（默认 8MB）；排查看 `/metrics` 里的 `imagesInlined`/`imagesSkipped`，见 [RUNBOOK 4.5](RUNBOOK.md) |
 | 群里刚发的图/文件，@ bot 后它说"看不到" | 那是**上下文（滚窗）**里的媒体：`BOT_OBSERVATION_INJECT_IMAGES`（默认 2）、`BOT_OBSERVATION_INJECT_FILES`（默认 1），0 = 不读；排查看 `/metrics` 里的 `windowImagesInlined`/`windowImagesSkipped`/`windowFilesFetched` |
 | 想给某个会话定规矩 | 在该会话工作区目录下写 `AGENTS.md`，DSH 会自动加载（改规则不用重建镜像） |
+| 想换某个会话的应答风格 | 群里发 `/persona <预设名>`（仅管理员；预设 = `dsh-profile/personas/*.md`，`BOT_PERSONA_DIR` 换目录）；`/persona` 列出可选项，`/persona off` 恢复默认 |
+| 长任务把会话卡死（新闻核查/抓取类最常见） | 确认 `hints.longTask.enabled`（默认开）：命中的消息会在 prompt 里带"必须后台派发"提示；观测 `/metrics` 的 `longTaskHints`（注入数）与 `backgroundStarted`（实际派发数）；仍不达标见 [DESIGN §14.3](DESIGN.md) 的下一档方案 |
 
 ---
 

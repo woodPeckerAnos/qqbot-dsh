@@ -47,6 +47,7 @@ import { cleanupInbox } from '../store/inbox.js';
 import type { SessionStore } from '../store/sessions.js';
 import { ensureWorkspace, type StorePaths } from '../store/paths.js';
 import { waitUntil } from './concurrency.js';
+import { matchLongTaskHint } from './hints.js';
 import type { MessageContext } from './ingress/types.js';
 import { defaultProgressText } from './egress/progress.js';
 import type { BackgroundPusher } from './egress/background.js';
@@ -581,8 +582,19 @@ export class TurnRunner {
     }
 
     // 顺序：群聊上下文 → 其中那条被点名的聊天记录（读出来了才在）→ 冷启动回放
+    // → 长任务提示（命中才在，贴着当前消息，模型读到的就是"对下面这条的处理建议"）
     // → 当前这条。记录紧跟上下文，模型读到的就是"上文里那条、下面是它的内容"。
-    const blocks = [context, recordBlock, replay, current].filter((block) => block !== '');
+    //
+    // 长任务提示（pipeline/hints.ts）：persona 纪律的桥接层补强——新闻核查、网页
+    // 抓取这类任务模型常自判"不长"而在本轮同步跑，会话随之卡死（§13.2 硬边界）。
+    // 命中关键词就注入一句"耗时任务请后台派发"，best-effort，不代替模型决定。
+    const longTask = config.hints.longTask;
+    let hint = '';
+    if (longTask.enabled && matchLongTaskHint(message.content, longTask.patterns)) {
+      this.deps.stats.longTaskHints += 1;
+      hint = longTask.text;
+    }
+    const blocks = [context, recordBlock, replay, hint, current].filter((block) => block !== '');
     return blocks.join('\n\n');
   }
 

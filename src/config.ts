@@ -25,6 +25,11 @@ import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import { ConfigError } from './config-error.js';
 import type { FileConfig, ObservationFileConfig, ProactiveFileConfig } from './config-file.js';
+import {
+  DEFAULT_LONG_TASK_HINT_TEXT,
+  DEFAULT_LONG_TASK_PATTERNS,
+  type LongTaskHintConfig,
+} from './pipeline/hints.js';
 import { DEFAULT_ACTIVITY_WINDOW_MS } from './pipeline/proactive/scene/state.js';
 import {
   DEFAULT_OBSERVATION_INJECT_FILES,
@@ -322,6 +327,22 @@ export interface Config {
    * "关掉主动发言就没有滚窗了"，而那正是这次重构要消灭的耦合。
    */
   observation: ObservationConfig;
+  /**
+   * 预设风格前台（/persona 命令）：预设目录里每个 `<名>.md` 是一个可切换人设，
+   * 切换即写入该会话工作区 AGENTS.md 的标记区块，下个 turn 生效（见 store/personas.ts）。
+   */
+  personas: {
+    /** 预设目录（BOT_PERSONA_DIR / personas.dir，默认 dsh-profile/personas） */
+    dir: string;
+  };
+  /**
+   * 长任务提示注入（persona 纪律的桥接层补强，见 pipeline/hints.ts）。
+   * 命中关键词的消息在 prompt 里追加"耗时任务请后台派发"的提示——best-effort，
+   * 不代替模型做决定。
+   */
+  hints: {
+    longTask: LongTaskHintConfig;
+  };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -1252,7 +1273,38 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     // 观察窗口：**放在 proactive 之后**构造，因为旧键的兼容读取要拿到
     // `buildProactiveConfig` 读出来的 `bufferMax*`（见 buildObservationConfig）。
     observation: observationConfig,
+    personas: {
+      dir: pickString(env, 'BOT_PERSONA_DIR', file.personas?.dir, 'dsh-profile/personas'),
+    },
+    hints: {
+      longTask: buildLongTaskHintConfig(env, file.hints?.longTask),
+    },
     logLevel: pickEnum(env, 'QQ_LOG_LEVEL', file.logLevel, ['debug', 'info', 'warn', 'error'] as const, 'info', 'logLevel'),
+  };
+}
+
+/**
+ * 长任务提示注入（`Config.hints.longTask`）。
+ *
+ * 空串关键词是**配置错误**而不是"匹配一切"：`''.includes(...)` 方向反过来就是
+ * 每条消息都命中，提示注入就退化成每轮固定多一段文本。在这里快速失败。
+ */
+function buildLongTaskHintConfig(
+  env: Env,
+  file: { enabled?: boolean; patterns?: string[]; text?: string } | undefined,
+): LongTaskHintConfig {
+  const raw = pickList(env, 'BOT_HINT_LONG_TASK_PATTERNS', file?.patterns);
+  const patterns = (raw.length > 0 ? raw : DEFAULT_LONG_TASK_PATTERNS).map((p) => p.trim());
+  const empty = patterns.filter((p) => p === '');
+  if (empty.length > 0) {
+    throw new ConfigError('长任务提示的关键词里含空串', [
+      '空串会命中每一条消息；hints.longTask.patterns 里的条目都必须是非空字符串',
+    ]);
+  }
+  return {
+    enabled: pickBool(env, 'BOT_HINT_LONG_TASK_ENABLED', file?.enabled, true),
+    patterns: [...new Set(patterns)],
+    text: pickString(env, 'BOT_HINT_LONG_TASK_TEXT', file?.text, DEFAULT_LONG_TASK_HINT_TEXT),
   };
 }
 
@@ -1341,6 +1393,13 @@ export function describeConfig(config: Config): Record<string, unknown> {
         : { deprecations: config.observation.deprecations }),
     },
     attachments: config.attachments,
+    personas: { dir: config.personas.dir },
+    hints: {
+      longTask: {
+        enabled: config.hints.longTask.enabled,
+        patterns: config.hints.longTask.patterns,
+      },
+    },
     media: {
       enabled: config.media.enabled,
       maxFileBytes: config.media.maxFileBytes,

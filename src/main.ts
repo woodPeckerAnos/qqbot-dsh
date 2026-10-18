@@ -41,6 +41,7 @@ import { OffpeakCommandRouter } from './pipeline/ingress/offpeak-command.js';
 import { createOffpeakGateStage } from './pipeline/ingress/offpeak-gate.js';
 import { createRecordStage } from './pipeline/ingress/record.js';
 import { SessionCommandRouter } from './pipeline/ingress/session-command.js';
+import { PersonaCommandRouter } from './pipeline/ingress/persona-command.js';
 import type { IngressStage } from './pipeline/ingress/types.js';
 import { Orchestrator } from './pipeline/orchestrator.js';
 import { PipelineStats } from './pipeline/stats.js';
@@ -59,6 +60,7 @@ import { ConversationStore } from './store/conversations.js';
 import { ObservationWindowStore } from './store/window.js';
 import { SeenStore } from './store/seen.js';
 import { SessionStore } from './store/sessions.js';
+import { PersonaStore } from './store/personas.js';
 import { ensureStoreDirs, resolveStorePaths, workspacePathFor } from './store/paths.js';
 import { buildHealthSnapshot, createHealthServer, type HealthServer } from './health.js';
 
@@ -192,6 +194,17 @@ async function main(): Promise<void> {
   const conversations = new ConversationStore(paths, logger);
   const seen = new SeenStore({ paths, logger });
   const sessions = new SessionStore({ paths, logger });
+
+  // 预设风格前台（/persona）：选择持久化在 stateDir，启动期把每个已选会话的
+  // 人设区块幂等重写进工作区 AGENTS.md（防"工作区被手工清掉但选择还在"）。
+  const personas = new PersonaStore({
+    dir: config.personas.dir,
+    persistPath: join(paths.stateDir, 'personas.json'),
+    paths,
+    logger: logger.child({ component: 'personas' }),
+  });
+  personas.restoreAll();
+  logger.info('人设预设就绪', { dir: config.personas.dir, presets: personas.listPresets() });
 
   // --- 观察窗口（旁听滚窗）---------------------------------------------------
   //
@@ -541,9 +554,13 @@ async function main(): Promise<void> {
   // 会话控制命令（/stop、/new，仅管理员）：必须在闸之前，且不进会话锁——
   // /stop 的意义就是在锁被长任务占住时也能立刻生效。
   const sessionCommands = new SessionCommandRouter({ pool, turns: turnRunner, stats });
+  // 人设切换命令（/persona，仅管理员）：与 /stop、/new 同级——控制面操作，
+  // 不占名额、不进会话锁、峰时段也要可用。
+  const personaCommands = new PersonaCommandRouter({ personas, stats });
   const stages: IngressStage[] = [
     createDedupeStage({ seen, stats }),
     sessionCommands.stage(),
+    personaCommands.stage(),
     offpeakCommands.stage(),
     createOffpeakGateStage({ gate: offpeak, config, stats }),
     createRecordStage({ conversations }),

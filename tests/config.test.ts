@@ -724,3 +724,38 @@ offpeak:
     expect(config.health.port).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe('personas 与 hints（三层合并）', () => {
+  it('默认值：预设目录相对 CWD，长任务提示默认开', () => {
+    const config = loadConfig(baseEnv);
+    expect(config.personas.dir).toBe('dsh-profile/personas');
+    expect(config.hints.longTask.enabled).toBe(true);
+    expect(config.hints.longTask.patterns.length).toBeGreaterThan(0);
+    expect(config.hints.longTask.text).toContain('subagent');
+  });
+
+  it('env 与文件覆盖', () => {
+    const fromEnv = loadConfig({
+      ...baseEnv,
+      BOT_PERSONA_DIR: '/opt/p',
+      BOT_HINT_LONG_TASK_ENABLED: 'false',
+      BOT_HINT_LONG_TASK_PATTERNS: '核查,  爬取 ',
+    });
+    expect(fromEnv.personas.dir).toBe('/opt/p');
+    expect(fromEnv.hints.longTask.enabled).toBe(false);
+    expect(fromEnv.hints.longTask.patterns).toEqual(['核查', '爬取']);
+
+    const fromFile = loadConfig(baseEnv, {
+      personas: { dir: '/data/p' },
+      hints: { longTask: { patterns: ['调研'] } },
+    });
+    expect(fromFile.personas.dir).toBe('/data/p');
+    expect(fromFile.hints.longTask.patterns).toEqual(['调研']);
+  });
+
+  it('空关键词是配置错误（会命中一切），启动期拒绝', () => {
+    expect(() =>
+      loadConfig(baseEnv, { hints: { longTask: { patterns: ['核查', '  '] } } }),
+    ).toThrow(ConfigError);
+  });
+});

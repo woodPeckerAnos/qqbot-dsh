@@ -106,6 +106,8 @@ export class PipelineStats {
   sessionCommands = 0;
   /** 话题间隔超阈值触发上下文重置的次数（TurnRunner） */
   topicResets = 0;
+  /** 长任务提示注入命中次数（TurnRunner；见 pipeline/hints.ts） */
+  longTaskHints = 0;
   /** 会话锁忙时发出的"排队提示"条数（admission stage） */
   busyNoticed = 0;
   /** turn 正常完成数（TurnRunner） */
