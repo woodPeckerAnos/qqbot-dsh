@@ -336,17 +336,21 @@ media:
 # 当前生效的场景清单与判据见 src/pipeline/proactive/interests/SCENES.md
 # （那份文件是场景的自然语言真相源；新增场景请先改它再改代码）。
 proactive:
-  enabled: false          # 总开关，默认关（fail-closed：不配就不主动开口）
+  enabled: true          # 总开关，默认关（fail-closed：不配就不主动开口）
   # 灰度观察：判定照跑、记录"本应发言"，但永不真的发。**默认开**——
   # 即使手滑打开了总开关，也先观察一到两周，确认判据准了再显式关掉它。
-  dryRun: true
+  dryRun: false
   # 兴趣池（场景 5）：整份内容会进判定 prompt，因此单独成文件、有独立 schema。
   # 文件不存在 = 空池（合法，场景 5 不触发）；文件存在但格式错 = 启动期报错。
   interestsEnabled: true
   interestsFile: interests.yml
   # bot 在本群的别名（场景 4 指代检测用）。留空 = 只认"机器人/助手"这类泛称
   # 且必须与请求词同现，误命中率更低。
-  botAliases: []
+  botAliases:
+    - 大肥鱼
+    - 肥鱼
+    - 阿梁梁
+    - DS
   # 话题滚动周期（场景 2/5 的入口）：每多少条旁听消息、或静默多久，
   # 收敛一次交给判定。默认比既有采样口径保守（宁缺勿滥）。
   topicRollMessages: 30
