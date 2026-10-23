@@ -308,6 +308,15 @@ export interface Config {
      */
     judgeTimeoutMs: number;
     /**
+     * 发言生成（措辞轮次）的超时（BOT_PROACTIVE_SPEAK_TIMEOUT_MS /
+     * proactive.speakTimeoutMs，默认 120000，范围 30000–300000）。
+     *
+     * 主动发言要走一次真实 agent turn（可能带工具查证），比判定调用重，
+     * 但它是"插一句话"而不是"跑一个任务"，所以上限刻意低于被动轮次的
+     * `turnTimeoutMs`——超时的表现是本次不发言（`compose-failed`），不是报错。
+     */
+    speakTimeoutMs: number;
+    /**
      * 旁听缓冲上限（条）：判定只需要近期上下文。
      *
      * @deprecated 取值搬到 `Config.observation.maxMessages`（滚窗已成为两条唤醒
@@ -732,6 +741,16 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       20_000,
       { min: 1_000, max: 120_000 },
       'proactive.judgeTimeoutMs',
+    ),
+    // 发言生成（措辞轮次）超时：是"插一句话"不是"跑一个任务"，
+    // 上限刻意低于被动轮次——超时的表现是本次不发言，不是报错。
+    speakTimeoutMs: pickInt(
+      env,
+      'BOT_PROACTIVE_SPEAK_TIMEOUT_MS',
+      file?.speakTimeoutMs,
+      120_000,
+      { min: 30_000, max: 300_000 },
+      'proactive.speakTimeoutMs',
     ),
     // 旁听缓冲的两个限制：**取值搬到 `observation.*`**（滚窗不再属于介入层，
     // 见 Config.observation 的说明），这里只保留**旧键的读取**（`undefined` = 用户
@@ -1379,6 +1398,7 @@ export function describeConfig(config: Config): Record<string, unknown> {
         minGapMs: config.proactive.sessionMinGapMs,
       },
       judgeTimeoutMs: config.proactive.judgeTimeoutMs,
+      speakTimeoutMs: config.proactive.speakTimeoutMs,
     },
     // 观察窗口（滚窗）：**与 proactive 并列**，因为它不随主动发言开关生死
     observation: {

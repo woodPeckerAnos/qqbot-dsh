@@ -21,6 +21,7 @@ import type {
 } from '../src/core/connector.js';
 import { createNullLogger } from '../src/logger.js';
 import type { SceneCandidate, SceneVerdict } from '../src/pipeline/proactive/contract.js';
+import type { ProactiveCompose } from '../src/pipeline/proactive/contract.js';
 import { ProactiveSpeaker } from '../src/pipeline/proactive/deliver/speaker.js';
 import type { ProactiveJudge, ProactiveJudgeInput } from '../src/pipeline/proactive/judge/client.js';
 import {
@@ -112,7 +113,7 @@ interface JudgeOptions {
   waitEvidence?: string;
 }
 
-function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proactive?: boolean } = {}): Harness {
+function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proactive?: boolean; compose?: ProactiveCompose } = {}): Harness {
   let clock = 1_700_000_000_000;
   const timers: Array<{ at: number; fn: () => void; cancelled: boolean }> = [];
   const judgeCalls: ProactiveJudgeInput[] = [];
@@ -201,6 +202,7 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proac
     config,
     speaker,
     judge,
+    ...(options.compose === undefined ? {} : { compose: options.compose }),
     windows: windowsFor(config.whitelistGroups),
     interests: parseInterestPool(
       'interests:\n  - {id: plotting, topic: 画图, keywords: [折线图]}',
@@ -583,5 +585,67 @@ describe('端到端：一条真实的场景 5 路径（兴趣池命中）', () =
     single.observe('u1', '自言自语第二句');
     await settle();
     expect(single.judgeCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. 发言生成（compose）：真实文案由 agent turn 措辞，判定要点不再直接发出去
+// ---------------------------------------------------------------------------
+
+describe('发言生成（compose 接缝）', () => {
+  it('接了 compose：发送的是措辞后的文本，判定要点只作为它的输入', async () => {
+    const seen: string[] = [];
+    const h = setup(
+      {},
+      {
+        compose: async (input) => {
+          seen.push(input.directive);
+          return 'NAS 上跑没问题，给容器挂上数据卷就行';
+        },
+      },
+    );
+    h.setVerdicts(['scene-4']);
+    h.observe('u1', '机器人帮我看下');
+    await settle();
+
+    expect(h.delivered).toHaveLength(1);
+    // 发出去的是措辞后的文本，不是"判定成立"这种要点原文
+    expect(h.delivered[0]?.out.text).toBe('NAS 上跑没问题，给容器挂上数据卷就行');
+    expect(h.delivered[0]?.out.text).not.toContain('判定成立');
+    // compose 拿到的是判定要点（directive ?? reason）
+    expect(seen).toEqual(['判定成立']);
+  });
+
+  it('compose 返回 undefined：不发言、记 compose-failed、不耗预算也不开 session', async () => {
+    const h = setup({}, { compose: async () => undefined });
+    h.setVerdicts(['scene-4']);
+    h.observe('u1', '机器人帮我看下');
+    await settle();
+
+    expect(h.delivered).toHaveLength(0);
+    expect(h.snapshot().deliveryDegraded['compose-failed']).toBe(1);
+    expect(h.snapshot().spoke).toBe(0);
+    // "没说出话就不记账"：与投递降级同口径（预算是"说了几句"的账）
+    expect(h.watcher.stateFor(GROUP_KEY).session).toBeUndefined();
+  });
+
+  it('dryRun 不调 compose：不为一句不会发出去的话花一次 agent turn', async () => {
+    let called = 0;
+    const h = setup(
+      { dryRun: true },
+      {
+        compose: async () => {
+          called += 1;
+          return 'x';
+        },
+      },
+    );
+    h.setVerdicts(['scene-4']);
+    h.observe('u1', '机器人帮我看下');
+    await settle();
+
+    expect(called).toBe(0);
+    expect(h.snapshot().wouldSend).toBe(1);
+    expect(h.delivered).toHaveLength(0);
   });
 });

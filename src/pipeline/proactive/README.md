@@ -77,7 +77,11 @@ async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<Proac
                                ① 本地预筛（零 LLM 成本）→ 无候选就到此为止
                                ② 有候选才调判定（LLM，转录同样来自观察窗口）
                                ③ 否决层（顺序 / 限流 / **话题 session 闸门** / 无人回应保险）
-                               ④ ProactiveSpeaker.deliver() → 适配器
+                               ④ **措辞轮次**（`TurnRunner.runProactiveTurn`）：判定的
+                                  `directive` 只是"该说什么"的要点，真实文案由一次
+                                  agent turn 生成（同会话、同窗口、可用工具查证；
+                                  返回 undefined = 本次不发言，记 `compose-failed`）
+                               ⑤ ProactiveSpeaker.deliver() → 适配器
 ```
 
 > **观察窗口是本模块的输入，不是它的私产**。在此之前缓冲住在 `scene/state.ts`
@@ -179,6 +183,7 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 | `proactive.sessionBudget` | `2`（硬上限 5） | **一个话题里**允许的主动发言条数；说满即**闭嘴**（会话不关，直到模型说换话题/收口或静默超时） |
 | `proactive.sessionIdleMs` | `600000` | 静默多久自动关闭 session（锚点 = bot 自己上次发言的时刻） |
 | `proactive.sessionMinGapMs` | `45000` | 同一 session 内两次发言的最小间隔（没过闸门**不消耗预算**；换话题也不例外） |
+| `proactive.speakTimeoutMs` | `120000` | 措辞轮次（agent turn 生成真实文案）的超时；超时 = 本次不发言（记 `compose-failed`），不是报错 |
 
 **给场景 5 加兴趣条目**：`cp src/pipeline/proactive/interests/interests.yml.example interests.yml`
 然后按字段加——完整说明见 [interests/SCENES.md](interests/SCENES.md) 的

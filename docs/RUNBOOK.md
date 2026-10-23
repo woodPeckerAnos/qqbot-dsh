@@ -473,6 +473,8 @@ curl -s localhost:8080/health | jq .proactive
 | `sessions.spokeInSession` 集中在 `"1"` | 每个话题只说得出一句，预算 2 用不满 | 可把 `proactive.sessionBudget` 降为 1（更省），或说明模型偏保守 |
 | `sessions.noSession` 很高 | 大量唤醒因为"没有会话"被挡 = 覆盖率低 | **这是本设计的预期**（以覆盖率换精度）；要提覆盖只能改判据或调 session 参数 |
 | `deliveryDegraded: {"unsupported": N}` | **官方通道不支持主动发言**（主动推送已停用） | 预期行为，不是故障；OneBot 才有这个能力 |
+| `deliveryDegraded: {"compose-failed": N}` | 措辞轮次没产出发言：会话正忙（有用户轮次在跑，主动发言主动让路）/ 生成超时 / runtime 起不来 / 模型看完完整上下文后选择不说 | 偶发 = 正常；持续增长看 debug 日志「主动发言：」「主动介入：发言生成未果」，超时占多就调大 `proactive.speakTimeoutMs` |
+| 发出去的话是"直接回答 xx 的要点（依据：…）"这种元文本 | 措辞轮次没接上（`compose` 未注入时退回发判定要点原文） | 启动日志搜 `未注入发言生成`——正常装配不会出现；确认部署的是含措辞轮次的版本 |
 
 ### 5.2 "它为什么说了这句"
 
@@ -485,16 +487,21 @@ curl -s localhost:8080/health | jq .proactive
 
 1. **平台能力**：官方通道恒为 `unsupported`（见上表）。要主动发言必须走 OneBot。
 2. **投递开关**：总开关关了 / 灰度没关（`dryRun`）/ 该群不在白名单。
-3. **否决层**：`vetoed` 里有 `rate-limit`（10 分钟 3 次、1 小时 8 次）、
+3. **措辞轮次**（判定说"值得说"之后才到这一层）：`deliveryDegraded['compose-failed']`
+   涨 = 文案没生成出来。常见原因：会话正忙（主动发言给用户轮次让路，预期行为）、
+   生成超时（`proactive.speakTimeoutMs`，默认 120s）、模型看完完整上下文后选择不说
+   （逃生门，debug 日志「主动发言：模型看过完整上下文后选择不说」——它多涨说明
+   判据偏松，而不是链路坏了）。
+4. **否决层**：`vetoed` 里有 `rate-limit`（10 分钟 3 次、1 小时 8 次）、
    `no-session`（没有开启中的话题会话：模型没判"值得"，或上一个会话已经关了）、
    `min-gap`（同一会话内距上次发言不足 `sessionMinGapMs`）、
    `budget-exhausted`（**本话题的发言预算已用尽**：会话还在，只是不放行——
    等模型说"换话题了"/"收口了"或静默超时）、`no-response`（连续两次介入没人理，保险生效）。
    另有 `skippedUnchanged`：被"转录自上次判定以来无新增"挡下、连 LLM 都没调的次数
    ——这个数高说明群里本来就没新消息，不是判据把它们否了。
-4. **判定层**：`judgeFailures` 涨 = 判定没跑通；`satisfiedByScene` 全空 =
+5. **判定层**：`judgeFailures` 涨 = 判定没跑通；`satisfiedByScene` 全空 =
    模型认为没有一个场景成立（看 `SCENES.md` 的成立门槛，多数是判据真的不成立）。
-5. **搜集层**：全是 `no-candidate` = 本地预筛就没命中。逐条对照：
+6. **搜集层**：全是 `no-candidate` = 本地预筛就没命中。逐条对照：
    - 场景 4：消息里有没有 bot 的别名，或"机器人/助手"+请求词；
    - 场景 1：bot 在这个话题里说过话吗（活动窗口内）；
    - 场景 3：有没有 ≥4 字的疑问句（问号或疑问词），且挂起够久；

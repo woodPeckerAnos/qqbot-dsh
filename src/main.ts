@@ -289,6 +289,52 @@ async function main(): Promise<void> {
     stats,
   });
 
+  // 后台结果投递器：后台子代理完成后，能即时推送就推送（OneBot 恒可、官方在
+  // 被动窗口内且配额未尽），否则暂存待下一条消息带出；暂存持久化到 stateDir，
+  // 桥接进程重启后仍能带出（见 pipeline/egress/background.ts、DESIGN §13.5）。
+  const background = new BackgroundPusher({
+    connectors,
+    conversations,
+    stats,
+    logger: logger.child({ component: 'background' }),
+    persistPath: join(paths.stateDir, 'background-pending.json'),
+  });
+
+  // TurnRunner 必须先于介入层创建：watcher 的 `compose`（主动发言的措辞轮次）
+  // 是它的一个方法——介入层不再自己拼文案，发言与被动回复走同一条 agent turn。
+  const turnRunner = new TurnRunner({
+    config,
+    logger: logger.child({ component: 'turn-runner' }),
+    pool,
+    conversations,
+    // 被 @ 时的群聊上下文来源（与主动介入判定读的是同一个窗口；见 store/window.ts）
+    windows,
+    sessions,
+    paths,
+    stats,
+    background,
+    // 话题判定器：不经 DSH 进程的小模型调用（判定失败一律视为相关，见
+    // pipeline/topic-judge.ts）。apiKey 复用 DEEPSEEK_API_KEY（env 必填项）。
+    ...(config.topic.enabled
+      ? {
+          topicJudge: createTopicJudge({
+            apiBase: config.topic.apiBase,
+            apiKey: process.env['DEEPSEEK_API_KEY'] ?? '',
+            model: config.topic.model,
+            timeoutMs: config.topic.timeoutMs,
+            perTurnMaxChars: 500,
+            logger: logger.child({ component: 'topic-judge' }),
+          }),
+        }
+      : {}),
+    // 文档正文抽取：PDF 走 pdftotext 子进程，纯文本类直接解码。
+    // 抽取器缺失（本地开发没装 poppler）时自动降级为"只落盘 + 路径说明"，
+    // 不会让这一轮失败——见 dsh/document.ts。
+    extractDocument: createDocumentExtractor({
+      logger: logger.child({ component: 'document' }),
+    }),
+  });
+
   // --- 主动介入层（旁听 → 判定 → 主动发言）--------------------------------
   //
   // 装配顺序有依赖：兴趣池 → 投递器 → 判定器 → watcher。四者都只在
@@ -367,6 +413,10 @@ async function main(): Promise<void> {
         // 观察窗口执行（滚窗不再属于介入层，见 store/window.ts）。
       },
       speaker,
+      // 发言生成：判定的 directive 只是"该说什么"的要点，真实文案由一次
+      // agent turn 措辞（与被动回复同一条链路：同会话、同窗口、可用工具）。
+      // 只在真实发言时被调用（dryRun 不碰它，见 watcher 的 deliver）。
+      compose: (input) => turnRunner.runProactiveTurn(input),
       // 观察窗口：判定层与被动回复路径读同一份
       windows,
       ...(judge === undefined ? {} : { judge }),
@@ -505,50 +555,6 @@ async function main(): Promise<void> {
       }s 关闭 / 间隔 ${config.proactive.sessionMinGapMs / 1000}s`,
     });
   }
-
-  // 后台结果投递器：后台子代理完成后，能即时推送就推送（OneBot 恒可、官方在
-  // 被动窗口内且配额未尽），否则暂存待下一条消息带出；暂存持久化到 stateDir，
-  // 桥接进程重启后仍能带出（见 pipeline/egress/background.ts、DESIGN §13.5）。
-  const background = new BackgroundPusher({
-    connectors,
-    conversations,
-    stats,
-    logger: logger.child({ component: 'background' }),
-    persistPath: join(paths.stateDir, 'background-pending.json'),
-  });
-
-  const turnRunner = new TurnRunner({
-    config,
-    logger: logger.child({ component: 'turn-runner' }),
-    pool,
-    conversations,
-    // 被 @ 时的群聊上下文来源（与主动介入判定读的是同一个窗口；见 store/window.ts）
-    windows,
-    sessions,
-    paths,
-    stats,
-    background,
-    // 话题判定器：不经 DSH 进程的小模型调用（判定失败一律视为相关，见
-    // pipeline/topic-judge.ts）。apiKey 复用 DEEPSEEK_API_KEY（env 必填项）。
-    ...(config.topic.enabled
-      ? {
-          topicJudge: createTopicJudge({
-            apiBase: config.topic.apiBase,
-            apiKey: process.env['DEEPSEEK_API_KEY'] ?? '',
-            model: config.topic.model,
-            timeoutMs: config.topic.timeoutMs,
-            perTurnMaxChars: 500,
-            logger: logger.child({ component: 'topic-judge' }),
-          }),
-        }
-      : {}),
-    // 文档正文抽取：PDF 走 pdftotext 子进程，纯文本类直接解码。
-    // 抽取器缺失（本地开发没装 poppler）时自动降级为"只落盘 + 路径说明"，
-    // 不会让这一轮失败——见 dsh/document.ts。
-    extractDocument: createDocumentExtractor({
-      logger: logger.child({ component: 'document' }),
-    }),
-  });
 
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
   // 会话控制命令（/stop、/new，仅管理员）：必须在闸之前，且不进会话锁——

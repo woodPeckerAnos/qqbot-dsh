@@ -157,6 +157,8 @@ export interface ProactiveFileConfig {
   sessionMinGapMs?: number;
   /** 判定调用超时（毫秒）；与 topic.timeoutMs 分开，见 config.ts 的说明 */
   judgeTimeoutMs?: number;
+  /** 发言生成（措辞轮次）超时（毫秒；默认 120000，范围 30000–300000） */
+  speakTimeoutMs?: number;
   /** 旁听缓冲上限（条）与最长保留时长（毫秒） */
   bufferMaxMessages?: number;
   bufferMaxAgeMs?: number;
@@ -361,6 +363,7 @@ const PROACTIVE_SPEC: SectionSpec = {
   sessionIdleMs: 'int',
   sessionMinGapMs: 'int',
   judgeTimeoutMs: 'int',
+  speakTimeoutMs: 'int',
   bufferMaxMessages: 'int',
   bufferMaxAgeMs: 'int',
 };
