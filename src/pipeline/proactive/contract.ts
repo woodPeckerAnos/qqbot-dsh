@@ -28,6 +28,8 @@
  * 这也是三层拆分带来的最大收益（见 docs/PROACTIVE-INTERVENTION-ARCH.md §4.2）。
  */
 
+import type { ConversationTarget } from '../../core/connector.js';
+
 // ---------------------------------------------------------------------------
 // 场景标识
 // ---------------------------------------------------------------------------
@@ -626,3 +628,35 @@ export type ProactiveDecision =
 export function isSpeak(decision: ProactiveDecision): boolean {
   return decision.action === 'speak';
 }
+
+// ---------------------------------------------------------------------------
+// ④ 发言生成（compose）接缝
+// ---------------------------------------------------------------------------
+
+/**
+ * 交给「发言生成」的输入：判定层的产出（要点 / 依据 / 场景），
+ * 由一次真实的 agent turn 措辞成**可以直接发出去的话**。
+ *
+ * 为什么有这一层：判定层的 `directive` 是"该说什么"的**要点**（面向执行者的
+ * 指令语气），不是能对群说的话。早期实现把它原样发送，群里看到的就是
+ * "直接回答 xx 的可行性要点（依据：…）"这种元文本。措辞必须走与被动回复
+ * 同一条 agent turn（`TurnRunner.runProactiveTurn`）：同一 runtime 会话
+ * （人设与上下文连续）、同一观察窗口、可以用工具查证了再开口。
+ *
+ * 返回 `undefined` 的语义是"本次不发言"——会话忙 / 生成超时 / 模型看完
+ * 完整上下文后选择不说，都走这里。调用方按投递降级记账（`compose-failed`），
+ * **不消耗会话预算、不开 session**（没说出话就不记账，与投递降级同口径）。
+ */
+export interface ProactiveComposeInput {
+  readonly target: ConversationTarget;
+  readonly scene: SceneId;
+  /** 判定给的「该说什么」要点（`directive ?? reason`） */
+  readonly directive: string;
+  /** 判定的可读理由（进日志与生成提示） */
+  readonly reason: string;
+  /** 判定给的证据（场景 3 的问题原文 / 纠错的原文片段） */
+  readonly evidence?: string;
+}
+
+/** 发言生成能力（真实实现走 TurnRunner；测试注入 fake）。 */
+export type ProactiveCompose = (input: ProactiveComposeInput) => Promise<string | undefined>;

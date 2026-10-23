@@ -49,6 +49,7 @@ import { ensureWorkspace, type StorePaths } from '../store/paths.js';
 import { waitUntil } from './concurrency.js';
 import { matchLongTaskHint } from './hints.js';
 import type { MessageContext } from './ingress/types.js';
+import type { ProactiveComposeInput } from './proactive/contract.js';
 import { defaultProgressText } from './egress/progress.js';
 import type { BackgroundPusher } from './egress/background.js';
 import type { PipelineStats } from './stats.js';
@@ -129,6 +130,16 @@ export class TurnRunner {
   private readonly activeTurns = new Map<string, TurnAccumulator>();
 
   /**
+   * 每个会话当前进行中的**主动发言**轮次（`runProactiveTurn`）。
+   *
+   * 与用户轮次分账的原因：用户消息到达时必须能**抢占**它（用户优先——
+   * 生成到一半的插话作废，见 runTurn 里的抢占段），两张表才不会互相覆盖。
+   * 同一会话两边最多一边在跑：`runProactiveTurn` 入口看到用户轮次在跑就
+   * 直接放弃（主动发言是机会型的，不排队）。
+   */
+  private readonly activeProactiveTurns = new Map<string, TurnAccumulator>();
+
+  /**
    * "自发轮次"累积器：后台子代理完成时，DSH 会唤醒空闲的父代理跑一轮总结
    * （settlement notice），这一轮不是任何 runTurn 发起的。没有它，父代理对
    * 后台结果的总结就会被当成"无归属事件"丢弃，用户永远看不到后台任务结果。
@@ -154,11 +165,15 @@ export class TurnRunner {
    */
   abortConversation(conversationKey: string): boolean {
     const accumulator = this.activeTurns.get(conversationKey);
+    const proactive = this.activeProactiveTurns.get(conversationKey);
     this.deps.logger.warn('会话被管理员强制中断，回收 runtime', {
       conversation: conversationKey,
       hadActiveTurn: accumulator !== undefined,
+      hadProactiveTurn: proactive !== undefined,
     });
     accumulator?.forceAbort();
+    proactive?.forceAbort();
+    this.activeProactiveTurns.delete(conversationKey);
     // 回收是异步的；runTurn 的 finally 里的 release 对已被移除的条目是 no-op
     void this.deps.pool.drop(conversationKey).catch(() => {});
     return accumulator !== undefined;
@@ -174,6 +189,21 @@ export class TurnRunner {
     const { message, responder, policy, logger } = ctx;
     const { pool, sessions, paths, stats, conversations, config } = this.deps;
     const conversationKey = message.target.key;
+
+    // 抢占进行中的主动发言生成：用户来了消息，bot 却先发一句生成了一半的
+    // 插话，体验是反的；而且两个 prompt 共用同一 session，事件会串进同一个
+    // 累积器。没有取消 API，终止手段与超时一致——回收 runtime（进程内的
+    // 生成随之终止，runProactiveTurn 那边以 aborted 收尾、按不发言记账），
+    // 本次 acquire 拿到的是全新 runtime，冷启动回放照常补偿上下文。
+    const preempted = this.activeProactiveTurns.get(conversationKey);
+    if (preempted !== undefined) {
+      preempted.forceAbort();
+      this.activeProactiveTurns.delete(conversationKey);
+      logger.debug('用户轮次开始，回收 runtime 以抢占进行中的主动发言生成', {
+        conversation: conversationKey,
+      });
+      await pool.drop(conversationKey).catch(() => {});
+    }
 
     const workspacePath = ensureWorkspace(paths, conversationKey);
     const startedAt = this.now();
@@ -328,6 +358,121 @@ export class TurnRunner {
   }
 
   /**
+   * 主动发言的「措辞」轮次：proactive 链路 `compose` 接缝的真实实现
+   * （输入形状见 proactive/contract.ts 的 `ProactiveComposeInput`）。
+   *
+   * 与被动轮次同一条通路的部分：同一 runtime 会话（人设与上下文连续）、
+   * 同一观察窗口、同一冷启动回放。刻意**不**走的部分：
+   *   - 不过 Ingress（去重/命令/谷时段闸/准入）：它没有用户消息可锚定，
+   *     准入的每会话串行锁由下面的并发护栏替代（撞见用户轮次就放弃，
+   *     机会型发言不排队）；
+   *   - 不过 Responder：发送由调用方（watcher → ProactiveSpeaker）收口，
+   *     本方法只交付文案；
+   *   - 不做话题判定、不写对话记录（v1 取舍：runtime 活着时会话内记忆自带
+   *     这句；回收后由观察窗口里的 bot 发言记录兜底）；
+   *   - 不取媒体：插一句话不该为图片付下载/编玛成本。
+   *
+   * 返回 `undefined` = 本次不发言：会话忙 / runtime 起不来 / 生成超时 /
+   * 模型看完完整上下文后选择不说（逃生门「不说」）。调用方按
+   * `compose-failed` 降级记账，不消耗会话预算。
+   */
+  async runProactiveTurn(input: ProactiveComposeInput): Promise<string | undefined> {
+    const { logger, pool, sessions, paths, config, conversations } = this.deps;
+    const conversationKey = input.target.key;
+
+    // 并发护栏（准入锁的替代）：同一会话已有轮次在跑就放弃。
+    // 反过来方向的竞态（生成中来了用户消息）由 runTurn 开头的抢占段处理。
+    if (this.activeTurns.has(conversationKey) || this.activeProactiveTurns.has(conversationKey)) {
+      logger.debug('会话正忙，本次主动发言不生成', {
+        conversation: conversationKey,
+        scene: input.scene,
+      });
+      return undefined;
+    }
+
+    const workspacePath = ensureWorkspace(paths, conversationKey);
+    let entry: RuntimeEntry;
+    try {
+      entry = await pool.acquire(conversationKey, workspacePath);
+    } catch (error) {
+      logger.warn('主动发言：获取 runtime 失败，本次不发言', {
+        conversation: conversationKey,
+        scene: input.scene,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+
+    const session = sessions.ensure(conversationKey, /* rotate */ !entry.replayed);
+    const accumulator = new TurnAccumulator(session.currentSessionId);
+    this.activeProactiveTurns.set(conversationKey, accumulator);
+    entry.busy = true;
+    const timeoutMs = config.proactive.speakTimeoutMs;
+    try {
+      // prompt 结构与被动轮次同序：群聊上下文 → 冷启动回放 → 本次任务。
+      const windowEntries = this.readWindowEntriesFor(conversationKey);
+      const context = windowEntries.length > 0 ? renderWindowBlock(windowEntries) : '';
+      const coldStart = !entry.replayed;
+      const replay =
+        coldStart && config.pool.replayTurns > 0
+          ? renderReplay(conversations.readTail(conversationKey, config.pool.replayTurns * 2))
+          : '';
+      const promptText = [context, replay, buildProactiveSpeakInstruction(input)]
+        .filter((block) => block !== '')
+        .join('\n\n');
+      entry.replayed = true;
+      await entry.runtime.prompt(session.currentSessionId, [{ type: 'text', text: promptText }]);
+      logger.debug('已派发主动发言 prompt', {
+        conversation: conversationKey,
+        scene: input.scene,
+        sessionId: session.currentSessionId,
+      });
+
+      const settled = await waitUntil(() => accumulator.isSettled, timeoutMs, 120);
+      if (!settled) {
+        logger.warn('主动发言生成超时，回收 runtime 并放弃本次发言', {
+          conversation: conversationKey,
+          scene: input.scene,
+          timeoutMs,
+        });
+        void pool.drop(conversationKey).catch(() => {});
+        return undefined;
+      }
+      const outcome = accumulator.result();
+      const text = outcome.text.trim();
+      if (outcome.kind !== 'completed' || text === '') {
+        logger.debug('主动发言生成未产出可用文本', {
+          conversation: conversationKey,
+          scene: input.scene,
+          kind: outcome.kind,
+          reason: outcome.reason,
+        });
+        return undefined;
+      }
+      // 逃生门：模型看完完整上下文后认为此刻不适合开口（话题翻篇/问题已答）。
+      if (text === '不说') {
+        logger.debug('主动发言：模型看过完整上下文后选择不说', {
+          conversation: conversationKey,
+          scene: input.scene,
+        });
+        return undefined;
+      }
+      // 失控兜底：指令要求一两句，模型写长文时硬截断（主动发言没有分段发送，
+      // 一条过长的消息比一句被截断的话更糟）。
+      return text.length > PROACTIVE_SPEAK_MAX_CHARS
+        ? `${text.slice(0, PROACTIVE_SPEAK_MAX_CHARS)}…`
+        : text;
+    } finally {
+      // 只有仍持有登记时才释放：被用户轮次抢占 / 管理员 /stop 后，entry 的
+      // 所有权已移交（或 runtime 已被回收），这里再 release 会把别人持有中的
+      // entry 标成空闲。
+      if (this.activeProactiveTurns.get(conversationKey) === accumulator) {
+        this.activeProactiveTurns.delete(conversationKey);
+        pool.release(conversationKey);
+      }
+    }
+  }
+  /**
    * 把 runtime 推送的事件路由到对应会话的在途 turn。
    *
    * **必须按 sessionId 过滤**：一个 runtime 进程里除了父会话，还有后台子代理
@@ -346,7 +491,9 @@ export class TurnRunner {
       return;
     }
     const accumulator =
-      this.activeTurns.get(conversationKey) ?? this.spontaneousTurns.get(conversationKey);
+      this.activeTurns.get(conversationKey) ??
+      this.activeProactiveTurns.get(conversationKey) ??
+      this.spontaneousTurns.get(conversationKey);
     if (accumulator === undefined) {
       // 没有在途 turn（例如回收竞态、或事件属于上一轮）——记录到 debug 便于排查
       this.deps.logger.debug('收到无归属的会话事件', {
@@ -369,7 +516,8 @@ export class TurnRunner {
   routeSessionStatus(conversationKey: string, notification: SessionStatusNotification): void {
     if (!this.isParentSession(conversationKey, notification.sessionId)) return;
 
-    const active = this.activeTurns.get(conversationKey);
+    const active =
+      this.activeTurns.get(conversationKey) ?? this.activeProactiveTurns.get(conversationKey);
     if (active !== undefined) {
       active.observeStatus(notification.status);
       return;
@@ -454,12 +602,23 @@ export class TurnRunner {
     message: MessageContext['message'],
     conversationKey: string,
   ): readonly ObservationEntry[] {
+    // 当前这条会被单独渲染成下面那行；留在块里就是同一句话说两遍
+    return this.readWindowEntriesFor(conversationKey, message.msgId);
+  }
+
+  /**
+   * 读窗口条目的公共实现：被动轮次排除当前消息，主动发言轮次不排除
+   * （没有"当前这条"——触发它的那条群消息本来就该留在上下文里）。
+   */
+  private readWindowEntriesFor(
+    conversationKey: string,
+    excludeMsgId?: string,
+  ): readonly ObservationEntry[] {
     const window = this.deps.windows;
     if (window === undefined || !window.accepts(conversationKey)) return [];
     return window.read(conversationKey, {
       sinceTs: this.now() - this.deps.config.observation.injectWindowMs,
-      // 当前这条会被单独渲染成下面那行；留在块里就是同一句话说两遍
-      excludeMsgId: message.msgId,
+      ...(excludeMsgId === undefined ? {} : { excludeMsgId }),
     });
   }
 
@@ -901,6 +1060,46 @@ export class TurnRunner {
   private now(): number {
     return this.deps.now?.() ?? Date.now();
   }
+}
+
+/**
+ * 主动发言的硬字数上限（失控兜底，不是目标长度）。
+ *
+ * 目标长度由 prompt 里的指令约束（一两句）；这道闸只防模型写长文——
+ * 主动发言没有 Responder 的分段发送，一条长消息比一句被截断的话更糟。
+ */
+const PROACTIVE_SPEAK_MAX_CHARS = 300;
+
+/**
+ * 主动发言轮次的任务指令（被动轮次没有这一段：它的"任务"就是用户那条消息）。
+ *
+ * 设计要点：
+ *   - 显式声明"这不是群成员的消息"：转录里全是别人的话，不说清楚模型会把
+ *     任务当成某个群友的发言来回应；
+ *   - 「不说」是刻意留的逃生门：判定层按收窄的转录判"值得说"，模型在这里
+ *     才第一次看到完整窗口——话题翻篇/问题已答时让它有安静的出口，比
+ *     硬说一句过时的话好；
+ *   - "先用工具查证再开口"对应判定理由里高频出现的"可查资料"：措辞轮次
+ *     是这条承诺唯一能被兑现的地方。
+ */
+function buildProactiveSpeakInstruction(input: ProactiveComposeInput): string {
+  const lines = [
+    '（以下是系统插入的任务，不是群成员的消息，也不要回复"收到"。）',
+    '你一直在旁听这个群（近期群聊内容见上）。现在轮到你主动插一句话。',
+    `你要表达的意思：${input.directive}`,
+  ];
+  if (input.evidence !== undefined && input.evidence.trim() !== '') {
+    lines.push(`触发依据：${input.evidence}`);
+  }
+  lines.push(
+    '要求：',
+    '- 用你自己的口吻，像群友自然插话；一两句说完，不要超过 100 字；',
+    '- 只输出要说的内容本身：不解释、不复述本任务、不要提"要点/依据/场景"这类词、不要 @ 人；',
+    '- 不替任何群友发言或下结论；',
+    '- 涉及事实/资料性内容时，先用工具查证再开口；查不到或不确定就直说不确定；',
+    '- 如果看完上面的群聊上下文，觉得此刻其实不适合开口（比如话题已经翻篇、问题已有人答），只回复两个字：不说。',
+  );
+  return lines.join('\n');
 }
 
 /**

@@ -13,7 +13,9 @@
 > → `veto/veto.ts`（顺序与额度）；投递走 `deliver/speaker.ts`。
 >
 > **状态：已接入运行时（默认灰度观察）**。链路是
-> 旁听消息 → `ProactiveWatcher` → 本地预筛 → 判定 → 否决 → `ProactiveSpeaker` → 适配器。
+> 旁听消息 → `ProactiveWatcher` → 本地预筛 → 判定 → 否决 → **措辞轮次**
+> （`TurnRunner.runProactiveTurn`：要点 → 真实文案，可用工具查证）→
+> `ProactiveSpeaker` → 适配器。
 > 两个默认值决定了它当下的实际行为：
 >   1. `proactive.enabled` 默认 **false**（不配就不主动开口）；
 >   2. `proactive.dryRun` 默认 **true**——即使打开了总开关，它也只记录

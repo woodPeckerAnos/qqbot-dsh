@@ -90,6 +90,7 @@ import {
   effectiveWaitYieldMs,
   MAX_SESSION_BUDGET_CAP,
   MAX_WAIT_PER_ITEM_CAP,
+  type ProactiveCompose,
   type ProactiveDecision,
   type SceneCandidate,
   type SceneEvidence,
@@ -267,6 +268,19 @@ export interface ProactiveWatcherDeps {
   windows: ObservationWindowStore;
   /** 判定能力；未注入 = 只收集不判定（"只听不说"的部署形态） */
   judge?: ProactiveJudge;
+  /**
+   * 发言生成能力（`TurnRunner.runProactiveTurn`）：把判定的 `directive` 要点
+   * 措辞成真实文案（同一 runtime 会话、同一观察窗口、可以用工具）。
+   *
+   * 只在**真实发言**（`dryRun: false`）时调用；dryRun 不碰它——灰度观察的是
+   * 判据质量，不该为一句不会发出去的话花一次 agent turn、污染会话记忆。
+   * 未注入且 dryRun 关闭 = 退回"直接发判定要点"的旧行为（构造期会 warn，
+   * 因为那会发出"直接回答 xx 的要点（依据：…）"这种元文本）。
+   *
+   * 返回 `undefined` = 本次不发言（会话忙 / 生成失败 / 模型看完完整上下文
+   * 后选择不说），按 `compose-failed` 投递降级记账，不消耗预算、不开 session。
+   */
+  compose?: ProactiveCompose;
   interests?: InterestPool;
   metrics?: WatcherMetrics;
   logger: Logger;
@@ -542,6 +556,11 @@ export class ProactiveWatcher {
       });
     }
     this.sessionIdleMs = effectiveSessionIdleMs(deps.config.sessionIdleMs);
+    // 真实发言但没接发言生成：发出去的将是判定要点原文（"直接回答 xx 的要点
+    // （依据：…）"这种元文本）。装配期就 warn，比灰度期间在群里看到好查。
+    if (!deps.config.dryRun && deps.compose === undefined) {
+      deps.logger.warn('主动介入：未注入发言生成（compose），真实发言将直接发送判定要点文本');
+    }
     this.now = deps.now ?? (() => Date.now());
     this.schedule =
       deps.schedule ??
@@ -1637,8 +1656,14 @@ export class ProactiveWatcher {
    * 投递：唯一出口（dryRun / 平台能力差异都在它内部处理）。
    *
    * 返回"**是不是真的说出去了**"（含 dryRun 的"本应发出"），调用方据此决定
-   * session 的走向：说了才扣预算、才开 session；投递降级（平台不支持 / 错误）
-   * 不算说过——预算是"说了几句"的账，不是"想过几次"的账。
+   * session 的走向：说了才扣预算、才开 session；投递降级（平台不支持 / 错误 /
+   * 发言生成未果）不算说过——预算是"说了几句"的账，不是"想过几次"的账。
+   *
+   * 文案来源（真实模式）：判定的 `directive` 只是"该说什么"的**要点**，不是
+   * 能对群说的话——先经 `compose`（一次真实 agent turn，见 contract.ts 的
+   * `ProactiveComposeInput`）措辞成自然口语再发送。`compose` 返回 undefined
+   * （会话忙 / 超时 / 模型看完上下文选择不说）时本次按 `compose-failed`
+   * 降级记账，**不发言**。
    */
   private async deliver(
     convKey: string,
@@ -1646,11 +1671,33 @@ export class ProactiveWatcher {
     decision: Extract<ProactiveDecision, { action: 'speak' }>,
     now: number,
   ): Promise<boolean> {
-    // 内容：本模块**不写文案**，只把"该说什么"的要点交给投递层；
-    // 真实措辞由 agent turn 生成（S1 之后接 TurnRunner 时替换这里）。
-    const parts = [decision.directive ?? decision.reason];
-    if (decision.evidence !== undefined) parts.push(`（依据：${decision.evidence}）`);
-    const spokenText = parts.join('\n');
+    const gist = decision.directive ?? decision.reason;
+    let spokenText: string;
+    if (this.config.dryRun || this.deps.compose === undefined) {
+      // dryRun / 未接发言生成：保持旧文本（要点 + 依据）——dryRun 下它只进
+      // 观察窗口（标"灰度未发送"）与日志，不会真的发到群里。
+      const parts = [gist];
+      if (decision.evidence !== undefined) parts.push(`（依据：${decision.evidence}）`);
+      spokenText = parts.join('\n');
+    } else {
+      const composed = await this.deps.compose({
+        target,
+        scene: decision.scene,
+        directive: gist,
+        reason: decision.reason,
+        ...(decision.evidence === undefined ? {} : { evidence: decision.evidence }),
+      });
+      if (composed === undefined || composed.trim() === '') {
+        this.bump(this.counters.deliveryDegraded, 'compose-failed');
+        this.metrics.deliveryDegraded('compose-failed', decision.scene);
+        this.deps.logger.debug('主动介入：发言生成未果，本次不发言', {
+          conversation: convKey,
+          scene: decision.scene,
+        });
+        return false;
+      }
+      spokenText = composed;
+    }
     const outcome = await this.deps.speaker.deliver({
       target,
       content: { text: spokenText },
