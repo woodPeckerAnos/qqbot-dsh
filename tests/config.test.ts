@@ -157,6 +157,232 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_IMAGE_TILES: '21' })).toThrow(ConfigError);
   });
 
+  it('主动发言：默认关（fail-closed），兴趣池路径与滚动周期可被 env / 文件覆盖', () => {
+    const bare = loadConfig(baseEnv);
+    expect(bare.proactive.enabled).toBe(false);
+    expect(bare.proactive.interestsEnabled).toBe(true);
+    expect(bare.proactive.interestsFile).toBe('interests.yml');
+    expect(bare.proactive.botAliases).toEqual([]);
+    expect(bare.proactive.topicRollMessages).toBe(30);
+    expect(bare.proactive.topicRollMs).toBe(300_000);
+    // 配置层不读磁盘：是否读到文件由组装层回填
+    expect(bare.proactive.interestsLoaded).toBe(false);
+
+    const fromFile = loadConfig(baseEnv, {
+      proactive: {
+        enabled: true,
+        interestsFile: '/etc/bot/interests.yml',
+        botAliases: ['小助手'],
+        topicRollMessages: 50,
+        topicRollMs: 60_000,
+      },
+    });
+    expect(fromFile.proactive).toMatchObject({
+      enabled: true,
+      interestsFile: '/etc/bot/interests.yml',
+      botAliases: ['小助手'],
+      topicRollMessages: 50,
+      topicRollMs: 60_000,
+    });
+
+    const fromEnv = loadConfig({
+      ...baseEnv,
+      QQ_INTERESTS_FILE: '/tmp/i.yml',
+      BOT_BOT_ALIASES: '小助手,助手酱',
+      BOT_TOPIC_ROLL_MESSAGES: '12',
+    });
+    expect(fromEnv.proactive).toMatchObject({
+      interestsFile: '/tmp/i.yml',
+      botAliases: ['小助手', '助手酱'],
+      topicRollMessages: 12,
+    });
+  });
+
+  it('主动发言：灰度默认开（手滑打开总开关也不会立刻说话）、白名单只认 env 且要带平台前缀', () => {
+    const bare = loadConfig(baseEnv);
+    expect(bare.proactive.dryRun).toBe(true); // 关键默认值：先观察，再发言
+    expect(bare.proactive.whitelistGroups).toEqual([]); // 空 = 不接任何群
+    expect(bare.proactive.questionProbeMs).toBe(90_000);
+    // 旁听滚窗搬到了 observation.*（它不再属于介入层，见 store/window.ts）：
+    // 配置在顶层，且**与主动发言开关无关**——旧键不再出现在 proactive 段里。
+    expect(bare.proactive.bufferMaxMessages).toBeUndefined();
+    expect(bare.observation.maxMessages).toBe(200);
+    expect(bare.observation.maxAgeMs).toBe(30 * 60_000);
+    // 注入宽度与活动窗口同值（判定层已经定义过"当前话题有多长"）
+    expect(bare.observation.injectWindowMs).toBe(10 * 60_000);
+    expect(bare.observation.allowlist).toEqual([]); // 与介入层共用 BOT_LISTEN_GROUPS
+    // 判定超时与话题判定**分开**：话题判定 10s，主动介入判定 20s
+    // （多段 JSON 输出，沿用 10s 会频繁超时 → 沉默 → "它从来不说话"）
+    expect(bare.proactive.judgeTimeoutMs).toBe(20_000);
+    expect(bare.topic.timeoutMs).toBe(10_000);
+
+    // 「让路」（wait）的两个参数刻意保守：让路只能让一次，且不超过 45 秒。
+    // 这是"等待"从会话级收窄为条目级之后**唯一**还需要的两个旋钮。
+    expect(bare.proactive.maxWaitPerItem).toBe(1);
+    expect(bare.proactive.waitYieldMs).toBe(45_000);
+
+    const withList = loadConfig({ ...baseEnv, BOT_LISTEN_GROUPS: 'onebot:123456,ob11:g99' });
+    expect(withList.proactive.whitelistGroups).toEqual(['onebot:123456', 'ob11:g99']);
+
+    // 少写平台前缀是最容易犯的配置错误（会静默不生效）
+    expect(() => loadConfig({ ...baseEnv, BOT_LISTEN_GROUPS: '123456' })).toThrowError(
+      /缺少平台前缀/,
+    );
+    // 灰度可显式关掉（关掉之后才会真的发言）
+    expect(loadConfig({ ...baseEnv, BOT_PROACTIVE_DRY_RUN: 'false' }).proactive.dryRun).toBe(false);
+    // 判定超时可单独调（借用话题判定的 10 秒是"从不说话"的常见成因）
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_JUDGE_TIMEOUT_MS: '45000' }).proactive.judgeTimeoutMs,
+    ).toBe(45_000);
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_JUDGE_TIMEOUT_MS: '999' })).toThrowError(
+      ConfigError,
+    );
+
+    // --- 观察窗口的旧键兼容（它从 proactive.* 搬到了 observation.*）------------
+    // 默认配置文件（qqbot.yml）里曾长期是旧键，硬切会让所有人的记忆长度悄悄回到
+    // 默认值——所以旧键必须仍然生效，并留下迁移提示。
+    const legacy = loadConfig(baseEnv, {
+      proactive: { bufferMaxMessages: 77, bufferMaxAgeMs: 900_000 },
+    });
+    expect(legacy.observation.maxMessages).toBe(77);
+    expect(legacy.observation.maxAgeMs).toBe(900_000);
+    expect(legacy.observation.deprecations).toEqual([
+      expect.stringContaining('proactive.bufferMaxMessages'),
+      expect.stringContaining('proactive.bufferMaxAgeMs'),
+    ]);
+    // 新键优先（旧键同时存在时以新键为准）
+    const both = loadConfig(baseEnv, {
+      proactive: { bufferMaxMessages: 77 },
+      observation: { maxMessages: 33 },
+    });
+    expect(both.observation.maxMessages).toBe(33);
+    // 两个键都没配 → 默认值，且没有任何迁移提示
+    expect(loadConfig(baseEnv).observation.deprecations).toEqual([]);
+
+    // --- 上下文里的媒体配额（滚窗里的图/文件最多送几个）------------------------
+    // 默认刻意保守：图片 2 张（"发一张图再 @ 问"是常态，再多是拿背景烧 token）、
+    // 文件 1 个（要下载 + 落盘 + 可能起抽取子进程）。0 = 这条通路关掉。
+    expect(bare.observation.injectImages).toBe(2);
+    expect(bare.observation.injectFiles).toBe(1);
+    expect(
+      loadConfig({
+        ...baseEnv,
+        BOT_OBSERVATION_INJECT_IMAGES: '4',
+        BOT_OBSERVATION_INJECT_FILES: '3',
+      }).observation,
+    ).toMatchObject({ injectImages: 4, injectFiles: 3 });
+    // 0 是合法值，负数与越界值都是配置错误（env 与配置文件两条路都要挡住）
+    expect(
+      loadConfig({ ...baseEnv, BOT_OBSERVATION_INJECT_IMAGES: '0' }).observation.injectImages,
+    ).toBe(0);
+    expect(() => loadConfig({ ...baseEnv, BOT_OBSERVATION_INJECT_IMAGES: '-1' })).toThrowError(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_OBSERVATION_INJECT_FILES: '99' })).toThrowError(
+      ConfigError,
+    );
+    expect(loadConfig(baseEnv, { observation: { injectImages: 20, injectFiles: 0 } }).observation)
+      .toMatchObject({ injectImages: 20, injectFiles: 0 });
+    expect(() => loadConfig(baseEnv, { observation: { injectImages: 21 } })).toThrowError(
+      ConfigError,
+    );
+
+    // 「让路」参数：默认保守（1 次 / 45 秒），且两端都有校验
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_MAX_WAIT_PER_ITEM: '2' }).proactive.maxWaitPerItem,
+    ).toBe(2);
+    expect(loadConfig({ ...baseEnv, BOT_PROACTIVE_WAIT_YIELD_MS: '60000' }).proactive.waitYieldMs).toBe(
+      60_000,
+    );
+    // 范围外的值在启动期被拒（等待时长下限 15 秒：短于它就不是"让路"而是抢话）
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_WAIT_YIELD_MS: '1000' })).toThrowError(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_WAIT_YIELD_MS: '999999' })).toThrowError(
+      ConfigError,
+    );
+    // ⚠️ 配成 5 **不报错**：正确的行为是"按硬上限 3 处理并 warn"，
+    // 因为那是运行期约束（上限必须活在模型之下），不是配置语法错误。
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_MAX_WAIT_PER_ITEM: '5' }).proactive.maxWaitPerItem,
+    ).toBe(5);
+  });
+
+  it('主动发言：话题 session 的三个参数（预算 2 / 静默 10 分钟 / 最小间隔 45 秒）', () => {
+    const bare = loadConfig(baseEnv);
+    expect(bare.proactive.sessionBudget).toBe(2);
+    expect(bare.proactive.sessionIdleMs).toBe(600_000); // 与活动窗口同值
+    expect(bare.proactive.sessionMinGapMs).toBe(45_000);
+
+    // 配置文件层同样可覆盖
+    const fromFile = loadConfig(baseEnv, {
+      proactive: { sessionBudget: 3, sessionIdleMs: 120_000, sessionMinGapMs: 60_000 },
+    });
+    expect(fromFile.proactive).toMatchObject({
+      sessionBudget: 3,
+      sessionIdleMs: 120_000,
+      sessionMinGapMs: 60_000,
+    });
+
+    // env 优先
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '1' }).proactive.sessionBudget,
+    ).toBe(1);
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '60000' }).proactive.sessionIdleMs,
+    ).toBe(60_000);
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '300000' }).proactive
+        .sessionMinGapMs,
+    ).toBe(300_000);
+
+    // ⚠️ 预算配成 9 **不报错**：按硬上限 5 处理并 warn（验收 9），
+    // 与 maxWaitPerItem 同一口径——硬上限是运行期约束，不是配置语法错误。
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '9' }).proactive.sessionBudget,
+    ).toBe(9);
+    // 三个参数的两端都有校验（静默时长 1–60 分钟、最小间隔 10–300 秒）
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '0' })).toThrowError(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '1000' })).toThrowError(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '99999999' })).toThrowError(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '100' })).toThrowError(
+      ConfigError,
+    );
+    expect(() =>
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '999999' }),
+    ).toThrowError(ConfigError);
+  });
+
+  it('主动发言：session 参数写在配置文件里也要过范围校验，未知键启动期报错', () => {
+    expect(() =>
+      loadConfig(baseEnv, { proactive: { sessionBudget: 0 } }),
+    ).toThrowError(/proactive.sessionBudget/);
+    expect(() =>
+      loadConfig(baseEnv, { proactive: { sessionMinGapMs: 1 } }),
+    ).toThrowError(/proactive.sessionMinGapMs/);
+  });
+
+  it('主动发言：别名太短或太多、滚动周期越界都在启动期被拒（安静故障要拦住）', () => {
+    expect(() => loadConfig({ ...baseEnv, BOT_BOT_ALIASES: '助' })).toThrowError(ConfigError);
+    expect(() =>
+      loadConfig({ ...baseEnv, BOT_BOT_ALIASES: 'a1,a2,a3,a4,a5,a6' }),
+    ).toThrowError(/最多 5 个/);
+    expect(() => loadConfig({ ...baseEnv, BOT_TOPIC_ROLL_MESSAGES: '1' })).toThrowError(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_TOPIC_ROLL_MS: '100' })).toThrowError(ConfigError);
+    // 描述摘要把兴趣池状态暴露出来（排障第一眼要看的就是它）
+    const described = describeConfig(loadConfig(baseEnv)) as {
+      proactive: { enabled: boolean; interests: { count: number } };
+    };
+    expect(described.proactive.enabled).toBe(false);
+    expect(described.proactive.interests.count).toBe(0);
+  });
+
   it('缺少必填项时报错并给出修复提示', () => {
     expect(() => loadConfig({ QQ_APP_ID: 'a' })).toThrow(ConfigError);
     try {
@@ -496,5 +722,40 @@ offpeak:
     // 空窗口列表会在启动期被拒，所以这里恒非空
     expect(config.offpeak.windows.length).toBeGreaterThan(0);
     expect(config.health.port).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('personas 与 hints（三层合并）', () => {
+  it('默认值：预设目录相对 CWD，长任务提示默认开', () => {
+    const config = loadConfig(baseEnv);
+    expect(config.personas.dir).toBe('dsh-profile/personas');
+    expect(config.hints.longTask.enabled).toBe(true);
+    expect(config.hints.longTask.patterns.length).toBeGreaterThan(0);
+    expect(config.hints.longTask.text).toContain('subagent');
+  });
+
+  it('env 与文件覆盖', () => {
+    const fromEnv = loadConfig({
+      ...baseEnv,
+      BOT_PERSONA_DIR: '/opt/p',
+      BOT_HINT_LONG_TASK_ENABLED: 'false',
+      BOT_HINT_LONG_TASK_PATTERNS: '核查,  爬取 ',
+    });
+    expect(fromEnv.personas.dir).toBe('/opt/p');
+    expect(fromEnv.hints.longTask.enabled).toBe(false);
+    expect(fromEnv.hints.longTask.patterns).toEqual(['核查', '爬取']);
+
+    const fromFile = loadConfig(baseEnv, {
+      personas: { dir: '/data/p' },
+      hints: { longTask: { patterns: ['调研'] } },
+    });
+    expect(fromFile.personas.dir).toBe('/data/p');
+    expect(fromFile.hints.longTask.patterns).toEqual(['调研']);
+  });
+
+  it('空关键词是配置错误（会命中一切），启动期拒绝', () => {
+    expect(() =>
+      loadConfig(baseEnv, { hints: { longTask: { patterns: ['核查', '  '] } } }),
+    ).toThrow(ConfigError);
   });
 });

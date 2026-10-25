@@ -99,6 +99,95 @@ export interface HealthFileConfig {
   port?: number;
 }
 
+/** 预设风格前台（`personas:` 段）：/persona 命令可切换的每会话人设。 */
+export interface PersonasFileConfig {
+  /** 预设目录（每个 `<名>.md` 是一个可选人设） */
+  dir?: string;
+}
+
+/** 长任务提示注入（`hints.longTask`，见 pipeline/hints.ts）。 */
+export interface LongTaskHintFileConfig {
+  enabled?: boolean;
+  /** 命中这些子串的消息，prompt 里追加"耗时任务请后台派发"提示 */
+  patterns?: string[];
+  /** 自定义提示文本（默认文本见 pipeline/hints.ts） */
+  text?: string;
+}
+
+export interface HintsFileConfig {
+  longTask?: LongTaskHintFileConfig;
+}
+
+/**
+ * 主动发言的配置面（`proactive:` 段）。
+ *
+ * `interests` 是**场景 5 兴趣池**：整份内容会进 prompt，因此文件本身另存
+ * （`proactive.interestsFile`），不塞进本配置文件——它有自己的 schema 与校验
+ * （见 `pipeline/proactive/interests/pool.ts`）。
+ */
+export interface ProactiveFileConfig {
+  enabled?: boolean;
+  /** 灰度观察：判定照跑、不真发言（默认 true） */
+  dryRun?: boolean;
+  interestsEnabled?: boolean;
+  interestsFile?: string;
+  /** bot 在本群的别名（场景 4 指代检测用），如 ["小助手", "助手酱"] */
+  botAliases?: string[];
+  /** 话题滚动周期：每多少条旁听消息收敛一次（场景 2/5 的入口） */
+  topicRollMessages?: number;
+  /** 话题滚动周期：多少毫秒无仲裁则收敛一次 */
+  topicRollMs?: number;
+  /** 问题挂起多久后探针（场景 3 的答案窗口） */
+  questionProbeMs?: number;
+  /**
+   * 每个挂起问题最多"让路"几次（默认 1）。硬上限 3——超出按 3 处理并 warn，
+   * 因为"让路只能让一次"是**代码级**约束，不是 prompt 里的请求。
+   */
+  maxWaitPerItem?: number;
+  /** "让路"理由的等待时长（毫秒；默认 45000，范围 15000–120000） */
+  waitYieldMs?: number;
+  /**
+   * 一个话题 session 内允许的主动发言条数（默认 2）。硬上限 5——配得更大按 5
+   * 处理并 warn，因为"少说两句"是产品决策，不该被一行配置改回去。
+   */
+  sessionBudget?: number;
+  /** 静默多久自动关闭 session（毫秒；默认 600000，范围 60000–3600000） */
+  sessionIdleMs?: number;
+  /** 同一 session 内两次发言的最小间隔（毫秒；默认 45000，范围 10000–300000） */
+  sessionMinGapMs?: number;
+  /** 判定调用超时（毫秒）；与 topic.timeoutMs 分开，见 config.ts 的说明 */
+  judgeTimeoutMs?: number;
+  /** 发言生成（措辞轮次）超时（毫秒；默认 120000，范围 30000–300000） */
+  speakTimeoutMs?: number;
+  /** 旁听缓冲上限（条）与最长保留时长（毫秒） */
+  bufferMaxMessages?: number;
+  bufferMaxAgeMs?: number;
+}
+
+/** 观察窗口（旁听滚窗）的配置面（`observation:` 段）。 */
+export interface ObservationFileConfig {
+  /** 每会话保留的消息条数上限（默认 200） */
+  maxMessages?: number;
+  /** 每条消息的最长保留时长（毫秒；默认 1800000 = 30 分钟） */
+  maxAgeMs?: number;
+  /**
+   * 注入给**被动唤醒**（被 @）的窗口宽度（毫秒；默认 600000 = 10 分钟）。
+   *
+   * 窄于保留期是有意的：留 30 分钟是为了让判定能回看，回答当下这问题时把半小时前
+   * 另一个话题的内容灌进去只会稀释注意力。
+   */
+  injectWindowMs?: number;
+  /**
+   * 被 @ 时最多内联几张上下文里的图片（默认 2；0 = 不内联，只留 `[图片]` 占位）。
+   *
+   * 上下文里的图在窗口里只有占位文本，没有这个配额就永远看不到——"群里先发图、
+   * 再 @ bot 问这是什么"因此必然失败（见 `store/window.ts` 的 `ObservationMedia`）。
+   */
+  injectImages?: number;
+  /** 被 @ 时最多摄取几个上下文里的文件（默认 1；0 = 不摄取） */
+  injectFiles?: number;
+}
+
 /** 富媒体输入配额（与平台无关，官方/OneBot 共用）。 */
 export interface AttachmentsFileConfig {
   enabled?: boolean;
@@ -157,6 +246,10 @@ export interface FileConfig {
   attachments?: AttachmentsFileConfig;
   media?: MediaFileConfig;
   health?: HealthFileConfig;
+  proactive?: ProactiveFileConfig;
+  observation?: ObservationFileConfig;
+  personas?: PersonasFileConfig;
+  hints?: HintsFileConfig;
   logLevel?: string;
 }
 
@@ -248,6 +341,40 @@ const OFFPEAK_SPEC: SectionSpec = {
   holidays: 'stringList',
 };
 const HEALTH_SPEC: SectionSpec = { port: 'int' };
+const PERSONAS_SPEC: SectionSpec = { dir: 'string' };
+const LONG_TASK_HINT_SPEC: SectionSpec = {
+  enabled: 'bool',
+  patterns: 'stringList',
+  text: 'string',
+};
+const HINTS_SPEC: SectionSpec = {};
+const PROACTIVE_SPEC: SectionSpec = {
+  enabled: 'bool',
+  dryRun: 'bool',
+  interestsEnabled: 'bool',
+  interestsFile: 'string',
+  botAliases: 'stringList',
+  topicRollMessages: 'int',
+  topicRollMs: 'int',
+  questionProbeMs: 'int',
+  maxWaitPerItem: 'int',
+  waitYieldMs: 'int',
+  sessionBudget: 'int',
+  sessionIdleMs: 'int',
+  sessionMinGapMs: 'int',
+  judgeTimeoutMs: 'int',
+  speakTimeoutMs: 'int',
+  bufferMaxMessages: 'int',
+  bufferMaxAgeMs: 'int',
+};
+/** 观察窗口（`observation:` 段；与主动发言的开关无关，见 config.ts 的说明）。 */
+const OBSERVATION_SPEC: SectionSpec = {
+  maxMessages: 'int',
+  maxAgeMs: 'int',
+  injectWindowMs: 'int',
+  injectImages: 'int',
+  injectFiles: 'int',
+};
 const ATTACHMENTS_SPEC: SectionSpec = {
   enabled: 'bool',
   maxImages: 'int',
@@ -306,6 +433,10 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'attachments', field: 'attachments', spec: ATTACHMENTS_SPEC },
   { yamlKey: 'media', field: 'media', spec: MEDIA_SPEC },
   { yamlKey: 'health', field: 'health', spec: HEALTH_SPEC },
+  { yamlKey: 'proactive', field: 'proactive', spec: PROACTIVE_SPEC },
+  { yamlKey: 'observation', field: 'observation', spec: OBSERVATION_SPEC },
+  { yamlKey: 'personas', field: 'personas', spec: PERSONAS_SPEC },
+  { yamlKey: 'hints', field: 'hints', spec: HINTS_SPEC },
 ];
 
 /**
@@ -318,6 +449,7 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
 const NESTED_SECTIONS: Record<string, Record<string, SectionSpec>> = {
   'qq-official': { c2c: QQ_OFFICIAL_C2C_SPEC },
   attachments: { forward: ATTACHMENTS_FORWARD_SPEC, files: ATTACHMENTS_FILES_SPEC },
+  hints: { longTask: LONG_TASK_HINT_SPEC },
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

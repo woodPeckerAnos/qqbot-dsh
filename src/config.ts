@@ -24,7 +24,34 @@ import { Intent, DEFAULT_INTENTS, describeIntents } from './adapters/qq-official
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import { ConfigError } from './config-error.js';
-import type { FileConfig } from './config-file.js';
+import type { FileConfig, ObservationFileConfig, ProactiveFileConfig } from './config-file.js';
+import {
+  DEFAULT_LONG_TASK_HINT_TEXT,
+  DEFAULT_LONG_TASK_PATTERNS,
+  type LongTaskHintConfig,
+} from './pipeline/hints.js';
+import { DEFAULT_ACTIVITY_WINDOW_MS } from './pipeline/proactive/scene/state.js';
+import {
+  DEFAULT_OBSERVATION_INJECT_FILES,
+  DEFAULT_OBSERVATION_INJECT_IMAGES,
+  DEFAULT_OBSERVATION_MAX_AGE_MS,
+  DEFAULT_OBSERVATION_MAX_MESSAGES,
+} from './store/window.js';
+import {
+  DEFAULT_MAX_WAIT_PER_ITEM,
+  DEFAULT_SESSION_BUDGET,
+  DEFAULT_SESSION_IDLE_MS,
+  DEFAULT_SESSION_MIN_GAP_MS,
+  MAX_SESSION_BUDGET_CAP,
+  MAX_WAIT_PER_ITEM_CAP,
+  SESSION_IDLE_MS_MAX,
+  SESSION_IDLE_MS_MIN,
+  SESSION_MIN_GAP_MS_MAX,
+  SESSION_MIN_GAP_MS_MIN,
+  DEFAULT_WAIT_YIELD_MS,
+  WAIT_YIELD_MS_MAX,
+  WAIT_YIELD_MS_MIN,
+} from './pipeline/proactive/contract.js';
 import {
   formatWindows,
   isValidDateString,
@@ -191,7 +218,187 @@ export interface Config {
   health: {
     port: number;
   };
+  /**
+   * 主动发言（旁听 → 判定 → 主动开口）的配置面。
+   *
+   * 场景清单与判据见 `src/pipeline/proactive/interests/SCENES.md`；
+   * 兴趣池文件（场景 5）另存，见 `proactive.interestsFile`。
+   * 注意：`enabled` 是**主动发言的总开关**，缺省 false（fail-closed）。
+   */
+  proactive: {
+    enabled: boolean;
+    /** 灰度观察：判定照跑、记录"本应发言"，但不真的发（BOT_PROACTIVE_DRY_RUN，默认 true） */
+    dryRun: boolean;
+    /** 兴趣池总开关（BOT_PROACTIVE_INTERESTS / proactive.interestsEnabled，默认 true） */
+    interestsEnabled: boolean;
+    /**
+     * 兴趣池文件路径（QQ_INTERESTS_FILE / proactive.interestsFile，默认 ./interests.yml）。
+     * 这是**过渡期的上游**：后续 role-play 迭代会动态设定兴趣池，
+     * 届时它是"人审 / 兜底来源"，判定层与投递层不受影响。
+     */
+    interestsFile: string;
+    /** 兴趣池是否真的读到了文件（health / 排障用：false + enabled = 配置指错了） */
+    interestsLoaded: boolean;
+    /** 兴趣池条目数（health 用） */
+    interestsCount: number;
+    /**
+     * 群白名单（**只认 env `BOT_LISTEN_GROUPS`**，与介入层共用同一个变量）。
+     *
+     * 为什么只从 env 来：群号属于个人标识，本项目既有的纪律是"个人标识不进
+     * qqbot.yml"（见 BOT_ADMINS 的处理）。条目形如 `onebot:123456` 或
+     * `ob11:g123456`；**空列表 = 不接任何群**（fail-closed）。
+     */
+    whitelistGroups: string[];
+    /** bot 在本群的别名（BOT_BOT_ALIASES / proactive.botAliases），场景 4 指代检测用 */
+    botAliases: string[];
+    /** 话题滚动周期（条）：每多少条旁听消息收敛一次，场景 2/5 的入口 */
+    topicRollMessages: number;
+    /** 话题滚动周期（毫秒）：无仲裁时的兜底收敛间隔 */
+    topicRollMs: number;
+    /** 问题挂起多久后探针（BOT_PROACTIVE_QUESTION_PROBE_MS / proactive.questionProbeMs） */
+    questionProbeMs: number;
+    /**
+     * 每个挂起问题最多"让路"几次（BOT_PROACTIVE_MAX_WAIT_PER_ITEM /
+     * proactive.maxWaitPerItem，默认 1，硬上限 3）。
+     *
+     * 这是"让路只能让一次"的**代码级**硬上限：超出硬上限按 3 处理并 warn，
+     * 因为把收敛改回不收敛不该只需要改一行配置（见 wait 收敛需求）。
+     */
+    maxWaitPerItem: number;
+    /**
+     * "让路"理由的等待时长（BOT_PROACTIVE_WAIT_YIELD_MS / proactive.waitYieldMs，
+     * 默认 45000，范围 15000–120000）。
+     *
+     * 语义是"现在差不多该说了，但此刻有人在动，再给几十秒"，因此刻意短：
+     * 它只是**把下一次唤醒提前一点**，不是一台新的等待机器。
+     */
+    waitYieldMs: number;
+    /**
+     * 一个话题 session 内允许的主动发言条数（BOT_PROACTIVE_SESSION_BUDGET /
+     * proactive.sessionBudget，默认 2，**硬上限 5**）。
+     *
+     * 它是"防刷屏"的主闸门：LLM 判"值得"时开一个 session，之后每说一句扣 1 点，
+     * 扣到 0 立即关闭；再要开口就得 LLM 重新判"值得"。配得比硬上限大时按硬上限
+     * 处理并 warn——"少说两句"是产品决策，不该被一行配置改回"多说几句"。
+     */
+    sessionBudget: number;
+    /**
+     * 静默多久自动关闭 session（BOT_PROACTIVE_SESSION_IDLE_MS /
+     * proactive.sessionIdleMs，默认 600000 = 10 分钟，与活动窗口同值；
+     * 范围 60000–3600000）。
+     *
+     * 锚点是 bot **自己**上次在这个 session 里发言的时间（没说过则是开启时刻），
+     * 刻意不被群消息刷新：这是"bot 说话的节奏"，不是"群消息的密度"。
+     */
+    sessionIdleMs: number;
+    /**
+     * 同一 session 内两次发言的**最小间隔**（BOT_PROACTIVE_SESSION_MIN_GAP_MS /
+     * proactive.sessionMinGapMs，默认 45000，范围 10000–300000）。
+     *
+     * 与 `waitYieldMs` 数值巧合地接近，但语义完全不同：那个是"让路后多久重查"
+     * （能不能再看一眼），这个是"两次开口至少隔多久"（闸门不让过，且**不消耗预算**）。
+     */
+    sessionMinGapMs: number;
+    /**
+     * 判定调用超时（BOT_PROACTIVE_JUDGE_TIMEOUT_MS / proactive.judgeTimeoutMs）。
+     *
+     * **刻意与 `topic.timeoutMs` 分开**：话题判定只输出一个布尔值（10 秒够），
+     * 而主动介入的判定要逐场景输出多段 JSON（最多 5 条判定 + 理由），
+     * 借用话题判定的 10 秒会频繁超时——超时 = 沉默，表现为「它从来不说话」。
+     */
+    judgeTimeoutMs: number;
+    /**
+     * 发言生成（措辞轮次）的超时（BOT_PROACTIVE_SPEAK_TIMEOUT_MS /
+     * proactive.speakTimeoutMs，默认 120000，范围 30000–300000）。
+     *
+     * 主动发言要走一次真实 agent turn（可能带工具查证），比判定调用重，
+     * 但它是"插一句话"而不是"跑一个任务"，所以上限刻意低于被动轮次的
+     * `turnTimeoutMs`——超时的表现是本次不发言（`compose-failed`），不是报错。
+     */
+    speakTimeoutMs: number;
+    /**
+     * 旁听缓冲上限（条）：判定只需要近期上下文。
+     *
+     * @deprecated 取值搬到 `Config.observation.maxMessages`（滚窗已成为两条唤醒
+     *   路径共享的设施，配置不该挂在 `proactive:` 段下）。这里保留**旧键的读取**
+     *   （`undefined` = 用户没配），由 `buildObservationConfig` 决定优先级并 warn
+     *   ——静默失效比报错更糟。
+     */
+    bufferMaxMessages?: number;
+    /** @deprecated 取值搬到 `Config.observation.maxAgeMs`，理由同上 */
+    bufferMaxAgeMs?: number;
+  };
+  /**
+   * 观察窗口（旁听滚窗）：**与主动发言开关无关**。
+   *
+   * 它是"群里刚刚说了什么"的唯一来源，被 @ 的回复与主动发言判定读的是同一份。
+   * 因此配置放在顶层，而不是 `proactive:` 段下——放在那里会让人合理地以为
+   * "关掉主动发言就没有滚窗了"，而那正是这次重构要消灭的耦合。
+   */
+  observation: ObservationConfig;
+  /**
+   * 预设风格前台（/persona 命令）：预设目录里每个 `<名>.md` 是一个可切换人设，
+   * 切换即写入该会话工作区 AGENTS.md 的标记区块，下个 turn 生效（见 store/personas.ts）。
+   */
+  personas: {
+    /** 预设目录（BOT_PERSONA_DIR / personas.dir，默认 dsh-profile/personas） */
+    dir: string;
+  };
+  /**
+   * 长任务提示注入（persona 纪律的桥接层补强，见 pipeline/hints.ts）。
+   * 命中关键词的消息在 prompt 里追加"耗时任务请后台派发"的提示——best-effort，
+   * 不代替模型做决定。
+   */
+  hints: {
+    longTask: LongTaskHintConfig;
+  };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
+}
+
+/** 观察窗口配置（见 Config.observation）。 */
+export interface ObservationConfig {
+  /**
+   * 观察范围（`BOT_LISTEN_GROUPS`，与介入层白名单**同一个变量**）。
+   *
+   * 空 = 不观察任何会话（fail-closed）。之所以与介入层共用一个白名单：两个
+   * 白名单会让"这个群到底算不算接入"有两个答案，而它们必须一致——滚窗记了
+   * 但判定不看，或反过来，都是没人能解释的状态。
+   */
+  allowlist: string[];
+  /** 每会话保留的消息条数上限（BOT_OBSERVATION_MAX_MESSAGES / observation.maxMessages） */
+  maxMessages: number;
+  /** 每条消息的最长保留时长（毫秒） */
+  maxAgeMs: number;
+  /**
+   * 注入给**被动唤醒**（被 @）的窗口宽度（毫秒）。
+   *
+   * 刻意**窄于保留期**：留 30 分钟是为了让判定能回看，而回答"在吗，帮我看看这个"
+   * 时把半小时前另一个话题的 200 条灌进去只会稀释注意力。缺省与活动窗口同值
+   * （`DEFAULT_ACTIVITY_WINDOW_MS`）——"当前话题有多长"在判定层已经定义过一次，
+   * 这里直接复用那个口径，不再造第二个。
+   */
+  injectWindowMs: number;
+  /**
+   * 被 @ 时，最多把上下文里的几张图片内联进 prompt（0 = 不内联，只留占位文本）。
+   *
+   * 为什么需要它：上下文里的 `[图片: x.jpg]` 只是占位，模型看不到图——而"群里先
+   * 发一张图、再 @ bot 问这是什么"是最常见的用法（见 `store/window.ts` 的
+   * `ObservationMedia`）。代价是 token：图片按像素烧，所以配额刻意小于
+   * `attachments.maxImages`，且**只取最近的几张**（"看看这个"的对象几乎总是刚发的那张）。
+   */
+  injectImages: number;
+  /**
+   * 被 @ 时，最多摄取几个上下文里的文件（0 = 不摄取）。
+   *
+   * 比图片更保守（缺省 1）：文件要下载、落 inbox、可能起 pdftotext 子进程，
+   * 而"翻背景资料"通常只需要最近那一个。
+   */
+  injectFiles: number;
+  /**
+   * 迁移提示（旧键 → 新键）：配置层不持有 logger，只生成句子，由启动摘要打出来。
+   * 空数组 = 用户没配旧键。
+   */
+  deprecations: string[];
 }
 
 /** 富媒体出站配置（见 Config.media）。 */
@@ -401,8 +608,300 @@ function pickEnum<T extends string>(
   return fallback;
 }
 
-/** 列表：env 用逗号分隔，配置文件用 YAML 数组；env 非空时以 env 为准。 */
-function pickList(env: Env, envKey: string, fileValue: string[] | undefined): string[] {
+/**
+ * 主动发言配置（`Config.proactive`）。
+ *
+ * 这里**只做配置合并与形状校验**：兴趣池文件的内容校验归
+ * `pipeline/proactive/interests/pool.ts`（它有自己的 schema 与报错文案），
+ * 由组装层在需要时读取——本函数不碰磁盘。
+ *
+ * 默认值刻意保守：
+ *   - `enabled` 缺省 **false**（fail-closed，不配就不主动开口）；
+ *   - `topicRollMessages` 30（比既有采样口径 `evaluateEvery=6` 更保守：
+ *     弱信号场景每 30 条才有一次机会，见架构方案 §6 的成本模型）；
+ *   - `topicRollMs` 5 分钟（消息少但话题在延续时的兜底收敛）。
+ */
+function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): Config['proactive'] {
+  const aliases = pickList(env, 'BOT_BOT_ALIASES', file?.botAliases);
+  if (aliases.length > 5) {
+    throw new ConfigError(`bot 别名最多 5 个，收到 ${aliases.length} 个`, [
+      'BOT_BOT_ALIASES / proactive.botAliases；别名会进判定 prompt，太多会稀释判据',
+    ]);
+  }
+  for (const alias of aliases) {
+    if (alias.length < 2) {
+      throw new ConfigError(`bot 别名「${alias}」太短（少于 2 字）`, [
+        '单字别名会在群里到处误命中（例如"助"），宁可用完整叫法',
+      ]);
+    }
+  }
+
+  // 白名单只认 env（个人标识不进配置文件）；条目必须含 `:`，否则是写错了平台前缀
+  const whitelistGroups = pickList(env, 'BOT_LISTEN_GROUPS', undefined);
+  for (const item of whitelistGroups) {
+    if (!item.includes(':')) {
+      throw new ConfigError(`BOT_LISTEN_GROUPS 条目缺少平台前缀：${item}`, [
+        '正确写法：onebot:123456 或 ob11:g123456（平台标识:群号）',
+      ]);
+    }
+  }
+
+  return {
+    enabled: pickBool(env, 'BOT_PROACTIVE_ENABLED', file?.enabled, false),
+    // ⚠️ 灰度默认**开**：即使有人手滑把总开关打开，也不会立刻在群里说话，
+    // 而是先记录"本应发言"。观察一到两周确认判据准了再显式关掉它。
+    dryRun: pickBool(env, 'BOT_PROACTIVE_DRY_RUN', file?.dryRun, true),
+    interestsEnabled: pickBool(env, 'BOT_PROACTIVE_INTERESTS', file?.interestsEnabled, true),
+    interestsFile: pickString(env, 'QQ_INTERESTS_FILE', file?.interestsFile, 'interests.yml'),
+    // 真实取值由组装层读文件后回填（见 main.ts）；配置层只知道路径。
+    interestsLoaded: false,
+    interestsCount: 0,
+    whitelistGroups,
+    botAliases: aliases,
+    topicRollMessages: pickInt(
+      env,
+      'BOT_TOPIC_ROLL_MESSAGES',
+      file?.topicRollMessages,
+      30,
+      { min: 3, max: 500 },
+      'proactive.topicRollMessages',
+    ),
+    topicRollMs: pickInt(
+      env,
+      'BOT_TOPIC_ROLL_MS',
+      file?.topicRollMs,
+      300_000,
+      { min: 10_000, max: 3_600_000 },
+      'proactive.topicRollMs',
+    ),
+    questionProbeMs: pickInt(
+      env,
+      'BOT_PROACTIVE_QUESTION_PROBE_MS',
+      file?.questionProbeMs,
+      90_000,
+      { min: 10_000, max: 3_600_000 },
+      'proactive.questionProbeMs',
+    ),
+    // 让路预算：默认 1（让路只能让一次）。
+    //
+    // ⚠️ 这里的 `max` 刻意**不是**硬上限（3）：配成 5 时正确的行为是
+    // "按 3 处理并 warn"（需求边界表），而不是启动失败。校验范围只挡明显
+    // 越界的值，真正的硬上限由 `effectiveMaxWaitPerItem` 在 watcher 层执行
+    // ——"上限必须活在模型之下"，而且是**运行期**的约束。
+    maxWaitPerItem: pickInt(
+      env,
+      'BOT_PROACTIVE_MAX_WAIT_PER_ITEM',
+      file?.maxWaitPerItem,
+      DEFAULT_MAX_WAIT_PER_ITEM,
+      { min: 0, max: MAX_WAIT_PER_ITEM_CAP * 10 },
+      'proactive.maxWaitPerItem',
+    ),
+    waitYieldMs: pickInt(
+      env,
+      'BOT_PROACTIVE_WAIT_YIELD_MS',
+      file?.waitYieldMs,
+      DEFAULT_WAIT_YIELD_MS,
+      { min: WAIT_YIELD_MS_MIN, max: WAIT_YIELD_MS_MAX },
+      'proactive.waitYieldMs',
+    ),
+    // 话题 session（主动发言的唯一放行闸门）：
+    //
+    // ⚠️ `sessionBudget` 的 `max` 刻意**不是**硬上限（5）：配成 9 时正确的行为是
+    // "按 5 处理并 warn"（验收 9），而不是启动失败——与 `maxWaitPerItem` 同一口径。
+    // 真正的硬上限由 `effectiveSessionBudget` 在 watcher 层执行。
+    sessionBudget: pickInt(
+      env,
+      'BOT_PROACTIVE_SESSION_BUDGET',
+      file?.sessionBudget,
+      DEFAULT_SESSION_BUDGET,
+      { min: 1, max: MAX_SESSION_BUDGET_CAP * 20 },
+      'proactive.sessionBudget',
+    ),
+    sessionIdleMs: pickInt(
+      env,
+      'BOT_PROACTIVE_SESSION_IDLE_MS',
+      file?.sessionIdleMs,
+      DEFAULT_SESSION_IDLE_MS,
+      { min: SESSION_IDLE_MS_MIN, max: SESSION_IDLE_MS_MAX },
+      'proactive.sessionIdleMs',
+    ),
+    sessionMinGapMs: pickInt(
+      env,
+      'BOT_PROACTIVE_SESSION_MIN_GAP_MS',
+      file?.sessionMinGapMs,
+      DEFAULT_SESSION_MIN_GAP_MS,
+      { min: SESSION_MIN_GAP_MS_MIN, max: SESSION_MIN_GAP_MS_MAX },
+      'proactive.sessionMinGapMs',
+    ),
+    // 判定超时比话题判定宽一倍：输出是多段 JSON 而不是一个布尔值
+    judgeTimeoutMs: pickInt(
+      env,
+      'BOT_PROACTIVE_JUDGE_TIMEOUT_MS',
+      file?.judgeTimeoutMs,
+      20_000,
+      { min: 1_000, max: 120_000 },
+      'proactive.judgeTimeoutMs',
+    ),
+    // 发言生成（措辞轮次）超时：是"插一句话"不是"跑一个任务"，
+    // 上限刻意低于被动轮次——超时的表现是本次不发言，不是报错。
+    speakTimeoutMs: pickInt(
+      env,
+      'BOT_PROACTIVE_SPEAK_TIMEOUT_MS',
+      file?.speakTimeoutMs,
+      120_000,
+      { min: 30_000, max: 300_000 },
+      'proactive.speakTimeoutMs',
+    ),
+    // 旁听缓冲的两个限制：**取值搬到 `observation.*`**（滚窗不再属于介入层，
+    // 见 Config.observation 的说明），这里只保留**旧键的读取**（`undefined` = 用户
+    // 没配），由 `buildObservationConfig` 决定优先级并 warn。保留旧键的理由很实际：
+    // `qqbot.yml` 是随仓库提供的默认配置，用户手上那份里写的就是旧键名——静默失效
+    // 比报错更糟。
+    bufferMaxMessages: pickOptionalInt(
+      env,
+      'BOT_PROACTIVE_BUFFER_MAX_MESSAGES',
+      file?.bufferMaxMessages,
+      { min: 10, max: 10_000 },
+      'proactive.bufferMaxMessages',
+    ),
+    bufferMaxAgeMs: pickOptionalInt(
+      env,
+      'BOT_PROACTIVE_BUFFER_MAX_AGE_MS',
+      file?.bufferMaxAgeMs,
+      { min: 60_000, max: 72 * 3_600_000 },
+      'proactive.bufferMaxAgeMs',
+    ),
+  };
+}
+
+/**
+ * 与 `pickInt` 同款，但**没有缺省值**：两处都没配时返回 `undefined`。
+ *
+ * 存在理由只有一个：让"用户到底配没配这个键"可判。用来读取那些**已迁移但必须
+ * 兼容**的旧键（读写两侧都要知道"这是用户显式写的，还是搬运期留下的默认值"）。
+ */
+function pickOptionalInt(
+  env: Env,
+  envKey: string,
+  fileValue: number | undefined,
+  range: { min: number; max: number },
+  filePath: string,
+): number | undefined {
+  const raw = envRaw(env, envKey);
+  if (raw === undefined && fileValue === undefined) return undefined;
+  if (raw !== undefined) {
+    const value = Number(raw);
+    if (!Number.isFinite(value) || !Number.isInteger(value)) {
+      throw new ConfigError(`${envKey} 必须是整数，收到 ${JSON.stringify(raw)}`);
+    }
+    if (value < range.min || value > range.max) {
+      throw new ConfigError(`${envKey} 必须在 [${range.min}, ${range.max}] 之间，收到 ${value}`);
+    }
+    return value;
+  }
+  const value = fileValue as number;
+  if (value < range.min || value > range.max) {
+    throw new ConfigError(
+      `配置文件里的 ${filePath} 必须在 [${range.min}, ${range.max}] 之间，收到 ${value}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * 观察窗口（滚窗）配置。
+ *
+ * 四件事在这里定下来：
+ *   1. **范围** = `BOT_LISTEN_GROUPS`，与介入层**共用同一个变量**（见 ObservationConfig）；
+ *   2. **保留期**（`maxMessages` / `maxAgeMs`）与**注入宽度**（`injectWindowMs`）
+ *      是两件事：前者是"记得多久"，后者是"被 @ 时给多少"；
+ *   3. **媒体配额**（`injectImages` / `injectFiles`）：窗口里留下的媒体引用要在
+ *      注入时才会被取字节（见 `store/window.ts`），这两个数就是那道闸；
+ *   4. **旧键兼容**：`proactive.bufferMaxMessages` / `proactive.bufferMaxAgeMs` /
+ *      `BOT_PROACTIVE_BUFFER_MAX_*` 仍然生效，但 `observation.*` 优先并 warn
+ *      ——默认配置文件里本来就是旧键，硬切会让所有人的记忆长度悄悄回到默认值。
+ */
+function buildObservationConfig(
+  env: Env,
+  file: ObservationFileConfig | undefined,
+  proactive: { bufferMaxMessages?: number; bufferMaxAgeMs?: number },
+): Config['observation'] {
+  const maxMessages = pickInt(
+    env,
+    'BOT_OBSERVATION_MAX_MESSAGES',
+    file?.maxMessages,
+    proactive.bufferMaxMessages ?? DEFAULT_OBSERVATION_MAX_MESSAGES,
+    { min: 10, max: 10_000 },
+    'observation.maxMessages',
+  );
+  const maxAgeMs = pickInt(
+    env,
+    'BOT_OBSERVATION_MAX_AGE_MS',
+    file?.maxAgeMs,
+    proactive.bufferMaxAgeMs ?? DEFAULT_OBSERVATION_MAX_AGE_MS,
+    { min: 60_000, max: 72 * 3_600_000 },
+    'observation.maxAgeMs',
+  );
+  // 配置层**不持有 logger**（它比日志先构造，报错走 stderr + exit 2）。所以旧键
+  // 这件事只在这里生成一句提示，由启动摘要打出来——比在 config.ts 里造一个
+  // "日志"要诚实得多。
+  const deprecations: string[] = [];
+  if (proactive.bufferMaxMessages !== undefined) {
+    deprecations.push(
+      `proactive.bufferMaxMessages → observation.maxMessages（当前生效：${maxMessages}）`,
+    );
+  }
+  if (proactive.bufferMaxAgeMs !== undefined) {
+    deprecations.push(
+      `proactive.bufferMaxAgeMs → observation.maxAgeMs（当前生效：${maxAgeMs}）`,
+    );
+  }
+
+  // 注入宽度与活动窗口同值：判定层已经定义过"当前话题有多长"（活动窗口），
+  // 被 @ 时注入的上下文用同一个口径，不另造一个数字。
+  const injectWindowMs = pickInt(
+    env,
+    'BOT_OBSERVATION_INJECT_WINDOW_MS',
+    file?.injectWindowMs,
+    DEFAULT_ACTIVITY_WINDOW_MS,
+    { min: 60_000, max: 3_600_000 },
+    'observation.injectWindowMs',
+  );
+
+  // 上下文里的媒体配额：**刻意小于 `attachments.maxImages` / `files.maxFiles`**。
+  // 那两份配额回答的是"用户这次发来的东西最多读多少"，而这两份回答的是"为了听懂
+  // 他在说什么，最多额外翻多少背景资料"——后者是背景，不该压过前者，更不该因为
+  // 群里刷了一晚上图就让每一次 @ 都拖着一串图片进 prompt（token 是这么烧掉的）。
+  const injectImages = pickInt(
+    env,
+    'BOT_OBSERVATION_INJECT_IMAGES',
+    file?.injectImages,
+    DEFAULT_OBSERVATION_INJECT_IMAGES,
+    { min: 0, max: 20 },
+    'observation.injectImages',
+  );
+  const injectFiles = pickInt(
+    env,
+    'BOT_OBSERVATION_INJECT_FILES',
+    file?.injectFiles,
+    DEFAULT_OBSERVATION_INJECT_FILES,
+    { min: 0, max: 10 },
+    'observation.injectFiles',
+  );
+
+  return {
+    // 白名单只认 env（个人标识不进配置文件），与介入层读的是同一个变量
+    allowlist: pickList(env, 'BOT_LISTEN_GROUPS', undefined),
+    maxMessages,
+    maxAgeMs,
+    injectWindowMs,
+    injectImages,
+    injectFiles,
+    deprecations,
+  };
+}
+
+/** 列表：env 用逗号分隔，配置文件用 YAML 数组；env 非空时以 env 为准。 */function pickList(env: Env, envKey: string, fileValue: string[] | undefined): string[] {
   const raw = envRaw(env, envKey);
   if (raw !== undefined) {
     return raw
@@ -637,6 +1136,30 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     // 空串会被 extensionOf('') 之外的调用方当成"任意无扩展名文件都命中白名单"
     .filter((ext) => ext !== '');
 
+  // 先构造 proactive：观察窗口要读它读出来的**旧键**（`bufferMax*`）做兼容
+  const proactiveConfig = buildProactiveConfig(env, file.proactive);
+  const observationConfig = buildObservationConfig(env, file.observation, {
+    ...(proactiveConfig.bufferMaxMessages === undefined
+      ? {}
+      : { bufferMaxMessages: proactiveConfig.bufferMaxMessages }),
+    ...(proactiveConfig.bufferMaxAgeMs === undefined
+      ? {}
+      : { bufferMaxAgeMs: proactiveConfig.bufferMaxAgeMs }),
+  });
+
+  // ⚠️ 隐形耦合检查：判定层的"活动窗口计数"（条数/人头）读的是**观察窗口里的条目**。
+  // 如果窗口保留期比活动窗口还短，那些计数会**静默少算**——窗口里已经没有的条目
+  // 不会被统计，而判据仍以为自己看的是完整窗口。不是致命错误（判定照跑），
+  // 但必须让人知道，所以在这里出声而不是等线上发现判据偏了。
+  if (observationConfig.maxAgeMs < DEFAULT_ACTIVITY_WINDOW_MS) {
+    process.stderr.write(
+      `\n配置提示：observation.maxAgeMs（${observationConfig.maxAgeMs}ms）比判定层的活动窗口` +
+        `（${DEFAULT_ACTIVITY_WINDOW_MS}ms）还短，\n` +
+        '  判定看到的条数/人数会少算。建议 maxAgeMs ≥ 活动窗口，或把 proactive 的\n' +
+        '  活动窗口一并调小（ConversationStateOptions.activityWindowMs）。\n\n',
+    );
+  }
+
   return {
     connectors: enabledConnectors,
     admins,
@@ -765,7 +1288,42 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     health: {
       port: pickInt(env, 'QQ_HEALTH_PORT', file.health?.port, 8080, { min: 0, max: 65_535 }, 'health.port'),
     },
+    proactive: proactiveConfig,
+    // 观察窗口：**放在 proactive 之后**构造，因为旧键的兼容读取要拿到
+    // `buildProactiveConfig` 读出来的 `bufferMax*`（见 buildObservationConfig）。
+    observation: observationConfig,
+    personas: {
+      dir: pickString(env, 'BOT_PERSONA_DIR', file.personas?.dir, 'dsh-profile/personas'),
+    },
+    hints: {
+      longTask: buildLongTaskHintConfig(env, file.hints?.longTask),
+    },
     logLevel: pickEnum(env, 'QQ_LOG_LEVEL', file.logLevel, ['debug', 'info', 'warn', 'error'] as const, 'info', 'logLevel'),
+  };
+}
+
+/**
+ * 长任务提示注入（`Config.hints.longTask`）。
+ *
+ * 空串关键词是**配置错误**而不是"匹配一切"：`''.includes(...)` 方向反过来就是
+ * 每条消息都命中，提示注入就退化成每轮固定多一段文本。在这里快速失败。
+ */
+function buildLongTaskHintConfig(
+  env: Env,
+  file: { enabled?: boolean; patterns?: string[]; text?: string } | undefined,
+): LongTaskHintConfig {
+  const raw = pickList(env, 'BOT_HINT_LONG_TASK_PATTERNS', file?.patterns);
+  const patterns = (raw.length > 0 ? raw : DEFAULT_LONG_TASK_PATTERNS).map((p) => p.trim());
+  const empty = patterns.filter((p) => p === '');
+  if (empty.length > 0) {
+    throw new ConfigError('长任务提示的关键词里含空串', [
+      '空串会命中每一条消息；hints.longTask.patterns 里的条目都必须是非空字符串',
+    ]);
+  }
+  return {
+    enabled: pickBool(env, 'BOT_HINT_LONG_TASK_ENABLED', file?.enabled, true),
+    patterns: [...new Set(patterns)],
+    text: pickString(env, 'BOT_HINT_LONG_TASK_TEXT', file?.text, DEFAULT_LONG_TASK_HINT_TEXT),
   };
 }
 
@@ -816,7 +1374,52 @@ export function describeConfig(config: Config): Record<string, unknown> {
     },
     paths: config.paths,
     adminCount: config.admins.length,
+    proactive: {
+      enabled: config.proactive.enabled,
+      dryRun: config.proactive.dryRun,
+      interests: {
+        enabled: config.proactive.interestsEnabled,
+        file: config.proactive.interestsFile,
+        loaded: config.proactive.interestsLoaded,
+        count: config.proactive.interestsCount,
+      },
+      whitelistGroups: config.proactive.whitelistGroups.length,
+      botAliases: config.proactive.botAliases,
+      topicRoll: {
+        messages: config.proactive.topicRollMessages,
+        ms: config.proactive.topicRollMs,
+      },
+      // 话题 session（主动发言的唯一放行闸门）：启动摘要里给出用户配的原始值。
+      // **生效值**（硬上限裁剪之后）另在 health 的 `proactive.sessions` 里给——
+      // 配成 9 时这两处会不一样，那正是我们想要的可见性。
+      session: {
+        budget: config.proactive.sessionBudget,
+        idleMs: config.proactive.sessionIdleMs,
+        minGapMs: config.proactive.sessionMinGapMs,
+      },
+      judgeTimeoutMs: config.proactive.judgeTimeoutMs,
+      speakTimeoutMs: config.proactive.speakTimeoutMs,
+    },
+    // 观察窗口（滚窗）：**与 proactive 并列**，因为它不随主动发言开关生死
+    observation: {
+      groups: config.observation.allowlist.length,
+      maxMessages: config.observation.maxMessages,
+      maxAgeMs: config.observation.maxAgeMs,
+      injectWindowMs: config.observation.injectWindowMs,
+      injectImages: config.observation.injectImages,
+      injectFiles: config.observation.injectFiles,
+      ...(config.observation.deprecations.length === 0
+        ? {}
+        : { deprecations: config.observation.deprecations }),
+    },
     attachments: config.attachments,
+    personas: { dir: config.personas.dir },
+    hints: {
+      longTask: {
+        enabled: config.hints.longTask.enabled,
+        patterns: config.hints.longTask.patterns,
+      },
+    },
     media: {
       enabled: config.media.enabled,
       maxFileBytes: config.media.maxFileBytes,

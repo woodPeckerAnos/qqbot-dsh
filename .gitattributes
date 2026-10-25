@@ -1,0 +1,3 @@
+# 说明：src/pipeline/proactive/ 下的两份 Markdown 不是普通说明文档，而是
+# **可执行契约的一部分**（agent 扩展契约；生成器与代码审查都引用它们）。
+# 改代码时若不同步更新，按缺陷处理（见 AGENT-CONTRACT.md §8 同步义务）。

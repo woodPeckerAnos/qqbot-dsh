@@ -73,7 +73,7 @@ docker compose logs -f qqbot
 > 'deploy.resources.limits.pids'`，说明资源限制被同时写在了顶层旧式字段与
 > `deploy.resources.limits` 两处。本仓库的 `docker-compose.yml` 已统一放在
 > `deploy.resources.limits` 下；手动改过该文件的话请只保留一处，详见
-> [RUNBOOK 6.0](RUNBOOK.md)。改完用 `docker compose config >/dev/null` 先验证。
+> [RUNBOOK 7.0](RUNBOOK.md)。改完用 `docker compose config >/dev/null` 先验证。
 
 启动成功的日志特征（JSON 行，逐行）：
 
@@ -461,7 +461,10 @@ docker stats qqbot-dsh
 | 日志太吵 | `QQ_LOG_LEVEL=warn` |
 | 图片烧 token / 模型不支持图片 | `BOT_ATTACHMENT_ENABLED=false`（消息照收，图片变成 `[图片]` 占位） |
 | 图片太多/太大读不进来 | `BOT_ATTACHMENT_MAX_IMAGES`（默认 4）、`BOT_ATTACHMENT_MAX_BYTES`（默认 8MB）；排查看 `/metrics` 里的 `imagesInlined`/`imagesSkipped`，见 [RUNBOOK 4.5](RUNBOOK.md) |
+| 群里刚发的图/文件，@ bot 后它说"看不到" | 那是**上下文（滚窗）**里的媒体：`BOT_OBSERVATION_INJECT_IMAGES`（默认 2）、`BOT_OBSERVATION_INJECT_FILES`（默认 1），0 = 不读；排查看 `/metrics` 里的 `windowImagesInlined`/`windowImagesSkipped`/`windowFilesFetched` |
 | 想给某个会话定规矩 | 在该会话工作区目录下写 `AGENTS.md`，DSH 会自动加载（改规则不用重建镜像） |
+| 想换某个会话的应答风格 | 群里发 `/persona <预设名>`（仅管理员；预设 = `dsh-profile/personas/*.md`，`BOT_PERSONA_DIR` 换目录）；`/persona` 列出可选项，`/persona off` 恢复默认 |
+| 长任务把会话卡死（新闻核查/抓取类最常见） | 确认 `hints.longTask.enabled`（默认开）：命中的消息会在 prompt 里带"必须后台派发"提示；观测 `/metrics` 的 `longTaskHints`（注入数）与 `backgroundStarted`（实际派发数）；仍不达标见 [DESIGN §14.3](DESIGN.md) 的下一档方案 |
 
 ---
 

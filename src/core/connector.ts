@@ -140,6 +140,15 @@ export interface MessageForwardPart {
   /** 是否因条数/字符/深度上限被截断（渲染时在尾部显式说明） */
   truncated?: boolean;
   parts: MessagePart[];
+  /**
+   * 平台侧 id（合并转发的回查凭据）：**只在内容还没展开时才有**。
+   *
+   * 为什么它要挂在片段上：旁听消息里的聊天记录**不进 `content`**（那是"普通群聊
+   * 上下文"，见 `store/window.ts` 的说明），但 id 必须留下来——被 @ 且这次的问题
+   * 明确提到那条记录时，才知道该去回查哪一条（`BotConnector.fetchForward`）。
+   * 展开之后这个字段自然消失：`resolveForwardRefs` 会把整个占位片段换掉。
+   */
+  refId?: string;
 }
 
 /**
@@ -207,9 +216,20 @@ export interface MediaBytes {
  *
  * 各平台的群聊/单聊消息都归一化成这个形状，编排层只有一条代码路径。
  * 平台专有的字段（消息段、附件等）放在 raw 里，编排层不解读。
+ *
+ * `kind` 三种取值的语义差别只有一件事——**这条消息是不是在跟 bot 说话**：
+ *
+ * | kind | 含义 | 编排层走向 |
+ * |---|---|---|
+ * | `group-at-message` | 群里 @ 了 bot | Ingress 管线 → agent turn → 回复 |
+ * | `c2c-message` | 单聊消息（私聊天然是"对 bot 说"） | 同上 |
+ * | `group-message` | **群里没 @ bot 的旁听消息** | 只进主动介入层（判断要不要插话），**不进 Ingress** |
+ *
+ * 旁听消息在 OneBot 上需要框架推送全量群消息；官方通道需要平台侧开通
+ * 「接收所有消息」能力（未开通时永远收不到，见 §接入能力）。
  */
 export interface NormalizedMessage {
-  kind: 'group-at-message' | 'c2c-message';
+  kind: 'group-at-message' | 'c2c-message' | 'group-message';
   target: ConversationTarget;
   /**
    * 事件级去重 id。适配器必须保证它在平台内唯一且已带平台命名空间
@@ -259,8 +279,28 @@ export interface NormalizedSystemEvent {
 
 export type NormalizedEvent = NormalizedMessage | NormalizedSystemEvent;
 
-/** 是否为用户消息（群聊或单聊），用于把消息事件与系统事件分开。 */
+/** 是否为用户消息（群聊 / 单聊 / 旁听），用于把消息事件与系统事件分开。 */
 export function isUserMessage(event: NormalizedEvent): event is NormalizedMessage {
+  return (
+    event.kind === 'group-at-message' ||
+    event.kind === 'c2c-message' ||
+    event.kind === 'group-message'
+  );
+}
+
+/**
+ * 是否为**旁听消息**（群里没 @ bot）。
+ *
+ * 这是编排层的分流依据，且分流点只有一处（`Orchestrator.handleEvent`）：
+ * 旁听消息**不进 Ingress 管线**（不写对话记录、不占并发、不回复），
+ * 只交给主动介入层判断"要不要插话"。
+ */
+export function isObservedMessage(event: NormalizedEvent): event is NormalizedMessage {
+  return event.kind === 'group-message';
+}
+
+/** 是否为「在跟 bot 说话」的消息（@ 或私聊）——这些才走完整的 Ingress 管线。 */
+export function isAddressedMessage(event: NormalizedEvent): event is NormalizedMessage {
   return event.kind === 'group-at-message' || event.kind === 'c2c-message';
 }
 
@@ -305,6 +345,22 @@ export interface BotConnector {
   /** 发送一条回复。平台专有的请求体构造在适配器内部完成。 */
   reply(ctx: ReplyContext, out: OutgoingMessage): Promise<void>;
   /**
+   * 【主动发言能力】在没有用户消息可锚定时，往会话里发一条 bot 自己发起的话。
+   *
+   * 这是**唯一**的平台能力差异点，且差异只允许通过返回值表达：
+   *   - OneBot（社区协议）：直接发，返回 `{ ok: true }`；
+   *   - 官方 QQ：主动推送受限（文档载明主动推送自 2025-04-21 起不再提供、
+   *     群聊主动消息每月 4 条，且用户可关闭接收），实现**什么都不做**并返回
+   *     `{ ok: false, reason: 'unsupported' }`（或 'quota'）。
+   *
+   * 纪律（与 fetchMedia 一致）：
+   *   - 永不抛错表达"平台不支持"，一律用返回值表达——否则外层逻辑会被迫
+   *     为每个平台写 try/catch 分支；
+   *   - 缺省（未实现）= 返回 `unsupported`，与"官方层 do nothing"同义；
+   *   - 额度策略**不在适配器里判断**，适配器只如实表达结果（'quota' / 'rate-limit'）。
+   */
+  proactive?(target: ConversationTarget, out: OutgoingMessage): Promise<ProactiveResult>;
+  /**
    * 取平台侧附件的字节（图片/语音等）。
    *
    * 存在的理由是"鉴权差异"：官方 QQ 的多媒体 CDN 需要 `Authorization: QQBot <token>`，
@@ -315,7 +371,42 @@ export interface BotConnector {
    * timeoutMs，失败时返回 undefined（由调用方降级成文字说明），不要抛错打断整轮。
    */
   fetchMedia?(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined>;
+  /**
+   * 【按需展开】取一条**聊天记录（合并转发）**的内容。
+   *
+   * 与 `fetchMedia` 同一类能力：平台专有的取件方式（OneBot 走 `get_forward_msg`
+   * 动作、带 LRU 缓存与配额），编排层只说"我要 `refId` 这条记录的内容"。
+   *
+   * 为什么是**按需**而不是像 @ 消息那样在归一化期就展开：旁听消息里的聊天记录
+   * 不该被当作普通群聊上下文（一条转发动辄几十条发言，灌进上下文既烧 token 又把
+   * 真正在聊的事淹掉）。只有被 @ 且这次的问题**明确提到**了它时才取（由话题判定
+   * 那一次 LLM 调用顺带判断，见 `pipeline/topic-judge.ts`）。
+   *
+   * 纪律与 `fetchMedia` 一致：返回 undefined 表示"取不到"，**绝不抛错**——调用方
+   * 会把它降级成一句"这条记录没读出来"，让模型如实告诉用户而不是猜。
+   */
+  fetchForward?(target: ConversationTarget, refId: string): Promise<MessageForwardPart | undefined>;
 }
+
+/**
+ * 一次主动发言的投放结果。
+ *
+ * `retryable` 表达"下次还有机会"，交给上层决定是否补投；主动发言的场景里
+ * 补投通常没有意义（话题已经翻篇），所以上层默认记为降级而不是重试。
+ */
+export type ProactiveResult =
+  | { ok: true }
+  | { ok: false; reason: ProactiveRejectReason; detail?: string; retryable: boolean };
+
+export type ProactiveRejectReason =
+  /** 平台不提供主动推送能力（官方通道的默认实现） */
+  | 'unsupported'
+  /** 平台侧额度用尽（官方：每群每月 4 条） */
+  | 'quota'
+  /** 平台侧限频（子频道每秒条数、风控等） */
+  | 'rate-limit'
+  /** 鉴权 / 网络 / 未知故障 */
+  | 'error';
 
 // ---------------------------------------------------------------------------
 // 回复

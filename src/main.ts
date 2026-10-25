@@ -41,14 +41,26 @@ import { OffpeakCommandRouter } from './pipeline/ingress/offpeak-command.js';
 import { createOffpeakGateStage } from './pipeline/ingress/offpeak-gate.js';
 import { createRecordStage } from './pipeline/ingress/record.js';
 import { SessionCommandRouter } from './pipeline/ingress/session-command.js';
+import { PersonaCommandRouter } from './pipeline/ingress/persona-command.js';
 import type { IngressStage } from './pipeline/ingress/types.js';
 import { Orchestrator } from './pipeline/orchestrator.js';
 import { PipelineStats } from './pipeline/stats.js';
 import { createTopicJudge } from './pipeline/topic-judge.js';
+import { ProactiveSpeaker } from './pipeline/proactive/deliver/speaker.js';
+import { loadInterestPool } from './pipeline/proactive/interests/pool.js';
+import { createChatClient } from './pipeline/proactive/judge/chat-client.js';
+import { createDefaultProactiveJudge } from './pipeline/proactive/judge/client.js';
+import {
+  DEFAULT_WATCHER_CONFIG,
+  ProactiveWatcher,
+} from './pipeline/proactive/scene/watcher.js';
+import type { ProactiveHealthSnapshot } from './health.js';
 import { TurnRunner } from './pipeline/turn-runner.js';
 import { ConversationStore } from './store/conversations.js';
+import { ObservationWindowStore } from './store/window.js';
 import { SeenStore } from './store/seen.js';
 import { SessionStore } from './store/sessions.js';
+import { PersonaStore } from './store/personas.js';
 import { ensureStoreDirs, resolveStorePaths, workspacePathFor } from './store/paths.js';
 import { buildHealthSnapshot, createHealthServer, type HealthServer } from './health.js';
 
@@ -183,6 +195,42 @@ async function main(): Promise<void> {
   const seen = new SeenStore({ paths, logger });
   const sessions = new SessionStore({ paths, logger });
 
+  // 预设风格前台（/persona）：选择持久化在 stateDir，启动期把每个已选会话的
+  // 人设区块幂等重写进工作区 AGENTS.md（防"工作区被手工清掉但选择还在"）。
+  const personas = new PersonaStore({
+    dir: config.personas.dir,
+    persistPath: join(paths.stateDir, 'personas.json'),
+    paths,
+    logger: logger.child({ component: 'personas' }),
+  });
+  personas.restoreAll();
+  logger.info('人设预设就绪', { dir: config.personas.dir, presets: personas.listPresets() });
+
+  // --- 观察窗口（旁听滚窗）---------------------------------------------------
+  //
+  // 这里是"群里刚刚说了什么"的**唯一**写入点，也是它与介入层解耦的地方：
+  //   - 只要群在 `BOT_LISTEN_GROUPS` 里就记录，**与 `BOT_PROACTIVE_ENABLED` 无关**
+  //     ——"只 @ 回复"的部署照样能拿到上下文；
+  //   - 记录是静默的（不判断、不调 LLM、不回复），写入失败不影响任何回复；
+  //   - 纯内存、不落盘：进程重启即清空，冷启动那一次靠 ConversationStore 的回放兜底。
+  //
+  // 两个消费者：主动介入的判定层（读宽窗）与被 @ 的被动回复（读活动窗口）。见
+  // store/window.ts 顶部。
+  const windows = new ObservationWindowStore({
+    allowlist: config.observation.allowlist,
+    maxMessages: config.observation.maxMessages,
+    maxAgeMs: config.observation.maxAgeMs,
+  });
+  for (const note of config.observation.deprecations) {
+    logger.warn('配置键已迁移（旧键仍生效）', { note });
+  }
+  logger.info('观察窗口就绪', {
+    groups: config.observation.allowlist.length,
+    maxMessages: config.observation.maxMessages,
+    maxAgeMs: config.observation.maxAgeMs,
+    injectWindowMs: config.observation.injectWindowMs,
+  });
+
   // --- 接入层（按配置建连接器，可多个并存） ----------------------------------
   // stats 提前到这里：连接器需要上报转发块回查结果（onForward 回调），
   // 而它是编排层与接入层之间唯一的"计数"通道。放在最前面也让它成为
@@ -252,11 +300,15 @@ async function main(): Promise<void> {
     persistPath: join(paths.stateDir, 'background-pending.json'),
   });
 
+  // TurnRunner 必须先于介入层创建：watcher 的 `compose`（主动发言的措辞轮次）
+  // 是它的一个方法——介入层不再自己拼文案，发言与被动回复走同一条 agent turn。
   const turnRunner = new TurnRunner({
     config,
     logger: logger.child({ component: 'turn-runner' }),
     pool,
     conversations,
+    // 被 @ 时的群聊上下文来源（与主动介入判定读的是同一个窗口；见 store/window.ts）
+    windows,
     sessions,
     paths,
     stats,
@@ -283,13 +335,238 @@ async function main(): Promise<void> {
     }),
   });
 
+  // --- 主动介入层（旁听 → 判定 → 主动发言）--------------------------------
+  //
+  // 装配顺序有依赖：兴趣池 → 投递器 → 判定器 → watcher。四者都只在
+  // `config.proactive.enabled` 时创建；未启用时 orchestrator 拿到的是 undefined
+  // observe（旁听消息只计 skipped 计数），**"只 @ 回复"的部署形态不受影响**。
+  //
+  // 兴趣池文件不存在 = 空池（合法，场景 5 不触发）；存在但格式错 = 启动期报错
+  // （fail-closed，不让 bot 悄悄少一个场景）。
+  let proactive: ProactiveWatcher | undefined;
+  /** health 里的介入层快照（延迟求值：每次 /metrics 都取最新） */
+  let proactiveHealth: (() => ProactiveHealthSnapshot) | undefined;
+  if (config.proactive.enabled) {
+    const interests = loadInterestPool({
+      path: config.proactive.interestsFile,
+      // 显式配了路径就必须存在（否则是"配了但没生效"这种最难查的故障）
+      explicit: config.proactive.interestsFile !== 'interests.yml',
+      enabled: config.proactive.interestsEnabled,
+    });
+    // 回填给配置摘要：`enabled && !loaded` 就是路径配错了
+    config.proactive.interestsLoaded = interests.size > 0;
+    config.proactive.interestsCount = interests.size;
+
+    const speaker = new ProactiveSpeaker({
+      connectorFor: (target) => connectors.get(target.platform),
+      // 单一开关：主动发言复用介入层总开关（见 deliver/speaker.ts 的说明）
+      enabled: true,
+      dryRun: config.proactive.dryRun,
+      logger: logger.child({ component: 'proactive-deliver' }),
+    });
+
+    // 判定能力：需要 LLM 密钥。没有密钥时 watcher 只收集不判定（"只听不说"）。
+    const apiKey = process.env['DEEPSEEK_API_KEY'] ?? '';
+    if (apiKey === '') {
+      // 明确警告：否则表现为"装配成功但从不说话"，是最难查的一种
+      logger.warn('主动介入缺少 DEEPSEEK_API_KEY：判定不会执行，只会收集旁听（只听不说）');
+    }
+    const judge =
+      apiKey === ''
+        ? undefined
+        : createDefaultProactiveJudge({
+            chat: createChatClient({
+              apiBase: config.topic.apiBase,
+              apiKey,
+              model: config.topic.model,
+              // 独立超时：判定要逐场景输出多段 JSON，借用话题判定的 10 秒
+              // 会频繁超时——超时 = 沉默 = "它从来不主动说话"
+              timeoutMs: config.proactive.judgeTimeoutMs,
+            }),
+            maxConcurrent: 2,
+            onError: (reason, detail) => {
+              stats.proactiveJudgeFailures += 1;
+              logger.warn('主动介入判定失败（本次按沉默处理）', { reason, detail });
+            },
+          });
+
+    proactive = new ProactiveWatcher({
+      config: {
+        ...DEFAULT_WATCHER_CONFIG,
+        enabled: true,
+        dryRun: config.proactive.dryRun,
+        // 白名单来自 BOT_LISTEN_GROUPS（个人标识不进配置文件；介入层将来
+        // 归并到同一个变量，届时不冲突）
+        whitelistGroups: config.proactive.whitelistGroups,
+        botAliases: config.proactive.botAliases,
+        topicRollMessages: config.proactive.topicRollMessages,
+        topicRollMs: config.proactive.topicRollMs,
+        questionProbeMs: config.proactive.questionProbeMs,
+        maxWaitPerItem: config.proactive.maxWaitPerItem,
+        waitYieldMs: config.proactive.waitYieldMs,
+        // 话题 session（主动发言的唯一放行闸门）的三个参数。越界值由 watcher
+        // 在构造期按硬上限裁剪并 warn（预算 5 / 静默 1–60 分钟 / 间隔 10–300 秒）。
+        sessionBudget: config.proactive.sessionBudget,
+        sessionIdleMs: config.proactive.sessionIdleMs,
+        sessionMinGapMs: config.proactive.sessionMinGapMs,
+        // ⚠️ 缓冲上限**不在这里**：它已搬到 `observation.*`，由组装层持有的
+        // 观察窗口执行（滚窗不再属于介入层，见 store/window.ts）。
+      },
+      speaker,
+      // 发言生成：判定的 directive 只是"该说什么"的要点，真实文案由一次
+      // agent turn 措辞（与被动回复同一条链路：同会话、同窗口、可用工具）。
+      // 只在真实发言时被调用（dryRun 不碰它，见 watcher 的 deliver）。
+      compose: (input) => turnRunner.runProactiveTurn(input),
+      // 观察窗口：判定层与被动回复路径读同一份
+      windows,
+      ...(judge === undefined ? {} : { judge }),
+      interests,
+      logger: logger.child({ component: 'proactive-watcher' }),
+      metrics: {
+        evaluated: (trigger) => {
+          stats.proactiveEvaluated += 1;
+          stats.proactiveJudgeCalls += 1;
+          logger.debug('主动介入评估', { trigger });
+        },
+        judgeFailed: () => {
+          stats.proactiveJudgeFailures += 1;
+        },
+        judgeSuspended: (conversation) => {
+          stats.proactiveSuspended += 1;
+          logger.warn('主动介入暂停评估（判定连续失败）', { conversation });
+        },
+        vetoed: (reason, scene) => {
+          stats.proactiveVetoed += 1;
+          logger.debug('主动介入被否决', { reason, scene });
+        },
+        spoke: (scene, dryRun) => {
+          if (dryRun) stats.proactiveWouldSend += 1;
+          else {
+            stats.proactiveSpoke += 1;
+            stats.repliesSent += 1;
+          }
+          logger.info(dryRun ? '主动介入（dryRun：本应发言）' : '主动介入已发言', { scene });
+        },
+        deliveryDegraded: (reason, scene) => {
+          stats.proactiveDegraded += 1;
+          logger.debug('主动介入投递降级', { reason, scene });
+        },
+        // wait 票据：每张票据只有一个终局，四个计数之和 == created（账目闭合）。
+        // 这四个数是"wait 到底有没有价值"的唯一答案来源：
+        // `resolved` 长期为 0 → 正确答案可能是把 `yielding` 也按 silent 处理。
+        waitTicket: (terminal, scene) => {
+          stats.proactiveWaitTickets[terminal] = (stats.proactiveWaitTickets[terminal] ?? 0) + 1;
+          logger.debug('主动介入 wait 票据终局', { terminal, scene });
+        },
+        waitTicketCreated: (reason, scene) => {
+          stats.proactiveWaitTicketCreated += 1;
+          stats.proactiveWaitTicketCreatedByReason[reason] =
+            (stats.proactiveWaitTicketCreatedByReason[reason] ?? 0) + 1;
+          logger.debug('主动介入 wait 票据建立', { reason, scene });
+        },
+        waitDeclined: (reason, scene) => {
+          stats.proactiveWaitDeclined[reason] = (stats.proactiveWaitDeclined[reason] ?? 0) + 1;
+          logger.debug('主动介入：模型想等但被按下', { reason, scene });
+        },
+        waitInvalidTarget: (scene) => {
+          stats.proactiveWaitInvalidTarget += 1;
+          logger.debug('主动介入：模型引用了不存在的挂起问题', { scene });
+        },
+        // 话题 session：账目**必须闭合**（`opened === closed === Σ closedBy`）。
+        // `spokeInSession` 的分布是"预算 2 到底对不对"的唯一答案来源。
+        sessionOpened: (scene) => {
+          stats.proactiveSessionOpened += 1;
+          logger.debug('主动介入：开启话题 session', { scene });
+        },
+        sessionClosed: (cause, speaks) => {
+          stats.proactiveSessionClosed += 1;
+          stats.proactiveSessionClosedBy[cause] = (stats.proactiveSessionClosedBy[cause] ?? 0) + 1;
+          stats.proactiveSpokeInSession[String(speaks)] =
+            (stats.proactiveSpokeInSession[String(speaks)] ?? 0) + 1;
+          logger.debug('主动介入：话题 session 关闭', { cause, speaks });
+        },
+      },
+    });
+
+    proactiveHealth = (): ProactiveHealthSnapshot => {
+      const snapshot = proactive?.snapshot();
+      return {
+        enabled: snapshot?.enabled ?? false,
+        dryRun: snapshot?.dryRun ?? false,
+        conversations: snapshot?.conversations ?? 0,
+        buffered: snapshot?.buffered ?? 0,
+        pendingQuestions: snapshot?.pendingQuestions ?? 0,
+        evaluating: snapshot?.evaluating ?? 0,
+        suspended: snapshot?.suspended ?? 0,
+        spoke: snapshot?.spoke ?? 0,
+        wouldSend: snapshot?.wouldSend ?? 0,
+        judgeCalls: snapshot?.judgeCalls ?? 0,
+        judgeFailures: snapshot?.judgeFailures ?? 0,
+        interests: {
+          enabled: config.proactive.interestsEnabled,
+          loaded: config.proactive.interestsLoaded,
+          count: config.proactive.interestsCount,
+          file: config.proactive.interestsFile,
+        },
+        botAliases: config.proactive.botAliases.length,
+        waitTickets: snapshot?.waitTickets ?? {
+          pending: 0,
+          created: 0,
+          resolved: 0,
+          spent: 0,
+          stale: 0,
+          unchanged: 0,
+          invalidTarget: 0,
+        },
+        waitTicketsCreatedByReason: snapshot?.waitTicketsCreatedByReason ?? {},
+        waitDeclined: snapshot?.waitDeclined ?? {},
+        // session 的生效参数即使没装配 watcher 也从配置回填：这样"我改的值到底
+        // 生效了没有"在 health 上一眼可见（硬上限裁剪发生在 watcher 内部）。
+        sessions: snapshot?.sessions ?? {
+          open: 0,
+          spent: 0,
+          opened: 0,
+          closed: 0,
+          closedBy: {},
+          spokeInSession: {},
+          noSession: 0,
+          budgetExhausted: 0,
+          minGap: 0,
+          budget: config.proactive.sessionBudget,
+          idleMs: config.proactive.sessionIdleMs,
+          minGapMs: config.proactive.sessionMinGapMs,
+        },
+        skippedUnchanged: snapshot?.skippedUnchanged ?? 0,
+        evaluatedByTrigger: snapshot?.evaluatedByTrigger ?? {},
+        satisfiedByScene: snapshot?.satisfiedByScene ?? {},
+        vetoed: snapshot?.vetoed ?? {},
+        deliveryDegraded: snapshot?.deliveryDegraded ?? {},
+      };
+    };
+    logger.info('主动介入已装配', {
+      dryRun: config.proactive.dryRun,
+      groups: config.proactive.whitelistGroups.length,
+      interests: interests.size,
+      botAliases: config.proactive.botAliases.length,
+      judge: judge === undefined ? '未配置判定（只听不说）' : 'ready',
+      // 生效值（硬上限裁剪之后）：配成 9 时这里显示 5，与 health 一致
+      session: `${proactive.snapshot().sessions.budget} 句 / 静默 ${
+        config.proactive.sessionIdleMs / 1000
+      }s 关闭 / 间隔 ${config.proactive.sessionMinGapMs / 1000}s`,
+    });
+  }
+
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
   // 会话控制命令（/stop、/new，仅管理员）：必须在闸之前，且不进会话锁——
   // /stop 的意义就是在锁被长任务占住时也能立刻生效。
   const sessionCommands = new SessionCommandRouter({ pool, turns: turnRunner, stats });
+  // 人设切换命令（/persona，仅管理员）：与 /stop、/new 同级——控制面操作，
+  // 不占名额、不进会话锁、峰时段也要可用。
+  const personaCommands = new PersonaCommandRouter({ personas, stats });
   const stages: IngressStage[] = [
     createDedupeStage({ seen, stats }),
     sessionCommands.stage(),
+    personaCommands.stage(),
     offpeakCommands.stage(),
     createOffpeakGateStage({ gate: offpeak, config, stats }),
     createRecordStage({ conversations }),
@@ -311,6 +588,14 @@ async function main(): Promise<void> {
         conversations,
         stats,
         logger: messageLogger,
+        // 被动回复也进观察窗口：否则被 @ 的回复路径看不到"bot 自己刚说过什么"，
+        // 模型会对着已经被回答过的问题重新组织一遍答案（见 store/window.ts）。
+        //
+        // ⚠️ 刻意**不带 `msgId`**：那是**用户那条**消息的 id，写进来会让"排除当前
+        // 消息"（TurnRunner 注入时按 msgId 排除）把 bot 自己的回复一起排掉。
+        onReplied: (text, ts) => {
+          windows.recordBotReply(message.target.key, { text, ts });
+        },
         // outbox 目录路径在这里拼好：Responder 不感知工作区布局，
         // 只拿一个"该扫哪个目录"的绝对路径（目录不存在 = 没有产物）。
         ...(config.media.enabled
@@ -325,6 +610,9 @@ async function main(): Promise<void> {
           : {}),
       }),
     turns: turnRunner,
+    // 旁听消息的去向：唯一入口是 watcher（未启用时留 undefined →
+    // orchestrator 只计 skipped 计数）
+    ...(proactive === undefined ? {} : { observe: (message) => proactive?.observe(message) }),
     status: () => ({
       inFlight: admission.inUse,
       queued: admission.queued,
@@ -362,6 +650,11 @@ async function main(): Promise<void> {
   // 这里只留一层 .catch 作为组装级保险（Orchestrator 自身永不抛错）。
   for (const connector of connectors.values()) {
     connector.on((event) => {
+      // 被 @ 的消息也记进旁听缓冲：否则判定看不到"bot 回答了谁、回答了什么"，
+      // 场景 1（续聊追问）没有判断依据。只记不评（评估仍由旁听路径触发）。
+      if (proactive !== undefined && (event.kind === 'group-at-message' || event.kind === 'c2c-message')) {
+        proactive.observeAddressed(event);
+      }
       void orchestrator.handleEvent(event).catch((error: unknown) => {
         logger.error('处理事件时出错', {
           kind: event.kind,
@@ -388,6 +681,7 @@ async function main(): Promise<void> {
         },
         background: background.snapshot(),
         dispatcher: orchestrator.snapshotStats(),
+        ...(proactiveHealth === undefined ? {} : { proactive: proactiveHealth() }),
       }),
   });
   await health.start();

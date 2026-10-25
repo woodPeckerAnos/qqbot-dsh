@@ -343,6 +343,31 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 | `imagesInlined` 一直是 0 | — | `attachments.enabled=false`，或模型侧不支持图片 | 打开 `BOT_ATTACHMENT_ENABLED`；prompt 里会明说"已关闭图片读取" |
 | 长图只读进来一部分 | prompt 注记里有"共需 R 块，本次只送入前 N 块" | 切片块数受 `attachments.maxImageTiles`（默认 12）与 runtime 单条 prompt 20 张上限约束 | 调大 `BOT_ATTACHMENT_MAX_IMAGE_TILES`（token 代价随之上升），或让用户分段发送 |
 | 引用内容为空 | 日志 `回查引用消息失败` | OneBot 侧 `get_msg` 失败（框架不支持/超时） | 该条按未引用继续处理；检查框架是否支持 `get_msg` |
+| **"群里先发图、再 @ bot"**，bot 说"只收到占位符/看不到图" | `windowImagesInlined` 为 0 | 上下文（滚窗）里的媒体配额为 0，或该图超配额/下载失败 | 见下一小节 |
+
+**上下文（滚窗）里的图片/文件**走的是与当前消息**同一条**通路，但配额独立，且
+只在被 @ 时才取字节（旁听期间不下载任何东西）。排障按这三个字段定位：
+
+| 现象 | 字段 | 处置 |
+|---|---|---|
+| 上下文里的图一张都没进 | `windowImagesInlined` = 0 且 `windowImagesSkipped` = 0 | 说明**根本没选中**：`BOT_OBSERVATION_INJECT_IMAGES`/`injectFiles` 被配成 0，或该会话不在 `BOT_LISTEN_GROUPS` 里（没进滚窗） |
+| 只进来一部分 | `windowImagesSkipped` > 0 + 日志"上下文里的部分图片未能读入" | 超配额（只取**最近**的 N 张，调大 `BOT_OBSERVATION_INJECT_IMAGES`）或单张下载失败（按下面的平台表排除） |
+| 上下文里的文件没进 | `windowFilesFetched` = 0 + `filesSkipped` 增长 | `BOT_OBSERVATION_INJECT_FILES=0`，或类型不在 `attachments.files.extractExtensions` 白名单里 |
+| 整轮图片都进不去（连刚发的那张也没了） | `windowImagesSkipped` 与 `imagesSkipped` 同时增长，日志有"带图片的 prompt 被 runtime 拒绝" | 撞上了单条 prompt 20 张的硬上限：当前消息先取、上下文只能用剩下的——调小两侧配额或 `BOT_ATTACHMENT_MAX_IMAGE_TILES` |
+
+文件被读进来的原文落在会话工作区的 `inbox/`，prompt 里会给出路径（`inbox/xxx.pdf`），
+模型可以继续用工具深挖；上下文里的文件在说明里带 `[谁] 那条消息里的 ` 前缀——
+群里的同名文件靠它区分。
+
+**聊天记录（合并转发）**默认**不展开**成上下文（一条转发动辄几十条发言，灌进去
+既烧 token 又跑题）：只有在被 @ 且这次的问题明确提到它时，才由话题判定那一次调用
+顺带判出来并回查。排障看这两个计数：
+
+| 现象 | 字段 | 处置 |
+|---|---|---|
+| "看看刚才那个聊天记录"但 bot 说看不到 | `windowForwardsExpanded` = 0 | 先看那轮日志里有没有"按需展开上下文里的聊天记录"：没有就是**判定没判成**（判据刻意窄，拿不准一律不展开；`topic.enabled=false` 或没配 `DEEPSEEK_API_KEY` 时整条通路关闭） |
+| 判成了但没读到 | `windowForwardsFailed` 增长 + 日志"上下文里的聊天记录未能展开" | 回查失败（消息过期 / 框架不支持 `get_forward_msg`）或转发展开被关（`BOT_ATTACHMENT_FORWARD_ENABLED=false`）。prompt 里已如实告诉模型"这条记录没读出来"，不会让它猜 |
+| @ 消息**自带**的记录没展开 | `forwardsExpanded` 不变 + 日志"回查转发消息失败" | 那是另一条路径（@ 消息里的转发在归一化后立刻展开），见上面几张表与 DESIGN §11.6 |
 
 按平台排除：
 
@@ -398,7 +423,7 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 | 现象 | 字段 | 原因 | 处置 |
 |---|---|---|---|
-| 转发块只显示 `[聊天记录]` | `forwardsFailed` 增长 | 回查失败/超时/响应解析不出条目 | 看 debug 日志 `get_forward_msg 失败`；确认框架支持该动作（见第 7 节 #14）。注意**关掉 `BOT_ATTACHMENT_FORWARD_ENABLED` 不计入**这个数（主动关闭不是失败） |
+| 转发块只显示 `[聊天记录]` | `forwardsFailed` 增长 | 回查失败/超时/响应解析不出条目 | 看 debug 日志 `get_forward_msg 失败`；确认框架支持该动作（见第 8 节 #14）。注意**关掉 `BOT_ATTACHMENT_FORWARD_ENABLED` 不计入**这个数（主动关闭不是失败） |
 | 转发块只显示 `[聊天记录]`，但 `forwardsFailed` **不涨** | — | 上报里既没有内联内容也没有 id（`forward` 段只有 type） | 框架问题：让它按 OneBot 规范上报 `forward.data.id`（NapCat 会同时给 `content`） |
 | 转发块"共 N 条"但只列出前几条 | `forwardNodesInlined` 小于 N | 命中上限（正常降级，不是故障） | 提高 `BOT_ATTACHMENT_FORWARD_MAX_NODES` / `_MAX_CHARS` |
 | 完全不想展开转发 | — | — | `BOT_ATTACHMENT_FORWARD_ENABLED=false`（关掉后**不发任何回查请求**，内联内容也不展开） |
@@ -416,7 +441,91 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 ---
 
-## 5. 重启后"失忆"
+## 5. 主动发言相关（它不主动说话 / 它说得不对）
+
+主动介入是**独立于 @ 回复**的一条链路：旁听群消息 → 判定要不要插话 → 主动发言。
+它的开关、白名单、灰度与 @ 路径完全无关，排障时先分清"是它决定不说"还是"链路没通"。
+
+### 5.1 分诊：看 health 的 `proactive` 段
+
+```bash
+curl -s localhost:8080/health | jq .proactive
+```
+
+**整段缺失** = 介入层没装配（`proactive.enabled=false`，默认值）。
+"bot 只在被 @ 时回复"与"它旁听了但决定不说"是两件事，这里必须先分清。
+
+| 现象 | 常见原因 | 怎么确认 |
+|---|---|---|
+| 段缺失 | `BOT_PROACTIVE_ENABLED` / `proactive.enabled` 没打开 | 启动日志里的 `主动介入已装配` 一行不会出现 |
+| `enabled: true` 但 `conversations: 0` | 白名单没配或写错（`BOT_LISTEN_GROUPS` 为空 = 不接任何群） | 条目必须带平台前缀：`onebot:123456`、`ob11:g123456` |
+| `interests.enabled: true` 但 `interests.loaded: false` | 兴趣池文件路径配错（默认 `interests.yml`，容器里要有这个文件） | 场景 5 永远不会触发，但其余场景正常 |
+| `dryRun: true` | **这是默认值**：判定照跑、只记 `wouldSend`，不会真的发言 | 确认判据准了再显式设 `false` |
+| `wouldSend > 0` 而 `spoke == 0` | 就是上面这条（灰度模式在工作） | 观察 `vetoed` / `satisfiedByScene` 判断判据质量 |
+| `spoke == 0` 且 `vetoed` 全是 `no-candidate` | 本地预筛没命中：消息不是指代/续聊/问句，也没命中兴趣池 | 看 `SCENES.md` 的成立条件；兴趣池加条目 |
+| `spoke == 0` 且 `judgeFailures > 0` | 判定调用失败（超时/网络/密钥/解析） | 日志里搜「主动介入判定失败」；连续失败会 `suspended` |
+| `suspended > 0` | 判定连续失败达上限，该会话暂停评估 | 修好上游后重启进程（暂停状态不持久化） |
+| `vetoed` 里 `rate-limit` / `min-gap` | 触发了硬限流，或同一话题会话内两次发言间隔没到 | 这是设计行为；额度见 `qqbot.yml` 的 proactive 段 |
+| `sessions.opened` 涨、`spoke` 不涨 | 判定判"值得"但发言被后面几道闸门挡下 | 看 `vetoed` 是哪一类；`min-gap` / `rate-limit` / `budget-exhausted` 都不消耗预算 |
+| `sessions.closedBy['idle']` 占绝大多数 | 话题会话几乎都是"没人接话"被静默关闭的 | 正常兜底；若 `llm-closed` 长期为 0，说明判据里"什么时候该关"那一段没起作用 |
+| `sessions.budgetExhausted` 高 | 同一个话题里"还想说、但额度没了"被挡了很多次 | 高 = 预算偏紧（模型还想接着聊）；低 = 2 句够用。**注意它不等于"它不说话了"**：会话还开着，只是闭嘴 |
+| `sessions.spent > 0` | 有话题的额度已用尽、正在闭嘴（会话没关） | 这是正常状态；`idle` 到点或模型说换话题后它会消失 |
+| `sessions.spokeInSession` 集中在 `"1"` | 每个话题只说得出一句，预算 2 用不满 | 可把 `proactive.sessionBudget` 降为 1（更省），或说明模型偏保守 |
+| `sessions.noSession` 很高 | 大量唤醒因为"没有会话"被挡 = 覆盖率低 | **这是本设计的预期**（以覆盖率换精度）；要提覆盖只能改判据或调 session 参数 |
+| `deliveryDegraded: {"unsupported": N}` | **官方通道不支持主动发言**（主动推送已停用） | 预期行为，不是故障；OneBot 才有这个能力 |
+| `deliveryDegraded: {"compose-failed": N}` | 措辞轮次没产出发言：会话正忙（有用户轮次在跑，主动发言主动让路）/ 生成超时 / runtime 起不来 / 模型看完完整上下文后选择不说 | 偶发 = 正常；持续增长看 debug 日志「主动发言：」「主动介入：发言生成未果」，超时占多就调大 `proactive.speakTimeoutMs` |
+| 发出去的话是"直接回答 xx 的要点（依据：…）"这种元文本 | 措辞轮次没接上（`compose` 未注入时退回发判定要点原文） | 启动日志搜 `未注入发言生成`——正常装配不会出现；确认部署的是含措辞轮次的版本 |
+
+### 5.2 "它为什么说了这句"
+
+每次判定都会记 `satisfiedByScene`（哪个场景被判成立）与 `vetoed`（被什么否掉）。
+日志里按 `component: proactive-watcher` 过滤，能看到评估、否决、投递三个阶段，
+其中 `主动介入已发言` / `主动介入（dryRun：本应发言）` 两条会带 `scene` 字段
+（`scene-1`…`scene-5`，含义见 `src/pipeline/proactive/interests/SCENES.md`）。
+
+### 5.3 "它为什么不说话"（按链条从后往前查）
+
+1. **平台能力**：官方通道恒为 `unsupported`（见上表）。要主动发言必须走 OneBot。
+2. **投递开关**：总开关关了 / 灰度没关（`dryRun`）/ 该群不在白名单。
+3. **措辞轮次**（判定说"值得说"之后才到这一层）：`deliveryDegraded['compose-failed']`
+   涨 = 文案没生成出来。常见原因：会话正忙（主动发言给用户轮次让路，预期行为）、
+   生成超时（`proactive.speakTimeoutMs`，默认 120s）、模型看完完整上下文后选择不说
+   （逃生门，debug 日志「主动发言：模型看过完整上下文后选择不说」——它多涨说明
+   判据偏松，而不是链路坏了）。
+4. **否决层**：`vetoed` 里有 `rate-limit`（10 分钟 3 次、1 小时 8 次）、
+   `no-session`（没有开启中的话题会话：模型没判"值得"，或上一个会话已经关了）、
+   `min-gap`（同一会话内距上次发言不足 `sessionMinGapMs`）、
+   `budget-exhausted`（**本话题的发言预算已用尽**：会话还在，只是不放行——
+   等模型说"换话题了"/"收口了"或静默超时）、`no-response`（连续两次介入没人理，保险生效）。
+   另有 `skippedUnchanged`：被"转录自上次判定以来无新增"挡下、连 LLM 都没调的次数
+   ——这个数高说明群里本来就没新消息，不是判据把它们否了。
+5. **判定层**：`judgeFailures` 涨 = 判定没跑通；`satisfiedByScene` 全空 =
+   模型认为没有一个场景成立（看 `SCENES.md` 的成立门槛，多数是判据真的不成立）。
+6. **搜集层**：全是 `no-candidate` = 本地预筛就没命中。逐条对照：
+   - 场景 4：消息里有没有 bot 的别名，或"机器人/助手"+请求词；
+   - 场景 1：bot 在这个话题里说过话吗（活动窗口内）；
+   - 场景 3：有没有 ≥4 字的疑问句（问号或疑问词），且挂起够久；
+   - 场景 2：近窗是否 ≥2 人且 ≥2 条消息；
+   - 场景 5：`interests.yml` 里有没有对应的关键词命中。
+
+### 5.4 旁听能力的平台前提
+
+- **OneBot**：需要框架推送**全量群消息**（NapCat 等默认就推）；
+  非 @ 群消息在归一化阶段变成旁听消息，`stats.observed` 会涨。
+  若 `observed` 一直是 0，说明框架没推全量消息，不是代码问题。
+- **官方通道**：需要平台侧开通「接收所有消息」能力，否则永远收不到旁听消息
+  （`GROUP_MESSAGE_CREATE` 不会推）。开通后它会归一到旁听消息，
+  **不会**再像从前那样把每条群消息都当触发消息——那个隐患已修。
+
+### 5.5 隐私与留存
+
+旁听内容**只在内存**（每会话一个有界 ring buffer，默认 200 条 / 30 分钟），
+进程重启即清空，不落盘；判定用的转录只在调用 LLM 时构造，不写文件。
+"仲裁快照 / 回放录制"目前**没有实现**（属方案 S4），所以不存在旁听落盘的问题。
+
+---
+
+## 6. 重启后"失忆"
 
 预期行为是：**DSH 会话是新建的，上下文由对话记录回放恢复。**
 （原因见 `docs/DESIGN.md` 2.3——DSH 的 `session/prompt` 没有 resume 语义。）
@@ -440,9 +549,9 @@ docker compose logs qqbot | grep "冷启动回放历史"
 
 ---
 
-## 6. 沙箱相关
+## 7. 沙箱相关
 
-### 6.0 compose 报 `can't set distinct values on 'pids_limit' and 'deploy.resources.limits.pids'`
+### 7.0 compose 报 `can't set distinct values on 'pids_limit' and 'deploy.resources.limits.pids'`
 
 ```
 services.qqbot: can't set distinct values on 'pids_limit' and
@@ -481,7 +590,7 @@ CapDrop={{.HostConfig.CapDrop}} User={{.Config.User}}'
 期望看到：`PidsLimit=512 Memory=2147483648 NanoCpus=2000000000
 ReadonlyRootfs=true CapDrop=[ALL] User=qqbot`。
 
-### 6.1 日志出现大量 `sandbox escalation auto-approved`
+### 7.1 日志出现大量 `sandbox escalation auto-approved`
 
 含义：工作区内操作本不该提权，但 DSH 请求了提权到 `danger-full-access`，
 **实际权限此时等于完全访问**。
@@ -499,13 +608,13 @@ docker inspect qqbot-dsh --format '{{json .HostConfig}}' | python3 -m json.tool 
   grep -E 'ReadonlyRootfs|CapDrop|PidsLimit|SecurityOpt|Memory'
 ```
 
-### 6.2 agent 想写工作区外的文件被拒
+### 7.2 agent 想写工作区外的文件被拒
 
 这是**预期行为**（`workspace-write` 生效）。如果确实需要放宽，正确做法是给
 该项目单独开一个工作区，而不是关掉沙箱——每个会话的工作区目录由会话键
 哈希决定，无法手工指定（群聊用 `group_openid`，单聊用 `c2c:<user_openid>`）。
 
-### 6.3 容器把磁盘写满
+### 7.3 容器把磁盘写满
 
 ```sh
 docker compose exec qqbot du -sh /data/* 
@@ -520,7 +629,7 @@ docker system df
 
 ---
 
-## 7. 已知的未实测项
+## 8. 已知的未实测项
 
 以下事实**无法从官方文档确认**，属于需要在真机联调时验证的项。如果遇到相关
 现象，先怀疑这里：
@@ -539,6 +648,7 @@ docker system df
 | 10 | 单聊 `msg_type=2`(markdown) 渲染效果 | 与群聊共用 `QQ_MSG_TYPE`；同样默认纯文本 |
 | 11 | 官方多媒体 CDN 是否强制 `Authorization: QQBot <token>` | 实况文档未写死。程序先带 token，仅在 401/403 时裸请求一次兜底，两种形态都能过 |
 | 12 | DS 模型对 image block 的真实支持面 | SDK 协议支持内联图片（`SdkEncodedImageBlock`），但具体模型是否都吃图未逐一实测。看不到图先看 `/metrics` 的 `imagesInlined`/`imagesSkipped`；不支持就设 `BOT_ATTACHMENT_ENABLED=false` |
+| 14 | 话题判定对"这次的问题有没有明确提到一条聊天记录"的判准 | 判据刻意窄（拿不准一律不展开），因此**会漏**：漏了的表现是 bot 说"那条记录我没读到"，用户可以重发那条记录或把要点贴出来。误判成 true 的代价只是一次回查 + 几十条发言的 token。`windowForwardsExpanded`/`windowForwardsFailed` 给出实际命中率，见 4.5 |
 | 13 | OneBot 上报的图片 URL 容器可达性 | 框架在宿主时可能上报 `http://127.0.0.1:<port>/...`，容器内不可达。**已缓解**：URL 缺失或 GET 失败时会自动用 `get_file`/`get_image` 动作回查（base64 或刷新 URL）；仍失败才退化为 `[图片]` 占位，见 4.5 |
 | 14 | `get_forward_msg` 的入参与响应形状 | 参数名在各实现间不一致（NapCat 用 `id`、go-cqhttp 用 `message_id`），响应可能是 node 段数组、裸消息段数组、CQ 码字符串数组、被序列化成 JSON 的字符串、或包着 `data` 的形态。程序**一次请求带两个参数**（`message_id` 的类型按能否无损往返决定：19 位消息 id 一旦过 `Number()` 就会丢精度，而 NapCat 恰好优先取 `message_id`）、解析器容忍上述形状，认不出的条目跳过。**已修**：上报自带 `forward.data.content` 时优先内联展开，零回查。真机上若转发块仍只显示 `[聊天记录]`，看 debug 日志 `get_forward_msg 失败` 与 `/metrics` 的 `forwardsFailed` |
 | 15 | 官方是否存在聊天记录类 `message_type` | 现行官方文档的接收侧只有 0/3/103，早期代码注释里的 101/102 查无实据。程序对它们做**防御性兼容**（见到就把 `msg_elements` 当转发块渲染）。若官方后续开放转发能力，接缝已留好；在此之前官方侧不作为承诺 |
@@ -548,7 +658,7 @@ docker system df
 
 ---
 
-## 8. 升级/回滚 DSH 版本后出问题
+## 9. 升级/回滚 DSH 版本后出问题
 
 本项目对 DSH 的依赖面很窄：只用 stdio JSON-RPC 的 3 个方法 + 4 个通知，
 并在 `initialize` 时**校验服务端身份**：
@@ -570,7 +680,7 @@ initialize 返回了意外的服务端身份 {...}，预期 name=deepseek-harnes
 
 ---
 
-## 9. 需要上报问题时请附带
+## 10. 需要上报问题时请附带
 
 ```sh
 docker compose logs --tail=200 qqbot > /tmp/qqbot.log

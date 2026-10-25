@@ -540,6 +540,36 @@ describe('ingestFiles', () => {
     expect(called).toBe(false);
     expect(result.notes).toEqual([]);
   });
+
+  // 滚窗来源：同一批文件走同一条通路，但说明里必须分得清"这是谁发的那条消息里的"
+  // ——群里的两个 report.pdf 不带来源就只能靠猜。
+  it('sourceLabel / labelPrefix 把来源写进说明（逐条与批量说明都要）', async () => {
+    const result = await ingestFiles({
+      parts: [filePart({ filename: 'report.pdf' }), filePart({ filename: 'b.pdf' })],
+      workspacePath: tempWorkspace(),
+      config: { ...FILES_CONFIG, maxFiles: 1 },
+      downloadTimeoutMs: 1_000,
+      sourceLabel: '群聊上下文',
+      labelPrefix: () => '[小红] 那条消息里的 ',
+      fetchMedia: async () => ({ data: PDF_BYTES }),
+      logger,
+    });
+    const notes = result.notes.join('\n');
+    expect(notes).toContain('[小红] 那条消息里的 [文件: report.pdf');
+    expect(notes).toContain('（群聊上下文里另有 1 个文件超出单条消息上限，未读取）');
+  });
+
+  it('关闭文件读取时，批量说明也说清来源群体', async () => {
+    const result = await ingestFiles({
+      parts: [filePart()],
+      workspacePath: tempWorkspace(),
+      config: { ...FILES_CONFIG, enabled: false },
+      downloadTimeoutMs: 1_000,
+      sourceLabel: '群聊上下文',
+      logger,
+    });
+    expect(result.notes[0]).toContain('已关闭文件读取，群聊上下文里的 1 个文件未读入');
+  });
 });
 
 // ---------------------------------------------------------------------------

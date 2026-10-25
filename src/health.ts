@@ -29,6 +29,14 @@ export interface HealthSnapshot {
   background: BackgroundSnapshot;
   /** 编排层统计（字段名 dispatcher 是 /metrics 的对外契约，RUNBOOK 在用） */
   dispatcher: PipelineStatsSnapshot;
+  /**
+   * 主动介入层快照（旁听/判定/投递）。
+   *
+   * 未装配介入层时整个字段缺失——**这本身就是有效信息**：
+   * "bot 只在被 @ 时回复"与"它旁听了但决定不说"是两件事，
+   * 排障时必须能一眼区分（`enabled=false` / `conversations=0` / `spoke=0` 各有含义）。
+   */
+  proactive?: ProactiveHealthSnapshot;
   /** 最近一次收到任何连接器事件的时间距今毫秒；undefined 表示还没收到过 */
   lastEventAgeMs?: number;
   warnings: string[];
@@ -128,12 +136,132 @@ export function createHealthServer(options: HealthServerOptions): HealthServer {
  */
 export const EVENT_STALE_THRESHOLD_MS = 150_000;
 
+/** 主动介入层在 health 里的形状（由组装层从 watcher 快照映射而来）。 */
+export interface ProactiveHealthSnapshot {
+  enabled: boolean;
+  dryRun: boolean;
+  conversations: number;
+  buffered: number;
+  pendingQuestions: number;
+  evaluating: number;
+  suspended: number;
+  spoke: number;
+  wouldSend: number;
+  /**
+   * 发起过判定调用的次数。与 `judgeFailures` 一起读：
+   * `judgeCalls==0` = 没判定能力；`judgeCalls>judgeFailures` = LLM 答了但判不成立；
+   * `judgeCalls==judgeFailures` = 每次调用都失败（超时 / 密钥 / 解析）。
+   */
+  judgeCalls: number;
+  judgeFailures: number;
+  /** 兴趣池：条目数与是否真的读到文件（`enabled && !loaded` = 路径配错了） */
+  interests: { enabled: boolean; loaded: boolean; count: number; file: string };
+  /** bot 别名个数（场景 4 的指代检测面） */
+  botAliases: number;
+  /**
+   * 让路（wait）的收敛账目——"这个机制该保留还是删掉"由它回答
+   * （见 docs/WAIT-CONVERGENCE-REQUIREMENT.md「可观测性」）。
+   *
+   * **账目必须闭合**：`created === resolved + spent + stale + unchanged`。
+   * `invalidTarget` 与 `waitDeclined` 不产生票据，因此不参与这个等式。
+   */
+  waitTickets: {
+    /** 当前待唤醒的票据数 */
+    pending: number;
+    created: number;
+    /** 等待熬到了成立（高 = wait 有价值；长期为 0 = 该删掉） */
+    resolved: number;
+    /** 让路预算用尽、静默（高 = 模型过度使用"让路"） */
+    spent: number;
+    /** 唤醒时对象已关闭（**越高越好**：省下了调用） */
+    stale: number;
+    /** 唤醒时转录无新增，跳过重问（同理） */
+    unchanged: number;
+    /** 模型引用了一个不存在（或没给）的挂起问题 */
+    invalidTarget: number;
+  };
+  /**
+   * 建票据的**理由分布**（`wait_ticket_created{reason}`）。
+   *
+   * 需求点名要有这一项：按理由分布直接反映判据是否需要调整
+   * （`yielding` 占绝大多数而 `resolved` 长期为 0 = 模型过度使用"让路"）。
+   */
+  waitTicketsCreatedByReason: Record<string, number>;
+  /**
+   * 模型想等、但被否决层按下的次数，**按理由拆开**。
+   *
+   * 必须有这一项：`not-yet` / `watching` 走 silent 分支，
+   * 不单独计数的话"模型为什么没让 bot 说话"就完全不可见了。
+   */
+  waitDeclined: Record<string, number>;
+  /**
+   * **话题 session 的账目与闸门**（见 docs/TOPIC-SESSION-REQUIREMENT.md「可观测性」）。
+   *
+   * 它是"预算 2 到底对不对"的唯一直读面：`opened × spokeInSession` 的联合分布
+   * 回答"每个 session 说满了几句"，`closedBy` 回答"是 LLM 关的还是预算关的"。
+   *
+   * **账目必须闭合**：`opened === closed === Σ closedBy{reason}`。
+   */
+  sessions: {
+    /** 当前开启中的 session 数（多群部署时最多等于会话数；**含已耗尽的**） */
+    open: number;
+    /**
+     * 其中预算已用尽、正在这个话题里闭嘴的会话数（`open - spent` = 还能开口的）。
+     *
+     * 为什么会有"开着但耗尽"的会话：**预算不驱动 session 的生死**（维护者口径）——
+     * 减到 0 只是闭嘴，会话要等话题收口、换话题或静默超时才关。
+     */
+    spent: number;
+    opened: number;
+    closed: number;
+    /**
+     * 关闭原因分布（四种原因穷举）：`llm-closed`（话题收口）/ `topic-changed`
+     * （换话题，旧会话让位）/ `idle`（静默超时）/ `conversation-gone`（状态被清理）。
+     * **预算不在其中**——它只让会话闭嘴，不终结它。
+     */
+    closedBy: Record<string, number>;
+    /** 「每个 session 里说了几句」的分布：`{"1": N, "2": M}` */
+    spokeInSession: Record<string, number>;
+    /**
+     * 因为"没有 session"被挡的唤醒次数（覆盖率信号：高 = session 开得太少）。
+     */
+    noSession: number;
+    /**
+     * 因为"本话题的发言预算已用尽"被挡的次数（**主路径之一**）。
+     *
+     * 预算耗尽不关会话，所以同一个话题里"还想说、但额度没了"会一次次记在这里：
+     * 高 = 预算偏紧（模型还想接着聊），低 = 预算够用。要不要加预算看它，
+     * 而不是看 `closedBy`（那里不再有预算这一项）。
+     */
+    budgetExhausted: number;
+    /** 因为"最小间隔没到"被挡的次数（异常高 = 模型想说的话被间隔压住了） */
+    minGap: number;
+    /** 生效的三个参数（硬上限裁剪之后的值，便于确认配置真的生效了） */
+    budget: number;
+    idleMs: number;
+    minGapMs: number;
+  };
+  /**
+   * 被"转录自上次判定以来无新增"挡下、连 LLM 都没调的次数（唯一的本地闸）。
+   *
+   * 它只装在滚动收敛（`topic-roll`）上：消息面（到达即新增）与问题探针
+   * （时间触发、且天生有界）都不装这道闸。
+   */
+  skippedUnchanged: number;
+  evaluatedByTrigger: Record<string, number>;
+  satisfiedByScene: Record<string, number>;
+  vetoed: Record<string, number>;
+  deliveryDegraded: Record<string, number>;
+}
+
 export function buildHealthSnapshot(input: {
   startedAt: number;
   connectors: Record<string, ConnectorHealth>;
   runtime: { size: number; activeConversationKeys: string[]; activeSubagents: number };
   background: BackgroundSnapshot;
   dispatcher: PipelineStatsSnapshot;
+  /** 主动介入层快照；未装配时省略 */
+  proactive?: ProactiveHealthSnapshot;
   now?: number;
 }): HealthSnapshot {
   const now = input.now ?? Date.now();
@@ -182,6 +310,7 @@ export function buildHealthSnapshot(input: {
     runtime: input.runtime,
     background: input.background,
     dispatcher: input.dispatcher,
+    ...(input.proactive === undefined ? {} : { proactive: input.proactive }),
     ...(lastEventAt !== undefined ? { lastEventAgeMs: now - lastEventAt } : {}),
     warnings,
   };

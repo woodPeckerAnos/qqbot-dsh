@@ -246,3 +246,29 @@ describe('嵌套子节的未知键', () => {
     expect(file.attachments?.forward?.maxNodes).toBe(3);
   });
 });
+
+describe('personas 与 hints 配置段', () => {
+  it('解析 personas.dir 与 hints.longTask 子节', () => {
+    const file = parseConfigFileText(`
+personas:
+  dir: /opt/personas
+hints:
+  longTask:
+    enabled: false
+    patterns: [核查, 批量]
+    text: 自定义提示
+`);
+    expect(file.personas).toEqual({ dir: '/opt/personas' });
+    expect(file.hints?.longTask).toEqual({
+      enabled: false,
+      patterns: ['核查', '批量'],
+      text: '自定义提示',
+    });
+  });
+
+  it('两个新段的未知键都在启动期报错（含 hints 的嵌套子节）', () => {
+    expect(() => parseConfigFileText('personas:\n  path: /x\n')).toThrow(ConfigError);
+    expect(() => parseConfigFileText('hints:\n  longTask:\n    keys: [a]\n')).toThrow(ConfigError);
+    expect(() => parseConfigFileText('hints:\n  other:\n    enabled: true\n')).toThrow(ConfigError);
+  });
+});

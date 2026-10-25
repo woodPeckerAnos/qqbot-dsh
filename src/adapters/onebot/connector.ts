@@ -26,6 +26,7 @@ import type {
   BotConnector,
   ConnectorHealth,
   ConversationKind,
+  ConversationTarget,
   MediaBytes,
   MediaFetchOptions,
   MessageForwardPart,
@@ -35,6 +36,7 @@ import type {
   NormalizedMessage,
   OutgoingAttachment,
   OutgoingMessage,
+  ProactiveResult,
   RemoteMedia,
   ReplyContext,
   ReplyPolicy,
@@ -306,6 +308,33 @@ export class OnebotConnector implements BotConnector {
     }
     for (const attachment of attachments) {
       await this.sendAttachment(session, ctx, attachment);
+    }
+  }
+
+  /**
+   * 【主动发言能力】OneBot 没有"被动窗口/主动额度"概念：任何时刻都能往群里发。
+   * 所以这里只需把"没有 msg_id 可锚定"这件事表达成一次普通发送——
+   * 复用 sendText，只是自造一个主动语义的 ReplyContext（seq 用 0）。
+   *
+   * 外层（pipeline/proactive）对两个平台走的是同一条逻辑，分支只在这里。
+   */
+  async proactive(target: ConversationTarget, out: OutgoingMessage): Promise<ProactiveResult> {
+    // ReplyContext 只多一个 seq：主动发言没有"针对哪条用户消息"的概念，
+    // seq 固定 0 表示"不属于任何一条被动回复账本"。
+    const ctx: ReplyContext = { target, seq: 0, kind: 'final' };
+    try {
+      await this.reply(ctx, out);
+      this.options.logger.debug('OneBot 主动发言已发送', {
+        conversation: target.key,
+        length: out.text.length,
+        attachments: out.attachments?.length ?? 0,
+      });
+      return { ok: true };
+    } catch (error) {
+      // 与 reply 不同：主动发言的失败不该打断任何调用方流程，用返回值表达。
+      const detail = error instanceof Error ? error.message : String(error);
+      this.options.logger.warn('OneBot 主动发言失败', { conversation: target.key, detail });
+      return { ok: false, reason: 'error', detail, retryable: true };
     }
   }
 
@@ -1004,6 +1033,51 @@ export class OnebotConnector implements BotConnector {
     if (viaGetFile !== undefined) return viaGetFile;
     // get_image：OneBot 标准动作，NapCat 返回刷新后的 url 或本地路径。
     return this.fetchViaFileAction(session, 'get_image', media.fileId, options);
+  }
+
+  /**
+   * 【按需展开】取一条聊天记录（合并转发）的内容。
+   *
+   * 与 `fetchMedia` 同一类能力，差别在"什么时候需要"：@ 消息里的转发在归一化后
+   * 立刻由连接器展开（`enrichEvent`），而**旁听**消息里的转发**不进 content**
+   * （一条转发动辄几十条发言，当普通上下文灌进去会烧掉大量 token），只把 id 留在
+   * 观察窗口里；被 @ 且这次的问题明确提到它时，才由编排层回调到这里（见
+   * `core/connector.ts` 的 `fetchForward` 说明）。
+   *
+   * 复用既有回查通路：同一套上限（`newForwardBudget`）、同一个 LRU 缓存、同一条
+   * 每会话串行队列。任何失败都返回 undefined，**绝不抛错**。
+   */
+  async fetchForward(
+    target: ConversationTarget,
+    refId: string,
+  ): Promise<MessageForwardPart | undefined> {
+    const config = this.options.forward;
+    // 关掉转发展开时**不发任何请求**（与 @ 路径同一个开关、同一条纪律）
+    if (config === undefined || !config.enabled || refId === '') return undefined;
+    let session: Session;
+    try {
+      // 必须用收到那条消息的连接：多连接下 pickAnySession 可能选到不在该群的号
+      session = this.pickSession(target.key);
+    } catch {
+      return undefined;
+    }
+    try {
+      const part = await this.expandForward(
+        session,
+        { index: 0, id: refId },
+        0,
+        this.newForwardBudget(),
+      );
+      // expandForward 在失败/超限时给的是 text 占位（`[聊天记录]`、`[转发消息（…）]`）：
+      // 那对调用方等于"没拿到"，如实返回 undefined，而不是把占位当内容传下去。
+      return part.type === 'forward' ? part : undefined;
+    } catch (error) {
+      this.options.logger.warn('按需展开聊天记录失败（降级为读不到）', {
+        forwardId: refId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
   }
 
   /**

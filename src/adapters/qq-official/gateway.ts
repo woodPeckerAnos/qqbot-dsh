@@ -414,8 +414,16 @@ export class QqGateway implements QqEventSource {
       // 进日志、也是命令匹配对象），parts 供 TurnRunner 组装多模态 prompt。
       const parts = this.buildParts(d);
       if (this.isEmptyMessage(parts, type)) return;
+      // ★ 两种群消息事件的语义完全不同，必须分开：
+      //   - GROUP_AT_MESSAGE_CREATE：有人 @ 了机器 → 正常提问，走 Ingress 管线；
+      //   - GROUP_MESSAGE_CREATE：群里的**全量**消息（需要平台侧开通「接收所有
+      //     消息」能力才会推送）→ 旁听消息，只交给主动介入层判断要不要插话。
+      //
+      // 曾经的写法把两者同等当触发消息：一旦该能力开放，群里每说一句话都会
+      // 起一轮 agent（事故级行为）。这里修掉，并按 kind 分流。
+      const observed = type === 'GROUP_MESSAGE_CREATE';
       this.emit({
-        kind: 'group-at-message',
+        kind: observed ? 'group-message' : 'group-at-message',
         target: groupTarget(groupOpenid),
         eventId: payload.id ?? '',
         msgId,
