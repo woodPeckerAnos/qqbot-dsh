@@ -21,6 +21,12 @@
  */
 
 import { Intent, DEFAULT_INTENTS, describeIntents } from './adapters/qq-official/types.js';
+import {
+  assertModelApiConfig,
+  DEEPSEEK_OFFICIAL_PROVIDER,
+  resolveAuxRoute,
+  type ModelApiConfig,
+} from './dsh/model-config.js';
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import { ConfigError } from './config-error.js';
@@ -153,6 +159,17 @@ export interface Config {
     runtimeStartTimeoutMs: number;
     runtimeShutdownTimeoutMs: number;
   };
+  /**
+   * 模型 API 配置层（qqbot.yml 的 `models:` 段；只认配置文件——结构化嵌套配置
+   * 没法用 env 平铺表达，与 interests 文件同口径）。
+   *
+   * 声明的提供商路由在启动时渲染成一份生成的 patch 文件，作为第二个 `--patch`
+   * 传给 dsh 子进程（见 dsh/model-config.ts 与 main.ts）。配了本段时，
+   * `dsh.provider` 必须是原生路由 `deepseek-official` 或这里 `providers`
+   * 声明过的路由名（启动期校验）；没配本段则不做此校验（路由可能由 DSH
+   * 自己的 settings 层带外提供）。
+   */
+  modelApi: ModelApiConfig;
   pool: {
     maxConcurrentTurns: number;
     maxRuntimes: number;
@@ -163,12 +180,26 @@ export interface Config {
    * 话题判定：新消息与既有话题是否相关由一个小模型调用判断（不经 DSH 进程，
    * 见 pipeline/topic-judge.ts）。判定为无关 → 关闭话题（回收 runtime、
    * 跳过冷启动回放）。判定失败一律视为相关（fail-safe）。
-   * apiKey 复用 DEEPSEEK_API_KEY（env），不在此处。
+   *
+   * 凭证与端点**收口到模型 API 配置层**：`provider` 指定 models: 段里声明的
+   * 路由，apiKey 从该路由的 apiKeyEnv 引用解析；不配 provider = 历史默认
+   * （apiBase 直连 + DEEPSEEK_API_KEY）。主动介入判定复用同一解析（它本来
+   * 就借用这里的 apiBase/model）。
    */
   topic: {
     /** 总开关（BOT_TOPIC_ENABLED / topic.enabled，默认 true） */
     enabled: boolean;
-    /** chat completions 基址（BOT_TOPIC_API_BASE / topic.apiBase） */
+    /** 判定调用走的模型路由名（BOT_TOPIC_PROVIDER / topic.provider）；未设 = 直连 apiBase */
+    provider?: string;
+    /** 判定用的凭证变量名（所选路由的 apiKeyEnv；供告警文案与排障使用） */
+    apiKeyEnv: string;
+    /**
+     * 已从 env 解析好的密钥（只来自 env，绝不来自配置文件）。
+     * `enabled` 时保证非空（缺失在启动期就报错）；`enabled: false` 时可能为空串，
+     * 此时主动介入判定降级为"只听不说"（main.ts 会打 warn）。
+     */
+    apiKey: string;
+    /** chat completions 基址（BOT_TOPIC_API_BASE / topic.apiBase > 路由 baseURL > 官方默认） */
     apiBase: string;
     /** 判定用模型（BOT_TOPIC_MODEL / topic.model），默认与主模型同档的小模型 */
     model: string;
@@ -965,9 +996,10 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     ? requiredSecret(env, 'QQ_APP_SECRET', hints)
     : (envRaw(env, 'QQ_APP_SECRET') ?? '');
 
-  // DEEPSEEK_API_KEY 不只是本进程要用：dsh 子进程继承环境（src/dsh/process.ts），
-  // 所以它必须在环境里，不能只放进配置文件。
-  requiredSecret(env, 'DEEPSEEK_API_KEY', hints);
+  // 注意：DEEPSEEK_API_KEY **不再在这里无条件必填**——它在下方按"实际引用"归集
+  // （主路由是 deepseek-official、或判定调用解析到它时才需要）。密钥只能来自
+  // env 的纪律不变：dsh 子进程继承本进程环境（src/dsh/process.ts），写进
+  // 配置文件它读不到。
 
   const qqFile = file.qqOfficial ?? {};
   const intents = pickInt(env, 'QQ_INTENTS', qqFile.intents, DEFAULT_INTENTS, { min: 1, max: 0x7fffffff }, 'qq-official.intents');
@@ -1084,6 +1116,62 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   }
 
   const dshFile = file.dsh ?? {};
+  // 模型 API 配置层：选中的 provider 必须先定下来，才能校验它指向的路由已声明；
+  // 同时在这里核对所有 apiKeyEnv 引用在环境中真实存在（dsh 子进程继承本进程环境）。
+  //
+  // ⚠️ 校验是 **opt-in** 的：只有配了 models: 段才执行。没配时 dsh.provider 可以是
+  // 任意字符串——路由也可能由 DSH 自己的 settings 层带外提供（$DSH_HOME 下的
+  // settings 文档直接喂 llm-pi-ai），qqbot 不该对自己看不见的集合断言。
+  // 一旦用户启用了本层，"选中的路由必须已声明"就该在启动期守住。
+  const dshProvider = pickString(env, 'DSH_PROVIDER', dshFile.provider, DEEPSEEK_OFFICIAL_PROVIDER);
+  const modelApi: ModelApiConfig = file.models ?? { providers: {} };
+  if (file.models !== undefined) {
+    assertModelApiConfig(modelApi, dshProvider, env);
+  }
+
+  // --- 判定调用的路由解析（话题判定 + 主动介入判定共用同一端点与凭证） --------
+  //
+  // 不配 topic.provider = 历史默认：直连 topic.apiBase（默认 https://api.deepseek.com）
+  // + DEEPSEEK_API_KEY，既有部署零变化。配了就把凭证与端点收口到 models: 段：
+  //   凭证   = 路由的 apiKeyEnv 引用（值仍在 env 里，下面统一检查存在性）；
+  //   端点   = 显式 topic.apiBase > 路由的 baseURL > 官方默认（仅 deepseek-official）。
+  const topicEnabled = pickBool(env, 'BOT_TOPIC_ENABLED', file.topic?.enabled, true);
+  const topicProvider = envRaw(env, 'BOT_TOPIC_PROVIDER') ?? file.topic?.provider;
+  let topicApiKeyEnv = 'DEEPSEEK_API_KEY';
+  let topicApiBaseFallback = 'https://api.deepseek.com';
+  if (topicProvider !== undefined && topicProvider !== '') {
+    const route = resolveAuxRoute(modelApi, topicProvider, 'topic.provider');
+    topicApiKeyEnv = route.apiKeyEnv;
+    const explicitApiBase = envRaw(env, 'BOT_TOPIC_API_BASE') ?? file.topic?.apiBase;
+    if (route.baseURL !== undefined) {
+      topicApiBaseFallback = route.baseURL;
+    } else if (topicProvider !== DEEPSEEK_OFFICIAL_PROVIDER && explicitApiBase === undefined) {
+      throw new ConfigError(
+        `topic.provider 指向的路由 ${topicProvider} 没有 baseURL，判定调用不知道往哪里发`, [
+          '给该路由配 baseURL，或显式设置 topic.apiBase（chat-completions 基址，不含 /chat/completions 后缀）',
+        ],
+      );
+    }
+  }
+
+  // --- 密钥必填项按"实际引用"归集 ------------------------------------------------
+  // DEEPSEEK_API_KEY 不再无条件必填：主路由与判定都收口到其他提供商时，部署里可以
+  // 完全没有它。只来自 env 的纪律不变（requiredSecret 不读配置文件）。
+  const requiredSecrets = new Set<string>();
+  if (dshProvider === DEEPSEEK_OFFICIAL_PROVIDER) {
+    // 原生路由的凭证引用（models.deepseek.apiKeyEnv 改名后按改名的来）
+    requiredSecrets.add(modelApi.deepseek?.apiKeyEnv ?? 'DEEPSEEK_API_KEY');
+  }
+  if (topicEnabled) {
+    requiredSecrets.add(topicApiKeyEnv);
+  }
+  // 主动介入判定复用同一凭证：topic 关掉时不硬失败，缺 key 的表现是"只听不说"
+  // （main.ts 打 warn）——保持既有语义。
+  for (const name of requiredSecrets) {
+    requiredSecret(env, name, hints);
+  }
+  const topicApiKey = envRaw(env, topicApiKeyEnv) ?? '';
+
   const poolFile = file.pool ?? {};
   const pathsFile = file.paths ?? {};
   const attachmentsFile = file.attachments ?? {};
@@ -1197,13 +1285,14 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       fileTransport: pickEnum(env, 'ONEBOT_FILE_TRANSPORT', obFile.fileTransport, ['base64', 'path'] as const, 'base64', 'onebot.fileTransport'),
     },
     dsh: {
-      provider: pickString(env, 'DSH_PROVIDER', dshFile.provider, 'deepseek-official'),
+      provider: dshProvider,
       model: pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash'),
       profilePatch: pickString(env, 'QQ_DSH_PROFILE_PATCH', dshFile.profilePatch, '/app/dsh-profile/cordis.patch.yml'),
       bin: pickString(env, 'QQ_DSH_BIN', dshFile.bin, 'dsh'),
       runtimeStartTimeoutMs: pickInt(env, 'QQ_DSH_START_TIMEOUT_MS', dshFile.startTimeoutMs, 60_000, { min: 5_000, max: 300_000 }, 'dsh.startTimeoutMs'),
       runtimeShutdownTimeoutMs: pickInt(env, 'QQ_DSH_SHUTDOWN_TIMEOUT_MS', dshFile.shutdownTimeoutMs, 15_000, { min: 2_000, max: 120_000 }, 'dsh.shutdownTimeoutMs'),
     },
+    modelApi,
     pool: {
       maxConcurrentTurns: pickInt(env, 'QQ_MAX_CONCURRENT_TURNS', poolFile.maxConcurrentTurns, 4, { min: 1, max: 64 }, 'pool.maxConcurrentTurns'),
       maxRuntimes: pickInt(env, 'QQ_MAX_RUNTIMES', poolFile.maxRuntimes, 8, { min: 1, max: 128 }, 'pool.maxRuntimes'),
@@ -1211,8 +1300,11 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       replayTurns: pickInt(env, 'QQ_REPLAY_TURNS', poolFile.replayTurns, 12, { min: 0, max: 200 }, 'pool.replayTurns'),
     },
     topic: {
-      enabled: pickBool(env, 'BOT_TOPIC_ENABLED', file.topic?.enabled, true),
-      apiBase: pickString(env, 'BOT_TOPIC_API_BASE', file.topic?.apiBase, 'https://api.deepseek.com'),
+      enabled: topicEnabled,
+      ...(topicProvider === undefined || topicProvider === '' ? {} : { provider: topicProvider }),
+      apiKeyEnv: topicApiKeyEnv,
+      apiKey: topicApiKey,
+      apiBase: pickString(env, 'BOT_TOPIC_API_BASE', file.topic?.apiBase, topicApiBaseFallback),
       model: pickString(env, 'BOT_TOPIC_MODEL', file.topic?.model, 'deepseek-flash'),
       timeoutMs: pickInt(env, 'BOT_TOPIC_TIMEOUT_MS', file.topic?.timeoutMs, 10_000, { min: 1_000, max: 60_000 }, 'topic.timeoutMs'),
       contextTurns: pickInt(env, 'BOT_TOPIC_CONTEXT_TURNS', file.topic?.contextTurns, 10, { min: 1, max: 50 }, 'topic.contextTurns'),
@@ -1365,9 +1457,18 @@ export function describeConfig(config: Config): Record<string, unknown> {
       model: config.dsh.model,
       profilePatch: config.dsh.profilePatch,
     },
+    // 模型 API 配置层：只暴露路由名与"是否自定义了原生路由"，apiKeyEnv 的变量名
+    // 不算密钥（值才在 .env），但也刻意不打印——摘要越短越好读。
+    modelApi: {
+      deepseek: config.modelApi.deepseek === undefined ? 'default' : 'customized',
+      providers: Object.keys(config.modelApi.providers),
+    },
     pool: config.pool,
     topic: {
       enabled: config.topic.enabled,
+      // 凭证解析到哪条路由（apiKey 本身绝不进摘要）
+      provider: config.topic.provider ?? '(直连 apiBase)',
+      apiKeyEnv: config.topic.apiKeyEnv,
       model: config.topic.model,
       timeoutMs: config.topic.timeoutMs,
       contextTurns: config.topic.contextTurns,

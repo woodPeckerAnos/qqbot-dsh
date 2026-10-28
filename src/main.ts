@@ -33,6 +33,7 @@ import { createLogger } from './logger.js';
 import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
 import { RuntimePool } from './dsh/pool.js';
 import { createDocumentExtractor } from './dsh/document.js';
+import { writeModelApiPatch } from './dsh/model-config.js';
 import { BackgroundPusher } from './pipeline/egress/background.js';
 import { Responder } from './pipeline/egress/responder.js';
 import { AdmissionGate } from './pipeline/ingress/admission.js';
@@ -242,12 +243,26 @@ async function main(): Promise<void> {
   }
 
   // --- DSH runtime 池 --------------------------------------------------------
+  //
+  // 模型 API 配置层（qqbot.yml 的 models: 段）在这里物化成一份生成的 patch 文件，
+  // 作为第二个 --patch 叠加在 profile patch 之后传给每个 dsh 子进程
+  // （--patch 可重复、按 argv 顺序应用）。不配 models: 段时返回 undefined，
+  // 启动参数与历史行为完全一致。
+  const modelApiPatch = writeModelApiPatch(config.modelApi, paths.stateDir);
+  if (modelApiPatch !== undefined) {
+    logger.info('模型路由 patch 已生成', {
+      path: modelApiPatch,
+      deepseek: config.modelApi.deepseek === undefined ? 'default' : 'customized',
+      providers: Object.keys(config.modelApi.providers),
+    });
+  }
   const pool = new RuntimePool({
     maxRuntimes: config.pool.maxRuntimes,
     runtimeIdleMs: config.pool.runtimeIdleMs,
     base: {
       bin: config.dsh.bin,
       profilePatch: config.dsh.profilePatch,
+      ...(modelApiPatch === undefined ? {} : { patches: [modelApiPatch] }),
       dshHome: config.paths.dshHome,
       provider: config.dsh.provider,
       model: config.dsh.model,
@@ -314,12 +329,13 @@ async function main(): Promise<void> {
     stats,
     background,
     // 话题判定器：不经 DSH 进程的小模型调用（判定失败一律视为相关，见
-    // pipeline/topic-judge.ts）。apiKey 复用 DEEPSEEK_API_KEY（env 必填项）。
+    // pipeline/topic-judge.ts）。凭证与端点在配置层已解析好（models: 段的
+    // 路由引用，见 config.ts 的 topic 段）；enabled 时 apiKey 保证非空。
     ...(config.topic.enabled
       ? {
           topicJudge: createTopicJudge({
             apiBase: config.topic.apiBase,
-            apiKey: process.env['DEEPSEEK_API_KEY'] ?? '',
+            apiKey: config.topic.apiKey,
             model: config.topic.model,
             timeoutMs: config.topic.timeoutMs,
             perTurnMaxChars: 500,
@@ -365,11 +381,12 @@ async function main(): Promise<void> {
       logger: logger.child({ component: 'proactive-deliver' }),
     });
 
-    // 判定能力：需要 LLM 密钥。没有密钥时 watcher 只收集不判定（"只听不说"）。
-    const apiKey = process.env['DEEPSEEK_API_KEY'] ?? '';
+    // 判定能力：需要 LLM 密钥。与话题判定共用同一路由解析（config.topic.*）；
+    // 没有密钥时 watcher 只收集不判定（"只听不说"）。
+    const apiKey = config.topic.apiKey;
     if (apiKey === '') {
       // 明确警告：否则表现为"装配成功但从不说话"，是最难查的一种
-      logger.warn('主动介入缺少 DEEPSEEK_API_KEY：判定不会执行，只会收集旁听（只听不说）');
+      logger.warn(`主动介入缺少模型凭证（${config.topic.apiKeyEnv}）：判定不会执行，只会收集旁听（只听不说）`);
     }
     const judge =
       apiKey === ''

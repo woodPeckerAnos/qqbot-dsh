@@ -32,6 +32,12 @@ export interface DshRuntimeOptions {
   bin: string;
   /** profile patch 的绝对路径 */
   profilePatch: string;
+  /**
+   * 追加的 patch 叠加层（绝对路径），按顺序排在 profilePatch 之后应用
+   * （dsh CLI 的 --patch 可重复、按 argv 顺序生效）。模型 API 配置层生成的
+   * patch 走这里，见 dsh/model-config.ts。
+   */
+  patches?: string[];
   /** 该 runtime 的会话工作目录（= 某个群的工作区） */
   cwd: string;
   /** DSH_HOME 环境变量值 */
@@ -91,8 +97,12 @@ export class DshRuntime extends EventEmitter {
     return this.stderrTail;
   }
 
-  static buildArgs(options: Pick<DshRuntimeOptions, 'profilePatch'>): string[] {
-    return ['--profile', 'sdk', '--patch', options.profilePatch];
+  static buildArgs(options: Pick<DshRuntimeOptions, 'profilePatch' | 'patches'>): string[] {
+    const args = ['--profile', 'sdk', '--patch', options.profilePatch];
+    for (const patch of options.patches ?? []) {
+      args.push('--patch', patch);
+    }
+    return args;
   }
 
   /** 启动进程并完成 initialize 握手。失败时自动清理进程。 */
