@@ -221,9 +221,18 @@ hints:
 # 判定为无关 → 关闭话题（回收 runtime、跳过冷启动回放），已结束的话题不再
 # 赖在上下文里。判定失败/超时一律视为相关（fail-safe，不误清上下文）。
 # 管理员也可以在群里发 /new 显式开新话题。
-# 密钥复用 .env 的 DEEPSEEK_API_KEY；环境变量前缀 BOT_TOPIC_*
+# 环境变量前缀 BOT_TOPIC_*
+#
+# 凭证与端点已收口到模型 API 配置层（models: 段）：
+#   - 不配 provider（默认）：直连 apiBase + .env 的 DEEPSEEK_API_KEY；
+#   - 配了 provider：走 models: 里声明的路由——凭证用该路由的 apiKeyEnv 引用，
+#     端点取"显式 apiBase > 路由 baseURL"。判定客户端只会说 OpenAI 兼容的
+#     /chat/completions，指向显式声明了其他协议（api: anthropic-messages 等）
+#     的路由会在启动期报错。
+# 主动介入判定（proactive）复用这里的 provider/apiBase/model。
 topic:
   enabled: true
+  # provider: openai        # 例：判定也走 models.providers 里声明的 openai 路由
   apiBase: https://api.deepseek.com
   model: deepseek-flash
   # 单次判定超时（毫秒）；超时按相关处理

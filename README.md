@@ -119,6 +119,11 @@ cp src/pipeline/proactive/interests/interests.yml.example interests.yml
 [配置目录](https://github.com/deepseek-ai/deepseek-harness/blob/main/docs/config-catalog.md)
 为准。
 
+不经 DSH 的辅助模型调用（话题判定、主动介入判定）同样收口到这一层：
+`topic.provider` 指到已声明的路由即可（判定客户端走 OpenAI 兼容的
+`/chat/completions`）。当主路由与判定都不用 DeepSeek 时，`.env` 里的
+`DEEPSEEK_API_KEY` 也不再是必填项。
+
 ---
 
 ## 它特别处理了什么

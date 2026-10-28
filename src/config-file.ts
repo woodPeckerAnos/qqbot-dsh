@@ -74,6 +74,8 @@ export interface PoolFileConfig {
 /** 话题判定（LLM 判断新消息与既有话题是否相关，见 pipeline/topic-judge.ts）。 */
 export interface TopicFileConfig {
   enabled?: boolean;
+  /** 判定调用走的模型路由名（models: 段声明的路由）；不配 = 直连 apiBase + DEEPSEEK_API_KEY */
+  provider?: string;
   apiBase?: string;
   model?: string;
   timeoutMs?: number;
@@ -329,6 +331,7 @@ const POOL_SPEC: SectionSpec = {
 };
 const TOPIC_SPEC: SectionSpec = {
   enabled: 'bool',
+  provider: 'string',
   apiBase: 'string',
   model: 'string',
   timeoutMs: 'int',

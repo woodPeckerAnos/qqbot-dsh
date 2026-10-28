@@ -22,6 +22,7 @@ import {
   MODEL_API_PATCH_FILENAME,
   parseModelApiSection,
   renderModelApiPatch,
+  resolveAuxRoute,
   writeModelApiPatch,
   type ModelApiConfig,
 } from '../src/dsh/model-config.js';
@@ -263,6 +264,41 @@ describe('assertModelApiConfig', () => {
   });
 });
 
+describe('resolveAuxRoute（判定调用的路由解析）', () => {
+  it('deepseek-official：凭证默认 DEEPSEEK_API_KEY，可被 models.deepseek.apiKeyEnv 改名', () => {
+    expect(resolveAuxRoute({ providers: {} }, 'deepseek-official', 'topic.provider')).toEqual({
+      apiKeyEnv: 'DEEPSEEK_API_KEY',
+    });
+    expect(
+      resolveAuxRoute({ deepseek: { apiKeyEnv: 'MY_DS_KEY' }, providers: {} }, 'deepseek-official', 'topic.provider'),
+    ).toEqual({ apiKeyEnv: 'MY_DS_KEY' });
+  });
+
+  it('pi-ai 路由：带出 apiKeyEnv 与 baseURL', () => {
+    const modelApi: ModelApiConfig = {
+      providers: { acme: { apiKeyEnv: 'ACME_KEY', baseURL: 'https://gw.example/v1' } },
+    };
+    expect(resolveAuxRoute(modelApi, 'acme', 'topic.provider')).toEqual({
+      apiKeyEnv: 'ACME_KEY',
+      baseURL: 'https://gw.example/v1',
+    });
+  });
+
+  it('未声明的路由 / 协议不兼容 / 无凭证引用：解析期拒绝', () => {
+    expect(() => resolveAuxRoute({ providers: {} }, 'openai', 'topic.provider')).toThrow(/未在 models\.providers/);
+    expect(() =>
+      resolveAuxRoute(
+        { providers: { claude: { apiKeyEnv: 'K', api: 'anthropic-messages' } } },
+        'claude',
+        'topic.provider',
+      ),
+    ).toThrow(/判定调用无法使用/);
+    expect(() =>
+      resolveAuxRoute({ providers: { local: { baseURL: 'http://x/v1' } } }, 'local', 'topic.provider'),
+    ).toThrow(/没有 apiKeyEnv/);
+  });
+});
+
 describe('renderModelApiPatch', () => {
   it('无配置时返回 undefined（启动参数保持原样）', () => {
     expect(renderModelApiPatch({ providers: {} })).toBeUndefined();
@@ -370,6 +406,88 @@ models:
     expect(() => loadConfig({ ...baseEnv, DSH_PROVIDER: 'openai' }, file)).toThrow(/OPENAI_API_KEY/);
     const ok = loadConfig({ ...baseEnv, DSH_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-o' }, file);
     expect(ok.dsh.provider).toBe('openai');
+  });
+
+  it('topic.provider 把判定调用收口到声明的路由：凭证与端点都来自 models: 段', () => {
+    const file = parseConfigFileText(`
+models:
+  providers:
+    acme:
+      api: openai-completions
+      baseURL: https://gw.example/v1
+      apiKeyEnv: ACME_KEY
+topic:
+  provider: acme
+  model: acme-flash
+`);
+    const config = loadConfig({ ...baseEnv, ACME_KEY: 'sk-acme' }, file);
+    expect(config.topic.provider).toBe('acme');
+    expect(config.topic.apiKey).toBe('sk-acme');
+    expect(config.topic.apiKeyEnv).toBe('ACME_KEY');
+    expect(config.topic.apiBase).toBe('https://gw.example/v1');
+    // 显式 apiBase 优先于路由 baseURL
+    const override = loadConfig({ ...baseEnv, ACME_KEY: 'sk-acme', BOT_TOPIC_API_BASE: 'https://other.example/v1' }, file);
+    expect(override.topic.apiBase).toBe('https://other.example/v1');
+  });
+
+  it('topic.provider 指向无 baseURL 的路由且没显式 apiBase → 启动期报错', () => {
+    const file = parseConfigFileText(`
+models:
+  providers:
+    openai:
+      apiKeyEnv: OPENAI_API_KEY
+topic:
+  provider: openai
+`);
+    expect(() => loadConfig({ ...baseEnv, OPENAI_API_KEY: 'sk-o' }, file)).toThrow(/没有 baseURL/);
+  });
+
+  it('完全不依赖 DeepSeek 的部署：DEEPSEEK_API_KEY 不再必填', () => {
+    const file = parseConfigFileText(`
+dsh:
+  provider: acme
+models:
+  providers:
+    acme:
+      api: openai-completions
+      baseURL: https://gw.example/v1
+      apiKeyEnv: ACME_KEY
+topic:
+  provider: acme
+`);
+    // 注意 env 里没有 DEEPSEEK_API_KEY
+    const config = loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's', ACME_KEY: 'sk-acme' }, file);
+    expect(config.dsh.provider).toBe('acme');
+    expect(config.topic.apiKey).toBe('sk-acme');
+  });
+
+  it('主路由仍是 deepseek-official 时，即使关掉判定也仍需要其凭证变量', () => {
+    const file = parseConfigFileText('topic:\n  enabled: false\n');
+    expect(() => loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's' }, file)).toThrow(/DEEPSEEK_API_KEY/);
+    // models.deepseek.apiKeyEnv 改名后按改名的要求
+    const renamed = parseConfigFileText('topic:\n  enabled: false\nmodels:\n  deepseek:\n    apiKeyEnv: MY_DS_KEY\n');
+    expect(() => loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's' }, renamed)).toThrow(/MY_DS_KEY/);
+    const ok = loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's', MY_DS_KEY: 'k' }, renamed);
+    expect(ok.topic.enabled).toBe(false);
+    expect(ok.topic.apiKey).toBe(''); // 判定关闭：不硬要求，主动介入降级为"只听不说"
+  });
+
+  it('topic.enabled=false 且主路由收口到其他提供商时无任何 DeepSeek 依赖', () => {
+    const file = parseConfigFileText(`
+dsh:
+  provider: acme
+models:
+  providers:
+    acme:
+      api: openai-completions
+      baseURL: https://gw.example/v1
+      apiKeyEnv: ACME_KEY
+topic:
+  enabled: false
+`);
+    const config = loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's', ACME_KEY: 'k' }, file);
+    expect(config.topic.apiKeyEnv).toBe('DEEPSEEK_API_KEY'); // 默认引用，但不强制存在
+    expect(config.topic.apiKey).toBe('');
   });
 
   it('describeConfig 只暴露路由名，不含任何密钥信息', () => {

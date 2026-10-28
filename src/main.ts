@@ -329,12 +329,13 @@ async function main(): Promise<void> {
     stats,
     background,
     // 话题判定器：不经 DSH 进程的小模型调用（判定失败一律视为相关，见
-    // pipeline/topic-judge.ts）。apiKey 复用 DEEPSEEK_API_KEY（env 必填项）。
+    // pipeline/topic-judge.ts）。凭证与端点在配置层已解析好（models: 段的
+    // 路由引用，见 config.ts 的 topic 段）；enabled 时 apiKey 保证非空。
     ...(config.topic.enabled
       ? {
           topicJudge: createTopicJudge({
             apiBase: config.topic.apiBase,
-            apiKey: process.env['DEEPSEEK_API_KEY'] ?? '',
+            apiKey: config.topic.apiKey,
             model: config.topic.model,
             timeoutMs: config.topic.timeoutMs,
             perTurnMaxChars: 500,
@@ -380,11 +381,12 @@ async function main(): Promise<void> {
       logger: logger.child({ component: 'proactive-deliver' }),
     });
 
-    // 判定能力：需要 LLM 密钥。没有密钥时 watcher 只收集不判定（"只听不说"）。
-    const apiKey = process.env['DEEPSEEK_API_KEY'] ?? '';
+    // 判定能力：需要 LLM 密钥。与话题判定共用同一路由解析（config.topic.*）；
+    // 没有密钥时 watcher 只收集不判定（"只听不说"）。
+    const apiKey = config.topic.apiKey;
     if (apiKey === '') {
       // 明确警告：否则表现为"装配成功但从不说话"，是最难查的一种
-      logger.warn('主动介入缺少 DEEPSEEK_API_KEY：判定不会执行，只会收集旁听（只听不说）');
+      logger.warn(`主动介入缺少模型凭证（${config.topic.apiKeyEnv}）：判定不会执行，只会收集旁听（只听不说）`);
     }
     const judge =
       apiKey === ''

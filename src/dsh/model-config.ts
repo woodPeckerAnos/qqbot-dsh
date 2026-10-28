@@ -929,6 +929,63 @@ export function assertModelApiConfig(modelApi: ModelApiConfig, selectedProvider:
 }
 
 // ---------------------------------------------------------------------------
+// 辅助调用（不经 DSH 的直调：话题判定 / 主动介入判定）的路由解析
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条路由给"辅助调用"提供的东西：凭证引用 + chat-completions 端点。
+ *
+ * 判定客户端（pipeline/topic-judge.ts、proactive/judge/chat-client.ts）只会说
+ * OpenAI 兼容的 `/chat/completions`——这是它自己能成立的前提，所以：
+ *   - 显式声明了 `api` 且不是 openai-completions 的路由，解析期拒绝；
+ *   - 路由没给 baseURL 时返回 undefined，由调用方决定是否还有显式 apiBase
+ *     兜底（都没有才报错——报错文案在 config.ts，因为那里才知道是哪个消费者）。
+ */
+export interface AuxRouteResolution {
+  /** 凭证变量名（调用方负责从环境解析并校验非空） */
+  apiKeyEnv: string;
+  /** 路由自带的端点；没有则 undefined */
+  baseURL?: string;
+}
+
+/**
+ * 把路由名解析成辅助调用可用的凭证与端点。
+ *
+ * @param provider `topic.provider` 等配置里写的路由名
+ * @param path     报错用的 YAML 路径（如 `topic.provider`）
+ */
+export function resolveAuxRoute(
+  modelApi: ModelApiConfig,
+  provider: string,
+  path: string,
+): AuxRouteResolution {
+  if (provider === DEEPSEEK_OFFICIAL_PROVIDER) {
+    // 注意：llm-deepseek 的 baseURL 是 Anthropic Messages 端点（…/anthropic），
+    // 不是 chat-completions——判定调用不能用它，端点必须由 topic.apiBase 提供
+    // （缺省 https://api.deepseek.com 正好就是官方兼容端点）。
+    return { apiKeyEnv: modelApi.deepseek?.apiKeyEnv ?? 'DEEPSEEK_API_KEY' };
+  }
+  const route = modelApi.providers[provider];
+  if (route === undefined) {
+    throw new ConfigError(`${path} 指定的模型路由 ${JSON.stringify(provider)} 未在 models.providers 里声明`, [
+      `已声明的路由：${[DEEPSEEK_OFFICIAL_PROVIDER, ...Object.keys(modelApi.providers)].join('、')}`,
+    ]);
+  }
+  if (route.api !== undefined && route.api !== 'openai-completions') {
+    throw new ConfigError(`${path} 指向的路由 ${provider} 声明了 api: ${route.api}，判定调用无法使用`, [
+      '话题/介入判定是不经 DSH 的直调，只会说 OpenAI 兼容的 /chat/completions',
+      '换一条 openai-completions 路由，或不给该路由显式声明 api（目录默认协议可兼容时）',
+    ]);
+  }
+  if (route.apiKeyEnv === undefined) {
+    throw new ConfigError(`${path} 指向的路由 ${provider} 没有 apiKeyEnv，判定调用拿不到凭证`, [
+      '判定是 qqbot 进程内的直调，pi-ai 的"环境发现"在这里不存在；请给该路由配 apiKeyEnv',
+    ]);
+  }
+  return { apiKeyEnv: route.apiKeyEnv, ...(route.baseURL === undefined ? {} : { baseURL: route.baseURL }) };
+}
+
+// ---------------------------------------------------------------------------
 // patch 生成与落盘
 // ---------------------------------------------------------------------------
 
