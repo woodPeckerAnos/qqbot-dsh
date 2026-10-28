@@ -33,6 +33,7 @@ import { createLogger } from './logger.js';
 import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
 import { RuntimePool } from './dsh/pool.js';
 import { createDocumentExtractor } from './dsh/document.js';
+import { writeModelApiPatch } from './dsh/model-config.js';
 import { BackgroundPusher } from './pipeline/egress/background.js';
 import { Responder } from './pipeline/egress/responder.js';
 import { AdmissionGate } from './pipeline/ingress/admission.js';
@@ -242,12 +243,26 @@ async function main(): Promise<void> {
   }
 
   // --- DSH runtime 池 --------------------------------------------------------
+  //
+  // 模型 API 配置层（qqbot.yml 的 models: 段）在这里物化成一份生成的 patch 文件，
+  // 作为第二个 --patch 叠加在 profile patch 之后传给每个 dsh 子进程
+  // （--patch 可重复、按 argv 顺序应用）。不配 models: 段时返回 undefined，
+  // 启动参数与历史行为完全一致。
+  const modelApiPatch = writeModelApiPatch(config.modelApi, paths.stateDir);
+  if (modelApiPatch !== undefined) {
+    logger.info('模型路由 patch 已生成', {
+      path: modelApiPatch,
+      deepseek: config.modelApi.deepseek === undefined ? 'default' : 'customized',
+      providers: Object.keys(config.modelApi.providers),
+    });
+  }
   const pool = new RuntimePool({
     maxRuntimes: config.pool.maxRuntimes,
     runtimeIdleMs: config.pool.runtimeIdleMs,
     base: {
       bin: config.dsh.bin,
       profilePatch: config.dsh.profilePatch,
+      ...(modelApiPatch === undefined ? {} : { patches: [modelApiPatch] }),
       dshHome: config.paths.dshHome,
       provider: config.dsh.provider,
       model: config.dsh.model,

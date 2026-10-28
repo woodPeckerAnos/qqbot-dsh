@@ -22,6 +22,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
 
 import { ConfigError } from './config-error.js';
+import { parseModelApiSection, type ModelApiConfig } from './dsh/model-config.js';
 
 /** 未设置 QQ_CONFIG_FILE 时默认读的文件（相对进程 CWD）。 */
 export const DEFAULT_CONFIG_FILE = 'qqbot.yml';
@@ -239,6 +240,12 @@ export interface FileConfig {
   qqOfficial?: QqOfficialFileConfig;
   onebot?: OnebotFileConfig;
   dsh?: DshFileConfig;
+  /**
+   * 模型 API 配置层（`models:` 段）。结构与 DSH 的提供商配置面一一对应
+   * （透传 + 严格形状校验），解析与校验见 dsh/model-config.ts。
+   * 该段是结构化嵌套配置，不走上面的标量 spec 机制。
+   */
+  models?: ModelApiConfig;
   pool?: PoolFileConfig;
   topic?: TopicFileConfig;
   paths?: PathsFileConfig;
@@ -563,7 +570,7 @@ export function parseConfigFileText(text: string, source = DEFAULT_CONFIG_FILE):
     throw new ConfigError(`${source} 顶层必须是映射（key: value），收到 ${describeValue(root)}`);
   }
 
-  const allowedTop = [...Object.keys(TOP_SCALARS), ...TOP_SECTIONS.map((s) => s.yamlKey)];
+  const allowedTop = [...Object.keys(TOP_SCALARS), ...TOP_SECTIONS.map((s) => s.yamlKey), 'models'];
   for (const key of Object.keys(root)) {
     const rejected = REJECTED_KEYS[key];
     if (rejected !== undefined) {
@@ -586,6 +593,10 @@ export function parseConfigFileText(text: string, source = DEFAULT_CONFIG_FILE):
     const nested = NESTED_SECTIONS[yamlKey] ?? {};
     const section = readSection(root[yamlKey], `${source}: ${yamlKey}`, spec, nested);
     if (Object.keys(section).length > 0) mutable[field] = section;
+  }
+  // models: 段是结构化嵌套配置（提供商路由字典），由专门的解析器处理
+  if (root['models'] !== undefined && root['models'] !== null) {
+    out.models = parseModelApiSection(root['models'], `${source}: models`);
   }
   return out;
 }

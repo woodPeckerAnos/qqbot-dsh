@@ -109,6 +109,16 @@ cp src/pipeline/proactive/interests/interests.yml.example interests.yml
 `sessions`（`opened` / `closedBy` / `spokeInSession`——后者回答"预算 2 到底对不对"）；
 "它为什么不说话"的排查顺序见 **[RUNBOOK §5](docs/RUNBOOK.md)**。
 
+### 可选：换/加模型提供商
+
+默认走 DeepSeek 官方路由（`deepseek-official` + `DEEPSEEK_API_KEY`）。要换成或增加
+其他提供商——OpenAI / Anthropic 等 pi-ai 目录内的厂商，或任何 OpenAI 兼容的
+自建网关——在 `qqbot.yml` 的 **`models:` 段**声明路由，密钥以 `apiKeyEnv` 引用、
+值写进 `.env`（内联密钥会在启动期被直接拒绝），然后把 `dsh.provider` 指到对应
+路由名即可。机制与完整示例见 qqbot.yml 的 `models:` 节注释；字段语义以 DSH 的
+[配置目录](https://github.com/deepseek-ai/deepseek-harness/blob/main/docs/config-catalog.md)
+为准。
+
 ---
 
 ## 它特别处理了什么

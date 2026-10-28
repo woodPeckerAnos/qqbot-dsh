@@ -104,6 +104,83 @@ dsh:
   startTimeoutMs: 60000
   shutdownTimeoutMs: 15000
 
+# --- 模型 API 配置层（models:）------------------------------------------------
+# 声明 DSH 允许的全部"模型提供商"配置能力。整段**可选**：不配就是现状
+# （deepseek-official 官方路由 + DEEPSEEK_API_KEY）。本节只认本文件——
+# 结构化嵌套配置没法用环境变量平铺表达（与 interests 文件同口径）。
+#
+# 工作机制：启动时把本节渲染成一份生成的 patch 文件（stateDir/model-api.patch.yml），
+# 作为第二个 --patch 叠加在 dsh-profile 之后传给每个 dsh 子进程。
+#
+# 两个路由族（与 DSH base bundle 已挂载的两个插件一一对应）：
+#
+#   models.deepseek          → llm-deepseek 插件，原生 DeepSeek 路由
+#                              （provider 名固定 deepseek-official）；
+#   models.providers.<名>    → llm-pi-ai 插件，pi-ai 多提供商路由；键名就是
+#                              dsh.provider 里可选的路由名（小写连字符标识符）。
+#
+# 密钥纪律（解析期强制）：
+#   - 只允许 apiKeyEnv: <环境变量名> 的**引用**形式，值写在 .env 里；
+#   - apiKey / authToken 等内联密钥写法直接报错；Authorization 等带密钥语义的
+#     header 名同样被拒。
+#   - 引用的变量必须在环境中真实存在（启动期检查，缺失直接拒绝启动）。
+#
+# 选中路由：dsh.provider 必须是 deepseek-official 或下面 providers 声明过的
+# 路由名，否则启动期报错（不配错路由跑到运行期才炸）。
+#
+# 字段逐条语义以 DSH 配置目录为准（docs/config-catalog.md 的
+# @deepseek-ai/dsh-llm-deepseek-api-key 与 @deepseek-ai/dsh-llm-pi-ai 两节）。
+# 拼错键名会在启动期报错并列出可用项。下面是完整示例（全部注释掉 = 不启用）：
+#
+# models:
+#   # 原生 DeepSeek 路由的定制（对应 @deepseek-ai/dsh-llm-deepseek-api-key）
+#   deepseek:
+#     apiKeyEnv: DEEPSEEK_API_KEY        # 默认值，可省略
+#     baseURL: https://api.deepseek.com/anthropic
+#     thinking: enabled                  # enabled | disabled
+#     reasoningEffort: high              # off | low | high | max
+#     maxTokens: 256000                  # 每请求输出上限的默认值
+#     defaultContextWindow: 1000000      # 模型无精确值时的容量兜底
+#     # 整份替换该路由的模型目录（目录是建议性元数据，不做远端校验）
+#     models:
+#       - id: deepseek-flash
+#         contextWindow: 1000000
+#         maxTokens: 256000
+#         inputModalities: [text, image]
+#     retryPolicy:                       # normal（有界，默认）| always（直到成功/取消）
+#       mode: normal
+#       maxRetries: 5
+#       backoff: { initialDelayMs: 500, maxDelayMs: 10000, jitterRatio: 0.1 }
+#
+#   # pi-ai 多提供商路由（对应 @deepseek-ai/dsh-llm-pi-ai）
+#   providers:
+#     # pi-ai 目录内的提供商（openai / anthropic / google / deepseek / moonshotai
+#     # 等）：端点、协议、模型目录都有默认，通常只需补凭证引用。
+#     openai:
+#       apiKeyEnv: OPENAI_API_KEY        # .env 里加 OPENAI_API_KEY=...
+#       # models 整份替换目录；modelOverrides 只改目录内个别模型（二者互斥）
+#       modelOverrides:
+#         gpt-5: { maxTokens: 32768 }
+#     # 目录外的自建网关 / OpenAI 兼容端点：api + baseURL + 非空 models 必填
+#     acme-gateway:
+#       displayName: Acme Gateway
+#       api: openai-completions          # 还有 openai-responses / anthropic-messages 等
+#       baseURL: https://gateway.acme.example/v1
+#       apiKeyEnv: ACME_GATEWAY_API_KEY
+#       defaultContextWindow: 262144     # 目录没描述的模型的容量兜底
+#       defaultMaxTokens: 32768
+#       compat:                          # 线兼容开关（私有网关的 URL 推断不出来）
+#         thinkingFormat: deepseek
+#       models:
+#         - id: acme-think
+#           contextWindow: 262144
+#           maxTokens: 32768
+#           input: [text, image]         # 声明视觉能力后图片才会送过去
+#           reasoningEfforts:            # 可选思考档位 → 线上拼写；false = 不思考
+#             off:                       # off 档可留空（参数缺省即不思考）
+#             high: high
+#       retryPolicy: { mode: normal, maxRetries: 3 }
+
 # --- 运行时池 ----------------------------------------------------------------
 pool:
   # 全局并发 turn 上限（= 同时干活的会话数上限）

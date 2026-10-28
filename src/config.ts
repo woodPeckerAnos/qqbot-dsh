@@ -21,6 +21,11 @@
  */
 
 import { Intent, DEFAULT_INTENTS, describeIntents } from './adapters/qq-official/types.js';
+import {
+  assertModelApiConfig,
+  DEEPSEEK_OFFICIAL_PROVIDER,
+  type ModelApiConfig,
+} from './dsh/model-config.js';
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
 import { ConfigError } from './config-error.js';
@@ -153,6 +158,17 @@ export interface Config {
     runtimeStartTimeoutMs: number;
     runtimeShutdownTimeoutMs: number;
   };
+  /**
+   * 模型 API 配置层（qqbot.yml 的 `models:` 段；只认配置文件——结构化嵌套配置
+   * 没法用 env 平铺表达，与 interests 文件同口径）。
+   *
+   * 声明的提供商路由在启动时渲染成一份生成的 patch 文件，作为第二个 `--patch`
+   * 传给 dsh 子进程（见 dsh/model-config.ts 与 main.ts）。配了本段时，
+   * `dsh.provider` 必须是原生路由 `deepseek-official` 或这里 `providers`
+   * 声明过的路由名（启动期校验）；没配本段则不做此校验（路由可能由 DSH
+   * 自己的 settings 层带外提供）。
+   */
+  modelApi: ModelApiConfig;
   pool: {
     maxConcurrentTurns: number;
     maxRuntimes: number;
@@ -1084,6 +1100,18 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   }
 
   const dshFile = file.dsh ?? {};
+  // 模型 API 配置层：选中的 provider 必须先定下来，才能校验它指向的路由已声明；
+  // 同时在这里核对所有 apiKeyEnv 引用在环境中真实存在（dsh 子进程继承本进程环境）。
+  //
+  // ⚠️ 校验是 **opt-in** 的：只有配了 models: 段才执行。没配时 dsh.provider 可以是
+  // 任意字符串——路由也可能由 DSH 自己的 settings 层带外提供（$DSH_HOME 下的
+  // settings 文档直接喂 llm-pi-ai），qqbot 不该对自己看不见的集合断言。
+  // 一旦用户启用了本层，"选中的路由必须已声明"就该在启动期守住。
+  const dshProvider = pickString(env, 'DSH_PROVIDER', dshFile.provider, DEEPSEEK_OFFICIAL_PROVIDER);
+  const modelApi: ModelApiConfig = file.models ?? { providers: {} };
+  if (file.models !== undefined) {
+    assertModelApiConfig(modelApi, dshProvider, env);
+  }
   const poolFile = file.pool ?? {};
   const pathsFile = file.paths ?? {};
   const attachmentsFile = file.attachments ?? {};
@@ -1197,13 +1225,14 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       fileTransport: pickEnum(env, 'ONEBOT_FILE_TRANSPORT', obFile.fileTransport, ['base64', 'path'] as const, 'base64', 'onebot.fileTransport'),
     },
     dsh: {
-      provider: pickString(env, 'DSH_PROVIDER', dshFile.provider, 'deepseek-official'),
+      provider: dshProvider,
       model: pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash'),
       profilePatch: pickString(env, 'QQ_DSH_PROFILE_PATCH', dshFile.profilePatch, '/app/dsh-profile/cordis.patch.yml'),
       bin: pickString(env, 'QQ_DSH_BIN', dshFile.bin, 'dsh'),
       runtimeStartTimeoutMs: pickInt(env, 'QQ_DSH_START_TIMEOUT_MS', dshFile.startTimeoutMs, 60_000, { min: 5_000, max: 300_000 }, 'dsh.startTimeoutMs'),
       runtimeShutdownTimeoutMs: pickInt(env, 'QQ_DSH_SHUTDOWN_TIMEOUT_MS', dshFile.shutdownTimeoutMs, 15_000, { min: 2_000, max: 120_000 }, 'dsh.shutdownTimeoutMs'),
     },
+    modelApi,
     pool: {
       maxConcurrentTurns: pickInt(env, 'QQ_MAX_CONCURRENT_TURNS', poolFile.maxConcurrentTurns, 4, { min: 1, max: 64 }, 'pool.maxConcurrentTurns'),
       maxRuntimes: pickInt(env, 'QQ_MAX_RUNTIMES', poolFile.maxRuntimes, 8, { min: 1, max: 128 }, 'pool.maxRuntimes'),
@@ -1364,6 +1393,12 @@ export function describeConfig(config: Config): Record<string, unknown> {
       provider: config.dsh.provider,
       model: config.dsh.model,
       profilePatch: config.dsh.profilePatch,
+    },
+    // 模型 API 配置层：只暴露路由名与"是否自定义了原生路由"，apiKeyEnv 的变量名
+    // 不算密钥（值才在 .env），但也刻意不打印——摘要越短越好读。
+    modelApi: {
+      deepseek: config.modelApi.deepseek === undefined ? 'default' : 'customized',
+      providers: Object.keys(config.modelApi.providers),
     },
     pool: config.pool,
     topic: {
