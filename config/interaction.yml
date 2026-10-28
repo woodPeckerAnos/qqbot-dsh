@@ -52,11 +52,14 @@ hints:
 #     /chat/completions，指向显式声明了其他协议（api: anthropic-messages 等）
 #     的路由会在启动期报错。
 # 主动介入判定（proactive）复用这里的 provider/apiBase/model。
+# 生产环境的 provider/model 选择在 config/local/models.yml（本包已带）：
+#   topic.provider: arc-code，topic.model: ark-code-latest。
 topic:
   enabled: true
-  # provider: openai        # 例：判定也走 models.providers 里声明的 openai 路由
-  apiBase: https://api.deepseek.com
-  model: deepseek-flash
+  # provider / model 由 config/local/models.yml 覆盖；不配则走代码默认。
+  # 端点取"显式 apiBase > 路由 baseURL"，所以配了自建路由时不要在这里写
+  # DeepSeek 的 apiBase，否则会把请求指到错误的端点。
+  # apiBase: https://api.deepseek.com   # 仅 provider=deepseek-official 时用
   # 单次判定超时（毫秒）；超时按相关处理
   timeoutMs: 10000
   # 送给判定器的最近记录条数（不含当前新消息）
