@@ -367,14 +367,19 @@ const MODALITIES = ['text', 'image'] as const;
 function readModalities(raw: Record<string, unknown>, key: string, path: string): Array<'text' | 'image'> | undefined {
   const value = raw[key];
   if (value === undefined || value === null) return undefined;
-  if (
-    !Array.isArray(value) ||
-    value.length === 0 ||
-    value.some((item) => typeof item !== 'string' || !(MODALITIES as readonly string[]).includes(item))
-  ) {
-    throw new ConfigError(`${path}.${key} 必须是非空的模态数组，收到 ${describeValue(value)}`, [
-      '可用值：text、image（本桥接层只会向模型发送文本与图片两种块）',
-    ]);
+  const invalid =
+    Array.isArray(value) && value.length > 0
+      ? value.filter((item) => typeof item !== 'string' || !(MODALITIES as readonly string[]).includes(item))
+      : [];
+  if (!Array.isArray(value) || value.length === 0 || invalid.length > 0) {
+    throw new ConfigError(
+      `${path}.${key} 必须是非空的模态数组，收到 ${describeValue(value)}` +
+        (invalid.length > 0 ? `（不认识：${invalid.map((v) => JSON.stringify(v)).join('、')}）` : ''),
+      [
+        '可用值：text、image——这是 DSH/pi-ai 的模型能力面（Model.input 只有 text|image）',
+        'video / audio 写进来会被 DSH 拒绝；本桥接层也只会向模型发送文本与图片两种块',
+      ],
+    );
   }
   return [...new Set(value as Array<'text' | 'image'>)];
 }

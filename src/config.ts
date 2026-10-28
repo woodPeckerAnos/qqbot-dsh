@@ -199,7 +199,7 @@ export interface Config {
      * 此时主动介入判定降级为"只听不说"（main.ts 会打 warn）。
      */
     apiKey: string;
-    /** chat completions 基址（BOT_TOPIC_API_BASE / topic.apiBase > 路由 baseURL > 官方默认） */
+    /** chat completions 基址（路由 baseURL；路由没给时用显式 apiBase 或官方默认） */
     apiBase: string;
     /** 判定用模型（BOT_TOPIC_MODEL / topic.model），默认与主模型同档的小模型 */
     model: string;
@@ -1134,7 +1134,8 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   // 不配 topic.provider = 历史默认：直连 topic.apiBase（默认 https://api.deepseek.com）
   // + DEEPSEEK_API_KEY，既有部署零变化。配了就把凭证与端点收口到 models: 段：
   //   凭证   = 路由的 apiKeyEnv 引用（值仍在 env 里，下面统一检查存在性）；
-  //   端点   = 显式 topic.apiBase > 路由的 baseURL > 官方默认（仅 deepseek-official）。
+  //   端点   = 路由的 baseURL；路由没给 baseURL 时才用显式 topic.apiBase（deepseek-official 缺省官方端点）。
+  //            路由给了 baseURL 又显式设置 apiBase = 启动期报错（凭证与端点会跨厂商）。
   const topicEnabled = pickBool(env, 'BOT_TOPIC_ENABLED', file.topic?.enabled, true);
   const topicProvider = envRaw(env, 'BOT_TOPIC_PROVIDER') ?? file.topic?.provider;
   let topicApiKeyEnv = 'DEEPSEEK_API_KEY';
@@ -1144,6 +1145,18 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     topicApiKeyEnv = route.apiKeyEnv;
     const explicitApiBase = envRaw(env, 'BOT_TOPIC_API_BASE') ?? file.topic?.apiBase;
     if (route.baseURL !== undefined) {
+      // ⚠️ 冲突必须在启动期拦：凭证来自路由、端点却来自 apiBase = 把 A 家的 key
+      // 发到 B 家的端点。运行期表现是 401 → 判定 fail-safe 静默降级（话题永远
+      // 不清、主动介入永远不说话），几乎排不出来。
+      if (explicitApiBase !== undefined && explicitApiBase !== route.baseURL) {
+        throw new ConfigError(
+          `topic.provider 指向的路由 ${topicProvider} 自带 baseURL，同时又显式设置了 topic.apiBase`, [
+            `判定调用的凭证来自路由（${route.apiKeyEnv}），端点却将被 apiBase 覆盖——` +
+              '这个组合会把一家厂商的 key 发到另一家的端点，运行期只有静默降级',
+            '二选一：删掉 topic.apiBase（用路由端点），或删掉 topic.provider（直连 apiBase，凭证改用 DEEPSEEK_API_KEY）',
+          ],
+        );
+      }
       topicApiBaseFallback = route.baseURL;
     } else if (topicProvider !== DEEPSEEK_OFFICIAL_PROVIDER && explicitApiBase === undefined) {
       throw new ConfigError(

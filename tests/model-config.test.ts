@@ -425,9 +425,33 @@ topic:
     expect(config.topic.apiKey).toBe('sk-acme');
     expect(config.topic.apiKeyEnv).toBe('ACME_KEY');
     expect(config.topic.apiBase).toBe('https://gw.example/v1');
-    // 显式 apiBase 优先于路由 baseURL
-    const override = loadConfig({ ...baseEnv, ACME_KEY: 'sk-acme', BOT_TOPIC_API_BASE: 'https://other.example/v1' }, file);
-    expect(override.topic.apiBase).toBe('https://other.example/v1');
+    // 写同一份显式 apiBase = 无冲突，允许（等价写法不该报错）
+    const same = loadConfig(
+      { ...baseEnv, ACME_KEY: 'sk-acme', BOT_TOPIC_API_BASE: 'https://gw.example/v1' },
+      file,
+    );
+    expect(same.topic.apiBase).toBe('https://gw.example/v1');
+  });
+
+  it('路由自带 baseURL 时再显式 apiBase（不一致）→ 启动期报错，不静默跨厂商发 key', () => {
+    const file = parseConfigFileText(`
+models:
+  providers:
+    acme:
+      api: openai-completions
+      baseURL: https://gw.example/v1
+      apiKeyEnv: ACME_KEY
+topic:
+  provider: acme
+  apiBase: https://api.deepseek.com
+`);
+    expect(() => loadConfig({ ...baseEnv, ACME_KEY: 'sk-acme' }, file)).toThrow(/显式设置了 topic\.apiBase/);
+  });
+
+  it('模态只接受 text / image：video / audio 启动期报错并点名', () => {
+    expect(() =>
+      parseModelApiSection(parseYaml('providers:\n  acme:\n    models:\n      - id: m\n        input: [text, image, video]'), 'models'),
+    ).toThrow(/不认识："video"/);
   });
 
   it('topic.provider 指向无 baseURL 的路由且没显式 apiBase → 启动期报错', () => {
