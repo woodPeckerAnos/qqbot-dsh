@@ -156,23 +156,33 @@ LRU + 空闲回收控制（第 5.4 节）。
 每个会话已经隔到自己的工作区了，为什么还留一道沙箱？因为工作区的隔离靠的是
 "我们传对了 cwd"，而沙箱靠的是内核强制。前者是约定，后者是边界。详见第 6 节。
 
-### 3.3 配置分层：`.env` 装密钥，`qqbot.yml` 装行为参数
+### 3.3 配置分层：`.env` 装密钥，`qqbot.yml` + `config/` 装行为参数
 
 最初的版本把所有配置都塞进 `.env`，结果是 **39 个变量里真正敏感的只有 4 个**
 （`QQ_APP_ID` / `QQ_APP_SECRET` / `DEEPSEEK_API_KEY` / `ONEBOT_ACCESS_TOKEN`），
 其余 35 个是端口、配额、超时、谷时段这类行为参数。混在一起的实际后果是
 **重要信息被稀释**——想确认密钥填没填，要在一堆调参项里翻。
 
-拆分后的三层：
+拆分后的层次：
 
 | 层 | 位置 | 放什么 | 谁读 |
 |---|---|---|---|
 | 值 | `.env` | 主放 5 个凭证 / 个人标识（4 个密钥 + 管理员白名单）；行为参数也可在此临时覆盖 | compose 的 `env_file` **整份注入**容器 |
-| 行为参数（默认值） | `qqbot.yml` | 端口/配额/超时/谷时段/日志级别…（**不含**密钥与个人标识） | `QQ_CONFIG_FILE`（默认 `./qqbot.yml`） |
+| 行为参数（共享默认值） | `qqbot.yml` + `config/*.yml` | 端口/配额/超时/谷时段/日志级别…（**不含**密钥；管理员/群白名单等个人标识仍只认 env） | `QQ_CONFIG_FILE`（默认 `./qqbot.yml`）入口，include 展开后合并 |
+| 本机配置（不提交） | `config/local/*.yml` | 模型路由/模型选择、个人别名、本机资源上限等 | 入口以 `optional: true` include；缺失时走内置默认 |
 | 容器参数 | `docker-compose.yml` 的 `environment` | 路径、`TZ`、代理这类与宿主机绑定的项 | 容器环境 |
 
-`qqbot.yml` 是**随仓库提交**的默认配置：拷下来就能跑，不需要 `cp` 一份模板再改，
-改动也走 code review。密钥与个人标识不进这个文件，所以公开它没有风险。
+`qqbot.yml` 是**随仓库提交**的配置入口：它只声明要加载哪些模块，真正的参数在
+`config/*.yml`。这样单文件不会继续膨胀，详细注释也能跟着领域走。入口和共享模块
+拷下来就能跑，不需要 `cp` 一份模板再改，改动也走 code review。密钥与管理员/群
+白名单等个人标识不进这些文件（后者只认 env），所以公开它们没有风险。个别部署偏好
+（个人别名等）建议放 `config/local/overrides.yml`；仓库里的示例别名可按需替换。
+
+模块加载是 tsconfig 式的：`include` 按声明顺序加载，后加载覆盖先加载；入口自己
+的配置最后合并。映射深合并、数组/标量整体替换。每个文件先独立校验再合并，所以
+键名拼错会指出具体模块文件。**本机模型路由/模型选择**放 `config/local/models.yml`
+（`.gitignore` 忽略，模板 `*.example.yml` 提交）：它不是密钥，但属于"这台机器用
+哪家/哪个模型"的部署选择。完整规则见 [CONFIG.md](CONFIG.md)。
 
 `env_file: .env` 是刻意的选择：整份注入意味着**以后新增字段不用同时改 compose**，
 老部署拉新版本就能用上新变量。代价是文件里任何一行格式不对都会让**容器创建**失败。
@@ -182,7 +192,7 @@ LRU + 空闲回收控制（第 5.4 节）。
 不该靠砍掉机制来规避：仓库里的 `.env.example` 分隔线改用短横线（裸的 `----` 行
 会被 Compose 直接忽略），并把自查命令写进了 [RUNBOOK 1.2](RUNBOOK.md)。
 
-**取值优先级：env > `qqbot.yml` > 代码内置默认。**
+**取值优先级：env > 配置文件合并结果 > 代码内置默认。**
 让 env 仍然优先是有意的：临时覆盖不用改文件、既有部署的老变量也照旧生效。
 **密钥与个人标识只能来自 env**，配置文件里根本没有这些键，这是刻意的边界：
 
@@ -192,15 +202,17 @@ LRU + 空闲回收控制（第 5.4 节）。
   不上密钥，但那份配置文件是随仓库提交的，所以同样只认 env；写在文件里会被一条
   专门的报错拒绝并告知去哪配。这样 `qqbot.yml` 既无密钥也无个人标识。
 
-实现上分三个文件，各有单一职责：
+实现上分四个文件，各有单一职责：
 
-- `src/config-file.ts` —— 找文件、读 YAML、**形状与类型校验**，产出带类型的
-  `FileConfig`。顺手防了两个坑：
+- `src/config-file.ts` —— 找入口、读 YAML、**单文件形状与类型校验**，产出带类型的
+  `FileConfig`，并调用 include 展开。顺手防了两个坑：
   1. **未知键名直接报错并列出可用项**。静默忽略拼错的键会变成"改了没生效"的
      玄学问题，比报错难查得多。
   2. **bind mount 把文件挂成目录**。宿主上文件不存在时 Docker 会自动建同名
      目录，于是容器里读到目录。这种情况给出可照做的提示（删目录 + `cp` 示例），
      而不是含糊的 `EISDIR`。
+- `src/config-includes.ts` —— `include` 形状校验、相对路径解析、循环/深度检测、
+  optional 缺失跳过与深合并。它不碰配置 schema，只负责"文件图"。
 - `src/config-error.ts` —— `ConfigError` 单独成文件，断开 config.ts ↔
   config-file.ts 的循环依赖；仍从 `config.ts` 重新导出，调用方无感。
 - `src/config.ts` —— 三层合并 + **语义校验**（取值范围、配额不变量、窗口重叠）。
@@ -569,15 +581,25 @@ qqbot-dsh/
 ├── docker-compose.yml            部署入口
 ├── Dockerfile                    多阶段构建；runtime 层装 bubblewrap
 ├── .env.example                  密钥样例（5 个凭证 / 个人标识）
-├── qqbot.yml                     行为配置（随仓库提供 = 默认配置；无密钥，可安全提交）
+├── qqbot.yml                     配置入口（模块清单；无密钥，可安全提交）
+├── config/
+│   ├── connectors.yml            接入平台
+│   ├── runtime.yml               dsh / pool / paths / health / logLevel
+│   ├── media.yml                 attachments / media
+│   ├── interaction.yml           personas / hints / topic / observation
+│   ├── proactive.yml             主动发言
+│   ├── offpeak.yml               谷时段闸
+│   └── local/                    本机配置（*.yml 不进 git，*.example.yml 提交）
+├── docs/CONFIG.md                配置模块手册
 ├── package.json / tsconfig.json / vitest.config.ts
 ├── dsh-profile/
 │   ├── cordis.patch.yml          DSH profile 补丁（第 4 节）
 │   └── plugins/auto-approve.js   自动审批桩
 ├── src/
 │   ├── main.ts                   组装装配（唯一的 new 汇聚点）
-│   ├── config.ts                 env + qqbot.yml 三层合并 + 语义校验 + 启动期快速失败
-│   ├── config-file.ts            qqbot.yml 读取与形状校验（未知键名直接报错）
+│   ├── config.ts                 env + 配置文件合并结果 + 语义校验 + 启动期快速失败
+│   ├── config-file.ts            入口/单文件读取与形状校验（未知键名直接报错）
+│   ├── config-includes.ts        include 展开、深合并、循环检测
 │   ├── config-error.ts           ConfigError（单独成文件以断开循环依赖）
 │   ├── logger.ts                 结构化 JSON 日志 → stderr
 │   ├── health.ts                 /healthz + /metrics
@@ -1154,7 +1176,7 @@ fileName/sizeBytes）。一次 `reply()` 调用要么纯文本、要么一个附
 ### 12.4 配置与可观测性
 
 - `media.enabled` / `maxFileMB` / `maxAttachmentsPerMsg` / `imageExtensions` /
-  `outboxDir`（env 前缀 `BOT_MEDIA_*`），详见 qqbot.yml 注释；
+  `outboxDir`（env 前缀 `BOT_MEDIA_*`），详见 config/media.yml 注释；
 - 图片扩展名白名单默认 `png/jpg/jpeg/gif`：svg 等"是图片但平台不当图片渲染"
   的一律按文件发；
 - `/metrics` 的 `attachmentsSent` 计数成功发出的附件数。

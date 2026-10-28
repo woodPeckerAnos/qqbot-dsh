@@ -6,6 +6,12 @@ dist/
 .env
 .env.local
 
+# 本机配置（非密钥，但属于本机部署选择）：不进 git。
+# 模板 *.example.yml 保留在仓库里，用户 cp 去掉 .example 后使用。
+# 见 config/local/README.md。
+config/local/*.yml
+!config/local/*.example.yml
+
 # 兴趣池（场景 5）**不忽略**：仓库里提交了一份近乎为空的 interests.yml 占位。
 # 原因：Docker 的 bind mount 在宿主文件不存在时会自动建同名**目录**，
 # 容器启动会直接失败（「interests.yml 是一个目录，不是文件」）。

@@ -5,9 +5,10 @@
  * 都必须给出能直接照做的报错，而不是静默用默认值跑起来。
  */
 
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ConfigError } from '../src/config-error.js';
@@ -226,8 +227,9 @@ describe('loadConfigFile', () => {
     // qqbot.yml 是随仓库提供的默认配置，也是用户会按机器改的文件，
     // 所以这里只校验"形状合法"（键名、类型），不校验具体取值——
     // 否则用户把 connectors 改成 onebot 之后，测试反而会失败。
-    const text = readFileSync(new URL('../qqbot.yml', import.meta.url), 'utf8');
-    expect(() => parseConfigFileText(text, 'qqbot.yml')).not.toThrow();
+    const entry = fileURLToPath(new URL('../qqbot.yml', import.meta.url));
+    const loaded = loadConfigFile({ QQ_CONFIG_FILE: entry });
+    expect(loaded.files?.length).toBeGreaterThan(1);
   });
 });
 

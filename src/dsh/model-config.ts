@@ -1,5 +1,5 @@
 /**
- * 模型 API 配置层（qqbot.yml 的 `models:` 段）。
+ * 模型 API 配置层（配置文件的 `models:` 段；推荐 config/local/models.yml）。
  *
  * 职责：把 DSH 允许的全部"模型提供商"配置能力透传给 dsh 子进程，同时守住
  * qqbot 自己的两条纪律：
@@ -227,7 +227,7 @@ export interface PiAiProviderConfig {
   retryPolicy?: RetryPolicyConfig;
 }
 
-/** qqbot.yml `models:` 段解析后的形状（也是 Config.modelApi 的类型）。 */
+/** 配置文件 `models:` 段解析后的形状（也是 Config.modelApi 的类型）。 */
 export interface ModelApiConfig {
   /** 原生 DeepSeek 路由（provider = deepseek-official）的配置 */
   deepseek?: DeepSeekRouteConfig;
@@ -257,7 +257,7 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * 带密钥语义、因此禁止出现在 headers 里的 header 名（大小写不敏感）。
- * 这些头的值就是凭证本身，写进 qqbot.yml 违反"密钥不进配置文件"的纪律；
+ * 这些头的值就是凭证本身，写进配置文件违反"密钥不进配置文件"的纪律；
  * 正确做法是用 apiKeyEnv 让适配器自己带上认证头。
  */
 const SECRET_HEADER_NAMES = /^(authorization|proxy-authorization|x-api-key|api-key|apikey|x-auth-token|x-access-token)$/i;
@@ -288,7 +288,7 @@ function assertNoUnknownKeys(raw: Record<string, unknown>, allowed: readonly str
     if (FORBIDDEN_SECRET_KEYS.has(key.toLowerCase())) {
       throw new ConfigError(`${path}.${key} 是内联密钥写法，配置层不接受`, [
         '密钥只允许以"环境变量名引用"的形式出现：用 apiKeyEnv: <变量名>，变量值写在 .env 里',
-        'qqbot.yml 随仓库提交，内联密钥会随之泄露',
+        '配置文件会随仓库提交或进入本机配置，内联密钥都可能泄露',
       ]);
     }
     if (!allowed.includes(key)) {
@@ -838,7 +838,7 @@ function readPiAiProvider(raw: unknown, path: string): PiAiProviderConfig {
 // ---------------------------------------------------------------------------
 
 /**
- * 解析 qqbot.yml 的 `models:` 段（纯函数，供 config-file.ts 调用）。
+ * 解析配置文件的 `models:` 段（纯函数，供 config-file.ts 调用）。
  *
  * 只做形状/类型/取值校验与密钥卫生；语义校验（选中的 provider 是否已声明、
  * apiKeyEnv 引用的变量是否存在）在 config.ts 合并完 env 之后做。
@@ -906,7 +906,7 @@ export function assertModelApiConfig(modelApi: ModelApiConfig, selectedProvider:
     throw new ConfigError(
       `dsh.provider 选中的提供商 ${JSON.stringify(selectedProvider)} 没有对应的模型路由配置`, [
         `可用路由：${[DEEPSEEK_OFFICIAL_PROVIDER, ...declaredRoutes].join('、')}`,
-        `在 qqbot.yml 的 models.providers.${selectedProvider} 下声明它，或把 dsh.provider 改回已声明的路由`,
+        `在 config/local/models.yml（或声明 models 的模块）的 models.providers.${selectedProvider} 下声明它，或把 dsh.provider 改回已声明的路由`,
       ],
     );
   }
@@ -1017,7 +1017,7 @@ export function renderModelApiPatch(modelApi: ModelApiConfig): string | undefine
   }
   if (entries.length === 0) return undefined;
   return (
-    '# 本文件由 qqbot 启动时根据 qqbot.yml 的 models: 段生成——不要手改，重启会被覆盖。\n' +
+    '# 本文件由 qqbot 启动时根据配置文件的 models: 段生成——不要手改，重启会被覆盖。\n' +
     '# 密钥不在此文件里：apiKeyEnv 只是环境变量名引用，值在 .env。\n' +
     stringifyYaml(entries)
   );

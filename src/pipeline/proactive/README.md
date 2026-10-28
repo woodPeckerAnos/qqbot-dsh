@@ -168,7 +168,7 @@ disabled（总开关关）→ empty（内容为空）→ unsupported（平台不
 
 ## 7. 配置与观测
 
-| 配置（`qqbot.yml` 的 `proactive:` 段） | 默认 | 说明 |
+| 配置（`config/proactive.yml` 的 `proactive:` 段） | 默认 | 说明 |
 |---|---|---|
 | `proactive.enabled` | `false` | 总开关（fail-closed：不配就不主动开口） |
 | `proactive.dryRun` | **`true`** | 灰度：判定照跑、只记 `wouldSend`，**不真的发言**。上线先观察一到两周 |

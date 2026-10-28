@@ -5,11 +5,11 @@
  * 所以每一项硬约束都要有测试守着。
  */
 
-import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { ConfigError, describeConfig, loadConfig } from '../src/config.js';
-import { parseConfigFileText } from '../src/config-file.js';
+import { loadConfigFile, parseConfigFileText } from '../src/config-file.js';
 import { DEFAULT_INTENTS, Intent, describeIntents } from '../src/adapters/qq-official/types.js';
 
 const baseEnv = {
@@ -705,8 +705,12 @@ offpeak:
     // 四个密钥都给上，这样无论默认配置启用哪些接入都能通过加载；
     // 只断言"对任何合法取值都成立"的结构性事实——qqbot.yml 是给人改的，
     // 断言具体取值会让用户改完配置后测试反而失败。
-    const text = readFileSync(new URL('../qqbot.yml', import.meta.url), 'utf8');
-    const file = parseConfigFileText(text, 'qqbot.yml');
+    const entry = fileURLToPath(new URL('../qqbot.yml', import.meta.url));
+    const loaded = loadConfigFile({ QQ_CONFIG_FILE: entry });
+    // include 展开后必须包含全部共享模块；安全配置类文件是可选的，不在此断言。
+    for (const module of ['connectors', 'runtime', 'media', 'interaction', 'proactive', 'offpeak']) {
+      expect(loaded.files?.some((file) => file.endsWith(`/config/${module}.yml`))).toBe(true);
+    }
     const config = loadConfig(
       {
         QQ_APP_ID: 'app-1',
@@ -714,7 +718,7 @@ offpeak:
         DEEPSEEK_API_KEY: 'sk-test',
         ONEBOT_ACCESS_TOKEN: 'token-1',
       },
-      file,
+      loaded.config,
     );
     expect(config.connectors.length).toBeGreaterThan(0);
     // 范围校验保证恒成立：turnTimeout 上限 295000

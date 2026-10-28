@@ -60,7 +60,7 @@ cd qqbot-dsh
 # 2) 写配置
 cp .env.example .env                  # 只放密钥
 $EDITOR .env                           # 至少填 QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY
-# qqbot.yml（行为参数）已在仓库里，就是默认配置；要改直接改，不用复制
+# qqbot.yml（入口）+ config/（模块）已在仓库里，就是默认配置；要改直接改，不用复制
 
 # 3) 构建并启动
 docker compose up -d --build
@@ -212,7 +212,7 @@ ONEBOT_ACCESS_TOKEN=$(openssl rand -hex 32)
 DEEPSEEK_API_KEY=...
 ```
 
-`qqbot.yml`（行为参数，仓库自带）：
+`config/connectors.yml`（接入平台模块，仓库自带）：
 
 ```yaml
 connectors: [onebot]        # 或 [qq-official, onebot] 与官方通道并存
@@ -237,7 +237,7 @@ docker compose up -d --build
                                               容器内 0.0.0.0:6700
 ```
 
-> ⚠ **不要**把 `qqbot.yml` 里的 `onebot.host` 改成 `127.0.0.1`。宿主看到的
+> ⚠ **不要**把 `config/connectors.yml` 里的 `onebot.host` 改成 `127.0.0.1`。宿主看到的
 > `127.0.0.1:6700` 是 Docker 的端口转发，它落到**容器网卡**上；容器里若只绑
 > loopback，转发就够不到，症状是"端口映射看着正常但框架死活连不上"。保持
 > 默认的 `0.0.0.0`，安全性由宿主侧那个 `127.0.0.1:` 前缀保证。
@@ -430,14 +430,14 @@ docker stats qqbot-dsh
 
 ## 7. 调参建议
 
-编辑 `qqbot.yml` 后 `docker compose restart qqbot` 生效；改 `.env`（密钥）用
-`docker compose up -d`。两者都不需要重建镜像。
+编辑 `qqbot.yml` 或 `config/**` 后 `docker compose restart qqbot` 生效；改 `.env`
+（密钥）用 `docker compose up -d`。两者都不需要重建镜像。
 
-下表给的是**环境变量名**（它们优先于 `qqbot.yml`，所以临时覆盖最方便），
-但日常改配置请改 `qqbot.yml` 里对应的项——对应关系见每节的注释，例如
-`QQ_MAX_RUNTIMES` ↔ `pool.maxRuntimes`、`QQ_MAX_CHARS` ↔ `qq-official.maxChars`。
-要用环境变量覆盖，写进 `.env` 即可（它会被整份注入容器），或加到
-`docker-compose.yml` 的 `environment` 段。
+下表给的是**环境变量名**（它们优先于配置文件，所以临时覆盖最方便），
+但日常改配置请改 `config/` 里对应的模块——对应关系见每节的注释，例如
+`QQ_MAX_RUNTIMES` ↔ `runtime.yml` 的 `pool.maxRuntimes`、`QQ_MAX_CHARS` ↔
+`connectors.yml` 的 `qq-official.maxChars`。要用环境变量覆盖，写进 `.env` 即可
+（它会被整份注入容器），或加到 `docker-compose.yml` 的 `environment` 段。
 
 > **`.env` 是整份注入的**，好处是以后新增字段不用同时改 compose；代价是文件里
 > 任何一行格式不对都会让**容器创建**失败。最典型的是"一行全是 `="——从 Markdown
@@ -478,7 +478,7 @@ docker stats qqbot-dsh
 | 后端代码（`src/**`） | `docker compose up -d --build` | **是** | 否 |
 | `package.json` 依赖 | `docker compose up -d --build` | **是**（要重跑 `npm install`） | 否 |
 | `.env`（密钥） | `docker compose up -d` | 否（重建容器即可） | 否 |
-| `qqbot.yml`（行为参数） | `docker compose restart qqbot` | 否 | 否 |
+| `qqbot.yml`、`config/**`（行为参数） | `docker compose restart qqbot` | 否 | 否 |
 | `dsh-profile/cordis.patch.yml`（人设、权限模式） | `docker compose restart qqbot` | 否 | 否 |
 | 某个会话的行为规矩（`AGENTS.md`） | 直接改文件 | **都不用** | 否 |
 | `docker-compose.yml` 本身 | `docker compose up -d` | 否 | 否 |
@@ -486,6 +486,11 @@ docker stats qqbot-dsh
 **永远不需要 `docker compose down`。** `up -d --build` 会自己重建镜像并替换容器；
 `down` 只用于"要改网络/端口映射，或想彻底停止服务"。注意 `down` 默认删容器但
 保留卷（记忆与工作区不丢），加 `-v` 才会连数据一起删。
+
+> **从旧版单文件配置升级**：`docker-compose.yml` 新增了 `./config` 挂载，所以第一次
+> 要执行 `docker compose up -d`（让新挂载生效），之后才是 `restart`。旧的
+> `qqbot.yml` 若被本地改过，把差异挪到 `config/local/overrides.yml` 或对应模块；
+> 不要只覆盖仓库里的入口文件，否则会丢失模块清单。
 
 ### 8.1 最省事的调优手段：改会话规矩不用碰容器
 

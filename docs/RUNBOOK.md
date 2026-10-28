@@ -40,7 +40,7 @@ docker compose logs --tail=80 qqbot
 
 入口脚本**只**检查这一个（无论启用哪个接入都必须有）。`QQ_APP_ID`/`QQ_APP_SECRET`
 只在启用官方接入时需要、`ONEBOT_ACCESS_TOKEN` 只在启用 onebot 时需要，这两个判断
-交给应用层——它的报错会指出是环境变量还是 `qqbot.yml` 的哪一项。
+交给应用层——它的报错会指出是环境变量还是配置文件模块的哪一项。
 
 没填或没被 compose 读到。检查：
 
@@ -57,17 +57,21 @@ cat .env | grep -c '='                           # 确认文件有内容
 启动期的配置校验会明确告诉你是哪一项、为什么、怎么改。常见的：
 
 > 报错里出现的名字就是**该改的地方**：`QQ_XXX` 是环境变量（`.env` 里，或 compose
-> 的 `environment` 段），`onebot.port` 这种带点的路径是 `qqbot.yml` 里的项。两者
-> 指向同一个配置——环境变量优先级更高，所以"改了 `qqbot.yml` 没生效"通常是 `.env`
-> 或 compose 里还有个同名变量压着。启动日志会打印实际读到的配置文件路径
-> （搜 `configFile`）。
+> 的 `environment` 段），`onebot.port` 这种带点的路径是 `config/*.yml` 里的项。
+> 两者指向同一个配置——环境变量优先级更高，所以"改了配置文件没生效"通常是 `.env`
+> 或 compose 里还有个同名变量压着。启动日志会打印入口与实际加载的模块
+> （搜 `configFile` / `configModules`）。
 
 | 报错 | 原因 | 修复 |
 |---|---|---|
 | `invalid environment variable: =====...`（创建容器时报） | `.env` 里有一行**全是 `=`**——最常见来源是从 Markdown 预览里复制配置：`# =====` 被渲染成标题、`#` 被吃掉。Compose 按第一个 `=` 切开得到**变量名为空**的条目，daemon 拒绝创建容器（`docker compose config` 里会看到 `"": =====...`） | `grep -n '^=' .env` 找出那一行删掉（或行首补 `#`）。注：仓库里的 `.env.example` 分隔线已改用短横线——裸的 `----` 行会被 Compose 忽略，不会再造成这个错 |
 | `配置文件不存在：...` | `QQ_CONFIG_FILE` 显式指定了却没有这个文件 | 建好文件，或删掉该变量（默认 `./qqbot.yml`，不存在就只用 env/默认） |
-| `<路径> 是一个目录，不是文件` | bind mount 的宿主文件不存在时，Docker 自动建了同名目录 | 删掉那个同名目录，再 `git checkout -- qqbot.yml` |
-| `未知配置项 "xxx"` / `不是可识别的配置项` | `qqbot.yml` 里键名拼错 | 照报错里列的可用项改（拼错不会静默用默认值，这是故意的） |
+| `配置模块不存在：...` | 非 optional 的 include 指向了不存在的文件（或升级后新挂载没生效） | 改路径、注释 include 行，或加 `optional: true`；升级后先 `docker compose up -d` 让 `./config` 挂载生效，缺目录可 `git checkout -- config` |
+| `配置模块是一个目录，不是文件` | bind mount 的宿主文件不存在时，Docker 自动建了同名目录 | 删掉那个同名目录，再 `git checkout -- config`（或 `git checkout -- qqbot.yml`） |
+| `配置模块循环引用：a → b → a` | 模块 include 互相指回上级 | 去掉环；模块只应向下引用，不应引用入口 |
+| `含 include 的入口文件必须用 loadConfigFile 解析` | 用单文件解析器读了入口（通常只在测试/脚本里） | 正常启动不会出现；测试请用 `loadConfigFile` |
+| `没有权限读取配置模块` | 宿主机文件对容器 uid 10001 不可读 | `chmod 644 <文件>` |
+| `未知配置项 "xxx"` / `不是可识别的配置项` | `qqbot.yml` 或 `config/*.yml` 里键名拼错 | 照报错里列的可用项改（报错会指出具体文件；拼错不会静默用默认值） |
 | `不是合法 YAML` | 缩进用了 Tab，或冒号后缺空格 | 用空格缩进；写 `port: 6700` 而不是 `port:6700` |
 | `必须是整数，收到 "6700"` | YAML 里给数字加了引号 | 去掉引号：`port: 6700` |
 | `QQ_INTENTS=... 未包含 GROUP_AND_C2C_EVENT` | intents 配错 | 用默认值 `50331648`（群聊与单聊都靠它） |
@@ -465,7 +469,7 @@ curl -s localhost:8080/health | jq .proactive
 | `spoke == 0` 且 `vetoed` 全是 `no-candidate` | 本地预筛没命中：消息不是指代/续聊/问句，也没命中兴趣池 | 看 `SCENES.md` 的成立条件；兴趣池加条目 |
 | `spoke == 0` 且 `judgeFailures > 0` | 判定调用失败（超时/网络/密钥/解析） | 日志里搜「主动介入判定失败」；连续失败会 `suspended` |
 | `suspended > 0` | 判定连续失败达上限，该会话暂停评估 | 修好上游后重启进程（暂停状态不持久化） |
-| `vetoed` 里 `rate-limit` / `min-gap` | 触发了硬限流，或同一话题会话内两次发言间隔没到 | 这是设计行为；额度见 `qqbot.yml` 的 proactive 段 |
+| `vetoed` 里 `rate-limit` / `min-gap` | 触发了硬限流，或同一话题会话内两次发言间隔没到 | 这是设计行为；额度见 `config/proactive.yml` |
 | `sessions.opened` 涨、`spoke` 不涨 | 判定判"值得"但发言被后面几道闸门挡下 | 看 `vetoed` 是哪一类；`min-gap` / `rate-limit` / `budget-exhausted` 都不消耗预算 |
 | `sessions.closedBy['idle']` 占绝大多数 | 话题会话几乎都是"没人接话"被静默关闭的 | 正常兜底；若 `llm-closed` 长期为 0，说明判据里"什么时候该关"那一段没起作用 |
 | `sessions.budgetExhausted` 高 | 同一个话题里"还想说、但额度没了"被挡了很多次 | 高 = 预算偏紧（模型还想接着聊）；低 = 2 句够用。**注意它不等于"它不说话了"**：会话还开着，只是闭嘴 |

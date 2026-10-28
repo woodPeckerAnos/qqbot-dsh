@@ -157,11 +157,14 @@ function buildConnector(
 async function main(): Promise<void> {
   let config: Config;
   let configFile: string | undefined;
+  let configFiles: string[] = [];
   try {
-    // 配置文件（qqbot.yml）先读：缺文件、YAML 语法错、键名拼错都在这里爆出来。
+    // 配置文件（qqbot.yml 入口 + config/*.yml 模块）先读：缺文件、YAML 语法错、
+    // 键名拼错、include 循环都在这里爆出来。
     // 密钥不走配置文件，只从 env 读（loadConfig 内部处理）。
     const loaded = loadConfigFile(process.env);
     configFile = loaded.path;
+    configFiles = loaded.files ?? [];
     config = loadConfig(process.env, loaded.config);
   } catch (error) {
     if (error instanceof ConfigError) {
@@ -179,8 +182,10 @@ async function main(): Promise<void> {
   logger.info('启动 qqbot-dsh', {
     node: process.version,
     platform: process.platform,
-    // 配置文件路径要显式打出来：排障第一个问题永远是"你到底读的哪个配置"
+    // 配置文件路径要显式打出来：排障第一个问题永远是"你到底读的哪个配置"。
+    // configModules 是 include 展开后实际合并的模块（入口文件不算在内）。
     configFile: configFile ?? '(未使用配置文件，全部走 env/默认)',
+    configModules: configFiles.filter((file) => file !== configFile),
     config: describeConfig(config),
   });
 
@@ -244,7 +249,8 @@ async function main(): Promise<void> {
 
   // --- DSH runtime 池 --------------------------------------------------------
   //
-  // 模型 API 配置层（qqbot.yml 的 models: 段）在这里物化成一份生成的 patch 文件，
+  // 模型 API 配置层（配置文件的 models: 段，推荐 config/local/models.yml）在这里
+  // 物化成一份生成的 patch 文件，
   // 作为第二个 --patch 叠加在 profile patch 之后传给每个 dsh 子进程
   // （--patch 可重复、按 argv 顺序应用）。不配 models: 段时返回 undefined，
   // 启动参数与历史行为完全一致。

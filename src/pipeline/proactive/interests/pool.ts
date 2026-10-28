@@ -258,7 +258,7 @@ export function loadInterestPool(options: {
     if (error instanceof ConfigError) throw error;
     if (explicit) {
       throw new ConfigError(`兴趣池文件不存在：${path}`, [
-        '路径来自 QQ_INTERESTS_FILE 或 qqbot.yml 的 proactive.interestsFile；' +
+        '路径来自 QQ_INTERESTS_FILE 或 config/proactive.yml 的 proactive.interestsFile；' +
           '不需要兴趣池就把这个配置删掉（文件不存在时视为空池）',
       ]);
     }

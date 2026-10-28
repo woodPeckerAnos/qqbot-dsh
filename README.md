@@ -40,11 +40,13 @@ flowchart LR
 
 ## 快速开始
 
-只支持 Docker 部署。`qqbot.yml` 随仓库提供（= 默认配置，带注释，**不用复制**），
-所以起步只有两步：**填 `.env` → `docker compose up -d --build`**。
+只支持 Docker 部署。`qqbot.yml` 是配置入口（模块清单 + 加载规则），真正的
+默认值在 `config/*.yml`，两者都随仓库提供（带注释，**不用复制**），所以起步
+只有两步：**填 `.env` → `docker compose up -d --build`**。模块化配置的完整说明
+见 [docs/CONFIG.md](docs/CONFIG.md)。
 
 要填哪些凭证，取决于走哪条通道（默认配置里两条都开着，不用就把另一条从
-`qqbot.yml` 的 `connectors` 里删掉）：
+`config/connectors.yml` 的 `connectors` 里删掉）：
 
 | 通道 | `.env` 里必填 | 说明 |
 |---|---|---|
@@ -56,6 +58,10 @@ cp .env.example .env
 docker compose up -d --build
 docker compose logs -f
 ```
+
+> **从旧版单文件配置升级**：先执行一次 `docker compose up -d`，让新增的
+> `./config` 只读挂载生效；之后改配置才是 `restart`。旧 `qqbot.yml` 里你自己的
+> 改动请挪到 `config/local/overrides.yml`（或对应模块），否则会被仓库默认值覆盖。
 
 启动后在群里 @机器人、或直接私聊说一句需求。**完整步骤与常见坑见
 [docs/DEPLOY.md](docs/DEPLOY.md)**；社区框架那条路还要多做一步反向 WS 配置（见下）。
@@ -98,8 +104,8 @@ BOT_PROACTIVE_DRY_RUN=true           # 默认值：先观察，确认判据准�
 cp src/pipeline/proactive/interests/interests.yml.example interests.yml
 ```
 
-> ⚠️ 别删掉宿主上的 `interests.yml` / `qqbot.yml`：compose 是 bind mount，
-> 文件不存在时 Docker 会**自动建一个同名目录**，容器启动会直接失败。
+> ⚠️ 别删掉宿主上的 `interests.yml`、`qqbot.yml` 或 `config/` 目录：compose 是
+> bind mount，文件不存在时 Docker 会**自动建一个同名目录**，容器启动会直接失败。
 
 它**会在什么情况下开口**，用人话写在
 **[SCENES.md](src/pipeline/proactive/interests/SCENES.md)**：五类场景（指代 / 续聊追问 /
@@ -113,9 +119,16 @@ cp src/pipeline/proactive/interests/interests.yml.example interests.yml
 
 默认走 DeepSeek 官方路由（`deepseek-official` + `DEEPSEEK_API_KEY`）。要换成或增加
 其他提供商——OpenAI / Anthropic 等 pi-ai 目录内的厂商，或任何 OpenAI 兼容的
-自建网关——在 `qqbot.yml` 的 **`models:` 段**声明路由，密钥以 `apiKeyEnv` 引用、
-值写进 `.env`（内联密钥会在启动期被直接拒绝），然后把 `dsh.provider` 指到对应
-路由名即可。机制与完整示例见 qqbot.yml 的 `models:` 节注释；字段语义以 DSH 的
+自建网关——先把模板复制成本机配置：
+
+```sh
+cp config/local/models.example.yml config/local/models.yml
+```
+
+然后在 `models.yml` 的 **`models:` 段**声明路由，密钥以 `apiKeyEnv` 引用、值写进
+`.env`（内联密钥会在启动期被直接拒绝），并把 `dsh.provider` 指到对应路由名。
+`config/local/models.yml` 不进 git（它不是密钥，但属于本机部署选择）；机制与完整
+示例见该模板的注释，字段语义以 DSH 的
 [配置目录](https://github.com/deepseek-ai/deepseek-harness/blob/main/docs/config-catalog.md)
 为准。
 
@@ -193,7 +206,7 @@ npm test                 # 离线单测：不触网、不启动 DSH 子进程
 |---|---|---|
 | `src/**` 后端代码 | `docker compose up -d --build` | 是 |
 | `.env`（密钥 / 开关 / 白名单） | `docker compose up -d` | 否 |
-| `qqbot.yml`、`interests.yml`（挂载的配置） | `docker compose restart qqbot` | 否 |
+| `qqbot.yml`、`config/**`、`interests.yml`（挂载的配置） | `docker compose restart qqbot` | 否 |
 | 某个会话的规矩（工作区里的 `AGENTS.md`） | 直接写文件，连重启都不用 | 否 |
 | 某个会话的人设风格（`/persona <名>` 命令） | 群里发命令，下一条消息生效 | 否 |
 | 新增人设预设（`dsh-profile/personas/*.md`） | 直接加文件，`/persona` 立刻列得出 | 否¹ |
@@ -219,13 +232,18 @@ docker compose run --rm --entrypoint node qqbot scripts/probe-dual-session.mjs #
 ## 目录结构
 
 ```
-docker-compose.yml       生产部署入口（qqbot.yml / interests.yml 以只读方式挂进来）
+docker-compose.yml       生产部署入口（qqbot.yml / config / interests.yml 以只读方式挂进来）
 docker-compose.dev.yml   开发覆盖：挂本地 dist，跳过镜像重建
 .env.example             密钥与个人标识样例（不含行为参数）
-qqbot.yml                行为配置（随仓库提供 = 默认值，带注释直接用）
+qqbot.yml                配置入口：模块清单 + 加载/合并规则（详细参数在 config/）
+config/                  共享配置模块（接入/运行时/富媒体/交互/主动发言/谷时段）
+config/local/            本机配置（模型路由、个人覆盖；*.yml 不进 git）
+docs/CONFIG.md           配置模块手册（怎么加模块、怎么排查）
+interests.yml            兴趣池（场景 5；独立 schema）
 
-src/config.ts            env + qqbot.yml 三层合并 + 语义校验 + 启动期快速失败
-src/config-file.ts       qqbot.yml 读取与形状校验（未知键名直接报错）
+src/config.ts            env + 配置文件合并结果 + 语义校验 + 启动期快速失败
+src/config-file.ts       单文件读取与形状校验（未知键名直接报错）
+src/config-includes.ts   include 展开、深合并、循环检测
 src/core/                接入层契约：BotConnector / 归一化事件 / 内容片段（编排层只依赖这里）
 src/adapters/            接入平台：qq-official（官方）/ onebot（社区框架）
 src/dsh/                 DSH 桥接：JSON-RPC 客户端 / 子进程监督 / 进程池 / turn 归并 / 图片内联与长图切片

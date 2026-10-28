@@ -1,20 +1,28 @@
 /**
- * 配置文件层（`qqbot.yml`）。
+ * 配置文件层（`qqbot.yml` 入口 + `config/*.yml` 模块）。
  *
  * 为什么要拆出这一层：`.env` 里塞了 39 个变量，里面**真正敏感的只有 4 个**
  * （QQ_APP_ID / QQ_APP_SECRET / DEEPSEEK_API_KEY / ONEBOT_ACCESS_TOKEN），
  * 其余 35 个是行为参数。混在一起的结果是"重要信息被稀释"——翻半天才找到要改的那行。
  *
- * 职责划分（本模块只管前半段）：
- *   1. 找到文件（QQ_CONFIG_FILE，默认 ./qqbot.yml）并读出 YAML；
- *   2. 校验形状与类型，拒绝拼错的键名，产出**带类型的 FileConfig**；
- *   3. 语义校验（取值范围、窗口重叠…）留给 config.ts，因为它要在合并 env 之后再判。
+ * 配置本身又进一步拆成模块（tsconfig 式 include）：
+ *   - `qqbot.yml` 是入口，只声明 include 清单与模块控制；
+ *   - `config/*.yml` 各管一块，详细注释跟着模块走；
+ *   - `config/local/*.yml` 放本机配置（模型路由等），不进 git。
  *
- * 优先级：env > 本文件 > 代码内置默认。之所以让 env 仍然优先，
+ * 职责划分：
+ *   1. 找到入口文件（QQ_CONFIG_FILE，默认 ./qqbot.yml）并读出 YAML；
+ *   2. 展开 include（config-includes.ts），每个文件先独立校验再深合并；
+ *   3. 校验形状与类型，拒绝拼错的键名，产出**带类型的 FileConfig**；
+ *   4. 语义校验（取值范围、窗口重叠…）留给 config.ts，因为它要在合并 env 之后再判。
+ *
+ * 优先级：env > 配置文件合并结果 > 代码内置默认。模块之间按 include 顺序，
+ * 后加载覆盖先加载；入口文件自己的配置最后合并。之所以让 env 仍然优先，
  * 一是既有部署零破坏（.env 里写着的值照旧生效），二是临时覆盖不用改文件。
  *
- * 本模块**不做**任何 env 合并，也不读 process.env 之外的全局状态，
- * 所以 `parseConfigFileText` 是纯函数，可以直接单测。
+ * 本模块**不做**任何 env 合并，也不读 process.env 之外的全局状态：
+ * `parseConfigFileText` / `parseConfigDocument` 仍是纯函数，可以直接单测；
+ * 只有 `loadConfigFile` 会碰文件系统。
  */
 
 import { readFileSync, statSync } from 'node:fs';
@@ -22,6 +30,11 @@ import { readFileSync, statSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
 
 import { ConfigError } from './config-error.js';
+import {
+  loadConfigGraph,
+  parseIncludeDirectives,
+  type ParsedConfigDocument,
+} from './config-includes.js';
 import { parseModelApiSection, type ModelApiConfig } from './dsh/model-config.js';
 
 /** 未设置 QQ_CONFIG_FILE 时默认读的文件（相对进程 CWD）。 */
@@ -554,11 +567,8 @@ function readSection(
   return out;
 }
 
-/**
- * 解析 YAML 文本为 FileConfig（纯函数，便于单测）。
- * @param source 出错信息里显示的文件名
- */
-export function parseConfigFileText(text: string, source = DEFAULT_CONFIG_FILE): FileConfig {
+/** 解析 YAML 文本，要求顶层是映射；空文件视为空映射。 */
+function parseYamlMapping(text: string, source: string): Record<string, unknown> {
   let root: unknown;
   try {
     root = parseYaml(text);
@@ -572,9 +582,18 @@ export function parseConfigFileText(text: string, source = DEFAULT_CONFIG_FILE):
   if (!isPlainObject(root)) {
     throw new ConfigError(`${source} 顶层必须是映射（key: value），收到 ${describeValue(root)}`);
   }
+  return root;
+}
 
+/**
+ * 校验一个已经去掉 `include` 的配置映射。
+ *
+ * 拆成独立函数是为了让 include 加载层能"每个文件先独立校验、再合并"——
+ * 这样报错能指到具体模块文件，而不是合并后的大对象。
+ */
+function parseConfigObject(raw: Record<string, unknown>, source: string): FileConfig {
   const allowedTop = [...Object.keys(TOP_SCALARS), ...TOP_SECTIONS.map((s) => s.yamlKey), 'models'];
-  for (const key of Object.keys(root)) {
+  for (const key of Object.keys(raw)) {
     const rejected = REJECTED_KEYS[key];
     if (rejected !== undefined) {
       throw new ConfigError(`${source}: 配置项 "${key}" 不能写在配置文件里`, rejected);
@@ -589,19 +608,55 @@ export function parseConfigFileText(text: string, source = DEFAULT_CONFIG_FILE):
   const out: FileConfig = {};
   const mutable = out as Record<string, unknown>;
   for (const [key, kind] of Object.entries(TOP_SCALARS)) {
-    const value = coerceScalar(root[key], `${source}: ${key}`, kind);
+    const value = coerceScalar(raw[key], `${source}: ${key}`, kind);
     if (value !== undefined) mutable[key] = value;
   }
   for (const { yamlKey, field, spec } of TOP_SECTIONS) {
     const nested = NESTED_SECTIONS[yamlKey] ?? {};
-    const section = readSection(root[yamlKey], `${source}: ${yamlKey}`, spec, nested);
+    const section = readSection(raw[yamlKey], `${source}: ${yamlKey}`, spec, nested);
     if (Object.keys(section).length > 0) mutable[field] = section;
   }
   // models: 段是结构化嵌套配置（提供商路由字典），由专门的解析器处理
-  if (root['models'] !== undefined && root['models'] !== null) {
-    out.models = parseModelApiSection(root['models'], `${source}: models`);
+  if (raw['models'] !== undefined && raw['models'] !== null) {
+    out.models = parseModelApiSection(raw['models'], `${source}: models`);
   }
   return out;
+}
+
+/**
+ * 解析一份配置文件：取出 `include` 清单，并校验本文件自己的配置。
+ *
+ * 这是给 `loadConfigGraph` 用的回调：图遍历负责读其他文件、循环检测与合并，
+ * 这里只关心"这一份文件写了什么"。
+ */
+export function parseConfigDocument(
+  text: string,
+  source = DEFAULT_CONFIG_FILE,
+): ParsedConfigDocument<FileConfig> {
+  const root = parseYamlMapping(text, source);
+  const includes = parseIncludeDirectives(root['include'], source);
+  const body: Record<string, unknown> = { ...root };
+  delete body['include'];
+  return { config: parseConfigObject(body, source), includes };
+}
+
+/**
+ * 解析单份 YAML 文本为 FileConfig（纯函数，便于单测）。
+ *
+ * 不含 include 展开：需要模块能力时用 `loadConfigFile`（正常启动路径）。
+ * 这里遇到 include 会明确报错，避免调用方以为模块被加载了、实际却被静默忽略。
+ *
+ * @param source 出错信息里显示的文件名
+ */
+export function parseConfigFileText(text: string, source = DEFAULT_CONFIG_FILE): FileConfig {
+  const { config, includes } = parseConfigDocument(text, source);
+  if (includes.length > 0) {
+    throw new ConfigError(`${source}: 含 include 的入口文件必须用 loadConfigFile 解析`, [
+      'include 会读取并合并其他文件，parseConfigFileText 只负责单份文档',
+      '正常启动路径（main.ts）已经使用 loadConfigFile，无需手工调用',
+    ]);
+  }
+  return config;
 }
 
 // ---------------------------------------------------------------------------
@@ -620,9 +675,16 @@ export function resolveConfigFilePath(env: Record<string, string | undefined>): 
 
 /** `loadConfigFile` 的结果：实际用到的文件路径 + 解析出来的配置。 */
 export interface LoadedConfigFile {
-  /** 真正读到的文件路径；没使用配置文件时为 undefined */
+  /** 入口文件路径；没使用配置文件时为 undefined */
   path?: string;
   config: FileConfig;
+  /**
+   * 实际加载的全部文件（按加载顺序，入口文件在最后）。
+   *
+   * 只有真正读到了入口文件才存在；默认路径下文件不存在时返回空配置，不带此字段。
+   * 启动日志用它回答排障第一个问题："这次到底读了哪几份配置"。
+   */
+  files?: string[];
 }
 
 /**
@@ -674,5 +736,8 @@ export function loadConfigFile(
     );
   }
 
-  return { path, config: parseConfigFileText(raw, path) };
+  // 入口文件可以 include 模块：每个文件先单独校验，再按声明顺序深合并。
+  // 入口自己的配置最后合并（覆盖模块），与 tsconfig 的 extends 直觉一致。
+  const graph = loadConfigGraph(path, raw, parseConfigDocument);
+  return { path, config: graph.config, files: graph.files };
 }

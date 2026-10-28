@@ -1,7 +1,7 @@
 # 兴趣池（interests）—— 场景 5 的配置面
 #
 # 怎么用：把本文件复制成仓库根目录的 `interests.yml`（或由
-# `QQ_INTERESTS_FILE` / `qqbot.yml: proactive.interestsFile` 指定路径），
+# `QQ_INTERESTS_FILE` / `config/proactive.yml: proactive.interestsFile` 指定路径），
 # 按下面的格式加条目即可。文件不存在 = 兴趣池为空（合法状态，场景 5 不会触发）。
 #
 # 规则（逐条都有测试；写错会在**启动期**报错并指出是哪一条）：
@@ -15,9 +15,9 @@
 #   - note     选填，额外的发言约束（进 prompt，例如"只给结论别讲原理"）
 #
 # 不进本文件的配置（避免两套账）：
-#   - 还能主动说几句 → 话题 session 的 `sessionBudget`（`qqbot.yml` 的 proactive 段，
+#   - 还能主动说几句 → 话题 session 的 `sessionBudget`（`config/proactive.yml`，
 #                       对所有场景统一，见 docs/TOPIC-SESSION-REQUIREMENT.md）
-#   - 开关 / 临时停用   → `qqbot.yml` 的 `proactive.interestsEnabled`
+#   - 开关 / 临时停用   → `config/proactive.yml` 的 `proactive.interestsEnabled`
 #
 # 上限：最多 20 条（超出启动报错）。理由是整份兴趣池会进 prompt，
 # 条目越多每个场景的判定越贵也越飘；宁缺勿滥。

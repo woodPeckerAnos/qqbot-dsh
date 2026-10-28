@@ -9,5 +9,7 @@ dist
 .env.local
 docs
 tests
+# 配置只通过 bind mount 进容器（与 qqbot.yml 同策略），不打进镜像
+config
 *.log
 .DS_Store

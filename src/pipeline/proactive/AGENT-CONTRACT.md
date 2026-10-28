@@ -75,7 +75,7 @@ src/pipeline/proactive/
 | 调整"什么算命中场景"的**本地门槛** | ③a 改搜集层 | 是（`scene/collect.ts` 的 `precheck` + 契约测试） |
 | 调整**判据文案 / 输出契约** | ③b 改 LLM 层 | 是（`judge/judge.ts`） |
 | 调整**顺序 / 额度 / 预算 / wait 策略** | ③c 改否决层 | 是（`veto/veto.ts`，纯函数、可穷举测试） |
-| 只想改文案 / 阈值 | 配置（`qqbot.yml` / env） | 否 |
+| 只想改文案 / 阈值 | 配置（`config/proactive.yml` / env） | 否 |
 
 ---
 
@@ -143,7 +143,7 @@ agent 必须知道的三个副作用：
 
 - 生成器**直接写进 `src/`**（不是临时目录）；
 - 校验失败会把整个规则夹 `rename` 到 `rules/_rejected/<ISO>/`；
-- 它**不会**替你提交，也不会改 `qqbot.yml`；提交前请自己 `git diff` 复核。
+- 它**不会**替你提交，也不会改配置文件；提交前请自己 `git diff` 复核。
 
 ---
 

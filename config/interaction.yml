@@ -1,0 +1,101 @@
+# ============================================================================
+# 模块：交互层（personas / hints / topic / observation）
+#
+# 本文件由 qqbot.yml 的 include 加载。放"机器人怎么理解群聊、怎么保持人设、
+# 怎么决定是否换话题"的配置：
+#   - personas     预设风格前台（/persona）
+#   - hints        长任务提示注入（persona 纪律的桥接层补强）
+#   - topic        话题判定（小模型调用，决定新消息是否延续旧话题）
+#   - observation  观察窗口（旁听滚窗，被 @ 与主动判定共用的上下文源）
+#
+# observation 与主动发言开关**解耦**：即使 proactive.enabled=false，被 @ 时
+# 仍然需要它提供上下文。所以它放在本模块，不放 proactive.yml。
+#
+# 模块开关：在 qqbot.yml 里注释掉对应 include 行，或写成 enabled: false。
+# ============================================================================
+
+# --- 预设风格前台（/persona 命令）--------------------------------------------
+# 预设目录里每个 `<名>.md` 是一个可切换的会话人设（名字限小写字母/数字/中划线）。
+# 管理员在群里发 /persona <名> 切换：预设内容写进该会话工作区 AGENTS.md 的
+# 标记区块，**下一条消息即生效，无需重启**（dsh-agent-instructions 每步探测
+# 文件变化）；/persona off 恢复默认；/persona 列出可选项与当前选择。
+# 预设只放风格与口径（口吻、详略、组织方式）；身份与纪律写在 dsh-profile 的
+# personaPrefix 里全局共用，预设不要重复。仓库自带示例见 dsh-profile/personas/。
+# 环境变量：BOT_PERSONA_DIR
+personas:
+  dir: dsh-profile/personas
+
+# --- 长任务提示注入 ------------------------------------------------------------
+# persona 纪律的桥接层补强：命中关键词的消息，prompt 里追加一段"耗时任务必须
+# subagent 后台派发并立即回执"的提示。新闻核查、网页抓取这类任务模型常自判
+# "不长"而在本轮同步跑，会话随之卡死（DESIGN §13.2 硬边界：协议无 cancel，
+# 模型不守纪律时只能靠超时回收）。best-effort：命中只注入提示，不代替模型
+# 做决定；闲聊里误命中（如"爬虫"）的代价只是一段可被忽略的提示文本。
+# 环境变量：BOT_HINT_LONG_TASK_ENABLED / BOT_HINT_LONG_TASK_PATTERNS / BOT_HINT_LONG_TASK_TEXT
+hints:
+  longTask:
+    enabled: true
+    # 命中子串（大小写不敏感）。写成空数组 [] = 注入永不触发（等价于关闭）。
+    patterns: [核查, 核实, 爬取, 抓取, 批量, 编译, 监控, 汇总, 调研, 新闻]
+
+# --- 话题判定 ---------------------------------------------------------------
+# 新消息与既有话题是否相关，由一个小模型调用判断（不经 DSH 进程）：
+# 判定为无关 → 关闭话题（回收 runtime、跳过冷启动回放），已结束的话题不再
+# 赖在上下文里。判定失败/超时一律视为相关（fail-safe，不误清上下文）。
+# 管理员也可以在群里发 /new 显式开新话题。
+# 环境变量前缀 BOT_TOPIC_*
+#
+# 凭证与端点已收口到模型 API 配置层（models: 段）：
+#   - 不配 provider（默认）：直连 apiBase + .env 的 DEEPSEEK_API_KEY；
+#   - 配了 provider：走 models: 里声明的路由——凭证用该路由的 apiKeyEnv 引用，
+#     端点取"显式 apiBase > 路由 baseURL"。判定客户端只会说 OpenAI 兼容的
+#     /chat/completions，指向显式声明了其他协议（api: anthropic-messages 等）
+#     的路由会在启动期报错。
+# 主动介入判定（proactive）复用这里的 provider/apiBase/model。
+topic:
+  enabled: true
+  # provider: openai        # 例：判定也走 models.providers 里声明的 openai 路由
+  apiBase: https://api.deepseek.com
+  model: deepseek-flash
+  # 单次判定超时（毫秒）；超时按相关处理
+  timeoutMs: 10000
+  # 送给判定器的最近记录条数（不含当前新消息）
+  contextTurns: 10
+
+# --- 观察窗口（旁听滚窗）-------------------------------------------------------
+#
+# 「群里刚刚说了什么」的唯一来源。被 @ 的回复与主动发言判定读的是**同一份**，
+# 因此它放在顶层、**与 BOT_PROACTIVE_ENABLED 无关**：把主动发言关掉，被 @ 时
+# 照样能拿到上下文（这正是它与介入层解耦的意义）。
+#
+# 两条纪律：
+#   - 静默：只记录，不判断、不调 LLM、不回复；
+#   - **纯内存、不落盘**：进程重启即清空。冷启动那一次没有群聊上下文，靠
+#     `pool.replayTurns` 的对话记录回放兜底（那份落盘、且只记与 bot 相关的轮次）。
+#
+# 观察范围 = BOT_LISTEN_GROUPS（与介入层共用同一个白名单），留空 = 什么都不观察。
+observation:
+  # 每会话保留的消息条数上限（环境变量：BOT_OBSERVATION_MAX_MESSAGES）。
+  maxMessages: 200
+  # 每条消息的最长保留时长（毫秒，默认 1800000 = 30 分钟，
+  # 环境变量：BOT_OBSERVATION_MAX_AGE_MS）。
+  # ⚠️ 这是「记得多久」，不是「注入多少」——注入宽度见下一项，刻意窄得多。
+  maxAgeMs: 1800000
+  # 被 @ 时注入的窗口宽度（毫秒，默认 600000 = 10 分钟，范围 60000–3600000，
+  # 环境变量：BOT_OBSERVATION_INJECT_WINDOW_MS）。
+  # 与判定层的活动窗口同值：回答"在吗，帮我看看这个"时，把半小时前另一个话题的
+  # 200 条灌进去只会稀释注意力。
+  injectWindowMs: 600000
+  # 被 @ 时最多把上下文里的几张图片内联进 prompt（默认 2，范围 0–20，
+  # 环境变量：BOT_OBSERVATION_INJECT_IMAGES）。
+  # 为什么需要它：上下文里的 `[图片: x.jpg]` 只是占位，**光有占位模型看不到图**——
+  # "群里先发一张图、再 @ bot 问这是什么"因此只会得到"这张图没到我这儿"。
+  # 取的是**最近**的几张（"看看这个"指的就是刚发的那张）。0 = 不内联，只留占位文本。
+  # ⚠️ 图片按像素烧 token：它与 attachments.maxImages 一起决定单轮的图片预算上界，
+  # 两者还共享模型单条 20 张的硬上限（见 docs/RUNBOOK.md 4.5）。
+  injectImages: 2
+  # 被 @ 时最多摄取几个上下文里的文件（默认 1，范围 0–10，
+  # 环境变量：BOT_OBSERVATION_INJECT_FILES）。
+  # 比图片更保守：文件要下载、落 inbox、可能起 pdftotext 子进程。
+  # 0 = 不摄取（上下文里仍显示 `[文件: x.pdf]` 占位）。
+  injectFiles: 1

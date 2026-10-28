@@ -173,7 +173,7 @@ export async function prepareImageForPrompt(
     return { kind: 'unavailable' };
   }
 
-  // 配置值兜底：调用方传的是 qqbot.yml 里的数，一个 NaN/0 不该把整条图片链路弄崩。
+  // 配置值兜底：调用方传的是配置文件里的数，一个 NaN/0 不该把整条图片链路弄崩。
   // 字节上限的兜底刻意取 provider 自己的单图上限（1MiB）——它是"送进模型"这件事
   // 本身的硬约束，比任何本地默认值都更有依据。
   const maxBytes = positiveInteger(options.maxBytes, TILE_TARGET_BYTES);
@@ -674,7 +674,7 @@ function reasonOf(error: unknown): string {
 /**
  * 配置值兜底。
  *
- * 这些数来自 qqbot.yml，NaN/0/负数在配置层可能被漏掉，但绝不能让它们把
+ * 这些数来自配置文件（config/media.yml），NaN/0/负数在配置层可能被漏掉，但绝不能让它们把
  * 几何计算变成 NaN（那会切出 0 像素的块或死循环）。
  */
 function positiveInteger(value: number, fallback: number): number {

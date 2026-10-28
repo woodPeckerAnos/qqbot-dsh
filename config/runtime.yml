@@ -1,0 +1,51 @@
+# ============================================================================
+# 模块：运行时（dsh 进程 / 并发池 / 路径 / 健康检查 / 日志级别）
+#
+# 本文件由 qqbot.yml 的 include 加载。这里只放"进程怎么跑、资源怎么分"，
+# 不决定用哪个模型——模型路由与模型选择在 config/local/models.yml（不进 git）。
+#
+# 模型相关的覆盖关系：
+#   - 不创建 config/local/models.yml：使用代码内置默认
+#     （provider=deepseek-official、model=deepseek-flash）；
+#   - 创建后可在那里写 dsh.provider / dsh.model / models:；
+#   - 环境变量 DSH_PROVIDER / DSH_MODEL 仍然优先级最高。
+#
+# 模块开关：在 qqbot.yml 里注释掉对应 include 行，或写成 enabled: false。
+# ============================================================================
+
+# --- DSH runtime -------------------------------------------------------------
+dsh:
+  # profile patch 的绝对路径（容器内由 compose 指定，一般不用改）
+  profilePatch: /app/dsh-profile/cordis.patch.yml
+  # dsh 可执行文件；默认从 PATH 解析
+  bin: dsh
+  startTimeoutMs: 60000
+  shutdownTimeoutMs: 15000
+
+# --- 运行时池 ----------------------------------------------------------------
+pool:
+  # 全局并发 turn 上限（= 同时干活的会话数上限）
+  maxConcurrentTurns: 4
+  # 并发 runtime 进程上限（LRU 回收）
+  maxRuntimes: 8
+  # 空闲 runtime 回收时间（毫秒），回收后该会话下次提问会重建会话并回放历史
+  runtimeIdleMs: 1800000
+  # 冷启动回放的历史轮数
+  replayTurns: 12
+
+# --- 存储路径 ----------------------------------------------------------------
+# 容器内由 docker-compose 的 environment 指定；这两处要保持一致。
+paths:
+  dshHome: /data/dsh
+  workspacesRoot: /data/workspaces
+  stateDir: /data/bot
+
+# --- 健康检查 ----------------------------------------------------------------
+# /healthz + /metrics；容器 HEALTHCHECK 探这个端口（compose 里未映射到宿主）
+health:
+  port: 8080
+
+# --- 日志级别 ----------------------------------------------------------------
+# debug | info | warn | error
+# 环境变量：QQ_LOG_LEVEL
+logLevel: info

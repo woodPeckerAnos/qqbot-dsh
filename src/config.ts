@@ -1,5 +1,6 @@
 /**
- * 配置层：env（密钥）+ qqbot.yml（行为参数）+ 代码内置默认，三层合并 + 启动期快速失败。
+ * 配置层：env（密钥）+ 配置文件（qqbot.yml 入口 + config/ 模块）+ 代码内置默认，
+ * 三层合并 + 启动期快速失败。
  *
  * 为什么要分层（而不是全塞 .env）：
  *   `.env` 里 39 个变量中真正敏感的只有 4 个（QQ_APP_ID / QQ_APP_SECRET /
@@ -7,9 +8,11 @@
  *   重要信息被稀释——想改个端口要在一堆参数里翻。所以：
  *
  *     .env        只放密钥（以及 docker-compose 传递的少数几个）
- *     qqbot.yml   其余全部行为参数（随仓库提供，带注释，就是默认配置）
+ *     qqbot.yml   配置入口（include 清单）；其余行为参数在 config/*.yml
+ *                  （随仓库提供，带注释，就是默认配置）
  *
- * 取值优先级：**env > qqbot.yml > 内置默认**。
+ * 取值优先级：**env > 配置文件合并结果 > 内置默认**。模块之间后加载覆盖先加载，
+ * 入口自己的配置最后合并；映射深合并，数组/标量整体替换。
  * 让 env 仍然优先有两个理由：既有部署的 .env 零破坏；临时覆盖不用改文件。
  * 密钥类（appId/appSecret/apiKey/accessToken）**只能**来自 env——它们绝不写进配置文件。
  *
@@ -160,8 +163,8 @@ export interface Config {
     runtimeShutdownTimeoutMs: number;
   };
   /**
-   * 模型 API 配置层（qqbot.yml 的 `models:` 段；只认配置文件——结构化嵌套配置
-   * 没法用 env 平铺表达，与 interests 文件同口径）。
+   * 模型 API 配置层（配置文件的 `models:` 段；推荐写在 config/local/models.yml，
+   * 只认配置文件——结构化嵌套配置没法用 env 平铺表达，与 interests 文件同口径）。
    *
    * 声明的提供商路由在启动时渲染成一份生成的 patch 文件，作为第二个 `--patch`
    * 传给 dsh 子进程（见 dsh/model-config.ts 与 main.ts）。配了本段时，
@@ -276,7 +279,7 @@ export interface Config {
      * 群白名单（**只认 env `BOT_LISTEN_GROUPS`**，与介入层共用同一个变量）。
      *
      * 为什么只从 env 来：群号属于个人标识，本项目既有的纪律是"个人标识不进
-     * qqbot.yml"（见 BOT_ADMINS 的处理）。条目形如 `onebot:123456` 或
+     * 配置文件"（见 BOT_ADMINS 的处理）。条目形如 `onebot:123456` 或
      * `ob11:g123456`；**空列表 = 不接任何群**（fail-closed）。
      */
     whitelistGroups: string[];
@@ -786,7 +789,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
     // 旁听缓冲的两个限制：**取值搬到 `observation.*`**（滚窗不再属于介入层，
     // 见 Config.observation 的说明），这里只保留**旧键的读取**（`undefined` = 用户
     // 没配），由 `buildObservationConfig` 决定优先级并 warn。保留旧键的理由很实际：
-    // `qqbot.yml` 是随仓库提供的默认配置，用户手上那份里写的就是旧键名——静默失效
+    // 随仓库提供的默认配置里写的就是旧键名——静默失效
     // 比报错更糟。
     bufferMaxMessages: pickOptionalInt(
       env,

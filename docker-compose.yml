@@ -1,7 +1,7 @@
 # ============================================================================
 # QQ 机器人 × DSH —— 目标部署入口
 #
-#   cp .env.example .env                   # 只填密钥（qqbot.yml 已在仓库里，直接用）
+#   cp .env.example .env                   # 只填密钥（qqbot.yml + config/ 已在仓库里，直接用）
 #   docker compose up -d --build
 #   docker compose logs -f
 #
@@ -33,7 +33,8 @@ services:
       QQ_WORKSPACES_ROOT: /data/workspaces
       QQ_STATE_DIR: /data/bot
       QQ_DSH_PROFILE_PATCH: /app/dsh-profile/cordis.patch.yml
-      # 行为配置从挂进来的 qqbot.yml 读（仓库自带的默认配置，密钥仍来自 .env）。
+      # 行为配置从挂进来的 qqbot.yml 读；它 include 的模块在 /app/config/。
+      # 仓库自带的默认配置，密钥仍来自 .env。
       QQ_CONFIG_FILE: /app/qqbot.yml
       # A 方案：保持 workspace-write。审批由 profile 里的 auto-approve 桩兜住。
       # 注意 DSH_PERMISSION_MODE 只能设成 danger-full-access 或留空；
@@ -62,12 +63,18 @@ services:
       - dsh-home:/data/dsh            # DSH 会话日志、settings、凭证
       - workspaces:/data/workspaces   # 每个 QQ 群一个工作区目录
       - bot-state:/data/bot           # 机器人自身的对话记录 / 去重 / 会话映射
-      # 行为配置（只读，随仓库提供，不需要复制）。
+      # 配置入口（只读，随仓库提供，不需要复制）。
       # ⚠ 别把这个文件删掉：bind mount 的宿主文件不存在时 Docker 会自动建一个同名
       #   **目录**，容器里读到目录会拒绝启动（报错里会告诉你用 git checkout 恢复）。
       # ⚠ 容器以非 root（uid 10001）运行，所以本文件要对其他用户可读；启动若报
       #   "没有权限读取配置文件"，在宿主机执行 chmod 644 qqbot.yml。
       - ./qqbot.yml:/app/qqbot.yml:ro
+      # 配置模块目录。qqbot.yml 的 include 路径相对入口文件解析，所以必须挂到
+      # /app/config。改完模块文件 restart 即可生效，不需要重建镜像。
+      # ⚠ 升级到模块化配置后要执行一次 docker compose up -d，让这个挂载生效；
+      #   只 restart 老容器不会自动加上新挂载。
+      # ⚠ 同样别删掉宿主上的 config/ 目录；缺模块会在启动期报错。
+      - ./config:/app/config:ro
       # 兴趣池（场景 5）。仓库里提交了一份近乎为空的占位（interests: []），
       # 克隆后直接挂载就是合法空池。
       # ⚠ 千万别删掉宿主上的这个文件：bind mount 在文件不存在时会自动建一个

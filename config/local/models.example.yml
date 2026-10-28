@@ -1,0 +1,106 @@
+# ============================================================================
+# 本机模型配置（模板，不进 git）
+#
+#   cp config/local/models.example.yml config/local/models.yml
+#
+# 为什么单独一份：模型路由与模型选择不是密钥，但属于本机部署选择（用哪家、
+# 哪条网关、哪个模型），不适合随仓库提交。qqbot.yml 以 optional 方式加载
+# config/local/models.yml：文件不存在 = 全部走内置默认
+# （deepseek-official + deepseek-flash），行为与不配置完全一致；存在则和
+# config/runtime.yml 的 dsh 段深合并（本文件优先）。
+#
+# 密钥仍然只放 .env：
+#   - 只允许 apiKeyEnv: <环境变量名> 的引用形式；
+#   - apiKey / authToken 等内联密钥写法、Authorization 等带密钥语义的 header
+#     名会在启动期直接报错；
+#   - 引用的变量必须在环境中真实存在（启动期检查，缺失直接拒绝启动）。
+#
+# 选中路由：dsh.provider 必须是 deepseek-official 或下面 providers 声明过的
+# 路由名，否则启动期报错（不配错路由跑到运行期才炸）。
+#
+# 字段逐条语义以 DSH 配置目录为准（docs/config-catalog.md 的
+# @deepseek-ai/dsh-llm-deepseek-api-key 与 @deepseek-ai/dsh-llm-pi-ai 两节）。
+# 拼错键名会在启动期报错并列出可用项。
+#
+# 工作机制：启动时把 models: 渲染成一份生成的 patch 文件
+# （stateDir/model-api.patch.yml），作为第二个 --patch 叠加在 dsh-profile 之后
+# 传给每个 dsh 子进程。下面的 models: 示例全部注释掉 = 不启用路由定制
+# （顶部的 dsh 模型选择仍然生效）。
+# ============================================================================
+
+# --- 模型选择（不写则用内置默认）--------------------------------------------
+dsh:
+  provider: deepseek-official
+  model: deepseek-flash
+
+# --- 原生 DeepSeek 路由（可选）----------------------------------------------
+# 对应 @deepseek-ai/dsh-llm-deepseek-api-key。provider 名固定
+# deepseek-official，所以这一节只定制端点/思考/目录/重试，不新增路由名。
+#
+# models:
+#   deepseek:
+#     apiKeyEnv: DEEPSEEK_API_KEY        # 默认值，可省略
+#     baseURL: https://api.deepseek.com/anthropic
+#     thinking: enabled                  # enabled | disabled
+#     reasoningEffort: high              # off | low | high | max
+#     maxTokens: 256000                  # 每请求输出上限的默认值
+#     defaultContextWindow: 1000000      # 模型无精确值时的容量兜底
+#     # 整份替换该路由的模型目录（目录是建议性元数据，不做远端校验）
+#     models:
+#       - id: deepseek-flash
+#         contextWindow: 1000000
+#         maxTokens: 256000
+#         inputModalities: [text, image]
+#     retryPolicy:                       # normal（有界，默认）| always（直到成功/取消）
+#       mode: normal
+#       maxRetries: 5
+#       backoff: { initialDelayMs: 500, maxDelayMs: 10000, jitterRatio: 0.1 }
+
+# --- pi-ai 多提供商路由（可选）----------------------------------------------
+# 对应 @deepseek-ai/dsh-llm-pi-ai。键名就是 dsh.provider 里可选的路由名
+# （小写连字符标识符；deepseek-official / deepseek-account 已被原生插件占用）。
+#
+# models:
+#   providers:
+#     # pi-ai 目录内的提供商（openai / anthropic / google / deepseek /
+#     # moonshotai 等）：端点、协议、模型目录都有默认，通常只需补凭证引用。
+#     openai:
+#       apiKeyEnv: OPENAI_API_KEY        # .env 里加 OPENAI_API_KEY=...
+#       # models 整份替换目录；modelOverrides 只改目录内个别模型（二者互斥）
+#       modelOverrides:
+#         gpt-5: { maxTokens: 32768 }
+#     # 目录外的自建网关 / OpenAI 兼容端点：api + baseURL + 非空 models 必填
+#     acme-gateway:
+#       displayName: Acme Gateway
+#       api: openai-completions          # 还有 openai-responses / anthropic-messages 等
+#       baseURL: https://gateway.acme.example/v1
+#       apiKeyEnv: ACME_GATEWAY_API_KEY
+#       defaultContextWindow: 262144     # 目录没描述的模型的容量兜底
+#       defaultMaxTokens: 32768
+#       compat:                          # 线兼容开关（私有网关的 URL 推断不出来）
+#         thinkingFormat: deepseek
+#       models:
+#         - id: acme-think
+#           contextWindow: 262144
+#           maxTokens: 32768
+#           input: [text, image]         # 声明视觉能力后图片才会送过去
+#           reasoningEfforts:            # 可选思考档位 → 线上拼写；false = 不思考
+#             off:                       # off 档可留空（参数缺省即不思考）
+#             high: high
+#       retryPolicy: { mode: normal, maxRetries: 3 }
+#
+# 声明了 providers 之后，记得把上面的 dsh.provider 改成对应路由名，
+# 否则默认仍走 deepseek-official（声明了但没选中，启动期不会报错）。
+
+# --- 辅助模型调用（话题判定 / 主动介入判定）---------------------------------
+# 这两类调用不经 DSH 进程，只认 OpenAI 兼容的 /chat/completions。
+#   - 不配 provider：直连 topic.apiBase（默认 https://api.deepseek.com）
+#     + .env 的 DEEPSEEK_API_KEY；
+#   - 配了 provider：凭证用该路由的 apiKeyEnv 引用，端点取
+#     "显式 apiBase > 路由 baseURL"；指向 api: anthropic-messages 等
+#     非 OpenAI 兼容路由会在启动期报错。
+#
+# topic:
+#   provider: openai
+#   # apiBase: https://api.openai.com/v1   # 显式覆盖路由 baseURL 时才需要
+#   model: gpt-5-mini

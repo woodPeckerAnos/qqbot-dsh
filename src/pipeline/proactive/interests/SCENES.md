@@ -236,9 +236,9 @@ bot ：这个报错是因为 requests 没装，先 pip install requests
   所以校验直接拒绝单字关键词；
 - **关键词越准越省钱**：命中才进判定，命中越少白花的调用越少；
 - **每话题最多说几次不在这里**——那是话题 session 的发言预算
-  （`qqbot.yml` 的 `proactive.sessionBudget`，对所有场景统一），
+  （`config/proactive.yml` 的 `proactive.sessionBudget`，对所有场景统一），
   写进兴趣池会形成两套账；
-- **临时停用**：`qqbot.yml` 的 `proactive.interestsEnabled: false` 或整份停用
+- **临时停用**：`config/proactive.yml` 的 `proactive.interestsEnabled: false` 或整份停用
   `proactive.enabled: false`。
 
 **怎么改、改了怎么生效**：改 `interests.yml` 后**需要重启进程**（兴趣池在启动时读一次；
