@@ -317,12 +317,17 @@ docker compose exec qqbot node dist/health-probe.js && echo HEALTHY
 > 拉群邀请默认不自动同意（`ONEBOT_AUTO_ACCEPT_GROUP_INVITE=false`），
 > 需要机器人进新群时先打开，进完再关回去。
 
-#### 3.1.7 如果以后想让框架也进容器
+#### 3.1.7 让框架也进容器
 
-**NapCat**：官方 [NapCat.Docker](https://github.com/NapNeko/NapCat-Docker) 镜像
-只跑 **Linux NTQQ**，macOS 上没有 Docker 形态；容器里跑的"Linux QQ"意味着客户端
-环境特征与真实 macOS 设备不一致，风控画像未知——macOS 上建议就保持宿主有头
-（3.1.2）。
+**NapCat（Linux 云主机，推荐）**：官方 [NapCat.Docker](https://github.com/NapNeko/NapCat-Docker)
+镜像在容器里跑 **Linux NTQQ + Xvfb**，amd64/arm64 都有。仓库已提供
+`docker-compose.napcat.yml`：NapCat 作为独立 sidecar，通过内部 DNS 反向连
+`qqbot:6700`，WebUI 只绑 `127.0.0.1:6099`。用法、资源占用和风控要点见
+[CLOUD-DEPLOY.md 第 3 节](CLOUD-DEPLOY.md)。
+
+**macOS**：官方镜像只跑 Linux NTQQ，在 Docker Desktop/OrbStack 里是 Linux
+客户端环境，与真实 macOS 设备特征不一致——macOS 上仍建议宿主有头模式
+（3.1.2）。不要为了容器化把 macOS 当成云端形态。
 
 **LLBot**：官方提供一键脚本（会自动生成 compose）：
 
@@ -476,7 +481,7 @@ docker stats qqbot-dsh
 | 你想改的东西 | 需要做什么 | 需要重建镜像？ | 需要 `down`？ |
 |---|---|---|---|
 | 后端代码（`src/**`） | `docker compose up -d --build` | **是** | 否 |
-| `package.json` 依赖 | `docker compose up -d --build` | **是**（要重跑 `npm install`） | 否 |
+| `package.json` 依赖 | `docker compose up -d --build` | **是**（要重跑 `npm ci`） | 否 |
 | `.env`（密钥） | `docker compose up -d` | 否（重建容器即可） | 否 |
 | `qqbot.yml`、`config/**`（行为参数） | `docker compose restart qqbot` | 否 | 否 |
 | `dsh-profile/cordis.patch.yml`（人设、权限模式） | `docker compose restart qqbot` | 否 | 否 |

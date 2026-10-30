@@ -3,8 +3,10 @@ FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 
-# 先只拷贝清单，最大化利用层缓存
-COPY package.json ./
+# 先只拷贝清单，最大化利用层缓存。
+# package-lock.json 必须一起拷：docker-install.mjs 用 npm ci 安装，
+# 没有锁文件会直接失败（也保证不同时间构建装到同一批版本）。
+COPY package.json package-lock.json ./
 COPY scripts/docker-install.mjs ./scripts/docker-install.mjs
 # 1) 安装全部依赖（含 devDependencies，编译需要 typescript）
 RUN node scripts/docker-install.mjs install

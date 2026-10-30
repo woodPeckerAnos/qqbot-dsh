@@ -1,0 +1,62 @@
+# ============================================================================
+# 云主机覆盖层（云平台无关）
+#
+# 用法（在仓库根目录，与基础 compose 叠加）：
+#
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d --build
+#
+# 它解决"从本机搬到任意 Linux 云主机"时的差异，不改动基础文件，
+# 因此本地既有部署（含 macOS 的 Clash/Surge 代理）完全不受影响：
+#
+#   1. 清空宿主代理。基础 compose 把 HTTPS_PROXY/HTTP_PROXY 硬编码到
+#      host.docker.internal:7897（本机代理），云主机上这个地址不存在，
+#      会让 web_fetch 乃至所有走 fetch 的调用失败。DSH 的代理策略把
+#      "空字符串"视为未设置（见 @deepseek-ai/dsh-http-proxy 的 readEnv），
+#      因此这里置空即可恢复直连。
+#   2. 把健康检查端口绑到回环地址。基础 compose 刻意不映射 8080，
+#      云上要接宿主监控（cron / 云监控 agent）时需要一个可访问的地址；
+#      只绑 127.0.0.1，不暴露到公网。
+#   3. 补齐优雅退出宽限（90s），避免 Docker 默认 10s 强杀在途任务。
+#   4. 4GB 内存主机的保守并发默认值（可被 .env 覆盖）。
+#
+# 额外说明：OneBot 端口保持只绑 127.0.0.1。NapCat sidecar 走容器网络的
+# qqbot:6700，不经过这个宿主映射；映射保留只是兼容宿主框架的旧部署。
+# 管理端口（6700 / 8080 / 6099）在任何情况下都只绑回环。
+#
+# 注意：
+#   - 云主机如果**确实**需要出网代理（企业网关等），不要用本文件，改为
+#     在本机建一个不入库的 docker-compose.site.yml 覆盖 environment，
+#     代理值只写在那一层，绝不写进项目根目录的 .env（DSH 会对项目 .env
+#     里的代理名 fail-loud）。
+#   - 本文件不含任何云厂商字段（没有 region / VPC / 负载均衡 / 对象存储），
+#     换云只需要换主机和镜像仓库。
+# ============================================================================
+
+services:
+  qqbot:
+    # 可回滚的镜像标签：升级前把 QQBOT_IMAGE_TAG 设成日期或 git 短 SHA，
+    # 例如 QQBOT_IMAGE_TAG=20261030-24dd7f0。不设时与基础文件一致。
+    image: qqbot-dsh:${QQBOT_IMAGE_TAG:-0.1.0}
+
+    # 应用自身的优雅退出：先停连接器，最多等在途 turn 30s，再并行关闭
+    # 所有 DSH runtime（每个 15s）。串起来最坏约 45s，这里留到 90s，
+    # 避免 Docker 默认 10s 直接 SIGKILL 掉在途任务、留下半条会话日志。
+    stop_grace_period: 90s
+
+    environment:
+      # 置空 = 直连。必须同时清掉大写形式：DSH 的代理解析会先读小写、
+      # 再回退大写，任一处非空都会安装全局 dispatcher。
+      HTTPS_PROXY: ""
+      HTTP_PROXY: ""
+
+      # 4GB 内存主机的保守并发上限：每个 DSH 子进程空闲约 175MB，
+      # 8 个 runtime 理论上限约 1.4GB，和 NapCat 同机会挤压 bot 的 2GB 限额。
+      # 4C4G 可上调（写进 .env 的 QQ_MAX_RUNTIMES / QQ_MAX_CONCURRENT_TURNS），
+      # 2C4G 建议保持默认。
+      QQ_MAX_RUNTIMES: "${QQ_MAX_RUNTIMES:-4}"
+      QQ_MAX_CONCURRENT_TURNS: "${QQ_MAX_CONCURRENT_TURNS:-2}"
+
+    ports:
+      # 仅回环：宿主上的监控进程可以 curl 127.0.0.1:8080/healthz，
+      # 公网和同 VPC 的其他机器都连不上。
+      - "127.0.0.1:8080:8080"

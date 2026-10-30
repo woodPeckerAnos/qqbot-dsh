@@ -181,7 +181,7 @@ LRU + 空闲回收控制（第 5.4 节）。
 模块加载是 tsconfig 式的：`include` 按声明顺序加载，后加载覆盖先加载；入口自己
 的配置最后合并。映射深合并、数组/标量整体替换。每个文件先独立校验再合并，所以
 键名拼错会指出具体模块文件。**本机模型路由/模型选择**放 `config/local/models.yml`
-（`.gitignore` 忽略，模板 `*.example.yml` 提交）：它不是密钥，但属于"这台机器用
+（`.gitignore` 忽略；当前不随附真实文件或模板，按需自行创建）：它不是密钥，但属于"这台机器用
 哪家/哪个模型"的部署选择。完整规则见 [CONFIG.md](CONFIG.md)。
 
 `env_file: .env` 是刻意的选择：整份注入意味着**以后新增字段不用同时改 compose**，
@@ -589,7 +589,7 @@ qqbot-dsh/
 │   ├── interaction.yml           personas / hints / topic / observation
 │   ├── proactive.yml             主动发言
 │   ├── offpeak.yml               谷时段闸
-│   └── local/                    本机配置（*.yml 不进 git，*.example.yml 提交）
+│   └── local/                    本机配置（*.yml 不进 git；当前不随附模板）
 ├── docs/CONFIG.md                配置模块手册
 ├── package.json / tsconfig.json / vitest.config.ts
 ├── dsh-profile/

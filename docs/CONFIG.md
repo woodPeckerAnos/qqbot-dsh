@@ -25,8 +25,10 @@
 | `config/offpeak.yml` | `offpeak` 谷时段闸 | ✅ |
 | `config/local/models.yml` | 本机模型路由与 `dsh.provider`/`dsh.model` | ❌ |
 | `config/local/overrides.yml` | 其他本机覆盖 | ❌ |
-| `config/local/*.example.yml` | 上述两个文件的模板 | ✅ |
 | `config/local/README.md` | 本机配置说明 | ✅ |
+
+> 仓库当前**不随附** `models.yml` / `overrides.yml` 或 `*.example.yml` 模板。
+> 两个文件都不存在时使用代码内置默认；需要本机差异时按本文键名自行创建。
 
 模型选择放在本机文件里，是因为它不是密钥、但属于"这台机器用哪家/哪个模型"的
 部署选择。不创建 `models.yml` 时走代码内置默认（`deepseek-official` +
@@ -99,12 +101,12 @@ include:
 ## 7. git 边界
 
 - `config/*.yml`：随仓库提交的默认值，改动走 code review；
-- `config/local/*.yml`：被 `.gitignore` 忽略，放本机部署选择；
-- `config/local/*.example.yml`：模板，提交；
+- `config/local/*.yml`：被 `.gitignore` 忽略，放本机部署选择；当前仓库不随附
+  真实文件或模板，按需自行创建；
 - 任何配置文件都**不允许**内联密钥：密钥只在 `.env`，模型凭证用 `apiKeyEnv`
   引用；`admins` / `BOT_LISTEN_GROUPS` 等个人标识只认环境变量。
 - 个人别名之类"不保密但不适合提交"的部署偏好，建议放
-  `config/local/overrides.yml`（模板里有示例）；共享模块里的示例别名可按需替换。
+  `config/local/overrides.yml`（自行创建，键名见本文）；共享模块里的示例别名可按需替换。
 
 如果确实要提交某个本机文件，先确认它不含个人信息与凭证；`git add -f` 会绕过
 忽略规则，因此要格外小心。
