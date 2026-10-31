@@ -214,10 +214,11 @@ NapCat 官方镜像的 entrypoint 已经做了一批容器特征清理（删除 
 
 ## 4. 部署步骤（任意 Linux 云主机）
 
-下面命令统一使用三个 compose 文件，建议先设一个变量，避免每次写全：
+下面命令统一使用三个 compose 文件，建议先定义一个函数，避免每次写全。
+函数形式在 bash 和 zsh 中都可直接执行，不依赖 shell 对字符串变量的空格拆分：
 
 ```sh
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml"
+COMPOSE() { docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml "$@"; }
 ```
 
 ### 4.1 全新部署（没有旧数据）
@@ -247,13 +248,13 @@ export QQBOT_IMAGE_TAG="$(date +%Y%m%d)-$(git rev-parse --short HEAD)"
 # echo "QQBOT_IMAGE_TAG=$QQBOT_IMAGE_TAG" >> .env
 
 # 6) 构建（先构建，避免运行中构建抢内存）
-$COMPOSE build
+COMPOSE build
 
 # 7) 启动空卷
-$COMPOSE up -d
+COMPOSE up -d
 
 # 8) 看 NapCat 日志里的二维码并扫码登录
-$COMPOSE logs -f napcat
+COMPOSE logs -f napcat
 
 # 9) 验证
 curl -s http://127.0.0.1:8080/healthz | head -40
@@ -280,8 +281,8 @@ Compose 里，脚本看不到它，必须先按原方式停掉；云端 NapCat �
 cd qqbot-dsh
 # 1) 按原方式停原生 QQ（systemd / LaunchAgent / 手工退出都行），确认进程已退出
 # 2) 停 bot：用旧主机原来的 compose 组合，下面以基础文件为例
-COMPOSE_OLD="docker compose -f docker-compose.yml"
-$COMPOSE_OLD stop qqbot
+COMPOSE_OLD() { docker compose -f docker-compose.yml "$@"; }
+COMPOSE_OLD stop qqbot
 
 # 3) 只备份 bot 三卷；不要带 napcat-*（旧端没有这三组卷）
 bash scripts/volume-bundle.sh backup --project qqbot-dsh --out backups \
@@ -294,7 +295,7 @@ sha256sum <批次目录>.tar.age > <批次目录>.tar.age.sha256
 # --- 新主机 ---
 git clone <repo> qqbot-dsh && cd qqbot-dsh
 git checkout feat/cloud-migration
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml"
+COMPOSE() { docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml "$@"; }
 cp .env.example .env && chmod 600 .env
 $EDITOR .env
 cp napcat.env.example napcat.env && chmod 600 napcat.env
@@ -309,8 +310,8 @@ age -d -i <identity-file> <批次目录>.tar.age | tar -C backups -xzf -
 
 # 6) 构建并建卷，先不启动
 export QQBOT_IMAGE_TAG="$(date +%Y%m%d)-$(git rev-parse --short HEAD)"
-$COMPOSE build
-$COMPOSE create
+COMPOSE build
+COMPOSE create
 
 # 7) 整批预检 + 覆盖恢复三卷；--volumes 必须和 backup 完全一致
 bash scripts/volume-bundle.sh verify  --bundle backups/<批次目录> --project qqbot-dsh \
@@ -319,8 +320,8 @@ bash scripts/volume-bundle.sh restore --bundle backups/<批次目录> --yes --pr
   --volumes "dsh-home workspaces bot-state"
 
 # 8) 数据就位后启动；NapCat 三卷为空，首次扫码登录
-$COMPOSE up -d
-$COMPOSE logs -f napcat
+COMPOSE up -d
+COMPOSE logs -f napcat
 ```
 
 #### 4.2B 旧 sidecar（迁六卷）
@@ -328,8 +329,8 @@ $COMPOSE logs -f napcat
 ```sh
 # --- 旧主机：旧端已经是 qqbot + NapCat sidecar ---
 cd qqbot-dsh
-COMPOSE_OLD="docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml"
-$COMPOSE_OLD stop
+COMPOSE_OLD() { docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml "$@"; }
+COMPOSE_OLD stop
 
 bash scripts/volume-bundle.sh backup --project qqbot-dsh --out backups
 tar -C backups -czf - <批次目录> | age -r <接收方公钥> > <批次目录>.tar.age
@@ -338,7 +339,7 @@ sha256sum <批次目录>.tar.age > <批次目录>.tar.age.sha256
 # --- 新主机 ---
 git clone <repo> qqbot-dsh && cd qqbot-dsh
 git checkout feat/cloud-migration
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml"
+COMPOSE() { docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml "$@"; }
 cp .env.example .env && chmod 600 .env
 $EDITOR .env
 cp napcat.env.example napcat.env && chmod 600 napcat.env
@@ -351,14 +352,14 @@ sha256sum -c <批次目录>.tar.age.sha256
 age -d -i <identity-file> <批次目录>.tar.age | tar -C backups -xzf -
 
 export QQBOT_IMAGE_TAG="$(date +%Y%m%d)-$(git rev-parse --short HEAD)"
-$COMPOSE build
-$COMPOSE create
+COMPOSE build
+COMPOSE create
 
 # 六卷：verify/restore 都不传 --volumes（默认六组），预检会核对 manifest
 bash scripts/volume-bundle.sh verify  --bundle backups/<批次目录>
 bash scripts/volume-bundle.sh restore --bundle backups/<批次目录> --yes
 
-$COMPOSE up -d
+COMPOSE up -d
 ```
 
 > `volume-bundle.sh` 的 bundle 包含所选卷、`manifest.txt` 和 `SHA256SUMS`；
@@ -413,8 +414,8 @@ docker cp qqbot-napcat:/app/napcat/cache/qrcode.png /tmp/qrcode.png
 
 ```sh
 cd qqbot-dsh
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml"
-$COMPOSE stop
+COMPOSE() { docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml "$@"; }
+COMPOSE stop
 
 # 六组卷 + manifest.txt + SHA256SUMS，一个批次一个目录
 bash scripts/volume-bundle.sh backup --project qqbot-dsh --out backups
@@ -462,19 +463,19 @@ age -d -i <identity-file> <批次目录>.tar.age | tar -C backups -xzf -
 bash scripts/volume-bundle.sh verify --bundle backups/<批次目录>
 
 # 2) 固定标签并构建镜像（create 需要镜像存在；2C4G 建议改在 CI 构建后 pull）
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml"
+COMPOSE() { docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml "$@"; }
 export QQBOT_IMAGE_TAG="$(date +%Y%m%d)-$(git rev-parse --short HEAD)"
-$COMPOSE build
+COMPOSE build
 
 # 3) 只创建容器与卷，不启动
-$COMPOSE create
+COMPOSE create
 
 # 4) 覆盖恢复所选卷：先清空目标卷再解包，且要求项目没有运行中的容器
 #    若 backup 用了 --volumes（如原生 NapCat 的三卷），这里必须传同一组
 bash scripts/volume-bundle.sh restore --bundle backups/<批次目录> --yes
 
 # 5) 数据就位后才启动
-$COMPOSE up -d
+COMPOSE up -d
 ```
 
 要点：
@@ -505,8 +506,8 @@ $COMPOSE up -d
 
 ```sh
 # --- 云端主机：停服务并打新批次（按源端形态选 --volumes）---
-COMPOSE_CLOUD="docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml"
-$COMPOSE_CLOUD stop
+COMPOSE_CLOUD() { docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml "$@"; }
+COMPOSE_CLOUD stop
 # 原生回滚：只备份 bot 三卷
 bash scripts/volume-bundle.sh backup --project qqbot-dsh --out backups \
   --volumes "dsh-home workspaces bot-state"
@@ -519,29 +520,29 @@ tar -C backups -czf - <新批次> | age -r <接收方公钥> > <新批次>.tar.a
 
 ```sh
 # --- 旧主机：原生 NapCat 回滚（只恢复 bot 三卷）---
-COMPOSE_OLD="docker compose -f docker-compose.yml"   # 用旧主机原来的文件组合
+COMPOSE_OLD() { docker compose -f docker-compose.yml "$@"; }  # 用旧主机原来的文件组合
 # 不要 export 云端标签；直接用旧主机本地镜像
 mkdir -p backups
 age -d -i <identity-file> <新批次>.tar.age | tar -C backups -xzf -
-$COMPOSE_OLD create
+COMPOSE_OLD create
 bash scripts/volume-bundle.sh verify  --bundle backups/<新批次> --project qqbot-dsh \
   --volumes "dsh-home workspaces bot-state"
 bash scripts/volume-bundle.sh restore --bundle backups/<新批次> --yes --project qqbot-dsh \
   --volumes "dsh-home workspaces bot-state"
-$COMPOSE_OLD up -d qqbot
+COMPOSE_OLD up -d qqbot
 # 再按原方式（systemd / LaunchAgent / 手工）启动原生 QQ
 ```
 
 ```sh
 # --- 旧主机：sidecar 回滚（恢复六卷）---
-COMPOSE_OLD="docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml"
+COMPOSE_OLD() { docker compose -f docker-compose.yml -f docker-compose.cloud.yml -f docker-compose.napcat.yml "$@"; }
 # 用旧主机迁移前的本地镜像标签；不要复用云端标签
 mkdir -p backups
 age -d -i <identity-file> <新批次>.tar.age | tar -C backups -xzf -
-$COMPOSE_OLD create
+COMPOSE_OLD create
 bash scripts/volume-bundle.sh verify  --bundle backups/<新批次>
 bash scripts/volume-bundle.sh restore --bundle backups/<新批次> --yes
-$COMPOSE_OLD up -d
+COMPOSE_OLD up -d
 ```
 
 - `restore` 是**覆盖恢复**：会先清空旧主机的目标卷再解包，避免新旧状态混合；
