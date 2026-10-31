@@ -5,6 +5,10 @@ dist/
 # 密钥：绝不提交
 .env
 .env.local
+# NapCat sidecar 专用口令（WebUI token），只由 NapCat env_file 读取
+napcat.env
+# 卷备份批次：含 DSH 凭证、QQ 登录态与 OneBot token
+backups/
 
 # 本机配置（非密钥，但属于本机部署选择）：不进 git。
 # 模板 *.example.yml 保留在仓库里，用户 cp 去掉 .example 后使用。
@@ -22,6 +26,8 @@ config/local/*.yml
 .npm-cache/
 .npm-lock-staging/
 .smoke/
+# 临时探针/日志目录：不纳入版本库，避免 git add . 误提交
+tmp/
 
 # 杂项
 *.log

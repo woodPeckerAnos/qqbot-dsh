@@ -7,8 +7,10 @@
 #   3. 划清"可提交到 git"与"本机配置"的边界。
 # 具体参数与逐项注释在 config/*.yml，改配置通常改那里，不要往本文件堆参数。
 #
-# 本目录是生产配置包：qqbot.yml + config/ 一起发送；config/local/ 下已带
-# models.yml（模型路由/模型选择）与 overrides.yml（本群别名）。
+# 配置是本仓库的可提交部分；`config/local/` 只提供**可选加载机制**：
+# `models.yml`（模型路由/模型选择）与 `overrides.yml`（本群别名）不随仓库
+# 提供，也不要求存在；不创建时使用代码内置默认。需要本机差异时再按
+# docs/CONFIG.md 的键名自行创建。
 #
 # 加载与优先级
 #   - 入口：QQ_CONFIG_FILE（默认 ./qqbot.yml）；include 的相对路径以本文件为基准。
@@ -26,7 +28,7 @@
 # git 边界
 #   - config/*.yml              随仓库提交 = 默认值，走 code review；
 #   - config/local/*.yml        本机配置，不进 git（模型路由、个人别名等）；
-#   - config/local/*.example.yml 模板，随仓库提交；用时 cp 去掉 .example。
+#   - config/local/*.example.yml 可选模板；本仓库当前不随附，需要时自行创建。
 #   密钥/管理员/群白名单只从 .env 读；个人别名等部署偏好放 config/local/。
 #
 # 生效方式
@@ -63,11 +65,11 @@ include:
   # offpeak（命中模型在正价时段直接拒答；管理员可用 /offpeak 热切换）
   - config/offpeak.yml
 
-  # --- 本机配置（不进 git；本包已带，文件不存在时自动跳过）-------------------
-  # 模型路由/模型选择：config/local/models.yml
+  # --- 本机配置（可选加载；文件不存在时自动跳过）----------------------------
+  # 模型路由/模型选择：config/local/models.yml（不随仓库提供）
   - path: config/local/models.yml
     optional: true
-  # 其他本机差异：config/local/overrides.yml（bot 别名等）
+  # 其他本机差异：config/local/overrides.yml（不随仓库提供；bot 别名等）
   - path: config/local/overrides.yml
     optional: true
 

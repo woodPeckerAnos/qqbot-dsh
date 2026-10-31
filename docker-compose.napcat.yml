@@ -1,0 +1,111 @@
+# ============================================================================
+# NapCat sidecar（QQ 协议端进容器，云平台无关）
+#
+# 用法（与基础 compose、云覆盖层叠加）：
+#
+#   cp napcat.env.example napcat.env && chmod 600 napcat.env
+#   # 填 WEBUI_TOKEN；这个文件只由下面的 env_file 读取，不进 qqbot 的 .env
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.cloud.yml \
+#     -f docker-compose.napcat.yml \
+#     up -d --build
+#
+# 首次登录：把 6099 通过 SSH 隧道转到本机，浏览器打开
+#   ssh -L 6099:127.0.0.1:6099 <user>@<cloud-host>
+#   http://127.0.0.1:6099/webui?token=<WEBUI_TOKEN>
+# 也可以 `docker compose logs -f napcat` 看二维码，或
+# `docker cp <napcat容器>:/app/napcat/cache/qrcode.png /tmp/qrcode.png`。
+#
+# 设计约束（不要改）：
+#   - **独立容器，不与 qqbot 同容器**。qqbot 里的 agent 能执行命令；同容器
+#     等于让它直接读到 QQ 登录态。两者只通过 qqbot-net 的内部 DNS 通信。
+#     注意：这隔离文件与凭据，不隔离网络；qqbot 仍可访问 napcat:6099。
+#   - **不挂 docker.sock、不 privileged**。官方镜像启动时要做 chown/挂载
+#     伪装，默认能力下部分操作会失败但不影响收发消息；提权换指纹收益不划算。
+#   - **6099 只绑 127.0.0.1**。OneBot 端口不发布，NapCat 作为客户端主动连
+#     qqbot:6700（反向 WS），公网没有任何入站端口。
+#   - **不设置 init: true**。上游 entrypoint 会伪造 /proc/1/* 与容器标识，
+#     换 PID1 会破坏这套处理，反而增加环境特征。
+# ============================================================================
+
+services:
+  napcat:
+    # 固定具体版本，不要用 latest：QQ/NapCat 版本变化本身就会改变环境特征。
+    # 升级前先看 NapCatQQ Releases，并保留上一版镜像以便回退。
+    image: mlikiowa/napcat-docker:${NAPCAT_IMAGE_TAG:-v4.18.42}
+    container_name: qqbot-napcat
+    restart: unless-stopped
+
+    # 与 qqbot 容器相同的 uid/gid，便于三组卷在备份/恢复时统一权限。
+    # 上游 entrypoint 会按它 chown /app，无需手工改卷权限。
+    # WebUI_TOKEN 只放在 napcat.env，由 env_file 注入；不要放进 qqbot 的 .env，
+    # 否则会随整份 .env 进入 qqbot 容器并被 DSH 子进程继承。
+    env_file:
+      - napcat.env
+    environment:
+      NAPCAT_UID: "10001"
+      NAPCAT_GID: "10001"
+      MODE: reverse_ws
+      # 反向 WS：NapCat 当客户端连 qqbot 的内部端口。token 走查询参数，
+      # qqbot 的 OneBot 适配器支持 ?access_token= 形式（见 connector.ts）。
+      # token 用 hex 生成即可，避免 URL 转义问题：openssl rand -hex 32
+      ONEBOT_URL: "ws://qqbot:6700/onebot/v11/ws?access_token=${ONEBOT_ACCESS_TOKEN:?ONEBOT_ACCESS_TOKEN 未设置}"
+      TZ: Asia/Shanghai
+
+    # 仅首次扫码/排障用；登录完成后可以不再映射，或继续保留 SSH 隧道访问。
+    ports:
+      - "127.0.0.1:6099:6099"
+
+    volumes:
+      # 登录态与设备信息：**必须持久化**，这是设备指纹稳定的关键。
+      - napcat-qq:/app/.config/QQ
+      # 账号与 OneBot 网络配置（含反向 WS URL 与 token，属敏感数据）。
+      - napcat-config:/app/napcat/config
+      # 插件目录先留空；装插件前先确认来源可信。
+      - napcat-plugins:/app/napcat/plugins
+
+    # Electron/QQ 客户端对 /dev/shm 有要求，默认 64MB 容易崩。
+    shm_size: "256m"
+
+    # 固定 MAC。Docker 重建容器默认会换 MAC，属于可被观察的环境变化；
+    # 同一网络内不能与其它容器重复。
+    # 服务级写法与 NapCat 官方 compose 模板一致，兼容旧版 Compose。
+    mac_address: "02:42:ac:11:00:02"
+    networks:
+      - qqbot-net
+
+    # 固定主机名。上游会过滤含 docker/container/lxc 或 12 位以上十六进制
+    # 的主机名；这个名字不命中过滤规则，重启后保持不变。
+    hostname: qqbot-napcat
+
+    # NapCat 启动完成前 qqbot 的 OneBot 连接器只是 listening，属于正常状态。
+    depends_on:
+      qqbot:
+        condition: service_started
+
+    # 资源上限：QQ 客户端 + Xvfb 常驻按 0.5–1GB 估算（官方无最低值）。
+    # 4GB 主机上与 qqbot 的 2GB 上限合计 3GB，给系统留约 1GB。
+    # 1GB 是保护 bot 的硬上限；实测若被 OOM 杀掉，先看 docker stats
+    # 再决定是否小幅上调，不要直接放开到 2GB。
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1024m
+          pids: 512
+
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  napcat-qq:
+  napcat-config:
+  napcat-plugins:

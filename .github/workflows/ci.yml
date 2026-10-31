@@ -17,7 +17,8 @@ jobs:
           node-version: '24'
 
       - name: 安装依赖
-        run: npm install --no-audit --no-fund
+        # 与 Dockerfile 一致：按 package-lock.json 精确安装，锁文件不一致时直接失败
+        run: npm ci --no-audit --no-fund
 
       - name: 类型检查
         run: npx tsc -p tsconfig.json --noEmit

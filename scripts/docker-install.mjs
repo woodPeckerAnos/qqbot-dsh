@@ -4,7 +4,7 @@
  *   node scripts/docker-install.mjs install   # 安装全部依赖（含 devDependencies）
  *   node scripts/docker-install.mjs prune     # 剔除 devDependencies 与异平台可选依赖
  *
- * 为什么要写脚本而不是在 Dockerfile 里直接 `npm install`：
+ * 为什么要写脚本而不是在 Dockerfile 里直接 `npm ci`：
  *
  *   1. **必须分两步**。编译需要 typescript（devDependency），所以不能一开始就用
  *      `--omit=dev`；但运行镜像又不该带 vitest/@types。npm 没有 `prune --prod`，
@@ -28,8 +28,8 @@ if (command !== 'install' && command !== 'prune') {
 }
 
 if (command === 'install') {
-  console.log('[docker-install] npm install（含 devDependencies，编译需要 typescript）');
-  execFileSync('npm', ['install', '--no-audit', '--no-fund'], { stdio: 'inherit' });
+  console.log('[docker-install] npm ci（含 devDependencies，编译需要 typescript；按 package-lock.json 精确安装）');
+  execFileSync('npm', ['ci', '--no-audit', '--no-fund'], { stdio: 'inherit' });
   process.exit(0);
 }
 
