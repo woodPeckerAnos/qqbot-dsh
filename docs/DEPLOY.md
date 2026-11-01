@@ -484,7 +484,7 @@ docker stats qqbot-dsh
 | `package.json` 依赖 | `docker compose up -d --build` | **是**（要重跑 `npm ci`） | 否 |
 | `.env`（密钥） | `docker compose up -d` | 否（重建容器即可） | 否 |
 | `qqbot.yml`、`config/**`（行为参数） | `docker compose restart qqbot` | 否 | 否 |
-| `dsh-profile/cordis.patch.yml`（人设、权限模式） | `docker compose restart qqbot` | 否 | 否 |
+| `dsh-profile/**`（profile 补丁、人设预设、审批桩、搜索端点） | `docker compose restart qqbot` | 否 | 否 |
 | 某个会话的行为规矩（`AGENTS.md`） | 直接改文件 | **都不用** | 否 |
 | `docker-compose.yml` 本身 | `docker compose up -d` | 否 | 否 |
 
@@ -492,10 +492,11 @@ docker stats qqbot-dsh
 `down` 只用于"要改网络/端口映射，或想彻底停止服务"。注意 `down` 默认删容器但
 保留卷（记忆与工作区不丢），加 `-v` 才会连数据一起删。
 
-> **从旧版单文件配置升级**：`docker-compose.yml` 新增了 `./config` 挂载，所以第一次
-> 要执行 `docker compose up -d`（让新挂载生效），之后才是 `restart`。旧的
-> `qqbot.yml` 若被本地改过，把差异挪到 `config/local/overrides.yml` 或对应模块；
-> 不要只覆盖仓库里的入口文件，否则会丢失模块清单。
+> **从旧版单文件配置升级**：`docker-compose.yml` 新增了 `./config` 与
+> `./dsh-profile` 两个挂载，所以第一次要执行 `docker compose up -d`（让新挂载
+> 生效），之后才是 `restart`。旧的 `qqbot.yml` 若被本地改过，把差异挪到
+> `config/local/overrides.yml` 或对应模块；不要只覆盖仓库里的入口文件，否则会
+> 丢失模块清单。
 
 ### 8.1 最省事的调优手段：改会话规矩不用碰容器
 
@@ -534,8 +535,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 docker compose -f docker-compose.yml -f docker-compose.dev.yml restart qqbot
 ```
 
-`docker-compose.dev.yml` 把 `./dist` 与 `./dsh-profile` 以**只读**方式覆盖进容器，
-所以改代码、改人设都只需重启。
+`docker-compose.dev.yml` 只额外把 `./dist` 以**只读**方式覆盖进容器，所以改代码
+不必重建镜像（`dsh-profile` 已由基础文件挂载，改人设/审批桩/搜索端点本来就只需
+`restart`）。
 
 **两个限制**：
 - `node_modules` 仍来自镜像，改了 `package.json` 必须重建镜像；

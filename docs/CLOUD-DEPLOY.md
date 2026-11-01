@@ -18,9 +18,9 @@
 | 进程 | 1 个主进程 `node dist/main.js` + 每个活跃会话一个 `dsh` 子进程（LRU，默认上限 8） |
 | 依赖 | `@deepseek-ai/dsh`（精确版 0.1.5-rc.2）、`sharp`、`ws`、`yaml`；构建期另需 typescript |
 | 监听端口 | `8080` 健康检查（容器内）；`6700` OneBot 反向 WS（仅回环） |
-| 出网 | `api.bot.qq.com`（官方 WebSocket 网关）、`api.deepseek.com`（模型）、可选 HTTP 代理 |
+| 出网 | `api.bot.qq.com`（官方 WebSocket 网关）、`api.deepseek.com`（默认模型/搜索）、可选 `ark.cn-beijing.volces.com`（模型路由或联网搜索走方舟时）、可选 HTTP 代理 |
 | 数据 | `dsh-home`（DSH 会话日志与 profile）、`workspaces`（每会话工作区）、`bot-state`（对话记录/去重/会话映射/人设/谷时段覆盖/后台待投递） |
-| 配置 | 仓库内 `qqbot.yml` + `config/*.yml` 只读 bind mount；`interests.yml` 同理；`config/local/*.yml` **不进 git** |
+| 配置 | 仓库内 `qqbot.yml` + `config/*.yml` + `dsh-profile/`（profile 补丁、人设、审批桩）只读 bind mount；`interests.yml` 同理；`config/local/*.yml` **不进 git** |
 | 密钥 | 只从 `.env` 注入：`QQ_APP_ID` / `QQ_APP_SECRET` / `DEEPSEEK_API_KEY` / `ONEBOT_ACCESS_TOKEN`（按启用的接入与模型路由判断是否必需），另有 `BOT_ADMINS`、`BOT_LISTEN_GROUPS` 等个人标识 |
 | 启动 | `scripts/entrypoint.sh`：目录与权限 → 幂等初始化 DSH profile → 沙箱后端自检 → 必需 env 检查 → `exec node dist/main.js` |
 | 停止 | SIGTERM → 先停连接器 → 等在处理的 turn（最多 30s）→ 逐级关闭 DSH runtime（15s） |
@@ -120,7 +120,7 @@ Dockerfile 现在同时拷贝 `package.json` 与 `package-lock.json`，
 
 `.dockerignore` 排除了 `config/`、`docs/`、`tests/`，运行时配置靠 bind mount
 从宿主机仓库读取。所以云主机上必须保留一份仓库（至少 `qqbot.yml`、
-`config/`、`interests.yml`），只 `docker compose pull` 起不来。
+`config/`、`dsh-profile/`、`interests.yml`），只 `docker compose pull` 起不来。
 
 ---
 

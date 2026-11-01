@@ -75,6 +75,16 @@ services:
       #   只 restart 老容器不会自动加上新挂载。
       # ⚠ 同样别删掉宿主上的 config/ 目录；缺模块会在启动期报错。
       - ./config:/app/config:ro
+      # DSH profile 补丁 + 自动审批桩 + /persona 人设预设。挂进来之后，
+      # 改 cordis.patch.yml / personas/*.md / plugins/*.js 只需
+      # `docker compose restart qqbot`，不用重建镜像（profile 是
+      # patchReload=startup：每个 dsh 子进程启动时按 --patch 重新组合）。
+      # 镜像里仍然 COPY 了一份，作为不走 compose 时的兜底；挂载会盖住它。
+      # ⚠ 别删掉宿主上的 dsh-profile/ 目录：目录不存在时 Docker 会自动建一个
+      #   空目录挂进来，容器会因为「profile patch 不存在」拒绝启动（fail-loud）。
+      # ⚠ 容器以 uid 10001 运行，文件要对其他用户可读；权限不对就
+      #   chmod -R a+rX dsh-profile。
+      - ./dsh-profile:/app/dsh-profile:ro
       # 兴趣池（场景 5）。仓库里提交了一份近乎为空的占位（interests: []），
       # 克隆后直接挂载就是合法空池。
       # ⚠ 千万别删掉宿主上的这个文件：bind mount 在文件不存在时会自动建一个

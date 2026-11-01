@@ -28,5 +28,5 @@ services:
   qqbot:
     volumes:
       - ./dist:/app/dist:ro
-      # 本地 dsh-profile 覆盖镜像里的，改人设/审批桩配置不用重建镜像
-      - ./dsh-profile:/app/dsh-profile:ro
+      # dsh-profile 已由基础文件挂载（改人设/审批桩/搜索端点只需 restart），
+      # 这里不再重复声明。
