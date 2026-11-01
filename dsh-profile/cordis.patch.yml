@@ -81,3 +81,29 @@
         #         但实际权限 = 完全访问，workspace-write 那道闸失效（会打 warn 日志）。
         # false ：提权一律拒绝，机器人只能做不需要执行命令的工作。
         allowEscalation: true
+
+# --- 6. 联网搜索改走方舟订阅（不再烧 DeepSeek 官方 key） ----------------------
+# DSH 的 web_search 后端（web-search-deepseek）默认直连 DeepSeek 官方 Messages
+# API（model=deepseek-v4-flash，凭证=DEEPSEEK_API_KEY），**与主模型走哪条路由
+# 无关**：群里每搜一次，消耗的都是 DS 官方 key，而不是方舟订阅。
+#
+# 方舟 Agent Plan 的 Messages API（Anthropic 协议）原生支持 Claude Code 的
+# web_search 服务端工具（由豆包搜索承接），返回块与 Anthropic 一致，所以这里
+# 只换端点/凭证/模型，协议不变。官方文档：
+#   https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-claude-code
+#   https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-search
+#
+# 前提（缺一不可）：
+#   1. 方舟控制台 → Harness → 开启「豆包搜索抵扣」，否则搜索会失败；
+#   2. ARC_CODE_API_KEY 必须是 Agent Plan 专属 key（Coding Plan 的 key 不通用）；
+#   3. 套餐每月 500 次免费搜索，超出后按 Harness 规则从套餐 AFP 额度里扣。
+#
+# baseURL 末尾必须带 /v1：本后端只追加 `/messages`（不是 Anthropic SDK 的
+# `/v1/messages`）。想再省，可在 config 里加：
+#   maxUses: 2      # 每次工具调用最多几次服务端搜索（默认 5）
+#   maxTokens: 1024 # 只限制总结文本；DSH 只解析搜索块，不看这段文本（默认 4096）
+- id: web-search-deepseek
+  config:
+    baseURL: https://ark.cn-beijing.volces.com/api/plan/v1
+    apiKeyEnv: ARC_CODE_API_KEY
+    model: ark-code-latest
