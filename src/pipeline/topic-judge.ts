@@ -49,7 +49,7 @@ export interface TopicVerdict {
 }
 
 /**
- * 判定器函数签名。由 main.ts 用 createTopicJudge 构造后注入 TurnRunner；
+ * 判定器函数签名。由 main.ts 用 createTopicJudge 构造后注入 PromptPreparer；
  * 未注入 = 关闭判定（也就**不会有**按需展开聊天记录的能力，见 §"聊天记录"）。
  */
 export type TopicJudge = (input: TopicJudgeInput) => Promise<TopicVerdict>;

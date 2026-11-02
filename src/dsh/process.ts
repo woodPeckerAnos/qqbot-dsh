@@ -12,6 +12,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import type { Duplex } from 'node:stream';
 
 import type { Logger } from '../logger.js';
 import {
@@ -44,6 +45,9 @@ export interface DshRuntimeOptions {
   dshHome: string;
   provider: string;
   model: string;
+  reasoningEffort?: string;
+  /** Dedicated fd 3 channel; authorization is bound by the parent, never by model args. */
+  taskControl?: (request: { action: string; taskId?: string; sessionId?: string }) => unknown;
   requestTimeoutMs?: number;
   /** initialize 的等待超时（进程冷启动 + profile 组合，可能较慢） */
   startTimeoutMs: number;
@@ -120,10 +124,29 @@ export class DshRuntime extends EventEmitter {
         DSH_HOME: options.dshHome,
         ...options.env,
       },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }) as ChildProcessWithoutNullStreams;
+      stdio: options.taskControl ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
+    }) as unknown as ChildProcessWithoutNullStreams;
 
     this.child = child;
+    if (options.taskControl) {
+      const control = child.stdio[3] as Duplex;
+      let buffer = '';
+      control.setEncoding('utf8');
+      control.on('data', (chunk: string) => {
+        buffer += chunk;
+        if (buffer.length > 65536) { control.destroy(); return; }
+        let newline: number;
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+          try {
+            const request = JSON.parse(line) as { id: string; action: string; taskId?: string; sessionId?: string };
+            const value = options.taskControl!(request);
+            control.write(JSON.stringify({ id: request.id, value }) + '\n');
+          } catch (error) { options.logger.warn('Task 控制请求失败', { error: String(error) }); }
+        }
+      });
+      control.on('error', error => options.logger.warn('Task 控制通道关闭', { error: error.message }));
+    }
 
     this.exitPromise = new Promise<void>((resolve) => {
       this.resolveExit = resolve;
@@ -179,7 +202,7 @@ export class DshRuntime extends EventEmitter {
 
     try {
       const result = await client.initialize(
-        { cwd: options.cwd, provider: options.provider, model: options.model },
+        { cwd: options.cwd, provider: options.provider, model: options.model, ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}) },
         { timeoutMs: options.startTimeoutMs },
       );
       // 协议漂移检测：服务端身份是 wire-stable 的，变了说明协议不兼容。
@@ -197,8 +220,8 @@ export class DshRuntime extends EventEmitter {
       });
       return result;
     } catch (error) {
-      const detail = this.stderrTail.slice(-15).join('\n');
       await this.dispose().catch(() => {});
+      const detail = this.stderrTail.slice(-15).join('\n');
       throw new Error(
         `DSH runtime initialize 失败：${error instanceof Error ? error.message : String(error)}` +
           (detail ? `\n--- dsh stderr 末 15 行 ---\n${detail}` : ''),

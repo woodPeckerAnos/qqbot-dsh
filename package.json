@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "verify:sandbox": "node scripts/verify-sandbox.mjs"
+    "verify:sandbox": "node scripts/verify-sandbox.mjs",
+    "test:integration": "BOT_TEST_INTEGRATION=1 vitest run tests/onebot.test.ts tests/forward.test.ts tests/files.test.ts"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.1.5-rc.2",

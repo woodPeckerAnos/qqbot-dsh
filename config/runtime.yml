@@ -24,14 +24,29 @@ dsh:
 
 # --- 运行时池 ----------------------------------------------------------------
 pool:
-  # 全局并发 turn 上限（= 同时干活的会话数上限）
-  maxConcurrentTurns: 4
-  # 并发 runtime 进程上限（LRU 回收）
+  # 双 lane 合计硬上限（至少 2），各 lane 容量之和不得超过它
   maxRuntimes: 8
   # 空闲 runtime 回收时间（毫秒），回收后该会话下次提问会重建会话并回放历史
   runtimeIdleMs: 1800000
   # 冷启动回放的历史轮数
   replayTurns: 12
+
+# 每个有效输入和主动请求同时进入两个 lane；同 Session 每个 lane 串行。
+# 排队和输入摄取不计入模型执行时限。快 lane 固定关闭 thinking。
+tasks:
+  fastRuntimes: 4
+  slowRuntimes: 4
+  fastTimeoutMs: 30000
+  slowTimeoutMs: 1800000
+  maxPerSession: 32
+  maxGlobal: 128
+  retentionMs: 604800000
+  reminderMs: 300000
+  # 两个 lane 默认继承 dsh.provider / dsh.model；可在本机 models.yml 分别覆盖。
+  # fastProvider: deepseek-official
+  # fastModel: deepseek-flash
+  # slowProvider: deepseek-official
+  # slowModel: deepseek-flash
 
 # --- 存储路径 ----------------------------------------------------------------
 # 容器内由 docker-compose 的 environment 指定；这两处要保持一致。

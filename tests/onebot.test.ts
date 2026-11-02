@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it, afterEach } from 'vitest';
+const socketDescribe = process.env.BOT_TEST_INTEGRATION === '1' ? describe : describe.skip;
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -440,7 +441,7 @@ async function connectClient(
   return ws;
 }
 
-describe('OneBot 反向 WS 回路', () => {
+socketDescribe('OneBot 反向 WS 回路', () => {
   let connector: OnebotConnector | undefined;
   const clients: WebSocket[] = [];
   const tempDirs: string[] = [];
@@ -783,7 +784,7 @@ describe('OneBot 反向 WS 回路', () => {
 // fetchMedia：URL 直连 + 动作回查（get_file / get_image）回退
 // ---------------------------------------------------------------------------
 
-describe('OneBot fetchMedia', () => {
+socketDescribe('OneBot fetchMedia', () => {
   let connector: OnebotConnector | undefined;
   const clients: WebSocket[] = [];
   afterEach(async () => {
@@ -885,3 +886,5 @@ describe('OneBot fetchMedia', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+// Real localhost channels run explicitly with npm run test:integration.

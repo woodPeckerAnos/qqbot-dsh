@@ -157,14 +157,15 @@ export class QqOfficialConnector implements BotConnector {
     const body = renderMessage(out.text, {
       msgType: this.options.msgType,
       msgSeq: ctx.seq,
+      quoteMessageId: out.reference?.messageId,
       ...(ctx.msgId !== undefined && ctx.msgId !== '' ? { msgId: ctx.msgId } : {}),
       ...(ctx.eventId !== undefined && ctx.eventId !== '' ? { eventId: ctx.eventId } : {}),
     });
     if (ctx.target.kind === 'c2c') {
-      await this.api.sendUserMessage(ctx.target.id, body);
+      await this.api.sendUserMessage(ctx.target.id, body, ctx.signal);
       return;
     }
-    await this.api.sendGroupMessage(ctx.target.id, body);
+    await this.api.sendGroupMessage(ctx.target.id, body, ctx.signal);
   }
 
   /**
@@ -204,8 +205,8 @@ export class QqOfficialConnector implements BotConnector {
     };
     const uploaded =
       ctx.target.kind === 'c2c'
-        ? await this.api.uploadUserFile(ctx.target.id, upload)
-        : await this.api.uploadGroupFile(ctx.target.id, upload);
+        ? await this.api.uploadUserFile(ctx.target.id, upload, ctx.signal)
+        : await this.api.uploadGroupFile(ctx.target.id, upload, ctx.signal);
     if (uploaded.file_info === undefined || uploaded.file_info === '') {
       throw new Error('上传富媒体文件失败：响应里没有 file_info');
     }
@@ -216,9 +217,9 @@ export class QqOfficialConnector implements BotConnector {
       ...(ctx.eventId !== undefined && ctx.eventId !== '' ? { eventId: ctx.eventId } : {}),
     });
     if (ctx.target.kind === 'c2c') {
-      await this.api.sendUserMessage(ctx.target.id, body);
+      await this.api.sendUserMessage(ctx.target.id, body, ctx.signal);
     } else {
-      await this.api.sendGroupMessage(ctx.target.id, body);
+      await this.api.sendGroupMessage(ctx.target.id, body, ctx.signal);
     }
     this.options.logger.debug('官方富媒体消息已发送', {
       conversation: ctx.target.key,

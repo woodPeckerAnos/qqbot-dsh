@@ -21,6 +21,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+const socketDescribe = process.env.BOT_TEST_INTEGRATION === '1' ? describe : describe.skip;
 import WebSocket from 'ws';
 
 import { OnebotConnector, type OnebotConnectorOptions } from '../src/adapters/onebot/connector.js';
@@ -594,7 +595,7 @@ describe('OneBot file 段归一化', () => {
   });
 });
 
-describe('OneBot 文件取字节', () => {
+socketDescribe('OneBot 文件取字节', () => {
   let connector: OnebotConnector | undefined;
   const clients: WebSocket[] = [];
   const servers: Server[] = [];
@@ -856,3 +857,5 @@ describe('文件链路端到端（真子进程桩）', () => {
     },
   );
 });
+
+// Real localhost channels run explicitly with npm run test:integration.

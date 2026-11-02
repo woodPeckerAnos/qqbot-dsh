@@ -32,7 +32,7 @@
    - 开发调试可以在控制台配置最多 20 个**内部体验号码**，不受服务范围限制。
 
 > ⚠ 被动回复窗口：**群聊 5 分钟 / 每条最多 5 次**，**单聊 60 分钟 / 每条最多 4 次**。
-> 本程序已按此设计（进度回执 + 群聊/单聊各自的配额账本），请不要把
+> 本程序已按此设计（消息队列 + 群聊/单聊的共享序号与平台条数约束），请不要把
 > `QQ_TURN_TIMEOUT_MS` 调到 300000 以上——配置层会直接拒绝（单聊虽然窗口更宽，
 > 也沿用这个更保守的上限）。
 >
@@ -456,7 +456,7 @@ docker stats qqbot-dsh
 | 场景 | 调整 |
 |---|---|
 | 模型回答太慢/太贵 | `DSH_MODEL=deepseek-flash`（默认，最快）；需要更强推理换 `deepseek-v4-pro` |
-| 群里人多、并发高 | 提高 `QQ_MAX_CONCURRENT_TURNS`，同时提高 compose 里的 `cpus`/`memory` |
+| 群里人多、并发高 | 提高 `tasks.fastRuntimes` / `slowRuntimes` 并同步调整 `pool.maxRuntimes` 和容器资源 |
 | 容器内存紧张 | 降低 `QQ_MAX_RUNTIMES`（更频繁地回收 runtime，代价是更频繁的历史回放） |
 | 不想让机器人记很久之前的事 | 降低 `QQ_REPLAY_TURNS`（0 = 完全不回放，重启即失忆） |
 | 回答太长被截断 | 提高 `QQ_MAX_CHARS`，但注意平台上限未知（超限会报 40054007 并自动折半重试） |
@@ -469,7 +469,7 @@ docker stats qqbot-dsh
 | 群里刚发的图/文件，@ bot 后它说"看不到" | 那是**上下文（滚窗）**里的媒体：`BOT_OBSERVATION_INJECT_IMAGES`（默认 2）、`BOT_OBSERVATION_INJECT_FILES`（默认 1），0 = 不读；排查看 `/metrics` 里的 `windowImagesInlined`/`windowImagesSkipped`/`windowFilesFetched` |
 | 想给某个会话定规矩 | 在该会话工作区目录下写 `AGENTS.md`，DSH 会自动加载（改规则不用重建镜像） |
 | 想换某个会话的应答风格 | 群里发 `/persona <预设名>`（仅管理员；预设 = `dsh-profile/personas/*.md`，`BOT_PERSONA_DIR` 换目录）；`/persona` 列出可选项，`/persona off` 恢复默认 |
-| 长任务把会话卡死（新闻核查/抓取类最常见） | 确认 `hints.longTask.enabled`（默认开）：命中的消息会在 prompt 里带"必须后台派发"提示；观测 `/metrics` 的 `longTaskHints`（注入数）与 `backgroundStarted`（实际派发数）；仍不达标见 [DESIGN §14.3](DESIGN.md) 的下一档方案 |
+| 长任务把会话卡死（新闻核查/抓取类最常见） | 查看 `/metrics` 的 `tasks.fast` / `slow` 与 `messages`；慢执行和上传不应阻塞快正文，时限在 `tasks.*TimeoutMs` 配置；见 [架构](ARCHITECTURE.md) |
 
 ---
 

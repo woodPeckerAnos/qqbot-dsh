@@ -450,7 +450,7 @@ export type VetoReason =
   /** 没有场景成立（LLM 全判不成立），而当时**也没有**开启中的 session */
   | 'no-session'
   /**
-   * 本话题的发言预算已经用尽（`budgetLeft <= 0`）。
+   * 本话题的主动 Task 预算已预留或提交完毕（`budgetLeft <= 0`）。
    *
    * 这是闸门的**主路径之一**，不是防御性分支：预算耗尽**不关闭** session
    * （维护者口径：session 不该被预算驱动），所以后续唤醒会一次次落在这里，
@@ -550,7 +550,7 @@ export interface VetoPolicy {
    *
    * 它是 session 闸门的三道检查之一。放在这一层是因为"顺序与额度的唯一实现"
    * 在这儿：闸门过不过必须能被单测穷举，而不是散在 runner 的 if 里。
-   * （session 的**初始预算**不在这里：它由调度层在"开 session"时写入状态，
+   * （session 的**初始 Task 预算**不在这里：它由调度层在"开 session"时写入状态，
    * 否决层只读 `context.session.budgetLeft`。）
    */
   readonly sessionMinGapMs: number;
@@ -630,22 +630,11 @@ export function isSpeak(decision: ProactiveDecision): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// ④ 发言生成（compose）接缝
+// ④ 主动 Task 输入接缝（旧 compose 类型保留给回归）
 // ---------------------------------------------------------------------------
 
-/**
- * 交给「发言生成」的输入：判定层的产出（要点 / 依据 / 场景），
- * 由一次真实的 agent turn 措辞成**可以直接发出去的话**。
- *
- * 为什么有这一层：判定层的 `directive` 是"该说什么"的**要点**（面向执行者的
- * 指令语气），不是能对群说的话。早期实现把它原样发送，群里看到的就是
- * "直接回答 xx 的可行性要点（依据：…）"这种元文本。措辞必须走与被动回复
- * 同一条 agent turn（`TurnRunner.runProactiveTurn`）：同一 runtime 会话
- * （人设与上下文连续）、同一观察窗口、可以用工具查证了再开口。
- *
- * 返回 `undefined` 的语义是"本次不发言"——会话忙 / 生成超时 / 模型看完
- * 完整上下文后选择不说，都走这里。调用方按投递降级记账（`compose-failed`），
- * **不消耗会话预算、不开 session**（没说出话就不记账，与投递降级同口径）。
+/** 判定的要点、理由和证据，由 ProactiveTaskAdapter 冻结并提交双 lane Task。
+ * 预算单位是 Task；真实发送由 MessageQueue 处理，不在发送前做过时判定。
  */
 export interface ProactiveComposeInput {
   readonly target: ConversationTarget;
@@ -658,5 +647,5 @@ export interface ProactiveComposeInput {
   readonly evidence?: string;
 }
 
-/** 发言生成能力（真实实现走 TurnRunner；测试注入 fake）。 */
+/** @deprecated 仅供旧 compose 回归；生产使用 submitTask。 */
 export type ProactiveCompose = (input: ProactiveComposeInput) => Promise<string | undefined>;

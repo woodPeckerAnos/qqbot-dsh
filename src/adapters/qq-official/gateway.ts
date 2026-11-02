@@ -411,7 +411,7 @@ export class QqGateway implements QqEventSource {
       }
       const author = (d['author'] ?? {}) as Record<string, unknown>;
       // 富媒体/引用/卡片统一翻译成片段：content 是它的可读扁平形态（进对话记录、
-      // 进日志、也是命令匹配对象），parts 供 TurnRunner 组装多模态 prompt。
+      // 进日志、也是命令匹配对象），parts 供 PromptPreparer 组装多模态 prompt。
       const parts = this.buildParts(d);
       if (this.isEmptyMessage(parts, type)) return;
       // ★ 两种群消息事件的语义完全不同，必须分开：

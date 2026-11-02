@@ -23,10 +23,10 @@
 | 配置 | 仓库内 `qqbot.yml` + `config/*.yml` + `dsh-profile/`（profile 补丁、人设、审批桩）只读 bind mount；`interests.yml` 同理；`config/local/*.yml` **不进 git** |
 | 密钥 | 只从 `.env` 注入：`QQ_APP_ID` / `QQ_APP_SECRET` / `DEEPSEEK_API_KEY` / `ONEBOT_ACCESS_TOKEN`（按启用的接入与模型路由判断是否必需），另有 `BOT_ADMINS`、`BOT_LISTEN_GROUPS` 等个人标识 |
 | 启动 | `scripts/entrypoint.sh`：目录与权限 → 幂等初始化 DSH profile → 沙箱后端自检 → 必需 env 检查 → `exec node dist/main.js` |
-| 停止 | SIGTERM → 先停连接器 → 等在处理的 turn（最多 30s）→ 逐级关闭 DSH runtime（15s） |
+| 停止 | SIGTERM → 先停连接器 → 等未完成 Task（最多 30s）→ 取消剩余执行并逐级关闭 DSH runtime（15s） |
 | 健康 | `/healthz`：**至少一个接入连接器已建立事件通道**才 200；`/metrics`：JSON 计数。容器 HEALTHCHECK 用 `node dist/health-probe.js` |
 | 加固 | 只读根文件系统、`/tmp` tmpfs、`cap_drop: ALL`、`no-new-privileges`、非 root uid 10001、2 CPU / 2GB / 512 pids |
-| CI | GitHub Actions：类型检查 + 单测（793 项，全离线）+ 构建镜像 + 入口快速失败 + 沙箱能力检查 |
+| CI | GitHub Actions：类型检查 + 默认离线测试 + 构建镜像 + 入口快速失败 + 沙箱能力检查；当前验收见 [任务状态](TASK-STATUS.md) |
 
 叠加 `docker-compose.napcat.yml` 后多一个独立 sidecar：
 
@@ -41,7 +41,8 @@
 ### 本地已验证
 
 - `npm run typecheck`：通过
-- `npm test`：37 个文件 / 793 项全部通过
+- `npm test`：42 个文件 / 804 项通过，40 项真实端口用例默认跳过
+- `npm run test:integration`：3 个文件 / 104 项本地 OneBot mock 回路通过；双 lane 验收详见 [任务状态](TASK-STATUS.md)
 - `npm ci --dry-run --no-audit --no-fund`：退出码 0，锁文件与 `package.json` 一致
 - 代理空值语义：直接调用 `@deepseek-ai/dsh-http-proxy`，`HTTPS_PROXY=""`
   解析为直连（`proxied:false`），非空才走代理
@@ -153,8 +154,7 @@ Dockerfile 现在同时拷贝 `package.json` 与 `package-lock.json`，
 建议：
 
 - 主机加 **2GB swap**（4GB 内存下 NapCat 的 Electron 峰值需要兜底）；
-- 覆盖层已把 `QQ_MAX_RUNTIMES` 默认降到 **4**、`QQ_MAX_CONCURRENT_TURNS`
-  默认降到 **2**；4C4G 可在 `.env` 里上调，2C4G 建议保持默认；
+- 覆盖层已把 `QQ_MAX_RUNTIMES` 默认降到 **4**、两个 lane 容量默认各 **2**（`BOT_FAST_RUNTIMES` / `BOT_SLOW_RUNTIMES`）；4C4G 可在 `.env` 里上调，2C4G 建议保持默认；
 - 构建和运行错开：先 `docker compose build`，再 `up -d`，不要在 bot 跑着时构建；
   2C4G 更建议在 CI/本机构建后推 OCI 仓库，云主机只 pull；
 - NapCat 上限 **1GB / 1.5 CPU / 512 pids** 已写进覆盖层，优先保护 bot 的
@@ -595,7 +595,7 @@ COMPOSE_OLD up -d
 | 内核不支持 Landlock / 禁止非特权 user namespace | `workspace-write` 退化为完全访问，安全边界只剩容器 | 选内核 ≥5.13 的镜像；Ubuntu 24.04 注意 `kernel.apparmor_restrict_unprivileged_userns=1`；启动日志看沙箱结论 |
 | NapCat 登录态/设备指纹变化 | 掉线、要求重新验证，严重时封号 | 持久化 `napcat-qq`，固定镜像/MAC/hostname，稳定出口 IP，单实例，减少重启 |
 | 跨云换 IP | 迁移即一次环境跳变 | 先定平台再迁，迁一次到位；首登在最终主机完成 |
-| 4GB 内存 | QQ + DSH 子进程峰值可能 OOM | 2GB swap；`QQ_MAX_RUNTIMES=4`、`QQ_MAX_CONCURRENT_TURNS=2`（覆盖层默认）；监控内存 |
+| 4GB 内存 | QQ + DSH 子进程峰值可能 OOM | 2GB swap；`QQ_MAX_RUNTIMES=4`、`BOT_FAST_RUNTIMES=2`、`BOT_SLOW_RUNTIMES=2`（覆盖层默认）；监控内存 |
 | 2 vCPU 构建 | `npm ci + tsc` 与运行抢 CPU/内存 | 先 build 再 up；2C4G 建议 CI 构建后 pull |
 | 第三方 NapCat 镜像供应链 | 镜像被替换/带后门 | 固定版本或 digest；升级前看 Release；不挂 docker.sock |
 | 数据迁移窗口 | 迁移期间消息漏回 | 低峰期停机；先停旧、备份、恢复、再起新；禁止双跑 |

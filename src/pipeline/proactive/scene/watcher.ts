@@ -54,6 +54,7 @@
 
 import type { ConversationTarget, NormalizedMessage } from '../../../core/connector.js';
 import type { Logger } from '../../../logger.js';
+import type { ProactiveTaskRequest } from '../../../task/proactive-adapter.js';
 import {
   matchesGroupAllowlist,
   type ObservationEntry,
@@ -254,6 +255,7 @@ export interface ProposedRecord {
 }
 
 export interface ProactiveWatcherDeps {
+  submitTask?: (request: ProactiveTaskRequest) => Promise<boolean>;
   config: ProactiveWatcherConfig;
   speaker: ProactiveSpeaker;
   /**
@@ -269,16 +271,9 @@ export interface ProactiveWatcherDeps {
   /** 判定能力；未注入 = 只收集不判定（"只听不说"的部署形态） */
   judge?: ProactiveJudge;
   /**
-   * 发言生成能力（`TurnRunner.runProactiveTurn`）：把判定的 `directive` 要点
-   * 措辞成真实文案（同一 runtime 会话、同一观察窗口、可以用工具）。
-   *
-   * 只在**真实发言**（`dryRun: false`）时调用；dryRun 不碰它——灰度观察的是
-   * 判据质量，不该为一句不会发出去的话花一次 agent turn、污染会话记忆。
-   * 未注入且 dryRun 关闭 = 退回"直接发判定要点"的旧行为（构造期会 warn，
-   * 因为那会发出"直接回答 xx 的要点（依据：…）"这种元文本）。
-   *
-   * 返回 `undefined` = 本次不发言（会话忙 / 生成失败 / 模型看完完整上下文
-   * 后选择不说），按 `compose-failed` 投递降级记账，不消耗预算、不开 session。
+   * @deprecated 历史措辞回归接缝，仅供旧测试夹具使用。
+   * 生产注入 submitTask，由 ProactiveTaskAdapter 固定依据后提交双 lane Task。
+   * 旧接缝返回 undefined 时按 compose-failed 降级记账。
    */
   compose?: ProactiveCompose;
   interests?: InterestPool;
@@ -558,7 +553,7 @@ export class ProactiveWatcher {
     this.sessionIdleMs = effectiveSessionIdleMs(deps.config.sessionIdleMs);
     // 真实发言但没接发言生成：发出去的将是判定要点原文（"直接回答 xx 的要点
     // （依据：…）"这种元文本）。装配期就 warn，比灰度期间在群里看到好查。
-    if (!deps.config.dryRun && deps.compose === undefined) {
+    if (!deps.config.dryRun && deps.compose === undefined && deps.submitTask === undefined) {
       deps.logger.warn('主动介入：未注入发言生成（compose），真实发言将直接发送判定要点文本');
     }
     this.now = deps.now ?? (() => Date.now());
@@ -600,7 +595,7 @@ export class ProactiveWatcher {
    */
   private onSessionClosed(convKey: string, cause: SessionCloseCause, session: TopicSession): void {
     this.cancelIdleTimer(convKey);
-    const speaks = Math.max(0, this.sessionBudget - session.budgetLeft);
+    const speaks = this.deps.submitTask ? this.states.for(convKey).committedTaskCount(session) : Math.max(0, this.sessionBudget - session.budgetLeft);
     this.counters.sessionClosed += 1;
     this.bump(this.counters.sessionClosedBy, cause);
     this.bump(this.counters.spokeInSession, String(speaks));
@@ -1480,7 +1475,7 @@ export class ProactiveWatcher {
     }
 
     // ④ 投递：唯一出口（dryRun / 平台能力差异都在它内部处理）。
-    const spoken = await this.deliver(convKey, target, decision, now);
+    const spoken = await this.deliver(convKey, target, decision, now, sessionOutcome);
     // ⑤ session 的收口（唯一入口）：开 / 换话题重建 / 扣预算（**不减到 0 就关**）/
     //    按模型的建议收口。
     this.applySessionOutcome(convKey, now, decision.scene, spoken, sessionOutcome);
@@ -1670,8 +1665,32 @@ export class ProactiveWatcher {
     target: ConversationTarget,
     decision: Extract<ProactiveDecision, { action: 'speak' }>,
     now: number,
+    sessionDirective: { restart: boolean; close: boolean } = { restart: false, close: false },
   ): Promise<boolean> {
     const gist = decision.directive ?? decision.reason;
+    if (this.deps.submitTask && !this.config.dryRun) {
+      const state = this.states.for(convKey);
+      if (state.session && sessionDirective.restart) state.closeSession('topic-changed');
+      if (!state.session) this.openTopicSession(convKey, now, decision.scene);
+      const scope = state.taskBudgetScope(this.sessionBudget);
+      const entries = this.windows.read(convKey).filter(e => !e.isBot);
+      const entry = entries.findLast(e => !!decision.evidence && e.text && (e.text.includes(decision.evidence) || decision.evidence.includes(e.text))) ?? (decision.scene === 'scene-1' || decision.scene === 'scene-4' ? entries.at(-1) : undefined);
+      const reference: NormalizedMessage | undefined = entry ? {
+        kind: 'group-message', target, eventId: entry.eventId, msgId: entry.msgId,
+        senderId: entry.senderId, username: entry.senderName, content: entry.text, ts: entry.ts, raw: {},
+      } : { kind: 'group-message', target, eventId: '', msgId: '', senderId: 'context', username: '触发时的群聊上下文', content: decision.evidence ?? entries.slice(-4).map(e => `[${e.senderName ?? e.senderId}] ${e.text}`).join('\n'), ts: now, raw: {} };
+      const accepted = await this.deps.submitTask({
+        input: { target, scene: decision.scene, directive: gist, reason: decision.reason, evidence: decision.evidence }, scope, reference,
+        onSpoke: (_text, ts) => {
+          this.counters.spoke++; this.metrics.spoke(decision.scene, false);
+          this.notifyBotSpoke(convKey, ts);
+          if (scope.isCurrent()) this.armSessionIdle(convKey);
+        },
+      });
+      if (!accepted) { this.bump(this.counters.deliveryDegraded, 'task-rejected'); this.metrics.deliveryDegraded('task-rejected', decision.scene); }
+      // Scope reservation owns budget; actual delivery records speech asynchronously.
+      return false;
+    }
     let spokenText: string;
     if (this.config.dryRun || this.deps.compose === undefined) {
       // dryRun / 未接发言生成：保持旧文本（要点 + 依据）——dryRun 下它只进

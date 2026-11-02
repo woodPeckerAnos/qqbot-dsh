@@ -36,6 +36,7 @@ import {
   toObservationEntry,
   type ObservationEntry,
 } from '../../../store/window.js';
+import { randomUUID } from 'node:crypto';
 import type { SessionCloseCause, SessionClosedEvent, TopicSession } from '../contract.js';
 
 // ---------------------------------------------------------------------------
@@ -183,6 +184,8 @@ export class ConversationState {
    *
    * 类型与 `TopicSession` 同构（那份是 readonly 的**对外视图**，这里是可变实现）。
    */
+  private topicBudgetId = randomUUID();
+  private readonly committedTasks = new WeakMap<object, number>();
   private topicSession?: { openedAt: number; budgetLeft: number; lastSpokeAt?: number };
   /**
    * 该会话**上次进入判定**的时刻（会话级字段，见 docs/TOPIC-SESSION-REQUIREMENT.md §三）。
@@ -325,6 +328,7 @@ export class ConversationState {
    */
   openSession(now: number, budget: number): boolean {
     if (this.topicSession !== undefined) return false;
+    this.topicBudgetId = randomUUID();
     this.topicSession = {
       openedAt: now,
       budgetLeft: Math.max(0, Math.trunc(budget)),
@@ -333,18 +337,33 @@ export class ConversationState {
   }
 
   /**
-   * 在**当前 session 里**说了一句：预算 -1、记下发言时刻。
+   * 旧 compose 回归的提交接口；生产通过 taskBudgetScope 投影 TaskBudget。
    *
    * 返回 false = 没有开启中的 session（什么都没做）。**减到 0 不在这里关闭**：
    * 关闭要通知监听者、要区分四种原因，统一走 `closeSession()`
-   * （`budgetLeft <= 0` 时由调度层立刻调它，见需求验收 4）。
+   * （预算耗尽只限制新 Task，不触发关闭）。
    */
   consumeSessionBudget(now: number): boolean {
     const session = this.topicSession;
     if (session === undefined) return false;
     session.budgetLeft = Math.max(0, session.budgetLeft - 1);
     session.lastSpokeAt = now;
+    this.committedTasks.set(session, (this.committedTasks.get(session) ?? 0) + 1);
     return true;
+  }
+
+  /** Capture the trigger's scope. Completion never charges a later topic. */
+  taskBudgetScope(limit: number) {
+    const session = this.topicSession;
+    if (!session) throw new Error('主动话题未开启');
+    return {
+      id: `${this.convKey}:${this.topicBudgetId}`,
+      limit,
+      reserve: () => { session.budgetLeft = Math.max(0, session.budgetLeft - 1); },
+      release: () => { session.budgetLeft = Math.min(limit, session.budgetLeft + 1); },
+      commit: (ts: number) => { session.lastSpokeAt = ts; this.committedTasks.set(session, (this.committedTasks.get(session) ?? 0) + 1); },
+      isCurrent: () => this.topicSession === session,
+    };
   }
 
   /**
@@ -354,6 +373,8 @@ export class ConversationState {
    * 只带一个原因——验收 11 的账目等式（`closed === Σ closedBy{reason}`）
    * 就建立在"只有这一个出口"上。
    */
+  committedTaskCount(session: TopicSession): number { return this.committedTasks.get(session) ?? 0; }
+
   closeSession(cause: SessionCloseCause): boolean {
     const session = this.topicSession;
     if (session === undefined) return false;

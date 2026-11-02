@@ -16,7 +16,8 @@ import { createServer, type Server } from 'node:http';
 
 import type { ConnectorHealth } from './core/connector.js';
 import type { Logger } from './logger.js';
-import type { BackgroundSnapshot } from './pipeline/egress/background.js';
+import type { SessionActor } from './task/session-actor.js';
+import type { MessageQueue } from './task/message-queue.js';
 import type { PipelineStatsSnapshot } from './pipeline/stats.js';
 
 export interface HealthSnapshot {
@@ -25,8 +26,9 @@ export interface HealthSnapshot {
   /** 平台标识 → 该连接器的健康状态 */
   connectors: Record<string, ConnectorHealth & { staleMs?: number }>;
   runtime: { size: number; activeConversationKeys: string[]; activeSubagents: number };
-  /** 后台任务投递状态：待带出结果的会话数与总条数（见 DESIGN §13.5） */
-  background: BackgroundSnapshot;
+  /** 双 lane 调度与独立消息投递状态。 */
+  tasks: ReturnType<SessionActor['snapshot']>;
+  messages: ReturnType<MessageQueue['snapshot']>;
   /** 编排层统计（字段名 dispatcher 是 /metrics 的对外契约，RUNBOOK 在用） */
   dispatcher: PipelineStatsSnapshot;
   /**
@@ -76,7 +78,9 @@ export function createHealthServer(options: HealthServerOptions): HealthServer {
             uptimeMs: snapshot.uptimeMs,
             connectors: snapshot.connectors,
             runtime: snapshot.runtime,
-            background: snapshot.background,
+            tasks: snapshot.tasks,
+            messages: snapshot.messages,
+            proactive: snapshot.proactive,
             dispatcher: snapshot.dispatcher,
             lastEventAgeMs: snapshot.lastEventAgeMs,
             warnings: snapshot.warnings,
@@ -258,7 +262,8 @@ export function buildHealthSnapshot(input: {
   startedAt: number;
   connectors: Record<string, ConnectorHealth>;
   runtime: { size: number; activeConversationKeys: string[]; activeSubagents: number };
-  background: BackgroundSnapshot;
+  tasks: ReturnType<SessionActor['snapshot']>;
+  messages: ReturnType<MessageQueue['snapshot']>;
   dispatcher: PipelineStatsSnapshot;
   /** 主动介入层快照；未装配时省略 */
   proactive?: ProactiveHealthSnapshot;
@@ -308,7 +313,8 @@ export function buildHealthSnapshot(input: {
     uptimeMs: now - input.startedAt,
     connectors,
     runtime: input.runtime,
-    background: input.background,
+    tasks: input.tasks,
+    messages: input.messages,
     dispatcher: input.dispatcher,
     ...(input.proactive === undefined ? {} : { proactive: input.proactive }),
     ...(lastEventAt !== undefined ? { lastEventAgeMs: now - lastEventAt } : {}),

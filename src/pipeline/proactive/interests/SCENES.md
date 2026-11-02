@@ -10,12 +10,12 @@
 > 校验见 `tests/scenes-layers.test.ts` 的「验收20」。
 >
 > 代码实现：`scene/collect.ts`（什么时候可能命中）→ `judge/judge.ts`（成立的判据）
-> → `veto/veto.ts`（顺序与额度）；投递走 `deliver/speaker.ts`。
+> → `veto/veto.ts`（顺序与 Task 预算）；执行与投递走 TaskSystem。
 >
 > **状态：已接入运行时（默认灰度观察）**。链路是
-> 旁听消息 → `ProactiveWatcher` → 本地预筛 → 判定 → 否决 → **措辞轮次**
-> （`TurnRunner.runProactiveTurn`：要点 → 真实文案，可用工具查证）→
-> `ProactiveSpeaker` → 适配器。
+> 旁听消息 → `ProactiveWatcher` → 本地预筛 → 判定 → 否决 →
+> `ProactiveTaskAdapter` → `SessionActor` 双 lane Task →
+> `SessionOutputCoordinator` → `MessageQueue` → 适配器。
 > 两个默认值决定了它当下的实际行为：
 >   1. `proactive.enabled` 默认 **false**（不配就不主动开口）；
 >   2. `proactive.dryRun` 默认 **true**——即使打开了总开关，它也只记录
@@ -30,8 +30,9 @@
 >
 > **放行闸门是"话题 session"**（详见
 > [docs/TOPIC-SESSION-REQUIREMENT.md](../../../../docs/TOPIC-SESSION-REQUIREMENT.md)）：
-> 判定判"值得"时才开一次会话，里面最多说 `sessionBudget` 句（默认 2），
-> 说完/模型说收口/静默 10 分钟即关。它**取代了旧的"每话题一次"**，
+> 判定判"值得"时才开一次会话，里面最多提交 `sessionBudget` 个主动 Task（默认 2），
+> 首次成功送达按 Task 提交一次预算；静默或全部失败释放预留。模型说收口或
+> 静默 10 分钟关闭话题，已授权 Task 仍按原引用发送。它取代了旧的"每话题一次"，
 > 代价是明确接受的覆盖率损失——不做本地话题识别。
 
 ---

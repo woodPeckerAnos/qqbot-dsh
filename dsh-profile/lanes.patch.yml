@@ -1,0 +1,19 @@
+- id: tools
+  config:
+    mode: native
+- id: tool-subagent
+  config:
+    provider: spawn
+    toolName: subagent
+    enableRunInBackground: false
+    backgroundMode: one-shot
+- id: tool-subagent-fork
+  config:
+    provider: fork
+    toolName: subagent_fork
+    enableRunInBackground: false
+    backgroundMode: one-shot
+- insert:
+    - id: qqbot-task-control
+      name: ./plugins/task-control.js
+      inject: [tools]

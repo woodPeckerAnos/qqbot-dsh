@@ -1,28 +1,16 @@
 /**
  * 观察窗口（旁听滚窗）：**全局**共享的"群里刚刚说了什么"。
  *
- * ## 为什么从介入层抽出来（这一版的核心动机）
- *
- * 在此之前，滚窗是 `pipeline/proactive/scene/state.ts` 的私有字段，于是它继承了
- * 介入层的**全部**生命周期缺陷：
- *
- *   1. 只有「主动发言开着 + 群在白名单里」才会记录——`BOT_PROACTIVE_ENABLED=false`
- *      的部署里，被 @ 的回复永远拿不到任何群聊上下文；
- *   2. 它是判定的输入（`renderTranscript`），因此语义被判定层的需要绑死；
- *   3. 谁都不能用它，除了 watcher —— `TurnRunner` 连它的存在都不知道。
- *
- * 现在它是一条独立的缝：**写入永远发生（白名单内），读取由各唤醒路径自己决定
- * 用多宽的窗口**。介入层从"拥有者"降级为"消费者"，与被动回复路径平级。
+ * 窗口独立于主动介入开关，白名单内消息始终记录。ProactiveWatcher 与
+ * PromptPreparer 都是消费者，分别选择判定窗口和 Task 输入窗口，不拥有窗口状态。
  *
  * ## 纪律（与介入层的三条硬纪律同源）
  *
  * 1. **静默**：本模块不做任何判断、不调 LLM、不写日志（除配置错误）、永不抛错。
  *    写入失败的唯一可能后果是"少一条上下文"，绝不能让主链路失败；
- * 2. **纯内存、不落盘**：进程重启即清空。这是**刻意**的隐私口径（与
- *    `TOPIC-SESSION-REQUIREMENT` 的"旁听内容不落盘"一致）：群聊里没 @ bot 的
- *    话不该因为我们旁听就在磁盘上留下副本。代价是冷启动那一次没有环境上下文
- *    ——那由 `ConversationStore` 的冷启动回放兜底（它落盘、且只记与 bot 相关的
- *    轮次）。要补这个洞是**另一件事**，需要单独评估留存期。
+ * 2. **窗口纯内存、不落盘**：进程重启即清空。冷启动由 ConversationStore 的
+ *    bot 相关轮次回放补偿。有效 Task 在准入时固定所需窗口摘录和原消息引用，
+ *    这些输入由 TaskStore 按 Task 保留期持久化，不是整个旁听窗口的磁盘副本。
  * 3. **准入只有一处**：窗口收不收某条消息，只由 `allowlist` 决定，且**与
  *    `proactive.enabled` 无关**——这正是解耦的意义。白名单为空 = 什么都不收
  *    （fail-closed，与介入层口径一致）。
@@ -36,7 +24,7 @@
  *     `proactive.bufferMax*` 仍然接受，见 `src/config.ts` 的兼容说明）；
  *   - **保留期**（`maxMessages` / `maxAgeMs`）与**读取范围**（`activityWindowMs`）
  *     是两个概念：前者决定我们记得多久，后者决定"当前话题"有多长。判定层要宽窗
- *     （宁可多读），被动注入只要当前话题（见 `TurnRunner.buildPrompt`）。
+ *     （宁可多读），Task 输入由 `PromptPreparer.capture` 按上下文边界固定。
  *
  * ## 媒体（图片 / 文件）
  *
@@ -91,6 +79,9 @@ export function matchesGroupAllowlist(convKey: string, allowlist: readonly strin
  * 需要——否则模型看到群友追问却看不到自己刚回答过什么。
  */
 export interface ObservationEntry {
+  readonly reference?: import('../core/connector.js').OriginalMessageReference;
+  readonly taskId?: string;
+  readonly lane?: 'fast' | 'slow';
   readonly msgId: string;
   readonly eventId: string;
   readonly senderId: string;
@@ -126,8 +117,8 @@ export interface ObservationEntry {
  * `text` 是给人（和模型）看的**扁平化文本**：图片只剩 `[图片: DF77A739.jpg]`。
  * 而被 @ 时注入的群聊上下文只有这一份文本，于是"群里刚发的那张图，@ 一下让 bot
  * 看看"必然失败——模型如实回答"我这边只收到一个占位符"，工作区里也没有文件，
- * 因为**从来没有人为旁听消息取过字节**（`TurnRunner.buildPromptBlocks` 只读
- * 当前这条消息的 `parts`）。@ 时直接携带的图没有这个问题：它走的就是那条路径。
+ * 如果只保留扁平文本，PromptPreparer 就无法恢复旁听消息的图片；直接携带的图
+ * 则可从当前消息的 `parts` 读取。
  *
  * 所以窗口除了文本，还要留下**能重新取到字节的东西**（url 快路径 + fileId 回查，
  * 与当前消息完全同一套，见 `dsh/media.ts` 与 `dsh/files.ts`）。取字节发生在注入时
@@ -267,7 +258,7 @@ export class ObservationWindow {
    * （`docs/PROACTIVE-INTERVENTION-ARCH.md` §3.6 的未修缺口），被动注入也会
    * 看到"群友追问、没有回答"的半截对话。
    */
-  recordBotReply(input: { msgId?: string; text: string; ts: number; dryRun?: boolean }): void {
+  recordBotReply(input: { msgId?: string; text: string; ts: number; dryRun?: boolean; reference?: import('../core/connector.js').OriginalMessageReference; taskId?: string; lane?: 'fast' | 'slow' }): void {
     const text = input.dryRun === true ? `（灰度未发送）${input.text}` : input.text;
     if (text.trim() === '') return;
     this.observeEntry({
@@ -278,6 +269,9 @@ export class ObservationWindow {
       ts: input.ts,
       addressed: false,
       isBot: true,
+      reference: input.reference,
+      taskId: input.taskId,
+      lane: input.lane,
     });
   }
 
@@ -425,7 +419,7 @@ export class ObservationWindowStore {
   /** 记一条 bot 自己的发言。 @returns 是否真的记下了 */
   recordBotReply(
     convKey: string,
-    input: { msgId?: string; text: string; ts: number; dryRun?: boolean },
+    input: { msgId?: string; text: string; ts: number; dryRun?: boolean; reference?: import('../core/connector.js').OriginalMessageReference; taskId?: string; lane?: 'fast' | 'slow' },
   ): boolean {
     if (!this.accepts(convKey)) return false;
     this.for(convKey).recordBotReply(input);
@@ -672,7 +666,9 @@ export function renderWindowBlock(
     .filter((entry) => entry.text.trim() !== '')
     .map((entry) => {
       const who = entry.isBot === true ? botLabel : (entry.senderName ?? entry.senderId);
-      return `[${who}] ${entry.text}`.trimEnd();
+      const ref = entry.reference;
+      const quote = ref ? `（引用 ${ref.senderName ?? ref.senderId} 的「${ref.excerpt}」）` : '';
+      return `[${who}] ${quote}${entry.text}`.trimEnd();
     });
 
   if (lines.length === 0) return '';

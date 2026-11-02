@@ -22,16 +22,18 @@ flowchart LR
   end
 
   subgraph BOT["qqbot-dsh（一个容器）"]
-    C["接入层<br/>platform adapters"] --> D["编排层<br/>并发 · 配额 · 进度 · 去重"]
-    D --> E["DSH 池<br/>一会话一进程一工作区"]
-    G["主动介入<br/>旁听 → 判定 → 否决"] -.->|主动发言| C
+    C["接入、归一化、去重、命令"] --> D["SessionActor → Task"]
+    D --> E["快 lane 独立队列"]
+    D --> F["慢 lane 独立队列"]
+    G["主动介入<br/>旁听 → 判定 → 否决"] --> D
+    E --> O["出口协调 → 持久消息队列"]
+    F --> O
+    O --> C
   end
 
   A <-->|wss| C
   B <-->|反向 wss :6700| C
   B -.->|旁听非 @ 消息| G
-  E --> F["写代码 · 跑命令 · 产出文件<br/>结果与产物回发到 QQ"]
-  F --> C
 ```
 
 | 通道 | 接入方式 | 旁听（听得到没 @ 的消息） | 主动发言 |
@@ -80,11 +82,13 @@ QQ 机器人的约束比看起来紧得多。挑五条最有代表性的（完�
 
 | 平台约束 | 处理方式 |
 |---|---|
-| 被动窗口只有**群聊 5 分钟 / 单聊 60 分钟**，每条消息最多回 **5 / 4 次** | 回复配额账本 + 进度回执，永远给最终答案留配额；`msg_seq` 统一分配避免平台去重 |
+| 被动窗口只有**群聊 5 分钟 / 单聊 60 分钟**，每条消息最多回 **5 / 4 次** | 消息队列统一分配 `msg_seq`；未尝试消息可等待新出口，发送失败和超时不重试 |
 | `session/prompt` **没有 resume 语义**，进程重启必失忆 | 桥接层自维护对话记录，runtime 重建时按边界标记回放——升级 / 重启不丢记忆 |
 | 被 @ 时**看不到群里刚才在聊什么**，上下文里的 `[图片: x.jpg]` 只是占位 | 观察窗口静默记录白名单群消息（纯内存、不落盘）；被 @ 时注入当前话题，并按配额真实下载最近的图 / 文件 |
 | **长截图**整张缩下去读不出、超限图被 runtime 整条拒收 | 长图按像素预算**原生分辨率切片**；超限图先探测真实像素再降采样重编码，只有解不开的才不内联 |
-| 用户发来的**文件**是字节、模型读不了；一轮多产物会刷屏 | 落 `inbox/` 供 agent 深挖 + 抽取正文（PDF 走 `pdftotext`）；一轮多个文件自动打包成单个 zip 回发 |
+| 用户发来的**文件**是字节、模型读不了；多任务附件容易串属 | 每 Task 摄取一次并抽正文（PDF 走 `pdftotext`）；交付物按 Task 隔离，队列保存独立文件副本 |
+
+旧慢任务执行期间，新输入的快回复仍可送出。两 lane 都终结才完成 Task，发送状态独立；慢结果和延迟结果引用原消息。主动预算按 Task 预留，首次成功送达只提交一次。管理员 `/stop` 停止正在执行的 Task 并保留排队任务，`/new` 取消全部未完成 Task 并重置上下文。
 
 ## 权限模型（请务必了解）
 
@@ -108,7 +112,9 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 | [docs/DEPLOY.md](docs/DEPLOY.md) | **本地部署手册**：从零到跑通，含框架选型与调参建议 |
 | [docs/CLOUD-DEPLOY.md](docs/CLOUD-DEPLOY.md) | **云服务部署手册**：资源建议、NapCat 同机编排、加密迁移、备份与回滚、上线验证清单 |
 | [docs/CONFIG.md](docs/CONFIG.md) | 配置模块手册（怎么加模块、怎么排查） |
-| [docs/DESIGN.md](docs/DESIGN.md) | 方案设计：架构、多接入模型、协议契约、硬约束落地、权限与安全 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) / [模块契约](docs/MODULE-CONTRACTS.md) | 当前 Task、双 lane、出口与资源所有权 |
+| [决策与路线](docs/DECISIONS.md) / [验收状态](docs/TASK-STATUS.md) | ADR、迁移和验证证据 |
+| [docs/DESIGN.md](docs/DESIGN.md) | 历史设计；整轮锁、后台派发和周期进度已被 ADR-001 取代 |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | 排障手册：按症状组织的排查流程（主动发言见 §5） |
 | [SCENES.md](src/pipeline/proactive/interests/SCENES.md) | 主动介入场景的自然语言真相源：什么情况下会说、典型对话、红线 |
 | docs/ 其余 | 需求与架构过程文档（主动介入、话题会话、富媒体等） |
@@ -118,7 +124,9 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 ```sh
 npm install
 npm run typecheck
-npm test                 # 离线单测：不触网、不启动 DSH 子进程
+npm test                 # 离线 mock；含本地文件/子进程桩，不请求真实模型
+npm run test:integration # 独立 localhost WebSocket 回路，无已部署客户端
+npm run build
 ```
 
 **改了东西要怎么生效**（没有热更新，但只有改后端代码才需要重建镜像）：
@@ -156,10 +164,10 @@ config/local/              本机配置（模型路由、个人覆盖；*.yml �
 interests.yml              兴趣池（场景 5；独立 schema）
 dsh-profile/               DSH profile 补丁 + 自动审批桩 + /persona 人设预设
 src/                       后端源码：接入适配（adapters）/ 编排（pipeline）/ DSH 桥接（dsh）/
-                           持久化与观察窗口（store）/ 配置合并与校验（config*.ts）
+                           Task 与双 lane（task）/ 持久化与观察窗口（store）/ 配置合并（config*.ts）
 scripts/                   容器入口、云上 preflight（cloud-preflight.sh）、
                            卷批次备份恢复（volume-bundle.sh）与验证脚本
-tests/                     离线单测（793 条）
+tests/                     离线契约与回归；legacy/ 仅保存旧路径测试夹具
 docs/                      方案设计 / 本地部署 / 云部署 / 排障 / 配置手册
 ```
 

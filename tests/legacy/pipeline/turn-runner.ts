@@ -17,43 +17,43 @@
  * 本文件不允许 import 任何 adapters/* 内部实现。
  */
 
-import type { Config } from '../config.js';
+import type { Config } from '../../../src/config.js';
 import type {
   MediaBytes,
   MediaFetchOptions,
   MessageForwardPart,
   RemoteMedia,
-} from '../core/connector.js';
-import { flattenParts, messageImageParts, messageMediaParts } from '../core/content.js';
-import { ingestFiles, type DocumentExtractor, type FileIngestResult } from '../dsh/files.js';
-import { MAX_BLOCKS_PER_PROMPT, buildImageBlocks, describeImageRejection } from '../dsh/media.js';
-import type { RuntimeEntry, RuntimePool } from '../dsh/pool.js';
+} from '../../../src/core/connector.js';
+import { flattenParts, messageImageParts, messageMediaParts } from '../../../src/core/content.js';
+import { ingestFiles, type DocumentExtractor, type FileIngestResult } from '../../../src/dsh/files.js';
+import { MAX_BLOCKS_PER_PROMPT, buildImageBlocks, describeImageRejection } from '../../../src/dsh/media.js';
+import type { RuntimeEntry, RuntimePool } from '../../../src/dsh/pool.js';
 import type {
   PromptContentBlock,
   SessionEventNotification,
   SessionStatusNotification,
-} from '../dsh/protocol.js';
-import { TurnAccumulator, type TurnOutcome } from '../dsh/turns.js';
-import type { Logger } from '../logger.js';
-import type { ConversationStore } from '../store/conversations.js';
-import { renderReplay } from '../store/conversations.js';
+} from '../../../src/dsh/protocol.js';
+import { TurnAccumulator, type TurnOutcome } from '../../../src/dsh/turns.js';
+import type { Logger } from '../../../src/logger.js';
+import type { ConversationStore } from '../../../src/store/conversations.js';
+import { renderReplay } from '../../../src/store/conversations.js';
 import type {
   ObservationEntry,
   ObservationWindowStore,
   PendingRecordRef,
-} from '../store/window.js';
-import { collectWindowMedia, latestPendingRecord, renderWindowBlock } from '../store/window.js';
-import { cleanupInbox } from '../store/inbox.js';
-import type { SessionStore } from '../store/sessions.js';
-import { ensureWorkspace, type StorePaths } from '../store/paths.js';
+} from '../../../src/store/window.js';
+import { collectWindowMedia, latestPendingRecord, renderWindowBlock } from '../../../src/store/window.js';
+import { cleanupInbox } from '../../../src/store/inbox.js';
+import type { SessionStore } from '../../../src/store/sessions.js';
+import { ensureWorkspace, type StorePaths } from '../../../src/store/paths.js';
 import { waitUntil } from './concurrency.js';
-import { matchLongTaskHint } from './hints.js';
-import type { MessageContext } from './ingress/types.js';
-import type { ProactiveComposeInput } from './proactive/contract.js';
+import { matchLongTaskHint } from '../../../src/pipeline/hints.js';
+import type { MessageContext } from '../../../src/pipeline/ingress/types.js';
+import type { ProactiveComposeInput } from '../../../src/pipeline/proactive/contract.js';
 import { defaultProgressText } from './egress/progress.js';
 import type { BackgroundPusher } from './egress/background.js';
-import type { PipelineStats } from './stats.js';
-import type { TopicJudge } from './topic-judge.js';
+import type { PipelineStats } from '../../../src/pipeline/stats.js';
+import type { TopicJudge } from '../../../src/pipeline/topic-judge.js';
 
 export interface TurnRunnerDeps {
   config: Config;

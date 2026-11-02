@@ -21,7 +21,7 @@ import type {
   ReplyPolicy,
 } from '../src/core/connector.js';
 import { createNullLogger } from '../src/logger.js';
-import { Responder } from '../src/pipeline/egress/responder.js';
+import { Responder } from './legacy/pipeline/egress/responder.js';
 import { SENT_DIR_NAME } from '../src/pipeline/egress/outbox.js';
 import { PipelineStats } from '../src/pipeline/stats.js';
 import { ConversationStore } from '../src/store/conversations.js';

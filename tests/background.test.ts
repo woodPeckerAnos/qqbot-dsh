@@ -22,7 +22,7 @@ import type {
   ReplyPolicy,
 } from '../src/core/connector.js';
 import { createNullLogger } from '../src/logger.js';
-import { BackgroundPusher } from '../src/pipeline/egress/background.js';
+import { BackgroundPusher } from './legacy/pipeline/egress/background.js';
 import { PipelineStats } from '../src/pipeline/stats.js';
 import { ConversationStore } from '../src/store/conversations.js';
 import { ensureStoreDirs, resolveStorePaths } from '../src/store/paths.js';

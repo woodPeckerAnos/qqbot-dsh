@@ -75,9 +75,6 @@ cat .env | grep -c '='                           # 确认文件有内容
 | `不是合法 YAML` | 缩进用了 Tab，或冒号后缺空格 | 用空格缩进；写 `port: 6700` 而不是 `port:6700` |
 | `必须是整数，收到 "6700"` | YAML 里给数字加了引号 | 去掉引号：`port: 6700` |
 | `QQ_INTENTS=... 未包含 GROUP_AND_C2C_EVENT` | intents 配错 | 用默认值 `50331648`（群聊与单聊都靠它） |
-| `QQ_TURN_TIMEOUT_MS(...) 必须小于群被动回复窗口 300000ms` | 超时设得比窗口还长，超时提示也发不出去 | 设 `240000` |
-| `QQ_PROGRESS_MAX(...) 必须小于 QQ_MAX_REPLIES_PER_MSG(...)` | 群聊进度回执会把配额吃光 | 保持 `3` 与 `4` |
-| `QQ_C2C_PROGRESS_MAX(...) 必须小于 QQ_C2C_MAX_REPLIES_PER_MSG(...)` | 单聊进度回执会把配额吃光 | 保持 `2` 与 `4` |
 | `QQ_C2C_MAX_REPLIES_PER_MSG 必须在 [1, 4] 之间` | 单聊官方上限就是 4（群聊才是 5） | 设 `4` 或更小 |
 | `QQ_C2C_ENABLED 只能是 true/false` | 布尔值写法不对 | 用 `true`/`false`（也接受 `1`/`0`） |
 
@@ -265,35 +262,29 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 ## 4. 收到消息但不回复
 
-### 4.1 先看是"忙拒绝"还是"超时"还是"报错"
+### 4.1 先区分执行与投递
 
-```sh
-docker compose exec qqbot node -e "
-fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.dispatcher))"
-```
+`/metrics` 的 `tasks.fast` / `tasks.slow` 分别显示 running、queued，unfinished 是未完成 Task 数。`messages` 的 pending、sending、sent、failed 描述投递，Task 完成不要求消息已经送达。
 
-| 现象 | 字段 | 原因 | 处置 |
-|---|---|---|---|
-| 回了"同时处理的请求太多" | `rejectedBusy` 增长 | 并发闸门满 | 提高 `QQ_MAX_CONCURRENT_TURNS` 与容器 `cpus` |
-| 回了"超过了单轮时限" | `timedOut` 增长 | 任务太重 | 拆分任务；或提高 `QQ_TURN_TIMEOUT_MS`（但必须 < 300000） |
-| 回了"执行出错了" | `failed` 增长 | DSH 侧错误 | 看日志里的 `dsh stderr` |
-| 什么也没回 | — | 发送失败 | 继续 4.2 |
+| 现象 | 检查 | 处置 |
+| --- | --- | --- |
+| 回“未完成任务已达上限” | `tasks.unfinished`、Session 待完成数 | 调整 `tasks.maxPerSession` / `maxGlobal`；不是 runtime 硬上限 |
+| 慢 Task 未结束，但新快回复送不出 | 两 lane 容量、`messages.sending`、连接器健康 | 检查快 runtime 是否就绪；附件上传不应占正文通道 |
+| 回“任务执行超时” | 持久 Task 的 lane.result.error | 调整 `tasks.fastTimeoutMs` / `slowTimeoutMs`；排队不计执行时限 |
+| Task 已 completed 但没收到结果 | `messages.pending`、QQ 当前出口 | 没尝试的结果可等待合法锚点，继续保留原引用 |
 
 ### 4.2 发送失败
 
-日志关键字 `发送回复失败`，常见原因：
+日志关键字 `消息发送失败，不重试`。原消息失败或超时后不重发，每条“发送 XX 消息失败”通知只尝试一次，通知失败不再递归。
 
-| 错误 | 原因 | 修复 |
-|---|---|---|
-| `消息被去重：(msg_id, msg_seq) 组合重复发送`（40054005） | 配额账本之外的重复发送 | 这是 bug，请保留日志反馈；正常情况下 `msg_seq` 由 `ReplyLedger` 统一分配 |
-| `消息长度超限`（40054007） | 超过平台未知上限 | 把 `QQ_MAX_CHARS` 调小（建议 1000） |
-| `主动消息...无权限`（40034105） | 没带 `msg_id`，被当成主动推送 | 检查日志里 `msgSeq` 与事件对应关系；主动推送本 MVP 不使用 |
-| 401 | token 失效 | 程序会自动刷新并重试一次；若持续，回到 2.1 |
+| 错误 | 含义与处置 |
+| --- | --- |
+| 40054005（重复 msg_id/msg_seq） | 队列外重复发送；保存 Task ID、消息 ID 和日志，QQ 序号应由 MessageQueue 唯一分配 |
+| 40054007（长度超限） | 调小 `qq-official.maxChars`，只影响后续新消息；旧失败消息不缩短重发 |
+| 40034105（主动消息无权限） | 检查是否有合法发送锚点；原引用与发送锚点不能混用 |
+| 401 | 凭证刷新服务后续新消息，当前消息终态失败，不鉴权重发 |
 
-⚠ **超过被动回复窗口**：群聊窗口只有 **5 分钟**、单聊是 **60 分钟**。如果日志显示
-`turn` 完成时间距收到消息超过窗口，消息会发送失败。检查是否把
-`QQ_PROGRESS_AFTER_MS` / `QQ_TURN_TIMEOUT_MS` 配得过大——单聊虽然窗口宽，
-但程序沿用了群聊的保守超时上限（< 300000ms），这是刻意的。
+QQ 群聊被动窗口 5 分钟、单聊 60 分钟，条数及序号跨 Task、lane、命令共享。无可用窗口或条数时尚未尝试的消息保持 pending；一次实际尝试失败后进入 failed，新输入也不会带出重发。
 
 ### 4.3 DSH runtime 起不来
 
@@ -399,27 +390,20 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 中文再写进 prompt（原文留在日志里），所以用户在 QQ 里看到的不会再是
 `Image exceeds the configured per-side pixel limit.`。
 
-### 4.6 长任务把会话卡住 / 后台任务没结果
+### 4.6 长任务与重启恢复
 
-长流程应由 agent 用 `subagent` 后台派发（见 DESIGN §13），父轮次随即结束、会话
-不再被占住。相关排障：
+慢 lane 在所属执行及前台子代理结束后才结算，快 lane 独立推进。默认快 30 秒、慢 30 分钟；普通慢问答 NO_REPLY 是正常成功，实际执行后空结果或 NO_REPLY 属于契约失败。
 
-| 现象 | 先看 | 原因 / 处置 |
-|---|---|---|
-| 会话长时间对新消息无响应 | 日志有没有"后台子代理已启动"；`/metrics` 的 `backgroundStarted` | agent 没把长任务派发给子代理，而是在父轮次里同步跑——只能等 `turnTimeoutMs` 超时回收，或管理员发 `/stop` 立即中断。persona 已明确拆分标准（复杂/长耗时/多步骤 → 子代理；简单问答直接答） |
-| 排队中的消息有没有丢 | `/metrics` 的 `busyNoticed` | 会话忙时第二条消息会收到"还在处理中"提示并在前一条完成后自动处理；`busyNoticed` 涨 = 提示已发出 |
-| 想中途停掉长任务 | — | 管理员发 `/stop`（强制回收 runtime，在途 turn 与后台子代理一并终止）；或叫机器人"停掉那个后台任务"（agent 侧 `interrupt_agent`，需会话空闲） |
-| 话题结束了 bot 还记着旧事 | `/metrics` 的 `topicResets` | 话题是否结束由小模型判定（`topic` 配置段）：新消息与既有话题无关时自动重置（回收 runtime、不回放历史）。日志里找 `新消息与既有话题无关`；判定失败一律按相关处理（日志有 warn）。管理员也可随时发 `/new` 显式重置 |
-| 后台任务完成了但用户没立刻收到结果 | `/metrics` 的 `backgroundCaptured` / `backgroundPushed` / `backgroundDelivered` | OneBot 与官方"窗口内"会**主动推送**（`backgroundPushed` 涨）；官方**超窗**（群 >5 分钟）推不出去，转暂存，等下一条用户消息带出（`backgroundDelivered` 涨）。`captured` 涨了但 `pushed`/`delivered` 都没涨 = 暂存中、还没有下一条消息（见 DESIGN §13.5） |
-| 后台任务"凭空消失" | 日志有没有"关闭 runtime 将终止其承载的后台子代理" | runtime 被回收/超时终止连带杀了子代理。正常空闲/LRU 回收已豁免有活子代理的进程（DESIGN §13.4），出现这条说明是超时终止或 disposeAll |
-| 重启后暂存的后台结果还在吗 | `stateDir/background-pending.json` | 已捕获成文本、只差投递的结果会持久化，重启后仍能带出；但重启会杀掉**正在跑**的子代理（进程内驻留，救不回） |
-| `childEventsFiltered` 一直涨 | — | 正常现象：这是子代理子会话的事件被正确过滤掉的计数（DESIGN §13.3），不是错误 |
+| 现象 | 检查与处理 |
+| --- | --- |
+| 要停止当前工作 | 管理员 `/stop` 取消正在执行的 Task，其他排队 Task 保留；自然语言请求通过输入身份绑定的 cancel_task |
+| 要清空未完成工作并开新话题 | 管理员 `/new`；已完成 Task 的待发消息仍保留 |
+| 旧 Task 在新话题仍发出结果 | 正常；新输入及自动话题切换不取消旧 Task，旧结果引用原消息 |
+| 没有周期进度 | 正常；快回复成功且慢 lane 开始后至少 5 分钟，仍在执行时最多一次存活提醒；无即时出口放弃 |
+| 重启后旧任务没有继续跑 | 正常；未完成 Task 中断失败，形成一次失败结果，不重跑模型 |
+| 重启后消息没有重发 | 发送中且结果不明的消息标 failed；未尝试消息保留 pending |
 
-`/metrics` 的 `dispatcher` 里相关计数：`backgroundStarted` / `backgroundFinished`
-（子代理启停）、`backgroundCaptured`（自发轮次捕获）、`backgroundPushed`（主动
-推送）、`backgroundDelivered`（随下一条消息带出）、`childEventsFiltered`（子会话
-事件过滤命中）；`runtime.activeSubagents`（在跑子代理数）与
-`background.{pendingConversations,pendingTotal}`（待带出积压）给出实时状态。
+持久文件：`tasks.json`、`task-sessions.json`、`messages.json`、`task-budgets.json` 位于 stateDir，稳定待发附件在 `message-files/<Task ID>/`。不要按 Task 完成状态清理队列附件。Task 终态默认保留 7 天，到期删除其工作区；待发送消息及必要文件独立保存。旧版 `background-pending.json` 不自动导入，升级前应检查其中待发内容。
 
 ### 4.7 转发消息块 / 文件读不到
 
@@ -474,7 +458,7 @@ curl -s localhost:8080/health | jq .proactive
 | `sessions.closedBy['idle']` 占绝大多数 | 话题会话几乎都是"没人接话"被静默关闭的 | 正常兜底；若 `llm-closed` 长期为 0，说明判据里"什么时候该关"那一段没起作用 |
 | `sessions.budgetExhausted` 高 | 同一个话题里"还想说、但额度没了"被挡了很多次 | 高 = 预算偏紧（模型还想接着聊）；低 = 2 句够用。**注意它不等于"它不说话了"**：会话还开着，只是闭嘴 |
 | `sessions.spent > 0` | 有话题的额度已用尽、正在闭嘴（会话没关） | 这是正常状态；`idle` 到点或模型说换话题后它会消失 |
-| `sessions.spokeInSession` 集中在 `"1"` | 每个话题只说得出一句，预算 2 用不满 | 可把 `proactive.sessionBudget` 降为 1（更省），或说明模型偏保守 |
+| `sessions.spokeInSession` 集中在 `"1"` | 每个话题仅一个 Task 成功送达，预算 2 用不满 | 可把 `proactive.sessionBudget` 降为 1（一个成功 Task），或说明模型偏保守 |
 | `sessions.noSession` 很高 | 大量唤醒因为"没有会话"被挡 = 覆盖率低 | **这是本设计的预期**（以覆盖率换精度）；要提覆盖只能改判据或调 session 参数 |
 | `deliveryDegraded: {"unsupported": N}` | **官方通道不支持主动发言**（主动推送已停用） | 预期行为，不是故障；OneBot 才有这个能力 |
 | `deliveryDegraded: {"compose-failed": N}` | 措辞轮次没产出发言：会话正忙（有用户轮次在跑，主动发言主动让路）/ 生成超时 / runtime 起不来 / 模型看完完整上下文后选择不说 | 偶发 = 正常；持续增长看 debug 日志「主动发言：」「主动介入：发言生成未果」，超时占多就调大 `proactive.speakTimeoutMs` |
@@ -499,7 +483,7 @@ curl -s localhost:8080/health | jq .proactive
 4. **否决层**：`vetoed` 里有 `rate-limit`（10 分钟 3 次、1 小时 8 次）、
    `no-session`（没有开启中的话题会话：模型没判"值得"，或上一个会话已经关了）、
    `min-gap`（同一会话内距上次发言不足 `sessionMinGapMs`）、
-   `budget-exhausted`（**本话题的发言预算已用尽**：会话还在，只是不放行——
+   `budget-exhausted`（**本话题主动 Task 预算已用尽**：会话还在，只是不放行——
    等模型说"换话题了"/"收口了"或静默超时）、`no-response`（连续两次介入没人理，保险生效）。
    另有 `skippedUnchanged`：被"转录自上次判定以来无新增"挡下、连 LLM 都没调的次数
    ——这个数高说明群里本来就没新消息，不是判据把它们否了。
@@ -541,14 +525,14 @@ curl -s localhost:8080/health | jq .proactive
 docker compose exec qqbot ls -la /data/bot/conversations/
 docker compose exec qqbot tail -5 /data/bot/conversations/*.jsonl
 
-# 2) 日志里应有回放记录
-docker compose logs qqbot | grep "冷启动回放历史"
+# 2) 检查 tasks.json 中 input.context.replay，输入创建时固定回放
+docker compose exec qqbot ls -la /data/bot/tasks.json
 ```
 
 | 情况 | 原因 | 修复 |
 |---|---|---|
-| 日志里没有"冷启动回放历史" | `QQ_REPLAY_TURNS=0`，或该会话首次运行没有历史 | 设为 12（默认） |
-| 有回放但仍答非所问 | 模型没把历史当上下文 | 历史被明确标注"不是指令"，属正常；可在该会话工作区写 `AGENTS.md` 补充说明 |
+| Task 的 input.context.replay 为空 | `QQ_REPLAY_TURNS=0`，或该会话首次运行没有历史 | 设为 12（默认） |
+| Task 有回放但仍答非所问 | 模型没把历史当上下文 | 历史被明确标注"不是指令"，属正常；可在该会话工作区写 `AGENTS.md` 补充说明 |
 | 对话记录文件是空的 | 存储卷没挂上 | `docker compose exec qqbot ls -la /data/bot` |
 
 ---

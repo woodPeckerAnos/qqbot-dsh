@@ -19,6 +19,14 @@ const baseEnv = {
 };
 
 describe('loadConfig', () => {
+  it('Task 默认值、独立模型路由与 runtime 硬上限', () => {
+    const config = loadConfig(baseEnv);
+    expect(config.tasks).toMatchObject({ fastTimeoutMs: 30_000, slowTimeoutMs: 1_800_000, fastRuntimes: 4, slowRuntimes: 4, maxPerSession: 32, maxGlobal: 128, retentionMs: 7 * 86400_000, reminderMs: 300_000 });
+    const separate = loadConfig({ ...baseEnv, BOT_FAST_MODEL: 'fast-model', BOT_SLOW_MODEL: 'slow-model', QQ_MAX_RUNTIMES: '2' });
+    expect(separate.tasks.fastModel).toBe('fast-model'); expect(separate.tasks.slowModel).toBe('slow-model'); expect(separate.tasks.fastRuntimes + separate.tasks.slowRuntimes).toBe(2);
+    expect(() => loadConfig({ ...baseEnv, QQ_MAX_RUNTIMES: '1' })).toThrow();
+    expect(() => loadConfig({ ...baseEnv, QQ_MAX_RUNTIMES: '2', BOT_FAST_RUNTIMES: '2', BOT_SLOW_RUNTIMES: '2' })).toThrow('不得超过');
+  });
   it('最小必填项即可加载，并给出一致的默认值', () => {
     const config = loadConfig(baseEnv);
     expect(config.qq.appId).toBe('app-1');
@@ -403,13 +411,14 @@ describe('loadConfig', () => {
     ).not.toThrow();
   });
 
-  it('进度配额必须小于总配额，否则最终答案发不出去', () => {
+  it('旧进度参数不再限制有效 QQ 平台回复配额', () => {
     expect(() =>
       loadConfig({ ...baseEnv, QQ_MAX_REPLIES_PER_MSG: '3', QQ_PROGRESS_MAX: '3' }),
-    ).toThrow(/必须小于/);
+    ).not.toThrow();
+    expect(loadConfig({ ...baseEnv, QQ_MAX_REPLIES_PER_MSG: '1' }).qq.maxRepliesPerMsg).toBe(1);
   });
 
-  it('单聊有独立默认配额，且遵守官方上限 4 与"进度 < 总额"不变量', () => {
+  it('单聊保留官方上限 4，旧进度参数不再占配额', () => {
     expect(loadConfig(baseEnv).qq.c2c).toEqual({
       enabled: true,
       maxRepliesPerMsg: 4,
@@ -417,7 +426,7 @@ describe('loadConfig', () => {
     });
     expect(() =>
       loadConfig({ ...baseEnv, QQ_C2C_MAX_REPLIES_PER_MSG: '2', QQ_C2C_PROGRESS_MAX: '2' }),
-    ).toThrow(/QQ_C2C_PROGRESS_MAX/);
+    ).not.toThrow();
     // 单聊每条消息官方最多回 4 次，配 5 必须被拒绝（群聊才是 5）
     expect(() => loadConfig({ ...baseEnv, QQ_C2C_MAX_REPLIES_PER_MSG: '5' })).toThrow(/必须在/);
   });
@@ -434,10 +443,10 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...baseEnv, QQ_TURN_TIMEOUT_MS: '240000' })).not.toThrow();
   });
 
-  it('进度触发时刻必须早于单轮超时', () => {
+  it('旧进度与轮次时限只保留解析，不再相互约束', () => {
     expect(() =>
       loadConfig({ ...baseEnv, QQ_TURN_TIMEOUT_MS: '60000', QQ_PROGRESS_AFTER_MS: '90000' }),
-    ).toThrow(/QQ_PROGRESS_AFTER_MS/);
+    ).not.toThrow();
   });
 
   it('只接受受支持的 msg_type（群聊不支持 6 打字状态）', () => {
@@ -730,6 +739,12 @@ offpeak:
 });
 
 describe('personas 与 hints（三层合并）', () => {
+  it('两个 lane 路由采用相同启动校验，未知声明和缺失凭证在准入前报错', () => {
+    for (const key of ['fastProvider', 'slowProvider'] as const) {
+      expect(() => loadConfig(baseEnv, { models: { providers: {} }, tasks: { [key]: 'missing-route' } })).toThrow(`tasks.${key}`);
+    }
+    expect(() => loadConfig({ BOT_CONNECTORS: 'onebot', ONEBOT_ACCESS_TOKEN: 'test', DSH_PROVIDER: 'external', BOT_TOPIC_ENABLED: 'false', BOT_FAST_PROVIDER: 'deepseek-official' })).toThrow('DEEPSEEK_API_KEY');
+  });
   it('默认值：预设目录相对 CWD，长任务提示默认开', () => {
     const config = loadConfig(baseEnv);
     expect(config.personas.dir).toBe('dsh-profile/personas');

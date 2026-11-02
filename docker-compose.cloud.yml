@@ -51,10 +51,11 @@ services:
 
       # 4GB 内存主机的保守并发上限：每个 DSH 子进程空闲约 175MB，
       # 8 个 runtime 理论上限约 1.4GB，和 NapCat 同机会挤压 bot 的 2GB 限额。
-      # 4C4G 可上调（写进 .env 的 QQ_MAX_RUNTIMES / QQ_MAX_CONCURRENT_TURNS），
+      # 4C4G 可同步上调总上限和两个 lane 容量，
       # 2C4G 建议保持默认。
       QQ_MAX_RUNTIMES: "${QQ_MAX_RUNTIMES:-4}"
-      QQ_MAX_CONCURRENT_TURNS: "${QQ_MAX_CONCURRENT_TURNS:-2}"
+      BOT_FAST_RUNTIMES: "${BOT_FAST_RUNTIMES:-2}"
+      BOT_SLOW_RUNTIMES: "${BOT_SLOW_RUNTIMES:-2}"
 
     ports:
       # 仅回环：宿主上的监控进程可以 curl 127.0.0.1:8080/healthz，

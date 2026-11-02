@@ -18,6 +18,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import type { Logger } from '../logger.js';
+import type { OriginalMessageReference } from '../core/connector.js';
 import { conversationFileFor, type StorePaths } from './paths.js';
 
 export type ConversationRole = 'user' | 'assistant' | 'system-note';
@@ -30,6 +31,9 @@ export interface ConversationTurn {
   ts: number;
   /** 触发本条的用户消息 id，便于把回复和提问关联起来 */
   replyToMsgId?: string;
+  reference?: OriginalMessageReference;
+  taskId?: string;
+  lane?: 'fast' | 'slow';
 }
 
 export class ConversationStore {
@@ -103,7 +107,9 @@ export function renderReplay(turns: readonly ConversationTurn[], maxChars = 6000
     const who = turn.role === 'assistant' ? '你' : turn.speaker;
     const text = turn.text.replace(/\s+/g, ' ').trim();
     if (text === '') continue;
-    lines.push(`[${who}] ${text}`);
+    const ref = turn.reference;
+    const quote = ref ? `（引用 ${ref.senderName ?? ref.senderId} 的「${ref.excerpt}」）` : '';
+    lines.push(`[${who}] ${quote}${text}`);
   }
   let body = lines.join('\n');
   if (body.length > maxChars) {

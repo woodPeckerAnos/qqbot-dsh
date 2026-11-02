@@ -12,7 +12,7 @@
  *
  * 富媒体与引用（这是本文件从"只认 text 段"升级出来的部分）：
  *   - `image` / `mface` / `record` / `video` / `file` 段各自映射成 core 的
- *     MessagePart，图片由 TurnRunner 在 turn 期下载后内联进多模态 prompt；
+ *     MessagePart，图片由 PromptPreparer 按 Task 下载并复用到两个 lane 的 prompt；
  *   - `reply` 段只带消息 id，被引用的内容要**额外回查**（get_msg），所以这里只把
  *     id 透出去（`quotedMessageId`），由 connector.ts 完成异步补全；
  *   - `at` 段里 @ 机器人自己是触发条件，@ 别人渲染成 `@昵称`。

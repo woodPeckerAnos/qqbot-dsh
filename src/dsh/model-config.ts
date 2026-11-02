@@ -900,13 +900,13 @@ type Env = Record<string, string | undefined>;
  *      环境（src/dsh/process.ts），缺了它 DSH 会在首次请求时以 MISSING_CREDENTIAL
  *      失败，同样该在启动期就拦住。
  */
-export function assertModelApiConfig(modelApi: ModelApiConfig, selectedProvider: string, env: Env): void {
+export function assertModelApiConfig(modelApi: ModelApiConfig, selectedProvider: string, env: Env, selectionKey = 'dsh.provider'): void {
   const declaredRoutes = Object.keys(modelApi.providers);
   if (selectedProvider !== DEEPSEEK_OFFICIAL_PROVIDER && !declaredRoutes.includes(selectedProvider)) {
     throw new ConfigError(
-      `dsh.provider 选中的提供商 ${JSON.stringify(selectedProvider)} 没有对应的模型路由配置`, [
+      `${selectionKey} 选中的提供商 ${JSON.stringify(selectedProvider)} 没有对应的模型路由配置`, [
         `可用路由：${[DEEPSEEK_OFFICIAL_PROVIDER, ...declaredRoutes].join('、')}`,
-        `在 config/local/models.yml（或声明 models 的模块）的 models.providers.${selectedProvider} 下声明它，或把 dsh.provider 改回已声明的路由`,
+        `在 config/local/models.yml（或声明 models 的模块）的 models.providers.${selectedProvider} 下声明它，或把 ${selectionKey} 改回已声明的路由`,
       ],
     );
   }

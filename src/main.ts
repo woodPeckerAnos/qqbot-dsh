@@ -15,8 +15,7 @@
  *   会话隔离靠 ConversationTarget.key（各平台 key 带自己的命名空间），
  *   回复路由靠 ConversationTarget.platform → 连接器。
  *
- * 退出路径必须是**优雅**的：先停全部连接器（不再接新消息），再等在处理中的
- * turn 结束，最后关掉所有 DSH runtime（shutdown → SIGTERM → SIGKILL）。
+ * 退出路径必须是**优雅**的：先停全部连接器（不再接新消息），再等待未完成 Task 的短暂收尾，最后关掉所有 DSH runtime（shutdown → SIGTERM → SIGKILL）。
  * 粗暴退出会让 DSH 的会话日志留半条记录，而那正是我们排障的依据。
  */
 
@@ -31,12 +30,10 @@ import { OnebotConnector, ONEBOT_PLATFORM } from './adapters/onebot/connector.js
 import type { BotConnector } from './core/connector.js';
 import { createLogger } from './logger.js';
 import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
-import { RuntimePool } from './dsh/pool.js';
+import { TaskSystem } from './task/system.js';
 import { createDocumentExtractor } from './dsh/document.js';
 import { writeModelApiPatch } from './dsh/model-config.js';
-import { BackgroundPusher } from './pipeline/egress/background.js';
 import { Responder } from './pipeline/egress/responder.js';
-import { AdmissionGate } from './pipeline/ingress/admission.js';
 import { createDedupeStage } from './pipeline/ingress/dedupe.js';
 import { OffpeakCommandRouter } from './pipeline/ingress/offpeak-command.js';
 import { createOffpeakGateStage } from './pipeline/ingress/offpeak-gate.js';
@@ -56,11 +53,9 @@ import {
   ProactiveWatcher,
 } from './pipeline/proactive/scene/watcher.js';
 import type { ProactiveHealthSnapshot } from './health.js';
-import { TurnRunner } from './pipeline/turn-runner.js';
 import { ConversationStore } from './store/conversations.js';
 import { ObservationWindowStore } from './store/window.js';
 import { SeenStore } from './store/seen.js';
-import { SessionStore } from './store/sessions.js';
 import { PersonaStore } from './store/personas.js';
 import { ensureStoreDirs, resolveStorePaths, workspacePathFor } from './store/paths.js';
 import { buildHealthSnapshot, createHealthServer, type HealthServer } from './health.js';
@@ -70,8 +65,7 @@ const DRAIN_TIMEOUT_MS = 30_000;
 
 /**
  * 官方平台被动回复窗口（平台硬约束，不可配）：群聊 5 分钟、单聊 60 分钟。
- * 后台任务完成时若仍在窗口内即可用最后一条消息的 msg_id 即时补发（见
- * pipeline/egress/background.ts）。OneBot 无窗口，用 +∞。
+ * 队列尚未尝试的消息可以使用有效出口锚点，原消息引用独立保留。OneBot 无窗口，用 +∞。
  */
 const QQ_GROUP_PASSIVE_WINDOW_MS = 5 * 60 * 1000;
 const QQ_C2C_PASSIVE_WINDOW_MS = 60 * 60 * 1000;
@@ -199,7 +193,6 @@ async function main(): Promise<void> {
 
   const conversations = new ConversationStore(paths, logger);
   const seen = new SeenStore({ paths, logger });
-  const sessions = new SessionStore({ paths, logger });
 
   // 预设风格前台（/persona）：选择持久化在 stateDir，启动期把每个已选会话的
   // 人设区块幂等重写进工作区 AGENTS.md（防"工作区被手工清掉但选择还在"）。
@@ -262,22 +255,6 @@ async function main(): Promise<void> {
       providers: Object.keys(config.modelApi.providers),
     });
   }
-  const pool = new RuntimePool({
-    maxRuntimes: config.pool.maxRuntimes,
-    runtimeIdleMs: config.pool.runtimeIdleMs,
-    base: {
-      bin: config.dsh.bin,
-      profilePatch: config.dsh.profilePatch,
-      ...(modelApiPatch === undefined ? {} : { patches: [modelApiPatch] }),
-      dshHome: config.paths.dshHome,
-      provider: config.dsh.provider,
-      model: config.dsh.model,
-      startTimeoutMs: config.dsh.runtimeStartTimeoutMs,
-      shutdownTimeoutMs: config.dsh.runtimeShutdownTimeoutMs,
-    },
-    logger: logger.child({ component: 'pool' }),
-  });
-
   // --- 编排 -----------------------------------------------------------------
   // 业务逻辑在这里显式组装：每个 stage / 闸门 / 服务都在本文件 new 出来并按序
   // 排布，Orchestrator 只是运行机制（事件分流 + 驱动 stage 链），不决定有哪些
@@ -304,57 +281,11 @@ async function main(): Promise<void> {
     logger: logger.child({ component: 'offpeak' }),
   });
 
-  // 准入闸门：全局并发名额 + 每会话串行锁（全系统唯一一处每会话串行）
-  const admission = new AdmissionGate({
-    maxConcurrentTurns: config.pool.maxConcurrentTurns,
-    stats,
-  });
-
-  // 后台结果投递器：后台子代理完成后，能即时推送就推送（OneBot 恒可、官方在
-  // 被动窗口内且配额未尽），否则暂存待下一条消息带出；暂存持久化到 stateDir，
-  // 桥接进程重启后仍能带出（见 pipeline/egress/background.ts、DESIGN §13.5）。
-  const background = new BackgroundPusher({
-    connectors,
-    conversations,
-    stats,
-    logger: logger.child({ component: 'background' }),
-    persistPath: join(paths.stateDir, 'background-pending.json'),
-  });
-
-  // TurnRunner 必须先于介入层创建：watcher 的 `compose`（主动发言的措辞轮次）
-  // 是它的一个方法——介入层不再自己拼文案，发言与被动回复走同一条 agent turn。
-  const turnRunner = new TurnRunner({
-    config,
-    logger: logger.child({ component: 'turn-runner' }),
-    pool,
-    conversations,
-    // 被 @ 时的群聊上下文来源（与主动介入判定读的是同一个窗口；见 store/window.ts）
-    windows,
-    sessions,
-    paths,
-    stats,
-    background,
-    // 话题判定器：不经 DSH 进程的小模型调用（判定失败一律视为相关，见
-    // pipeline/topic-judge.ts）。凭证与端点在配置层已解析好（models: 段的
-    // 路由引用，见 config.ts 的 topic 段）；enabled 时 apiKey 保证非空。
-    ...(config.topic.enabled
-      ? {
-          topicJudge: createTopicJudge({
-            apiBase: config.topic.apiBase,
-            apiKey: config.topic.apiKey,
-            model: config.topic.model,
-            timeoutMs: config.topic.timeoutMs,
-            perTurnMaxChars: 500,
-            logger: logger.child({ component: 'topic-judge' }),
-          }),
-        }
-      : {}),
-    // 文档正文抽取：PDF 走 pdftotext 子进程，纯文本类直接解码。
-    // 抽取器缺失（本地开发没装 poppler）时自动降级为"只落盘 + 路径说明"，
-    // 不会让这一轮失败——见 dsh/document.ts。
-    extractDocument: createDocumentExtractor({
-      logger: logger.child({ component: 'document' }),
-    }),
+  const taskSystem = new TaskSystem({
+    config, logger: logger.child({ component: 'tasks' }), paths, connectors, conversations, windows, stats,
+    ...(modelApiPatch ? { modelPatches: [modelApiPatch] } : {}),
+    extractDocument: createDocumentExtractor({ logger: logger.child({ component: 'document' }) }),
+    ...(config.topic.enabled ? { topicJudge: createTopicJudge({ apiBase: config.topic.apiBase, apiKey: config.topic.apiKey, model: config.topic.model, timeoutMs: config.topic.timeoutMs, perTurnMaxChars: 500, logger: logger.child({ component: 'topic-judge' }) }) } : {}),
   });
 
   // --- 主动介入层（旁听 → 判定 → 主动发言）--------------------------------
@@ -436,10 +367,9 @@ async function main(): Promise<void> {
         // 观察窗口执行（滚窗不再属于介入层，见 store/window.ts）。
       },
       speaker,
-      // 发言生成：判定的 directive 只是"该说什么"的要点，真实文案由一次
-      // agent turn 措辞（与被动回复同一条链路：同会话、同窗口、可用工具）。
+      // Task 提交：保存判定的 directive、依据、引用与旧预算范围；真实文案由两个 lane 生成。
       // 只在真实发言时被调用（dryRun 不碰它，见 watcher 的 deliver）。
-      compose: (input) => turnRunner.runProactiveTurn(input),
+      submitTask: request => taskSystem.proactive.submit(request),
       // 观察窗口：判定层与被动回复路径读同一份
       windows,
       ...(judge === undefined ? {} : { judge }),
@@ -466,7 +396,6 @@ async function main(): Promise<void> {
           if (dryRun) stats.proactiveWouldSend += 1;
           else {
             stats.proactiveSpoke += 1;
-            stats.repliesSent += 1;
           }
           logger.info(dryRun ? '主动介入（dryRun：本应发言）' : '主动介入已发言', { scene });
         },
@@ -573,18 +502,18 @@ async function main(): Promise<void> {
       botAliases: config.proactive.botAliases.length,
       judge: judge === undefined ? '未配置判定（只听不说）' : 'ready',
       // 生效值（硬上限裁剪之后）：配成 9 时这里显示 5，与 health 一致
-      session: `${proactive.snapshot().sessions.budget} 句 / 静默 ${
+      session: `${proactive.snapshot().sessions.budget} 个 Task / 静默 ${
         config.proactive.sessionIdleMs / 1000
       }s 关闭 / 间隔 ${config.proactive.sessionMinGapMs / 1000}s`,
     });
   }
 
   const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
-  // 会话控制命令（/stop、/new，仅管理员）：必须在闸之前，且不进会话锁——
-  // /stop 的意义就是在锁被长任务占住时也能立刻生效。
-  const sessionCommands = new SessionCommandRouter({ pool, turns: turnRunner, stats });
+  // 会话控制命令（/stop、/new，仅管理员）：在闸之前直接操作 Actor，
+  // 无需等待 lane 执行或输出投递。
+  const sessionCommands = new SessionCommandRouter({ actor: taskSystem.actor, stats });
   // 人设切换命令（/persona，仅管理员）：与 /stop、/new 同级——控制面操作，
-  // 不占名额、不进会话锁、峰时段也要可用。
+  // 不创建 Task、不等待 lane，峰时段也可用。
   const personaCommands = new PersonaCommandRouter({ personas, stats });
   const stages: IngressStage[] = [
     createDedupeStage({ seen, stats }),
@@ -593,7 +522,6 @@ async function main(): Promise<void> {
     offpeakCommands.stage(),
     createOffpeakGateStage({ gate: offpeak, config, stats }),
     createRecordStage({ conversations }),
-    admission.stage(),
   ];
 
   const orchestrator = new Orchestrator({
@@ -602,77 +530,32 @@ async function main(): Promise<void> {
     admins: config.admins,
     stats,
     stages,
-    terminal: (ctx) => turnRunner.runTurn(ctx),
-    createResponder: (message, connector, policy, messageLogger) =>
-      new Responder({
-        message,
-        connector,
-        policy,
-        conversations,
-        stats,
-        logger: messageLogger,
-        // 被动回复也进观察窗口：否则被 @ 的回复路径看不到"bot 自己刚说过什么"，
-        // 模型会对着已经被回答过的问题重新组织一遍答案（见 store/window.ts）。
-        //
-        // ⚠️ 刻意**不带 `msgId`**：那是**用户那条**消息的 id，写进来会让"排除当前
-        // 消息"（TurnRunner 注入时按 msgId 排除）把 bot 自己的回复一起排掉。
-        onReplied: (text, ts) => {
-          windows.recordBotReply(message.target.key, { text, ts });
-        },
-        // outbox 目录路径在这里拼好：Responder 不感知工作区布局，
-        // 只拿一个"该扫哪个目录"的绝对路径（目录不存在 = 没有产物）。
-        ...(config.media.enabled
-          ? {
-              media: {
-                outboxDir: join(workspacePathFor(paths, message.target.key), config.media.outboxDir),
-                maxFileBytes: config.media.maxFileBytes,
-                maxAttachments: config.media.maxAttachmentsPerMsg,
-                imageExtensions: config.media.imageExtensions,
-              },
-            }
-          : {}),
-      }),
-    turns: turnRunner,
+    terminal: async ctx => {
+      try { const handle = await taskSystem.actor.submit(ctx); void handle.done.then(task => { if (task.status === 'failed') stats.failed++; else if (task.status === 'completed') stats.completed++; }); }
+      catch (error) { stats.rejectedBusy++; await ctx.responder.error(error instanceof Error ? error.message : '任务准入失败。'); }
+    },
+    createResponder: message =>
+      new Responder({ message, queue: taskSystem.queue }),
     // 旁听消息的去向：唯一入口是 watcher（未启用时留 undefined →
     // orchestrator 只计 skipped 计数）
     ...(proactive === undefined ? {} : { observe: (message) => proactive?.observe(message) }),
     status: () => ({
-      inFlight: admission.inUse,
-      queued: admission.queued,
+      inFlight: taskSystem.actor.snapshot().unfinished,
+      queued: taskSystem.actor.snapshot().fast.queued + taskSystem.actor.snapshot().slow.queued,
       offpeak: offpeak.snapshot(),
     }),
   });
 
-  // runtime 事件 → 编排器（按会话路由）。
-  // 传**完整 notification**（含 sessionId）：一个 runtime 进程里除了父会话还有
-  // 后台子代理的子会话，事件都从同一条 wire 上来；TurnRunner 需要 sessionId
-  // 才能把子会话事件过滤掉，否则子代理的 turn/end 会把父轮次提前"结算"（串扰）。
-  pool.on('session.event', (conversationKey, notification) => {
-    orchestrator.routeSessionEvent(conversationKey, notification);
-  });
-  pool.on('session.status', (conversationKey, notification) => {
-    orchestrator.routeSessionStatus(conversationKey, notification);
-  });
-  // 后台子代理生命周期 → 统计（回收豁免已由池自己记账，这里只做可观测）。
-  pool.on('subagent.started', (conversationKey, notification) => {
-    stats.backgroundStarted += 1;
-    logger.info('后台子代理启动', { conversation: conversationKey, child: notification.childSessionId });
-  });
-  pool.on('subagent.finished', (conversationKey, notification) => {
-    stats.backgroundFinished += 1;
-    logger.info('后台子代理结束', {
-      conversation: conversationKey,
-      child: notification.childSessionId,
-      status: notification.status,
-      stopReason: notification.stopReason,
-    });
-  });
-
   // --- 连接器事件 → 编排器 ----------------------------------------------------
-  // 同步回调里直接派发：Ingress 管线的准入 stage 保证同一会话串行进入 turn，
+  // 同步回调里直接派发：SessionActor 的短事务原子创建并提交两个 lane，
   // 这里只留一层 .catch 作为组装级保险（Orchestrator 自身永不抛错）。
   for (const connector of connectors.values()) {
     connector.on((event) => {
+      if (event.kind === 'group-at-message' || event.kind === 'c2c-message' || event.kind === 'group-message') taskSystem.queue.observe(event);
+      if (proactive === undefined) {
+        if (event.kind === 'group-message') windows.observe(event);
+        else if (event.kind === 'group-at-message' || event.kind === 'c2c-message') windows.observeAddressed(event);
+      }
       // 被 @ 的消息也记进旁听缓冲：否则判定看不到"bot 回答了谁、回答了什么"，
       // 场景 1（续聊追问）没有判断依据。只记不评（评估仍由旁听路径触发）。
       if (proactive !== undefined && (event.kind === 'group-at-message' || event.kind === 'c2c-message')) {
@@ -698,11 +581,12 @@ async function main(): Promise<void> {
           [...connectors.entries()].map(([name, connector]) => [name, connector.health()]),
         ),
         runtime: {
-          size: pool.size,
-          activeConversationKeys: pool.activeConversationKeys(),
-          activeSubagents: pool.activeSubagents(),
+          size: taskSystem.pools.fast.size + taskSystem.pools.slow.size,
+          activeConversationKeys: [...taskSystem.pools.fast.activeConversationKeys(), ...taskSystem.pools.slow.activeConversationKeys()],
+          activeSubagents: taskSystem.pools.fast.activeSubagents() + taskSystem.pools.slow.activeSubagents(),
         },
-        background: background.snapshot(),
+        tasks: taskSystem.actor.snapshot(),
+        messages: taskSystem.queue.snapshot(),
         dispatcher: orchestrator.snapshotStats(),
         ...(proactiveHealth === undefined ? {} : { proactive: proactiveHealth() }),
       }),
@@ -726,18 +610,18 @@ async function main(): Promise<void> {
       });
     }
 
-    // 2. 等处理中的 turn 结束（有上限，避免卡死）
+    // 2. 等未完成 Task 收尾（有上限）
     const drainDeadline = Date.now() + DRAIN_TIMEOUT_MS;
     while (orchestrator.snapshotStats().inFlight > 0 && Date.now() < drainDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     const stats = orchestrator.snapshotStats();
     if (stats.inFlight > 0) {
-      logger.warn('仍有 turn 未结束，强制继续关闭', { inFlight: stats.inFlight });
+      logger.warn('仍有 Task 未结束，取消剩余执行并继续关闭', { inFlight: stats.inFlight });
     }
 
     // 3. 关闭全部 DSH runtime（内部是 shutdown → SIGTERM → SIGKILL 三档）
-    await pool.disposeAll();
+    await taskSystem.close();
 
     // 4. 关健康检查
     await health.stop();

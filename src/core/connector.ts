@@ -51,7 +51,7 @@ export interface ConversationTarget {
  * 为什么需要这一层：官方开放平台与 OneBot 对"图片 / 语音 / 引用 / 卡片"的表达
  * 完全不同（官方是 attachments + msg_elements，OneBot 是消息段数组），但编排层
  * 需要的是同一种东西——"这条消息有哪些可读内容、要送几张图给模型"。适配器负责
- * 把平台专有结构翻译成这里的片段，编排层（TurnRunner）再把它翻译成 DSH 的
+ * 把平台专有结构翻译成这里的片段，PromptPreparer 再把它翻译成 DSH 的
  * prompt content blocks。
  *
  * 关键设计：
@@ -340,6 +340,8 @@ export interface BotConnector {
   /** 订阅归一化事件；返回退订函数 */
   on(handler: (event: NormalizedEvent) => void): () => void;
   health(): ConnectorHealth;
+  /** 是否有此目标的即时出口；缺省使用 health.connected。 */
+  canReply?(target: ConversationTarget): boolean;
   /** 该平台某类会话的回复策略（配额、分段、进度、单轮超时） */
   policy(kind: ConversationKind): ReplyPolicy;
   /** 发送一条回复。平台专有的请求体构造在适配器内部完成。 */
@@ -441,6 +443,16 @@ export interface OutgoingAttachment {
 export interface OutgoingMessage {
   text: string;
   attachments?: OutgoingAttachment[];
+  reference?: OriginalMessageReference;
+}
+
+/** 引用目标是输入时的事实，不等同于平台被动回复的发送锚点。 */
+export interface OriginalMessageReference {
+  messageId?: string;
+  excerpt: string;
+  senderId: string;
+  senderName?: string;
+  ts: number;
 }
 
 /**
@@ -458,6 +470,7 @@ export interface ReplyContext {
   eventId?: string;
   seq: number;
   kind: OutgoingKind;
+  signal?: AbortSignal;
 }
 
 /**
@@ -472,22 +485,22 @@ export interface ReplyContext {
 export interface ReplyPolicy {
   /** 单条消息最大字符数（分段依据） */
   maxChars: number;
-  /** 针对一条用户消息的最大回复条数（含进度回执） */
+  /** 针对一个平台发送锚点的最大消息条数，所有 lane、附件和通知共享 */
   maxRepliesPerMsg: number;
-  /** 进度回执条数上限，必须 < maxRepliesPerMsg */
+  /** 旧周期进度条数上限，仅保留配置兼容 */
   progressMax: number;
-  /** turn 开始多久后发第一条进度回执 */
+  /** 旧周期进度首次延迟，仅保留配置兼容 */
   progressAfterMs: number;
-  /** 进度回执间隔 */
+  /** 旧周期进度间隔，仅保留配置兼容 */
   progressIntervalMs: number;
-  /** 该平台允许的单轮超时（毫秒） */
+  /** 旧单轮超时，仅保留兼容；执行时限由 tasks 的 lane 配置决定 */
   turnTimeoutMs: number;
   /**
    * 被动回复窗口（毫秒）：一条用户消息到达后，多久之内还能用它的 msg_id 作锚点
    * 主动补发消息（算被动回复，不消耗稀缺的主动消息额度）。
    *
-   * 后台任务完成时若仍在窗口内、且该 msg_id 的回复配额未用尽，就能把结果
-   * "即时投递"出去，而不必干等用户下一条消息（见 pipeline/egress/background.ts）。
+   * MessageQueue 在窗口与共享条数额度内使用该锚点。尚未尝试的产物可等待
+   * 后续合法锚点；引用目标始终保留原消息（见 task/message-queue.ts）。
    *   - 官方群聊 5 分钟、单聊 60 分钟（平台硬约束）；
    *   - OneBot 无窗口，用 Number.POSITIVE_INFINITY 表示"永远可主动发"。
    */

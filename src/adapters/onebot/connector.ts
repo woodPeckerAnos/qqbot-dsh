@@ -92,6 +92,8 @@ export interface OnebotConnectorOptions {
   /** 动作响应等待超时（毫秒） */
   actionTimeoutMs?: number;
   now?: () => number;
+  /** Inject the authenticated socket channel for deterministic contract tests. */
+  transport?: { start(onConnection: (socket: WebSocket) => void): Promise<void>; stop(): Promise<void> };
 }
 
 /** 一条已鉴权的框架连接 */
@@ -176,6 +178,7 @@ export class OnebotConnector implements BotConnector {
   private readonly forwardCache = new Map<string, { at: number; data: unknown }>();
   private startedAt = 0;
   private stopping = false;
+  private transportStarted = false;
 
   constructor(private readonly options: OnebotConnectorOptions) {}
 
@@ -193,6 +196,12 @@ export class OnebotConnector implements BotConnector {
   }
 
   async start(): Promise<void> {
+    if (this.options.transport) {
+      if (this.transportStarted) return;
+      this.stopping = false; this.startedAt = this.now();
+      await this.options.transport.start(socket => this.onConnection(socket));
+      this.transportStarted = true; return;
+    }
     if (this.server !== undefined) return;
     this.stopping = false;
     this.startedAt = this.now();
@@ -248,6 +257,7 @@ export class OnebotConnector implements BotConnector {
       entry.reject(new OnebotActionError('连接器正在关闭'));
     }
     this.pending.clear();
+    if (this.transportStarted) { this.transportStarted = false; await this.options.transport?.stop(); }
 
     const wss = this.wss;
     this.wss = undefined;
@@ -274,7 +284,7 @@ export class OnebotConnector implements BotConnector {
     }
     // 服务端连接器的"通道已建立"= 监听中。客户端连不连得上是框架侧的事，
     // 重启本服务帮不上忙（也不该因此触发容器重启循环），所以没有客户端只告警。
-    const listening = this.server !== undefined;
+    const listening = this.server !== undefined || this.transportStarted;
     return {
       connected: listening,
       state: listening ? (anyClient ? 'connected' : 'listening') : 'stopped',
@@ -293,6 +303,7 @@ export class OnebotConnector implements BotConnector {
   }
 
   async reply(ctx: ReplyContext, out: OutgoingMessage): Promise<void> {
+    ctx.signal?.throwIfAborted();
     const session = this.pickSession(ctx.target.key);
     const attachments = out.attachments ?? [];
 
@@ -304,11 +315,16 @@ export class OnebotConnector implements BotConnector {
     const text = normalizeWhitespace(stripControlChars(toPlainText(out.text)));
     // 无附件时保持旧行为（哪怕空文本也发，交给平台判定）；有附件时空文本不再发。
     if (text !== '' || attachments.length === 0) {
-      await this.sendText(session, ctx, text);
+      await this.sendText(session, ctx, text, out.reference?.messageId);
     }
     for (const attachment of attachments) {
       await this.sendAttachment(session, ctx, attachment);
     }
+  }
+
+  canReply(target: ConversationTarget): boolean {
+    try { return this.pickSession(target.key).socket.readyState === WebSocket.OPEN; }
+    catch { return false; }
   }
 
   /**
@@ -342,8 +358,9 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     ctx: ReplyContext,
     text: string,
+    quoteMessageId?: string,
   ): Promise<void> {
-    const message = [{ type: 'text', data: { text } }];
+    const message = [...(quoteMessageId ? [{ type: 'reply', data: { id: quoteMessageId } }] : []), { type: 'text', data: { text } }];
     const data =
       ctx.target.kind === 'c2c'
         ? await this.callAction(session, 'send_private_msg', {
@@ -375,6 +392,8 @@ export class OnebotConnector implements BotConnector {
     attachment: OutgoingAttachment,
   ): Promise<void> {
     const file = await this.encodeAttachment(attachment);
+    // A queue timeout can occur during encoding, before the first platform action.
+    ctx.signal?.throwIfAborted();
     if (attachment.kind === 'image') {
       const message = [{ type: 'image', data: { file } }];
       const data =

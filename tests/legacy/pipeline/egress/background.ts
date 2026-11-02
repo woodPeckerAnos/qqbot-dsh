@@ -22,11 +22,11 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { BotConnector, ConversationTarget, ReplyPolicy } from '../../core/connector.js';
-import type { Logger } from '../../logger.js';
-import type { ConversationStore } from '../../store/conversations.js';
-import type { PipelineStats } from '../stats.js';
-import { segmentText } from './chunk.js';
+import type { BotConnector, ConversationTarget, ReplyPolicy } from '../../../../src/core/connector.js';
+import type { Logger } from '../../../../src/logger.js';
+import type { ConversationStore } from '../../../../src/store/conversations.js';
+import type { PipelineStats } from '../../../../src/pipeline/stats.js';
+import { segmentText } from '../../../../src/pipeline/egress/chunk.js';
 
 /** 一次主动推送的锚点：某会话最后一条用户消息的寻址与已用回复序号。 */
 export interface ReplyAnchor {

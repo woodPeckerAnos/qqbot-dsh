@@ -77,6 +77,13 @@ export interface DshFileConfig {
   shutdownTimeoutMs?: number;
 }
 
+export interface TasksFileConfig {
+  fastTimeoutMs?: number; slowTimeoutMs?: number;
+  fastProvider?: string; fastModel?: string; slowProvider?: string; slowModel?: string;
+  fastRuntimes?: number; slowRuntimes?: number;
+  maxPerSession?: number; maxGlobal?: number; retentionMs?: number; reminderMs?: number;
+}
+
 export interface PoolFileConfig {
   maxConcurrentTurns?: number;
   maxRuntimes?: number;
@@ -262,6 +269,7 @@ export interface FileConfig {
    */
   models?: ModelApiConfig;
   pool?: PoolFileConfig;
+  tasks?: TasksFileConfig;
   topic?: TopicFileConfig;
   paths?: PathsFileConfig;
   offpeak?: OffpeakFileConfig;
@@ -335,6 +343,10 @@ const DSH_SPEC: SectionSpec = {
   bin: 'string',
   startTimeoutMs: 'int',
   shutdownTimeoutMs: 'int',
+};
+const TASKS_SPEC: SectionSpec = {
+  fastTimeoutMs: 'int', slowTimeoutMs: 'int', fastProvider: 'string', fastModel: 'string', slowProvider: 'string', slowModel: 'string',
+  fastRuntimes: 'int', slowRuntimes: 'int', maxPerSession: 'int', maxGlobal: 'int', retentionMs: 'int', reminderMs: 'int',
 };
 const POOL_SPEC: SectionSpec = {
   maxConcurrentTurns: 'int',
@@ -450,6 +462,7 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'onebot', field: 'onebot', spec: ONEBOT_SPEC },
   { yamlKey: 'dsh', field: 'dsh', spec: DSH_SPEC },
   { yamlKey: 'pool', field: 'pool', spec: POOL_SPEC },
+  { yamlKey: 'tasks', field: 'tasks', spec: TASKS_SPEC },
   { yamlKey: 'topic', field: 'topic', spec: TOPIC_SPEC },
   { yamlKey: 'paths', field: 'paths', spec: PATHS_SPEC },
   { yamlKey: 'offpeak', field: 'offpeak', spec: OFFPEAK_SPEC },

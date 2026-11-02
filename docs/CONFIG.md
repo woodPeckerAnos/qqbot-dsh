@@ -18,9 +18,9 @@
 |---|---|---|
 | `qqbot.yml` | 入口：include 清单、加载/合并规则、模块开关说明 | ✅ |
 | `config/connectors.yml` | `connectors` / `qq-official`（含 `c2c`）/ `onebot` | ✅ |
-| `config/runtime.yml` | `dsh` 进程参数 / `pool` / `paths` / `health` / `logLevel` | ✅ |
+| `config/runtime.yml` | `dsh` / `pool` 硬上限 / `tasks` 双 lane / `paths` / `health` / `logLevel` | ✅ |
 | `config/media.yml` | `attachments`（含 `forward`、`files`）/ `media` | ✅ |
-| `config/interaction.yml` | `personas` / `hints` / `topic` / `observation` | ✅ |
+| `config/interaction.yml` | `personas` / `topic` / `observation` | ✅ |
 | `config/proactive.yml` | `proactive` 主动发言全部参数 | ✅ |
 | `config/offpeak.yml` | `offpeak` 谷时段闸 | ✅ |
 | `config/local/models.yml` | 本机模型路由与 `dsh.provider`/`dsh.model` | ❌ |
@@ -130,3 +130,22 @@ include:
 - 不要删掉宿主上的 `config/` 目录；缺模块会在启动期报错，而不是悄悄用默认值。
 - 如果旧 `qqbot.yml` 有你自己的改动：把差异挪到 `config/local/overrides.yml`
   （或对应模块），不要让入口重新变成大杂烩。
+
+## 10. Task 与双 lane 配置迁移
+
+| 配置键 | 默认 | 环境变量 |
+| --- | --- | --- |
+| `tasks.fastTimeoutMs` / `slowTimeoutMs` | 30000 / 1800000 | `BOT_FAST_TIMEOUT_MS` / `BOT_SLOW_TIMEOUT_MS` |
+| `tasks.fastProvider` / `slowProvider` | 继承 `dsh.provider` | `BOT_FAST_PROVIDER` / `BOT_SLOW_PROVIDER` |
+| `tasks.fastModel` / `slowModel` | 继承 `dsh.model` | `BOT_FAST_MODEL` / `BOT_SLOW_MODEL` |
+| `tasks.fastRuntimes` / `slowRuntimes` | 各 4 | `BOT_FAST_RUNTIMES` / `BOT_SLOW_RUNTIMES` |
+| `tasks.maxPerSession` / `maxGlobal` | 32 / 128 | `BOT_TASKS_PER_SESSION` / `BOT_TASKS_GLOBAL` |
+| `tasks.retentionMs` | 604800000（7 天） | `BOT_TASK_RETENTION_MS` |
+| `tasks.reminderMs` | 300000（最小 5 分钟） | `BOT_TASK_REMINDER_MS` |
+| `pool.maxRuntimes` | 8（至少 2） | `QQ_MAX_RUNTIMES` |
+
+两个 lane 容量均至少 1，之和不得超过总硬上限；降低总上限时同步调整各 lane。排队、摄取与 runtime 初始化不计执行超时。快 lane 固定 `reasoningEffort=off`，只开放 Task 查询和取消；慢 lane 前台等待所有子代理。两 lane 模型路由与 dsh.provider 使用相同声明和凭证校验。自定义 `dsh.profilePatch` 后仍自动追加内置 `dsh-profile/lanes.patch.yml`，部署必须包含该文件和插件。
+
+旧 `pool.maxConcurrentTurns`、平台 `progress*` / `turnTimeoutMs`、`onebot.maxRepliesPerMsg`、`hints.longTask`、`proactive.speakTimeoutMs` 仅保留配置解析兼容，生产路径不使用；请删除并迁移到 `tasks.*`。启动摘要在 `deprecated.ignored` 明示这些键。旧值仍做类型与范围校验，建议升级时移除。QQ 的 `maxRepliesPerMsg` 继续作为平台条数约束；OneBot 不按产物数扣主动预算，`proactive.sessionBudget` 的单位是 Task。
+
+上下文 generation 与回放边界在 `stateDir/task-sessions.json`；Task 状态持久化在 `stateDir/tasks.json`，队列在 `messages.json`，预算在 `task-budgets.json`，待发送附件在 `message-files/<Task ID>/`。终态记录及 Task 工作区到期清理，队列和必要附件独立保留。旧 `background-pending.json` 不导入新队列，升级前请检查和交付其待发内容；旧运行任务不会恢复。

@@ -87,7 +87,7 @@ export interface SessionStatusNotification {
  *
  * 桥接层用它做两件事：
  *   1. runtime 池给对应 entry 记一个"活子代理"，豁免空闲回收/LRU 驱逐
- *      （子代理驻留在 runtime 进程内，进程被回收 = 后台任务被静默杀掉）；
+ *      （子代理驻留在 runtime 进程内，所属执行必须等待它结束）；
  *   2. 统计与日志（health 可观测）。
  */
 export interface SubagentStartedNotification {
@@ -101,9 +101,8 @@ export interface SubagentStartedNotification {
  * `subagent.finished` 载荷：一个进程内子代理运行结束（远程运行不会上报）。
  *
  * `lastAssistantMessage` 是子代理最后一条非空 assistant 消息（dsh-llm 的
- * ContentBlock 数组）。当前桥接层**不**用它做投递——后台结果统一从父会话的
- * "自发轮次"捕获（见 pipeline/turn-runner.ts 的 spontaneous 路径），父代理会
- * 把子代理结果整理成面向用户的文本；这里保留字段只为诊断与将来扩展。
+ * ContentBlock 数组）。DshLaneRunner 等待所属子代理结束并检查其状态，父代理
+ * 把结果整理成面向用户的最终回复；这里的子代理正文只用于诊断，不独立投递。
  */
 export interface SubagentFinishedNotification {
   provider: string;

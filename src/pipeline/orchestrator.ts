@@ -1,18 +1,7 @@
 /**
- * Orchestrator：编排层的运行机制，**不组装任何业务逻辑**。
- *
- * 所有业务组件——stage 链、准入闸门、谷时段闸服务、TurnRunner、Responder
- * 工厂——都由业务层（main.ts）显式构造并按序注入。这里只做四件事：
- *
- *   1. 事件分流：用户消息 → Ingress 管线；进群/加好友 → 欢迎语；其余仅记日志；
- *   2. 为每条消息构建 MessageContext（含 Egress 收口 Responder），
- *      并按业务层给定的顺序串行驱动 stage 链；
- *   3. runtime 事件委托给 TurnRunner 路由（方向相反，与 Ingress 无关）；
- *   4. 聚合统计快照：计数来自各 stage 自报的 PipelineStats，
- *      状态（inFlight / queued / offpeak）来自业务层注入的 status 探针。
- *
- * 永不抛错契约：stage 链内部各自兜底（准入 stage 包住终态的未预期错误），
- * 入口不向外抛——main.ts 仍保留一层 .catch 作为组装级保险。
+ * Ingress 运行机制：分流归一化事件，构建输入绑定，驱动注入的 stage 链。
+ * main 负责 stage 顺序、SessionActor 提交和消息队列装配。
+ * 这里不管理 runtime 事件或等待 Task 执行；状态由注入探针提供。
  */
 
 import type {
@@ -22,19 +11,12 @@ import type {
   ReplyPolicy,
 } from '../core/connector.js';
 import { isAddressedMessage, isObservedMessage, isUserMessage } from '../core/connector.js';
-import type { SessionEventNotification, SessionStatusNotification } from '../dsh/protocol.js';
 import type { Logger } from '../logger.js';
 import type { OffpeakSnapshot } from '../offpeak/index.js';
 import type { Responder } from './egress/responder.js';
 import { handleWelcomeEvent } from './ingress/welcome.js';
 import { runStages, type IngressStage, type MessageContext } from './ingress/types.js';
 import type { PipelineStats, PipelineStatsSnapshot } from './stats.js';
-
-/** runtime 事件路由的委托面（由 TurnRunner 实现）。 */
-export interface SessionEventRouter {
-  routeSessionEvent(conversationKey: string, notification: SessionEventNotification): void;
-  routeSessionStatus(conversationKey: string, status: SessionStatusNotification): void;
-}
 
 export interface OrchestratorDeps {
   logger: Logger;
@@ -45,22 +27,20 @@ export interface OrchestratorDeps {
   /** 各 stage 自报的计数器（业务层创建，注入给所有 stage 与 Responder） */
   stats: PipelineStats;
   /**
-   * Ingress stage 链。**顺序即架构约束**（去重 → 命令 → 闸 → 记录 → 准入，
+   * Ingress stage 链。**顺序即架构约束**（去重 → 命令 → 闸 → 记录 → Actor 准入，
    * 理由见 ingress/types.ts），由业务层显式排布后整体传入——编排层不决定
    * 有哪些拦截、也不决定它们的顺序。
    */
   stages: readonly IngressStage[];
-  /** 终态 handler（TurnRunner.runTurn），在准入 stage 的名额与串行锁内运行 */
+  /** 输入判定与 Task 提交；只等待短事务，不等待 Task.done。 */
   terminal: (ctx: MessageContext) => Promise<void>;
-  /** Egress 收口工厂：每条消息一个 Responder（持有唯一配额账本） */
+  /** 命令和准入错误收口工厂；Responder 将消息交给持久队列。 */
   createResponder: (
     message: NormalizedMessage,
     connector: BotConnector,
     policy: ReplyPolicy,
     logger: Logger,
   ) => Responder;
-  /** runtime 事件路由（TurnRunner 的委托面） */
-  turns: SessionEventRouter;
   /**
    * 主动介入层的入口（旁听消息的唯一去向）。
    *
@@ -123,15 +103,6 @@ export class Orchestrator {
       return;
     }
     this.deps.logger.debug('忽略系统事件', { kind: event.kind, reason: event.reason });
-  }
-
-  /** runtime 事件路由直接委托给 TurnRunner（与 Ingress 管线无关）。 */
-  routeSessionEvent(conversationKey: string, notification: SessionEventNotification): void {
-    this.deps.turns.routeSessionEvent(conversationKey, notification);
-  }
-
-  routeSessionStatus(conversationKey: string, status: SessionStatusNotification): void {
-    this.deps.turns.routeSessionStatus(conversationKey, status);
   }
 
   /**

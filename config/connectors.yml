@@ -32,24 +32,14 @@ qq-official:
   msgType: 0
   # 单条消息最大字符数。官方未公布数值上限，只在超限时报 40054007，保守取 1500。
   maxChars: 1500
-  # 群聊一次提问允许的最大回复条数（官方硬上限 5，留 1 条余量给错误提示）
+  # 群聊一个发送锚点的消息总上限（官方硬上限 5）；正文、附件、提醒和通知共享。
   maxRepliesPerMsg: 4
-  # 进度回执：turn 超过多少毫秒后发第一条「仍在处理中」
-  progressAfterMs: 90000
-  progressIntervalMs: 90000
-  # 进度回执条数上限，必须小于 maxRepliesPerMsg（给最终答案留配额）
-  progressMax: 3
-  # 单轮任务超时（毫秒），到点取消该轮。
-  # 硬约束：必须 < 300000 —— 群聊被动回复窗口只有 5 分钟，超时提示也要在窗口内发出。
-  turnTimeoutMs: 240000
   # 单聊（C2C）。单聊与群聊共用 1<<25 这一个 intent，无法在订阅层屏蔽，
   # 所以要"只服务群聊"必须靠这个开关。
   c2c:
     enabled: true
     # 单聊每条消息最大回复条数。官方上限 4（群聊是 5，两个值不能共用）。
     maxRepliesPerMsg: 4
-    # 单聊进度回执上限，必须小于上面的 maxRepliesPerMsg
-    progressMax: 2
 
 # --- OneBot v11 社区框架（connectors 含 onebot 时生效）-----------------------
 # 环境变量前缀：ONEBOT_*
@@ -71,13 +61,7 @@ onebot:
   # 收到拉群邀请时自动同意。默认关闭：被拉进陌生群 = 把 agent 暴露给陌生人。
   autoAcceptGroupInvite: false
   maxChars: 1500
-  # OneBot 没有平台级回复配额，这里只是防失控的安全阀
-  maxRepliesPerMsg: 10
-  progressMax: 3
-  progressAfterMs: 90000
-  progressIntervalMs: 90000
-  # OneBot 没有被动回复窗口，单轮超时可以放宽到任务真正需要的时长
-  turnTimeoutMs: 600000
+  # OneBot 无平台条数额度；主动业务预算统一按 Task 结算。
   # 附件字节怎么传给框架（环境变量 ONEBOT_FILE_TRANSPORT）：
   #   base64（默认）：文件内容编码进 WS 帧，跨容器部署也能用；
   #   path          ：只传绝对路径，要求 bot 与框架同机同文件系统（省 33% 体积）。

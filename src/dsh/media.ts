@@ -46,8 +46,8 @@ export interface BuildImageBlocksOptions {
    *
    * 存在的理由：张数上限是**整条 prompt** 的，而一轮 prompt 可能有多个来源
    * （当前这条消息 + 滚窗上下文）。各自按 20 裁剪，两份加起来就会撞爆 runtime 的
-   * 上限，代价是整条 prompt 被拒、连文字一起陪葬（见 `TurnRunner.dispatchPrompt`
-   * 的纯文本回退）。所以预算是**共享的**，由调用方传剩下的额度。
+   * 上限，导致整条 prompt 被拒。所以预算是**共享的**，由 PromptPreparer
+   * 给上下文媒体传剩下的额度，两个 lane 复用同一份准备结果。
    */
   maxBlocks?: number;
   /**

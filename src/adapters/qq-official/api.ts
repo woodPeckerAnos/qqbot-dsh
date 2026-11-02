@@ -56,7 +56,7 @@ export class QqApiError_ extends Error {
     return this.code === SendErrorCode.DUPLICATE;
   }
 
-  /** 消息过长，调用方应折半重试 */
+  /** 消息过长：终态失败，禁止以新长度重发同一消息。 */
   get isTooLong(): boolean {
     return this.code === SendErrorCode.TOO_LONG || this.code === SendErrorCode.TOO_LONG_OR_INVALID;
   }
@@ -90,7 +90,7 @@ export class QqApi {
     method: string,
     path: string,
     body?: unknown,
-    options: { retryOn401?: boolean; timeoutMs?: number } = {},
+    options: { retryOn401?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<T> {
     const token = await this.options.tokenManager.get();
     const url = `${this.options.apiBase.replace(/\/+$/, '')}${path}`;
@@ -102,6 +102,7 @@ export class QqApi {
     timeout.unref?.();
 
     let response: Response;
+    let text: string;
     try {
       response = await this.fetchImpl(url, {
         method,
@@ -110,8 +111,9 @@ export class QqApi {
           'Content-Type': 'application/json; charset=utf-8',
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: controller.signal,
+        signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
       });
+      text = await response.text();
     } catch (error) {
       throw new QqApiError_(
         `请求 ${method} ${path} 失败：${error instanceof Error ? error.message : String(error)}`,
@@ -123,7 +125,6 @@ export class QqApi {
       clearTimeout(timeout);
     }
 
-    const text = await response.text();
     let parsed: unknown;
     try {
       parsed = text === '' ? undefined : JSON.parse(text);
@@ -131,8 +132,11 @@ export class QqApi {
       parsed = text;
     }
 
-    // token 失效：刷新一次再试。QQ 侧对过期 token 的习惯是 401 或特定 code。
-    if ((options.retryOn401 ?? true) && response.status === 401) {
+    // 401 后刷新凭证供后续消息使用；只有 GET 允许刷新后重读，消息 POST 不重发。
+    if (response.status === 401 && method !== 'GET') {
+      void this.options.tokenManager.forceRefresh().catch(() => {});
+    }
+    if ((options.retryOn401 ?? method === 'GET') && response.status === 401) {
       this.options.logger.warn('OpenAPI 返回 401，刷新 token 后重试一次', { path });
       await this.options.tokenManager.forceRefresh();
       return this.request<T>(method, path, body, { retryOn401: false });
@@ -171,12 +175,13 @@ export class QqApi {
   async uploadGroupFile(
     groupOpenid: string,
     file: UploadFileRequest,
+    signal?: AbortSignal,
   ): Promise<UploadFileResponse> {
     return this.request<UploadFileResponse>(
       'POST',
       `/v2/groups/${encodeURIComponent(groupOpenid)}/files`,
       file,
-      { timeoutMs: 60_000 },
+      { timeoutMs: 60_000, retryOn401: false, signal },
     );
   }
 
@@ -184,12 +189,13 @@ export class QqApi {
   async uploadUserFile(
     userOpenId: string,
     file: UploadFileRequest,
+    signal?: AbortSignal,
   ): Promise<UploadFileResponse> {
     return this.request<UploadFileResponse>(
       'POST',
       `/v2/users/${encodeURIComponent(userOpenId)}/files`,
       file,
-      { timeoutMs: 60_000 },
+      { timeoutMs: 60_000, retryOn401: false, signal },
     );
   }
 
@@ -202,11 +208,13 @@ export class QqApi {
   async sendGroupMessage(
     groupOpenid: string,
     message: SendGroupMessageRequest,
+    signal?: AbortSignal,
   ): Promise<SendMessageResponse> {
     return this.request<SendMessageResponse>(
       'POST',
       `/v2/groups/${encodeURIComponent(groupOpenid)}/messages`,
       message,
+      { retryOn401: false, signal },
     );
   }
 
@@ -225,11 +233,13 @@ export class QqApi {
   async sendUserMessage(
     userOpenId: string,
     message: SendUserMessageRequest,
+    signal?: AbortSignal,
   ): Promise<SendMessageResponse> {
     return this.request<SendMessageResponse>(
       'POST',
       `/v2/users/${encodeURIComponent(userOpenId)}/messages`,
       message,
+      { retryOn401: false, signal },
     );
   }
 

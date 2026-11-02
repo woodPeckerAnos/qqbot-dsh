@@ -12,6 +12,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
+const socketDescribe = process.env.BOT_TEST_INTEGRATION === '1' ? describe : describe.skip;
 import WebSocket from 'ws';
 
 import {
@@ -335,7 +336,7 @@ function contentOf(events: NormalizedEvent[]): string {
   return message?.content ?? '';
 }
 
-describe('转发块回查全回路', () => {
+socketDescribe('转发块回查全回路', () => {
   let connector: OnebotConnector | undefined;
   const clients: WebSocket[] = [];
   afterEach(async () => {
@@ -655,7 +656,7 @@ describe('官方聊天记录（尽力而为）', () => {
   });
 });
 
-describe('转发块嵌套深度', () => {
+socketDescribe('转发块嵌套深度', () => {
   let connector: OnebotConnector | undefined;
   const clients: WebSocket[] = [];
   afterEach(async () => {
@@ -715,7 +716,7 @@ describe('转发块嵌套深度', () => {
 // 资源上限（对抗性审查 S2/S3）
 // ---------------------------------------------------------------------------
 
-describe('转发读取的资源上限', () => {
+socketDescribe('转发读取的资源上限', () => {
   let connector: OnebotConnector | undefined;
   const clients: WebSocket[] = [];
   afterEach(async () => {
@@ -845,7 +846,7 @@ describe('转发读取的资源上限', () => {
 // 顺序性：同一条消息既有引用又有转发（方案 §4 承诺的不变量）
 // ---------------------------------------------------------------------------
 
-describe('引用与转发的合并顺序', () => {
+socketDescribe('引用与转发的合并顺序', () => {
   let connector: OnebotConnector | undefined;
   const clients: WebSocket[] = [];
   afterEach(async () => {
@@ -998,7 +999,7 @@ describe('引用与转发的合并顺序', () => {
 /** 19 位十进制消息 id：超过 2^53，Number() 一定改写末位 */
 const BIG_MSG_ID = '7477882741027621893';
 
-describe('转发块的 id 精度与内联内容', () => {
+socketDescribe('转发块的 id 精度与内联内容', () => {
   let connector: OnebotConnector | undefined;
   const clients: WebSocket[] = [];
   afterEach(async () => {
@@ -1185,7 +1186,7 @@ describe('转发块的 id 精度与内联内容', () => {
  * 灌进去既烧 token 又把真正在聊的事淹掉），只把 id 留在观察窗口里。被 @ 且这次的
  * 问题明确提到它时，编排层才回调 `fetchForward`——这一组锁的就是这个回调。
  */
-describe('按需展开聊天记录（BotConnector.fetchForward）', () => {
+socketDescribe('按需展开聊天记录（BotConnector.fetchForward）', () => {
   let connector: OnebotConnector | undefined;
   const clients: WebSocket[] = [];
   afterEach(async () => {
@@ -1278,3 +1279,5 @@ describe('按需展开聊天记录（BotConnector.fetchForward）', () => {
     expect(frames).toEqual([]);
   });
 });
+
+// Real localhost channels run explicitly with npm run test:integration.

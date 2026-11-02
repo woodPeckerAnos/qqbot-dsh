@@ -173,6 +173,11 @@ export interface Config {
    * 自己的 settings 层带外提供）。
    */
   modelApi: ModelApiConfig;
+  tasks: {
+    fastTimeoutMs: number; slowTimeoutMs: number;
+    fastProvider: string; fastModel: string; slowProvider: string; slowModel: string;
+    fastRuntimes: number; slowRuntimes: number; maxPerSession: number; maxGlobal: number; retentionMs: number; reminderMs: number;
+  };
   pool: {
     maxConcurrentTurns: number;
     maxRuntimes: number;
@@ -379,9 +384,7 @@ export interface Config {
     dir: string;
   };
   /**
-   * 长任务提示注入（persona 纪律的桥接层补强，见 pipeline/hints.ts）。
-   * 命中关键词的消息在 prompt 里追加"耗时任务请后台派发"的提示——best-effort，
-   * 不代替模型做决定。
+   * 旧关键词提示的解析兼容（生产 lane prompt 不使用）。
    */
   hints: {
     longTask: LongTaskHintConfig;
@@ -955,21 +958,6 @@ function requiredSecret(env: Env, key: string, hints: string[] = []): string {
   return raw;
 }
 
-/** 校验"进度回执必须给最终答案留配额"的不变量。 */
-function assertProgressQuota(
-  progressLabel: string,
-  progressMax: number,
-  totalLabel: string,
-  total: number,
-): void {
-  if (progressMax >= total) {
-    throw new ConfigError(
-      `${progressLabel}(${progressMax}) 必须小于 ${totalLabel}(${total})，` +
-        '否则进度回执会把配额用光，最终答案发不出去',
-    );
-  }
-}
-
 export function loadConfig(env: Env = process.env, file: FileConfig = {}): Config {
   const hints = ['请复制 .env.example 为 .env 并填写后重试'];
 
@@ -1017,14 +1005,11 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
 
   const maxRepliesPerMsg = pickInt(env, 'QQ_MAX_REPLIES_PER_MSG', qqFile.maxRepliesPerMsg, 4, { min: 1, max: 5 }, 'qq-official.maxRepliesPerMsg');
   const progressMax = pickInt(env, 'QQ_PROGRESS_MAX', qqFile.progressMax, 3, { min: 0, max: 5 }, 'qq-official.progressMax');
-  // 硬性不变量：必须给最终答案留至少 1 条回复配额
-  assertProgressQuota('QQ_PROGRESS_MAX', progressMax, 'QQ_MAX_REPLIES_PER_MSG', maxRepliesPerMsg);
 
   // 单聊：官方上限是 4 次（群聊是 5），所以单独校验，不能共用群聊的上限。
   const qqC2cFile = qqFile.c2c ?? {};
   const c2cMaxReplies = pickInt(env, 'QQ_C2C_MAX_REPLIES_PER_MSG', qqC2cFile.maxRepliesPerMsg, 4, { min: 1, max: 4 }, 'qq-official.c2c.maxRepliesPerMsg');
   const c2cProgressMax = pickInt(env, 'QQ_C2C_PROGRESS_MAX', qqC2cFile.progressMax, 2, { min: 0, max: 4 }, 'qq-official.c2c.progressMax');
-  assertProgressQuota('QQ_C2C_PROGRESS_MAX', c2cProgressMax, 'QQ_C2C_MAX_REPLIES_PER_MSG', c2cMaxReplies);
 
   const msgTypeRaw = pickInt(env, 'QQ_MSG_TYPE', qqFile.msgType, 0, { min: 0, max: 7 }, 'qq-official.msgType');
   if (msgTypeRaw !== 0 && msgTypeRaw !== 2) {
@@ -1043,11 +1028,6 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   const turnTimeoutMs = pickInt(env, 'QQ_TURN_TIMEOUT_MS', qqFile.turnTimeoutMs, 240_000, { min: 5_000, max: 295_000 }, 'qq-official.turnTimeoutMs');
 
   const progressAfterMs = pickInt(env, 'QQ_PROGRESS_AFTER_MS', qqFile.progressAfterMs, 90_000, { min: 1_000, max: 280_000 }, 'qq-official.progressAfterMs');
-  if (officialEnabled && progressAfterMs >= turnTimeoutMs) {
-    throw new ConfigError(
-      `QQ_PROGRESS_AFTER_MS(${progressAfterMs}) 必须小于 QQ_TURN_TIMEOUT_MS(${turnTimeoutMs})，否则永远不会发进度回执`,
-    );
-  }
 
   // --- OneBot（社区框架；无被动窗口，配额只是防失控的安全阀） ----------------
   // access token 是密钥：只认 env，启用 onebot 时必填。
@@ -1059,14 +1039,8 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   const obFile = file.onebot ?? {};
   const onebotMaxReplies = pickInt(env, 'ONEBOT_MAX_REPLIES_PER_MSG', obFile.maxRepliesPerMsg, 10, { min: 1, max: 50 }, 'onebot.maxRepliesPerMsg');
   const onebotProgressMax = pickInt(env, 'ONEBOT_PROGRESS_MAX', obFile.progressMax, 3, { min: 0, max: 49 }, 'onebot.progressMax');
-  assertProgressQuota('ONEBOT_PROGRESS_MAX', onebotProgressMax, 'ONEBOT_MAX_REPLIES_PER_MSG', onebotMaxReplies);
   const onebotTurnTimeoutMs = pickInt(env, 'ONEBOT_TURN_TIMEOUT_MS', obFile.turnTimeoutMs, 600_000, { min: 5_000, max: 3_600_000 }, 'onebot.turnTimeoutMs');
   const onebotProgressAfterMs = pickInt(env, 'ONEBOT_PROGRESS_AFTER_MS', obFile.progressAfterMs, 90_000, { min: 1_000, max: 600_000 }, 'onebot.progressAfterMs');
-  if (onebotEnabled && onebotProgressAfterMs >= onebotTurnTimeoutMs) {
-    throw new ConfigError(
-      `ONEBOT_PROGRESS_AFTER_MS(${onebotProgressAfterMs}) 必须小于 ONEBOT_TURN_TIMEOUT_MS(${onebotTurnTimeoutMs})，否则永远不会发进度回执`,
-    );
-  }
 
   // --- 管理员白名单：platform:senderId，只认 env ----------------------------
   // 不读配置文件：那里是真实 QQ 号/openid，属于个人标识（见 Config.admins 注释）。
@@ -1127,9 +1101,14 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   // settings 文档直接喂 llm-pi-ai），qqbot 不该对自己看不见的集合断言。
   // 一旦用户启用了本层，"选中的路由必须已声明"就该在启动期守住。
   const dshProvider = pickString(env, 'DSH_PROVIDER', dshFile.provider, DEEPSEEK_OFFICIAL_PROVIDER);
+  const taskFile = file.tasks ?? {};
+  const fastProvider = pickString(env, 'BOT_FAST_PROVIDER', taskFile.fastProvider, dshProvider);
+  const slowProvider = pickString(env, 'BOT_SLOW_PROVIDER', taskFile.slowProvider, dshProvider);
   const modelApi: ModelApiConfig = file.models ?? { providers: {} };
   if (file.models !== undefined) {
     assertModelApiConfig(modelApi, dshProvider, env);
+    assertModelApiConfig(modelApi, fastProvider, env, 'tasks.fastProvider');
+    assertModelApiConfig(modelApi, slowProvider, env, 'tasks.slowProvider');
   }
 
   // --- 判定调用的路由解析（话题判定 + 主动介入判定共用同一端点与凭证） --------
@@ -1161,7 +1140,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   // DEEPSEEK_API_KEY 不再无条件必填：主路由与判定都收口到其他提供商时，部署里可以
   // 完全没有它。只来自 env 的纪律不变（requiredSecret 不读配置文件）。
   const requiredSecrets = new Set<string>();
-  if (dshProvider === DEEPSEEK_OFFICIAL_PROVIDER) {
+  if ([dshProvider, fastProvider, slowProvider].includes(DEEPSEEK_OFFICIAL_PROVIDER)) {
     // 原生路由的凭证引用（models.deepseek.apiKeyEnv 改名后按改名的来）
     requiredSecrets.add(modelApi.deepseek?.apiKeyEnv ?? 'DEEPSEEK_API_KEY');
   }
@@ -1176,6 +1155,11 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   const topicApiKey = envRaw(env, topicApiKeyEnv) ?? '';
 
   const poolFile = file.pool ?? {};
+  const hardRuntimes = pickInt(env, 'QQ_MAX_RUNTIMES', poolFile.maxRuntimes, 8, { min: 2, max: 128 }, 'pool.maxRuntimes');
+  const fastRuntimes = pickInt(env, 'BOT_FAST_RUNTIMES', taskFile.fastRuntimes, Math.min(4, Math.floor(hardRuntimes / 2)), { min: 1, max: 127 }, 'tasks.fastRuntimes');
+  const slowRuntimes = pickInt(env, 'BOT_SLOW_RUNTIMES', taskFile.slowRuntimes, Math.min(4, hardRuntimes - fastRuntimes), { min: 1, max: 127 }, 'tasks.slowRuntimes');
+  if (fastRuntimes + slowRuntimes > hardRuntimes) throw new ConfigError('tasks.fastRuntimes + tasks.slowRuntimes 不得超过 pool.maxRuntimes');
+
   const pathsFile = file.paths ?? {};
   const attachmentsFile = file.attachments ?? {};
   const mediaFile = file.media ?? {};
@@ -1296,9 +1280,22 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       runtimeShutdownTimeoutMs: pickInt(env, 'QQ_DSH_SHUTDOWN_TIMEOUT_MS', dshFile.shutdownTimeoutMs, 15_000, { min: 2_000, max: 120_000 }, 'dsh.shutdownTimeoutMs'),
     },
     modelApi,
+    tasks: {
+      fastTimeoutMs: pickInt(env, 'BOT_FAST_TIMEOUT_MS', taskFile.fastTimeoutMs, 30_000, { min: 100, max: 3_600_000 }, 'tasks.fastTimeoutMs'),
+      slowTimeoutMs: pickInt(env, 'BOT_SLOW_TIMEOUT_MS', taskFile.slowTimeoutMs, 1_800_000, { min: 100, max: 86_400_000 }, 'tasks.slowTimeoutMs'),
+      fastProvider,
+      fastModel: pickString(env, 'BOT_FAST_MODEL', taskFile.fastModel, pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash')),
+      slowProvider,
+      slowModel: pickString(env, 'BOT_SLOW_MODEL', taskFile.slowModel, pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash')),
+      fastRuntimes, slowRuntimes,
+      maxPerSession: pickInt(env, 'BOT_TASKS_PER_SESSION', taskFile.maxPerSession, 32, { min: 1, max: 1024 }, 'tasks.maxPerSession'),
+      maxGlobal: pickInt(env, 'BOT_TASKS_GLOBAL', taskFile.maxGlobal, 128, { min: 1, max: 65536 }, 'tasks.maxGlobal'),
+      retentionMs: pickInt(env, 'BOT_TASK_RETENTION_MS', taskFile.retentionMs, 7 * 86400_000, { min: 1, max: 365 * 86400_000 }, 'tasks.retentionMs'),
+      reminderMs: pickInt(env, 'BOT_TASK_REMINDER_MS', taskFile.reminderMs, 300_000, { min: 300_000, max: 86400_000 }, 'tasks.reminderMs'),
+    },
     pool: {
       maxConcurrentTurns: pickInt(env, 'QQ_MAX_CONCURRENT_TURNS', poolFile.maxConcurrentTurns, 4, { min: 1, max: 64 }, 'pool.maxConcurrentTurns'),
-      maxRuntimes: pickInt(env, 'QQ_MAX_RUNTIMES', poolFile.maxRuntimes, 8, { min: 1, max: 128 }, 'pool.maxRuntimes'),
+      maxRuntimes: hardRuntimes,
       runtimeIdleMs: pickInt(env, 'QQ_RUNTIME_IDLE_MS', poolFile.runtimeIdleMs, 1_800_000, { min: 0, max: 86_400_000 }, 'pool.runtimeIdleMs'),
       replayTurns: pickInt(env, 'QQ_REPLAY_TURNS', poolFile.replayTurns, 12, { min: 0, max: 200 }, 'pool.replayTurns'),
     },
@@ -1434,13 +1431,7 @@ export function describeConfig(config: Config): Record<string, unknown> {
           msgType: config.qq.msgType,
           maxChars: config.qq.maxChars,
           maxRepliesPerMsg: config.qq.maxRepliesPerMsg,
-          progress: {
-            afterMs: config.qq.progressAfterMs,
-            intervalMs: config.qq.progressIntervalMs,
-            max: config.qq.progressMax,
-          },
-          turnTimeoutMs: config.qq.turnTimeoutMs,
-          c2c: config.qq.c2c,
+          c2c: { enabled: config.qq.c2c.enabled, maxRepliesPerMsg: config.qq.c2c.maxRepliesPerMsg },
         }
       : 'disabled',
     onebot: config.connectors.includes(ONEBOT_PLATFORM)
@@ -1448,9 +1439,6 @@ export function describeConfig(config: Config): Record<string, unknown> {
           listen: `${config.onebot.host}:${config.onebot.port}`,
           c2cEnabled: config.onebot.c2cEnabled,
           maxChars: config.onebot.maxChars,
-          maxRepliesPerMsg: config.onebot.maxRepliesPerMsg,
-          progressMax: config.onebot.progressMax,
-          turnTimeoutMs: config.onebot.turnTimeoutMs,
           autoAcceptFriend: config.onebot.autoAcceptFriend,
           autoAcceptGroupInvite: config.onebot.autoAcceptGroupInvite,
         }
@@ -1466,7 +1454,8 @@ export function describeConfig(config: Config): Record<string, unknown> {
       deepseek: config.modelApi.deepseek === undefined ? 'default' : 'customized',
       providers: Object.keys(config.modelApi.providers),
     },
-    pool: config.pool,
+    pool: { maxRuntimes: config.pool.maxRuntimes, replayTurns: config.pool.replayTurns },
+    tasks: config.tasks,
     topic: {
       enabled: config.topic.enabled,
       // 凭证解析到哪条路由（apiKey 本身绝不进摘要）
@@ -1502,7 +1491,6 @@ export function describeConfig(config: Config): Record<string, unknown> {
         minGapMs: config.proactive.sessionMinGapMs,
       },
       judgeTimeoutMs: config.proactive.judgeTimeoutMs,
-      speakTimeoutMs: config.proactive.speakTimeoutMs,
     },
     // 观察窗口（滚窗）：**与 proactive 并列**，因为它不随主动发言开关生死
     observation: {
@@ -1518,12 +1506,7 @@ export function describeConfig(config: Config): Record<string, unknown> {
     },
     attachments: config.attachments,
     personas: { dir: config.personas.dir },
-    hints: {
-      longTask: {
-        enabled: config.hints.longTask.enabled,
-        patterns: config.hints.longTask.patterns,
-      },
-    },
+    deprecated: { ignored: ['pool.maxConcurrentTurns', 'qq-official.progress*', 'qq-official.turnTimeoutMs', 'onebot.maxRepliesPerMsg', 'onebot.progress*', 'onebot.turnTimeoutMs', 'hints.longTask', 'proactive.speakTimeoutMs'] },
     media: {
       enabled: config.media.enabled,
       maxFileBytes: config.media.maxFileBytes,

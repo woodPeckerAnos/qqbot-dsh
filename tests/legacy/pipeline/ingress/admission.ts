@@ -13,8 +13,8 @@
  */
 
 import { KeyedMutex, Semaphore } from '../concurrency.js';
-import type { PipelineStats } from '../stats.js';
-import type { IngressStage } from './types.js';
+import type { PipelineStats } from '../../../../src/pipeline/stats.js';
+import type { IngressStage } from '../../../../src/pipeline/ingress/types.js';
 
 export class AdmissionGate {
   private readonly semaphore: Semaphore;

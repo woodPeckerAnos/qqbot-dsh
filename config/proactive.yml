@@ -51,7 +51,7 @@ proactive:
   # 介入，话题切换时也可能漏掉一轮机会（已知并接受，不做 topicChange）。
   # 观测：health 的 proactive.sessions（opened / closedBy / spokeInSession）。
   #
-  #   sessionBudget  ：一个话题里允许的主动发言条数。默认 2，
+  #   sessionBudget  ：一个话题里允许的主动 Task 数（首次成功送达提交一次）。默认 2，
   #                    **硬上限 5**——配得更大按 5 处理并在日志里 warn
   #                    （"少说两句"是产品决策，不该被一行配置改回去）。
   #                    ⚠️ 预算用完**不关闭 session**，只让它在当前话题里闭嘴
@@ -65,7 +65,7 @@ proactive:
   #                    它同时也是"话题翻篇"的口径：会话结束后预算自然回到满值。
   #   sessionMinGapMs：同一 session 内两次发言的最小间隔（毫秒，范围
   #                    10000–300000）。间隔没到时闸门不过，且**不消耗预算**
-  #                    （预算是"说了几句"的账，不是"想过几次"的账）。
+  #                    （预算单位是 Task，正文、附件、提醒和失败通知不重复扣费）。
   sessionBudget: 2
   sessionIdleMs: 600000
   sessionMinGapMs: 45000
@@ -73,9 +73,4 @@ proactive:
   # （10 秒够），而主动介入要逐场景输出多段 JSON——借用 10 秒会频繁超时，
   # 而超时 = 沉默，表现就是「它从来不主动说话」。
   judgeTimeoutMs: 20000
-  # 发言生成（措辞轮次）超时：判定说"值得说"之后，真实文案由一次 agent turn
-  # 生成（与被动回复同一条链路：同会话、同观察窗口、可以用工具查证）。
-  # 它是"插一句话"不是"跑一个任务"，上限刻意低于被动轮次——
-  # 超时的表现是**本次不发言**（health 里 deliveryDegraded['compose-failed'] +1），
-  # 不是报错。范围 30000–300000。
-  speakTimeoutMs: 120000
+  # 主动请求统一创建双 lane Task，执行时限见 runtime.yml 的 tasks。

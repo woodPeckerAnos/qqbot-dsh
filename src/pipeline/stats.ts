@@ -4,8 +4,10 @@
  * 设计约定：
  *   - 计数器是公共数值字段，哪个 stage 拥有哪个字段在各自的文件头注释里写明；
  *   - 快照（snapshotStats）在这里的字段之外再附上 inFlight / queued / offpeak，
- *     它们不是计数而是状态，归准入闸门与谷时段闸服务所有；
+ *     它们不是计数而是状态，归 Task 管理器、lane 调度器与谷时段闸服务所有；
  *   - health 端点原样展示快照，不在此层做格式化。
+ *   - 旧 turn / 后台 / 周期进度字段保留 health 数字字段兼容；当前状态见
+ *     health.tasks、health.messages，已停用字段不再由生产路径递增。
  */
 
 import type { OffpeakSnapshot } from '../offpeak/index.js';
@@ -31,7 +33,7 @@ export class PipelineStats {
   proactiveSuspended = 0;
   /** 主动介入：被否决层否决的次数 */
   proactiveVetoed = 0;
-  /** 主动介入：真的发出的主动发言数 */
+  /** 主动介入：首次成功送达的主动 Task 数，每 Task 计一次 */
   proactiveSpoke = 0;
   /** 主动介入：dryRun 下"本应发出"的次数 */
   proactiveWouldSend = 0;
@@ -84,7 +86,7 @@ export class PipelineStats {
    */
   proactiveSessionClosedBy: Record<string, number> = {};
   /**
-   * 主动介入：**每个 session 里说了几句**的分布（键 = 句数，值 = 这样的 session 数）。
+   * 主动介入：每个话题里首次成功送达的 Task 数分布（键 = Task 数，值 = 话题数）。
    *
    * 需求点名它是核心指标：集中在 1 = 预算 2 用不满（可考虑降为 1）；
    * 集中在 2 = 预算卡着（每次都说满）。
@@ -94,7 +96,7 @@ export class PipelineStats {
   proactiveSkippedUnchanged = 0;
   /** 事件去重丢弃数（dedupe stage） */
   deduplicated = 0;
-  /** 并发满员拒绝数（admission stage） */
+  /** Task 准入拒绝数（main.ts 的 Actor 提交出口） */
   rejectedBusy = 0;
   /** 单聊开关拦截数（Orchestrator 入口，去重之前） */
   skippedC2C = 0;
@@ -104,42 +106,42 @@ export class PipelineStats {
   adminCommands = 0;
   /** 处理过的 /stop、/new 会话控制命令数（session-command stage） */
   sessionCommands = 0;
-  /** 话题间隔超阈值触发上下文重置的次数（TurnRunner） */
+  /** 旧单轮话题重置计数，仅保留 health 兼容 */
   topicResets = 0;
-  /** 长任务提示注入命中次数（TurnRunner；见 pipeline/hints.ts） */
+  /** 旧长任务提示计数，仅保留 health 兼容 */
   longTaskHints = 0;
-  /** 会话锁忙时发出的"排队提示"条数（admission stage） */
+  /** 旧整轮会话锁排队提示计数，仅保留 health 兼容 */
   busyNoticed = 0;
-  /** turn 正常完成数（TurnRunner） */
+  /** 用户 Task 正常完成数（main.ts，双 lane 终结） */
   completed = 0;
-  /** turn 未预期错误数（admission stage 兜底） */
+  /** 用户 Task 失败数（main.ts，双 lane 终结） */
   failed = 0;
-  /** turn 超时数（TurnRunner） */
+  /** 旧单轮超时计数，仅保留 health 兼容 */
   timedOut = 0;
-  /** 后台子代理启动数（main.ts，来自 pool 的 subagent.started） */
+  /** 旧后台子代理启动计数，仅保留 health 兼容 */
   backgroundStarted = 0;
-  /** 后台子代理结束数（main.ts，来自 pool 的 subagent.finished） */
+  /** 旧后台子代理结束计数，仅保留 health 兼容 */
   backgroundFinished = 0;
-  /** 捕获到的"自发轮次"结果条数（TurnRunner，后台任务完成后父代理的总结） */
+  /** 旧后台自发轮次捕获计数，仅保留 health 兼容 */
   backgroundCaptured = 0;
-  /** 后台结果被主动推送出去的条数（BackgroundPusher：OneBot 即推 / 官方窗口内投递） */
+  /** 旧后台即时推送计数，仅保留 health 兼容 */
   backgroundPushed = 0;
-  /** 随下一条回复带出的后台结果条数（TurnRunner） */
+  /** 旧后台搭载回复计数，仅保留 health 兼容 */
   backgroundDelivered = 0;
-  /** 因 sessionId 不匹配被过滤掉的子会话事件数（TurnRunner，串扰防护命中计数） */
+  /** 旧单轮子会话事件过滤计数，仅保留 health 兼容 */
   childEventsFiltered = 0;
   /**
-   * 成功内联进 prompt 的图片**块**数（TurnRunner）。
+   * 准备进 prompt 的图片**块**数（PromptPreparer，每 Task 计一次）。
    *
    * 计的是 block：一张长图按可读分辨率切成 N 块时算 N（见 dsh/image.ts），
    * 所以它可能大于这一轮消息里的源图张数——想知道"用户发了几张图"，看
-   * TurnRunner 日志里的 `total`。
+   * PromptPreparer 的源图统计 `totalImages`。
    */
   imagesInlined = 0;
-  /** 读取失败/超限/格式不支持/解不开而跳过的**源图**张数（TurnRunner） */
+  /** 读取失败/超限/格式不支持/解不开而跳过的图片数（PromptPreparer） */
   imagesSkipped = 0;
   /**
-   * 滚窗**上下文**里成功内联的 image block 数（TurnRunner；`imagesInlined` 的补充，
+   * 滚窗上下文里成功内联的源图数（PromptPreparer；`imagesInlined` 的补充，
    * 不是它的子集——两者按来源分开计）。
    *
    * 为什么要单独计：被 @ 时上下文里的图（"群里先发图、再 @ 问这是什么"）走的是一条
@@ -152,10 +154,10 @@ export class PipelineStats {
    * 解不开都会计进来）。
    */
   windowImagesSkipped = 0;
-  /** 从滚窗上下文里取到字节的文件数（TurnRunner；摄取计数同时并进 filesFetched 等） */
+  /** 从滚窗上下文里取到字节的文件数（PromptPreparer；同时并进 filesFetched 等） */
   windowFilesFetched = 0;
   /**
-   * 按需展开的聊天记录条数（TurnRunner）。
+   * 按需展开的聊天记录条数（PromptPreparer）。
    *
    * 这条通路**只在**话题判定认为"这次的问题明确提到了一条聊天记录"时才走
    * （见 `store/window.ts` 的 `recordIds`）。长期为 0 = 那条规定太严或用户从不这么问；
@@ -178,26 +180,26 @@ export class PipelineStats {
    * "关掉功能"看起来像"功能坏了"。关掉时连接器不发任何请求、也不上报。
    */
   forwardsFailed = 0;
-  /** 取到字节**并通过体积复核**的文件数（TurnRunner；与 filesSkipped 互斥） */
+  /** 取到字节并通过体积复核的文件数（PromptPreparer；与 filesSkipped 互斥） */
   filesFetched = 0;
-  /** 成功抽取正文的文件数（TurnRunner） */
+  /** 成功抽取正文的文件数（PromptPreparer） */
   filesExtracted = 0;
-  /** 只落盘、未抽取正文的文件数（TurnRunner；类型不支持或解析器不可用） */
+  /** 只落盘、未抽取正文的文件数（PromptPreparer；类型不支持或解析器不可用） */
   filesSavedOnly = 0;
-  /** 因关闭/超体积/超出数量/失败而跳过的文件数（TurnRunner / 连接器） */
+  /** 因关闭/超体积/超出数量/失败而跳过的文件数（PromptPreparer / 连接器） */
   filesSkipped = 0;
-  /** 送入 prompt 的文件正文字符数（TurnRunner） */
+  /** 准备进 prompt 的文件正文字符数（PromptPreparer，每 Task 计一次） */
   fileCharsInlined = 0;
-  /** 成功发出的回复段数（Responder / 欢迎语） */
+  /** 成功送达的消息数（Task 出口 / 欢迎语） */
   repliesSent = 0;
-  /** 成功发出的附件数（Responder；附件消息同时计入 repliesSent） */
+  /** 旧附件消息计数，仅保留 health 兼容；当前见 health.messages */
   attachmentsSent = 0;
-  /** 成功发出的进度回执数（Responder） */
+  /** 旧周期进度计数，仅保留 health 兼容 */
   progressSent = 0;
 }
 
 /**
- * health 端点展示用的完整快照：计数 + 准入闸门状态 + 谷时段闸状态。
+ * health 端点展示用的完整快照：计数 + Task / lane 状态 + 谷时段闸状态。
  *
  * 三个 wait 相关字段被映射成**数字**（而不是原样透出对象）：
  * `dispatcher` 是 `/metrics` 的对外契约，字段全为数字是一条被 RUNBOOK
