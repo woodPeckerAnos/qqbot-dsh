@@ -6,16 +6,17 @@
 > 形式一层一层触发；并提供**自然语言输入口**，调用 LLM 严格生成规则文件夹（§5）。
 >
 > 关键决策（已与维护者确认）：
->   1. **通道**：当前只有 OneBot 具备全量群消息能力，本期仅接 OneBot；
->      介入逻辑层（规则链、状态、判定、合成 turn）**必须平台无关**，
->      官方「接收所有消息」能力一旦开放即可直接接入（§12 预留设计）；
->   2. **守门机制**：混合式——本地规则预筛 + 小模型 Gate 三选一判定；
->   3. **分期**：Phase 0（恢复听觉）→ Phase 1（会话延续）→ Phase 2（话题介入）
->      递进，每期可独立上线；
->   4. **会话归属**：介入 turn 共享该群现有 DSH 会话（不另开进程），
->      靠 turn 标记区分「介入」与「被 @ 提问」；
->   5. **规则组织**（v2 新增）：规则 = 文件夹（REQUIREMENT.md + rule.ts +
->      rule.test.ts），拦截器链分层短路，自然语言生成口带双重严格闸。
+>
+> 1. **通道**：当前只有 OneBot 具备全量群消息能力，本期仅接 OneBot；
+>    介入逻辑层（规则链、状态、判定、合成 turn）**必须平台无关**，
+>    官方「接收所有消息」能力一旦开放即可直接接入（§12 预留设计）；
+> 2. **守门机制**：混合式——本地规则预筛 + 小模型 Gate 三选一判定；
+> 3. **分期**：Phase 0（恢复听觉）→ Phase 1（会话延续）→ Phase 2（话题介入）
+>    递进，每期可独立上线；
+> 4. **会话归属**：介入 turn 共享该群现有 DSH 会话（不另开进程），
+>    靠 turn 标记区分「介入」与「被 @ 提问」；
+> 5. **规则组织**（v2 新增）：规则 = 文件夹（REQUIREMENT.md + rule.ts +
+>    rule.test.ts），拦截器链分层短路，自然语言生成口带双重严格闸。
 
 ---
 
@@ -51,11 +52,11 @@
 
 「仅 @ 才回复」由三层构成：
 
-| 层 | 位置 | 现状 |
-|---|---|---|
-| 平台订阅（官方） | intent `1<<25` | 默认只推 `GROUP_AT_MESSAGE_CREATE`；全量群消息是 `GROUP_MESSAGE_CREATE`（同 intent，需平台侧开启「接收所有消息」能力，个人开发者默认拿不到） |
-| 适配器归一化（OneBot） | `src/adapters/onebot/normalize.ts` | 框架推来所有群消息，`if (!extracted.atSelf) return ignored` 直接丢弃 |
-| 编排层 | `src/core/connector.ts` | `NormalizedMessage.kind` 只有 `group-at-message` / `c2c-message`，没有「旁听消息」形态 |
+| 层                     | 位置                               | 现状                                                                                                                                         |
+| ---------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 平台订阅（官方）       | intent `1<<25`                     | 默认只推 `GROUP_AT_MESSAGE_CREATE`；全量群消息是 `GROUP_MESSAGE_CREATE`（同 intent，需平台侧开启「接收所有消息」能力，个人开发者默认拿不到） |
+| 适配器归一化（OneBot） | `src/adapters/onebot/normalize.ts` | 框架推来所有群消息，`if (!extracted.atSelf) return ignored` 直接丢弃                                                                         |
+| 编排层                 | `src/core/connector.ts`            | `NormalizedMessage.kind` 只有 `group-at-message` / `c2c-message`，没有「旁听消息」形态                                                       |
 
 差距 = ① 事件模型没有旁听形态；② 没有消费旁听消息的组件；③ 没有「该不该
 说话」的判定层；④ 没有介入 turn 的合成与限流；⑤（v2）判定规则没有可读、
@@ -70,13 +71,13 @@ Phase 0 一并改掉（§12）。
 
 调研过的代表实现与借鉴点：
 
-| 项目 | 路线 | 借鉴 | 不采用 |
-|---|---|---|---|
-| [bl-chat-plugin](https://github.com/Cat-bl/bl-chat-plugin)（Yunzai） | 频率采样 + 小模型 Gate（smart）；@ 后小模型二分类续聊判定（strict+tracking） | 分层漏斗、Gate 三选一、FOCUS/FADING/COLD 状态机、R1–R4 强续聊信号、回复去抖与让步、10 分钟硬限流、@ force 路径不受限、群白名单、冷群补偿 | 复读跟发、waitTool、表情包系统（陪聊向） |
-| [koishi-plugin-dialogue](https://dialogue.koishi.chat/zh-CN/prob.html) | 规则问答 + S/A 双概率 | 「称呼被喊出后短窗口内激活宽松概率」→ 对应我们的续聊窗口 | 问答库教学范式 |
-| [astrbot_plugin_proactive_chat](https://github.com/DBJD-CR/astrbot_plugin_proactive_chat) / [KouriChat](https://github.com/KouriChat/KouriChat) | 沉默触发的主动消息（话题重启） | 未回复计数上限、免打扰时段、注入真实聊天流水而非 LLM 对话历史 | 定时破冰（不同问题，远期再议） |
-| [nonebot-plugin-personification](https://blog.shiro.team/posts/personification/) | 拟人化全家桶 | 架构原则：内容交给模型，代码只管上下文拼装、防重复、并发锁 | 好感度/作息/空间动态 |
-| QChatGPT / AstrBot 平台层 | @ / 前缀 / 关键词 / lcid | lcid（@ 后一段时间内视为续聊）即 Phase 1 的原型 | — |
+| 项目                                                                                                                                            | 路线                                                                         | 借鉴                                                                                                                                     | 不采用                                   |
+| ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| [bl-chat-plugin](https://github.com/Cat-bl/bl-chat-plugin)（Yunzai）                                                                            | 频率采样 + 小模型 Gate（smart）；@ 后小模型二分类续聊判定（strict+tracking） | 分层漏斗、Gate 三选一、FOCUS/FADING/COLD 状态机、R1–R4 强续聊信号、回复去抖与让步、10 分钟硬限流、@ force 路径不受限、群白名单、冷群补偿 | 复读跟发、waitTool、表情包系统（陪聊向） |
+| [koishi-plugin-dialogue](https://dialogue.koishi.chat/zh-CN/prob.html)                                                                          | 规则问答 + S/A 双概率                                                        | 「称呼被喊出后短窗口内激活宽松概率」→ 对应我们的续聊窗口                                                                                 | 问答库教学范式                           |
+| [astrbot_plugin_proactive_chat](https://github.com/DBJD-CR/astrbot_plugin_proactive_chat) / [KouriChat](https://github.com/KouriChat/KouriChat) | 沉默触发的主动消息（话题重启）                                               | 未回复计数上限、免打扰时段、注入真实聊天流水而非 LLM 对话历史                                                                            | 定时破冰（不同问题，远期再议）           |
+| [nonebot-plugin-personification](https://blog.shiro.team/posts/personification/)                                                                | 拟人化全家桶                                                                 | 架构原则：内容交给模型，代码只管上下文拼装、防重复、并发锁                                                                               | 好感度/作息/空间动态                     |
+| QChatGPT / AstrBot 平台层                                                                                                                       | @ / 前缀 / 关键词 / lcid                                                     | lcid（@ 后一段时间内视为续聊）即 Phase 1 的原型                                                                                          | —                                        |
 
 跨项目共识（全部采纳）：**漏斗分层**、**@ 永远最高优先且不受限流**、
 **白名单 + 默认关**、**发言后高敏期 / 限流后冷却期**、**判定失败一律沉默**。
@@ -113,23 +114,23 @@ OneBot 适配器                     （官方适配器：预留，§12）
 
 模块划分：
 
-| 位置 | 内容 |
-|---|---|
-| `src/core/connector.ts` | 新增 `NormalizedObservedMessage` 与 `isObservedMessage()`；`NormalizedMessage` 新增可选 `origin` 字段 |
-| `src/adapters/onebot/normalize.ts` | 非 @ 群消息 → observed 事件（纯函数，不带配置判断） |
-| `src/adapters/qq-official/gateway.ts` | `GROUP_MESSAGE_CREATE` → observed 事件（修隐患 + 预留） |
-| `src/intervention/contract.ts` | 拦截器契约：`InterventionRule` / `RuleContext` / `RuleVerdict` / `RuleMarks` |
-| `src/intervention/chain.ts` | 链 runner：按 stage+order 逐层执行、短路、trace 日志、reason 统计 |
-| `src/intervention/state.ts` | 每群共享状态 + FOCUS/FADING/COLD 迁移表（集中一处，不散进规则） |
-| `src/intervention/watcher.ts` | 入口与调度（定时器、LLM 客户端注入、pending 合并、合成 turn 投递） |
-| `src/intervention/transcript.ts` | 旁听缓冲 → 带边界标记的群聊转录 |
-| `src/intervention/gate-client.ts` | 小模型客户端（语义 Gate 与规则生成口共用；直连 chat completions API） |
-| `src/intervention/rules/**` | 规则文件夹（多规则并列，§5.2 清单） |
-| `src/intervention/codegen/**` + `scripts/gen-rule.mjs` | 自然语言 → 规则文件夹生成口（§5.7） |
-| `src/pipeline/orchestrator.ts` | observed 分流；`runIntervention()` 合成 turn 入口 |
-| `src/pipeline/ingress/admission.ts` | 新增 try 语义（拿不到名额/锁立即失败） |
-| `src/pipeline/ingress/listen-command.ts` | `/listen` 管理命令（仿 `offpeak-command.ts`） |
-| `src/config.ts` / `qqbot.yml` | `intervention` 配置段（全局 + 按规则名覆盖，§10） |
+| 位置                                                   | 内容                                                                                                  |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `src/core/connector.ts`                                | 新增 `NormalizedObservedMessage` 与 `isObservedMessage()`；`NormalizedMessage` 新增可选 `origin` 字段 |
+| `src/adapters/onebot/normalize.ts`                     | 非 @ 群消息 → observed 事件（纯函数，不带配置判断）                                                   |
+| `src/adapters/qq-official/gateway.ts`                  | `GROUP_MESSAGE_CREATE` → observed 事件（修隐患 + 预留）                                               |
+| `src/intervention/contract.ts`                         | 拦截器契约：`InterventionRule` / `RuleContext` / `RuleVerdict` / `RuleMarks`                          |
+| `src/intervention/chain.ts`                            | 链 runner：按 stage+order 逐层执行、短路、trace 日志、reason 统计                                     |
+| `src/intervention/state.ts`                            | 每群共享状态 + FOCUS/FADING/COLD 迁移表（集中一处，不散进规则）                                       |
+| `src/intervention/watcher.ts`                          | 入口与调度（定时器、LLM 客户端注入、pending 合并、合成 turn 投递）                                    |
+| `src/intervention/transcript.ts`                       | 旁听缓冲 → 带边界标记的群聊转录                                                                       |
+| `src/intervention/gate-client.ts`                      | 小模型客户端（语义 Gate 与规则生成口共用；直连 chat completions API）                                 |
+| `src/intervention/rules/**`                            | 规则文件夹（多规则并列，§5.2 清单）                                                                   |
+| `src/intervention/codegen/**` + `scripts/gen-rule.mjs` | 自然语言 → 规则文件夹生成口（§5.7）                                                                   |
+| `src/pipeline/orchestrator.ts`                         | observed 分流；`runIntervention()` 合成 turn 入口                                                     |
+| `src/pipeline/ingress/admission.ts`                    | 新增 try 语义（拿不到名额/锁立即失败）                                                                |
+| `src/pipeline/ingress/listen-command.ts`               | `/listen` 管理命令（仿 `offpeak-command.ts`）                                                         |
+| `src/config.ts` / `qqbot.yml`                          | `intervention` 配置段（全局 + 按规则名覆盖，§10）                                                     |
 
 ## 5. 规则层架构（规则文件夹 × 拦截器链 × 自然语言生成口）
 
@@ -168,27 +169,27 @@ src/intervention/rules/
 编号前缀 = stage 内默认 order。初始规则清单（每条的完整需求在各自
 REQUIREMENT.md，这里只有一句话摘要）：
 
-| 文件夹 | stage | 一句话需求 | 期数 |
-|---|---|---|---|
-| `01-master-switch` | intake | 总开关或本群运行期开关（/listen off）关闭时，什么都不听 | P0 |
-| `02-group-whitelist` | intake | 群不在允许集（env `BOT_LISTEN_GROUPS` ∪ `/listen on`）内不听 | P0 |
-| `03-offpeak-window` | intake | offpeak 闸启用且当前非谷时段时，不评估介入（正价时段不花闲钱） | P2 |
-| `04-duplicate-event` | intake | 框架重连重放的重复事件丢弃（内存 LRU，不写 SeenStore 磁盘层） | P0 |
-| `05-at-others` | intake | @ 了其他成员的消息不是在叫 bot，不评估（仍入缓冲做上下文） | P2 |
-| `06-no-text` | intake | 无文本内容（纯图/表情/文件）的消息不评估 | P2 |
-| `07-rate-limit-precheck` | intake | 该群已达硬限流时不再评估，省 Gate 成本 | P2 |
-| `08-eval-cooldown` | intake | Gate 冷却期内不重复评估（常规 60s / 强信号 15s） | P2 |
-| `09-strong-quick-reply` | intake | bot 发言后 30s 内的任何文本，大概率是在回应 bot → 标强信号 | P2 |
-| `10-strong-quote-bot` | intake | 引用了 bot 发过的消息 → 标强信号 | P2 |
-| `11-strong-open-question` | intake | 问句且 90s 内无人应答 → 标强信号（defer 到窗口满再判） | P2 |
-| `12-strong-keyword-echo` | intake | 命中 bot 上次发言的实词关键词 → 标强信号 | P2 |
-| `13-sampling-debounce` | intake | 终局：距上次评估累计 ≥6 条，或静默 ≥20s → 评估；否则只入缓冲 | P2 |
-| `20-semantic-gate` | evaluate | 这个话题值不值得插话（需求文档正文即 Gate prompt 的来源） | P2 |
-| `30-rate-limit-veto` | speak | 硬限流终检：每群 10 分钟 ≤3 次且 1 小时 ≤8 次主动介入 | P2 |
-| `31-focus-budget` | speak | FOCUS 相位内主动发言 ≤2 次，超了降级不再插话 | P2 |
-| `32-admission-try` | speak | 全局并发无名额或该群会话锁被占 → 放弃（介入绝不排队） | P2 |
-| `40-promotion-window` | continuation | 被 @ 后 120s 内，同发送者的非 @ 文本消息晋升为正常提问 | P1 |
-| `41-inflight-merge` | continuation | turn 在途时晋升消息不独立触发，进合并队列（≤5 条 / 60s） | P1 |
+| 文件夹                    | stage        | 一句话需求                                                     | 期数 |
+| ------------------------- | ------------ | -------------------------------------------------------------- | ---- |
+| `01-master-switch`        | intake       | 总开关或本群运行期开关（/listen off）关闭时，什么都不听        | P0   |
+| `02-group-whitelist`      | intake       | 群不在允许集（env `BOT_LISTEN_GROUPS` ∪ `/listen on`）内不听   | P0   |
+| `03-offpeak-window`       | intake       | offpeak 闸启用且当前非谷时段时，不评估介入（正价时段不花闲钱） | P2   |
+| `04-duplicate-event`      | intake       | 框架重连重放的重复事件丢弃（内存 LRU，不写 SeenStore 磁盘层）  | P0   |
+| `05-at-others`            | intake       | @ 了其他成员的消息不是在叫 bot，不评估（仍入缓冲做上下文）     | P2   |
+| `06-no-text`              | intake       | 无文本内容（纯图/表情/文件）的消息不评估                       | P2   |
+| `07-rate-limit-precheck`  | intake       | 该群已达硬限流时不再评估，省 Gate 成本                         | P2   |
+| `08-eval-cooldown`        | intake       | Gate 冷却期内不重复评估（常规 60s / 强信号 15s）               | P2   |
+| `09-strong-quick-reply`   | intake       | bot 发言后 30s 内的任何文本，大概率是在回应 bot → 标强信号     | P2   |
+| `10-strong-quote-bot`     | intake       | 引用了 bot 发过的消息 → 标强信号                               | P2   |
+| `11-strong-open-question` | intake       | 问句且 90s 内无人应答 → 标强信号（defer 到窗口满再判）         | P2   |
+| `12-strong-keyword-echo`  | intake       | 命中 bot 上次发言的实词关键词 → 标强信号                       | P2   |
+| `13-sampling-debounce`    | intake       | 终局：距上次评估累计 ≥6 条，或静默 ≥20s → 评估；否则只入缓冲   | P2   |
+| `20-semantic-gate`        | evaluate     | 这个话题值不值得插话（需求文档正文即 Gate prompt 的来源）      | P2   |
+| `30-rate-limit-veto`      | speak        | 硬限流终检：每群 10 分钟 ≤3 次且 1 小时 ≤8 次主动介入          | P2   |
+| `31-focus-budget`         | speak        | FOCUS 相位内主动发言 ≤2 次，超了降级不再插话                   | P2   |
+| `32-admission-try`        | speak        | 全局并发无名额或该群会话锁被占 → 放弃（介入绝不排队）          | P2   |
+| `40-promotion-window`     | continuation | 被 @ 后 120s 内，同发送者的非 @ 文本消息晋升为正常提问         | P1   |
+| `41-inflight-merge`       | continuation | turn 在途时晋升消息不独立触发，进合并队列（≤5 条 / 60s）       | P1   |
 
 清单是活文档：新增规则 = 新增文件夹 + 注册表一行 + README 清单一行，
 不改任何既有规则代码。
@@ -200,15 +201,15 @@ export type RuleStage = 'continuation' | 'intake' | 'evaluate' | 'speak';
 
 /** 规则裁决：四种，且只有四种。 */
 export type RuleVerdict =
-  | { action: 'pass' }                            // 放行，进入下一层
+  | { action: 'pass' } // 放行，进入下一层
   | { action: 'mark'; marks: Partial<RuleMarks> } // 标注后继续（强信号类）
   | { action: 'defer'; ms: number; reason: string } // 延迟重查（答案窗口/gate wait）
-  | { action: 'halt'; reason: string };           // 拦截，链在此短路
+  | { action: 'halt'; reason: string }; // 拦截，链在此短路
 
 export interface RuleMarks {
   strongSignal?: 'quick-reply' | 'quote-bot' | 'open-question' | 'keyword-echo';
-  samplingHit?: boolean;      // 13 号规则：计数达标
-  gateDecision?: 'speak' | 'wait';  // 20 号规则的输出（silent 表达为 halt）
+  samplingHit?: boolean; // 13 号规则：计数达标
+  gateDecision?: 'speak' | 'wait'; // 20 号规则的输出（silent 表达为 halt）
 }
 
 export interface RuleContext {
@@ -229,9 +230,9 @@ export interface RuleContext {
 }
 
 export interface InterventionRule {
-  readonly name: string;    // = 文件夹名后缀 = REQUIREMENT.md frontmatter.rule
+  readonly name: string; // = 文件夹名后缀 = REQUIREMENT.md frontmatter.rule
   readonly stage: RuleStage;
-  readonly order: number;   // = 编号前缀，注册表与 frontmatter 不一致时冒烟测试失败
+  readonly order: number; // = 编号前缀，注册表与 frontmatter 不一致时冒烟测试失败
   evaluate(ctx: RuleContext): RuleVerdict | Promise<RuleVerdict>;
 }
 ```
@@ -244,26 +245,32 @@ export interface InterventionRule {
 rule: at-others
 stage: intake
 order: 50
-params: []                 # 可声明参数：名字/默认值/含义，qqbot.yml 可覆盖
-stats: halt_at_others      # 本规则产生的统计键
+params: [] # 可声明参数：名字/默认值/含义，qqbot.yml 可覆盖
+stats: halt_at_others # 本规则产生的统计键
 ---
 
 # 原始需求
+
 （产生这条规则的那句自然语言，逐字保留）
 
 # 需求描述
+
 什么情况下、做什么判断、产生什么结果——一段人话。
 
 # 判定
+
 - 输入 / 条件 / 动作（pass|mark|defer|halt + reason）
 
 # 参数
+
 | 名字 | 默认值 | 含义 |
 
 # 验收标准
+
 1. …（枚举；rule.test.ts 必须逐条覆盖，测试名含「验收1」等编号）
 
 # 背景与调研来源
+
 （为什么需要这条规则；生态实现里的对应物）
 ```
 
@@ -438,12 +445,12 @@ Phase 0 只「听」不「说」（intake 链只有 01/02/04 三层，终局是�
 /** 旁听到的群消息（未 @ 机器人，不触发回复，仅供介入判定与缓冲）。 */
 export interface NormalizedObservedMessage {
   kind: 'group-message-observed';
-  target: ConversationTarget;          // 与该群 at-message 相同的 key
-  eventId: string;                     // 平台内唯一，带平台命名空间（内存去重用）
+  target: ConversationTarget; // 与该群 at-message 相同的 key
+  eventId: string; // 平台内唯一，带平台命名空间（内存去重用）
   msgId: string;
   senderId: string;
   username?: string;
-  content: string;                     // 扁平化文本（[图片] 等占位与现有规则一致）
+  content: string; // 扁平化文本（[图片] 等占位与现有规则一致）
   ts: number;
   /** 是否 @ 了其他成员（@ 机器人的消息不会成为 observed） */
   atOthers: boolean;
@@ -595,29 +602,29 @@ COLD ──speak 链全过──▶ FOCUS（120s：期间消息强制走 Gate，
 
 ```yaml
 intervention:
-  enabled: false            # 全局总开关，默认关（fail-closed；规则 01）
-  dryRun: false             # 灰度：判定照跑、trace 照记、不发言
+  enabled: false # 全局总开关，默认关（fail-closed；规则 01）
+  dryRun: false # 灰度：判定照跑、trace 照记、不发言
   # 群白名单在 .env 的 BOT_LISTEN_GROUPS（群号属个人标识，不进本文件，
   # 规则与 BOT_ADMINS 一致）：BOT_LISTEN_GROUPS=onebot:123456,onebot:654321
-  buffer:                   # watcher 级（不是规则参数）
+  buffer: # watcher 级（不是规则参数）
     maxMessages: 200
     maxAgeHours: 72
-  gate:                     # gate-client 级（20 号规则经 ctx.gate 使用）
-    apiBase: https://api.deepseek.com   # 缺省用 DEEPSEEK_API_KEY
+  gate: # gate-client 级（20 号规则经 ctx.gate 使用）
+    apiBase: https://api.deepseek.com # 缺省用 DEEPSEEK_API_KEY
     model: deepseek-flash
     timeoutMs: 15000
     maxConcurrent: 2
-  rules:                    # 按规则名覆盖（键必须已注册）
-    master-switch:      { enabled: true }
-    promotion-window:   { params: { windowMs: 120000 } }
-    inflight-merge:     { params: { maxMessages: 5, maxWaitMs: 60000 } }
-    eval-cooldown:      { params: { cooldownMs: 60000, strongSignalCooldownMs: 15000 } }
+  rules: # 按规则名覆盖（键必须已注册）
+    master-switch: { enabled: true }
+    promotion-window: { params: { windowMs: 120000 } }
+    inflight-merge: { params: { maxMessages: 5, maxWaitMs: 60000 } }
+    eval-cooldown: { params: { cooldownMs: 60000, strongSignalCooldownMs: 15000 } }
     strong-quick-reply: { params: { quickResponseMs: 30000 } }
     strong-open-question: { params: { answerWindowMs: 90000 } }
-    sampling-debounce:  { params: { evaluateEvery: 6, silenceDebounceMs: 20000 } }
-    semantic-gate:      { params: { contextMessages: 30 } }  # prompt 覆盖见其 frontmatter
-    rate-limit-veto:    { params: { maxPer10Min: 3, maxPerHour: 8 } }
-    focus-budget:       { params: { focusMs: 120000, fadingMs: 120000, focusMaxReplies: 2 } }
+    sampling-debounce: { params: { evaluateEvery: 6, silenceDebounceMs: 20000 } }
+    semantic-gate: { params: { contextMessages: 30 } } # prompt 覆盖见其 frontmatter
+    rate-limit-veto: { params: { maxPer10Min: 3, maxPerHour: 8 } }
+    focus-budget: { params: { focusMs: 120000, fadingMs: 120000, focusMaxReplies: 2 } }
 ```
 
 运行期覆盖（`/listen` 命令，§11）持久化到 `stateDir/listen-override.json`，
@@ -628,11 +635,11 @@ intervention:
 `/listen` 命令路由（新 ingress stage，位置在 dedupe 之后、与 offpeak 命令
 同级；变更类子命令仅管理员，fail-closed，仿 OffpeakCommandRouter）：
 
-| 命令 | 权限 | 作用 |
-|---|---|---|
-| `/listen status` | 所有人 | 本群开关、缓冲水位、相位、最近 rules-trace、近 1 小时按规则名的拦截计数 |
+| 命令                         | 权限   | 作用                                                                           |
+| ---------------------------- | ------ | ------------------------------------------------------------------------------ |
+| `/listen status`             | 所有人 | 本群开关、缓冲水位、相位、最近 rules-trace、近 1 小时按规则名的拦截计数        |
 | `/listen on` / `/listen off` | 管理员 | 开/关**本群**介入（写运行期覆盖，规则 01/02 消费；off 后仍旁听缓冲但永不说话） |
-| `/listen stats` | 管理员 | 全局各群计数快照（含 Gate 调用/错误） |
+| `/listen stats`              | 管理员 | 全局各群计数快照（含 Gate 调用/错误）                                          |
 
 health（`/healthz`、`/metrics`）新增 `intervention` 段：每群相位、缓冲水位、
 `rules.<name>.*` 计数、`gateCalls/gateErrors`、`interventionsSent/Dropped*`、

@@ -108,7 +108,7 @@ function waitReasonOf(verdict: SceneVerdict): WaitReason | undefined {
  */
 export function selectByQuantileBudget(
   scored: ReadonlyArray<{ scene: SceneId; score: number; expectedRate: number }>,
-  targetRate: number,
+  targetRate: number
 ): ReadonlySet<SceneId> {
   if (scored.length === 0) return new Set();
   const target = Math.max(0, targetRate) * scored.reduce((sum, item) => sum + item.expectedRate, 0);
@@ -135,7 +135,7 @@ export function evaluateVeto(
     verdicts: readonly SceneVerdict[];
     context: VetoContext;
   },
-  policy: VetoPolicy = DEFAULT_VETO_POLICY,
+  policy: VetoPolicy = DEFAULT_VETO_POLICY
 ): ProactiveDecision {
   const { candidates, verdicts, context } = input;
 
@@ -188,7 +188,7 @@ export function evaluateVeto(
       return silent(
         'budget-exhausted',
         `本话题的发言预算已用尽（会话开启于 ${session.openedAt}）；` +
-          `等话题收口（close）、换新（new-topic）或静默超时`,
+          `等话题收口（close）、换新（new-topic）或静默超时`
       );
     }
     const lastSpokeAt = session.lastSpokeAt;
@@ -199,7 +199,7 @@ export function evaluateVeto(
         // 没有重置节奏的权力。否则"一直说换话题"就能连着刷——上限又回到模型手里。
         return silent(
           'min-gap',
-          `距上次发言 ${context.now - lastSpokeAt}ms（下限 ${gap}ms），本次不消耗预算`,
+          `距上次发言 ${context.now - lastSpokeAt}ms（下限 ${gap}ms），本次不消耗预算`
         );
       }
     }
@@ -213,7 +213,7 @@ export function evaluateVeto(
       : [...satisfied.map((verdict) => verdict.scene)].sort(
           (left, right) =>
             (context.order as readonly SceneId[]).indexOf(left) -
-            (context.order as readonly SceneId[]).indexOf(right),
+            (context.order as readonly SceneId[]).indexOf(right)
         );
 
   let winner = orderedIds[0] as SceneId;
@@ -238,9 +238,7 @@ export function evaluateVeto(
   }
 
   const winnerVerdict = satisfied.find((verdict) => verdict.scene === winner) as SceneVerdict;
-  const alsoMatched = satisfied
-    .map((verdict) => verdict.scene)
-    .filter((scene) => scene !== winner);
+  const alsoMatched = satisfied.map((verdict) => verdict.scene).filter((scene) => scene !== winner);
 
   return {
     action: 'speak',
@@ -254,9 +252,7 @@ export function evaluateVeto(
 }
 
 function silent(reason: VetoReason, detail?: string): ProactiveDecision {
-  return detail === undefined
-    ? { action: 'silent', reason }
-    : { action: 'silent', reason, detail };
+  return detail === undefined ? { action: 'silent', reason } : { action: 'silent', reason, detail };
 }
 
 /**
@@ -268,7 +264,7 @@ function silent(reason: VetoReason, detail?: string): ProactiveDecision {
 function decideWait(
   verdicts: readonly SceneVerdict[],
   context: VetoContext,
-  policy: VetoPolicy,
+  policy: VetoPolicy
 ): ProactiveDecision {
   // 谁在说"先别说"：三态理由里只有 `yielding` 需要排唤醒，其余按 silent 处理。
   let waiter: { verdict: SceneVerdict; reason: WaitReason } | undefined;
@@ -292,7 +288,7 @@ function decideWait(
   if (target === undefined || !target.exists) {
     return silent(
       'wait-declined',
-      `wait:invalid-target|理由 ${waiter.reason}，对象 ${target?.id ?? '(未给出)'} 不在台账里`,
+      `wait:invalid-target|理由 ${waiter.reason}，对象 ${target?.id ?? '(未给出)'} 不在台账里`
     );
   }
 
@@ -314,7 +310,7 @@ function decideWait(
   if (target.yieldBudgetUsed >= budget) {
     return silent(
       'wait-spent',
-      `${target.id} 已让路 ${target.yieldBudgetUsed} 次（上限 ${budget}）`,
+      `${target.id} 已让路 ${target.yieldBudgetUsed} 次（上限 ${budget}）`
     );
   }
 

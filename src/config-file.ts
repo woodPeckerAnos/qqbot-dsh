@@ -78,10 +78,18 @@ export interface DshFileConfig {
 }
 
 export interface TasksFileConfig {
-  fastTimeoutMs?: number; slowTimeoutMs?: number;
-  fastProvider?: string; fastModel?: string; slowProvider?: string; slowModel?: string;
-  fastRuntimes?: number; slowRuntimes?: number;
-  maxPerSession?: number; maxGlobal?: number; retentionMs?: number; reminderMs?: number;
+  fastTimeoutMs?: number;
+  slowTimeoutMs?: number;
+  fastProvider?: string;
+  fastModel?: string;
+  slowProvider?: string;
+  slowModel?: string;
+  fastRuntimes?: number;
+  slowRuntimes?: number;
+  maxPerSession?: number;
+  maxGlobal?: number;
+  retentionMs?: number;
+  reminderMs?: number;
 }
 
 export interface PoolFileConfig {
@@ -345,8 +353,18 @@ const DSH_SPEC: SectionSpec = {
   shutdownTimeoutMs: 'int',
 };
 const TASKS_SPEC: SectionSpec = {
-  fastTimeoutMs: 'int', slowTimeoutMs: 'int', fastProvider: 'string', fastModel: 'string', slowProvider: 'string', slowModel: 'string',
-  fastRuntimes: 'int', slowRuntimes: 'int', maxPerSession: 'int', maxGlobal: 'int', retentionMs: 'int', reminderMs: 'int',
+  fastTimeoutMs: 'int',
+  slowTimeoutMs: 'int',
+  fastProvider: 'string',
+  fastModel: 'string',
+  slowProvider: 'string',
+  slowModel: 'string',
+  fastRuntimes: 'int',
+  slowRuntimes: 'int',
+  maxPerSession: 'int',
+  maxGlobal: 'int',
+  retentionMs: 'int',
+  reminderMs: 'int',
 };
 const POOL_SPEC: SectionSpec = {
   maxConcurrentTurns: 'int',
@@ -502,10 +520,9 @@ function coerceScalar(value: unknown, path: string, kind: Kind): unknown {
       return value;
     case 'int':
       if (typeof value !== 'number' || !Number.isInteger(value)) {
-        throw new ConfigError(
-          `${path} 必须是整数，收到 ${describeValue(value)}`,
-          ['YAML 里直接写数字，不要加引号：port: 6700（而不是 port: "6700"）'],
-        );
+        throw new ConfigError(`${path} 必须是整数，收到 ${describeValue(value)}`, [
+          'YAML 里直接写数字，不要加引号：port: 6700（而不是 port: "6700"）',
+        ]);
       }
       return value;
     case 'bool':
@@ -515,10 +532,9 @@ function coerceScalar(value: unknown, path: string, kind: Kind): unknown {
       return value;
     case 'stringList': {
       if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
-        throw new ConfigError(
-          `${path} 必须是字符串数组，收到 ${describeValue(value)}`,
-          ['写法：\n  admins:\n    - qq-official:ABCDEF\n    - onebot:123456'],
-        );
+        throw new ConfigError(`${path} 必须是字符串数组，收到 ${describeValue(value)}`, [
+          '写法：\n  admins:\n    - qq-official:ABCDEF\n    - onebot:123456',
+        ]);
       }
       return value as string[];
     }
@@ -528,14 +544,11 @@ function coerceScalar(value: unknown, path: string, kind: Kind): unknown {
       if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
         return (value as string[]).join(',');
       }
-      throw new ConfigError(
-        `${path} 必须是窗口串或字符串数组，收到 ${describeValue(value)}`,
-        [
-          '两种写法都可以：',
-          '  windows: 00:00-09:00,12:00-14:00,18:00-24:00',
-          '  windows: ["00:00-09:00", "12:00-14:00", "18:00-24:00"]',
-        ],
-      );
+      throw new ConfigError(`${path} 必须是窗口串或字符串数组，收到 ${describeValue(value)}`, [
+        '两种写法都可以：',
+        '  windows: 00:00-09:00,12:00-14:00,18:00-24:00',
+        '  windows: ["00:00-09:00", "12:00-14:00", "18:00-24:00"]',
+      ]);
     }
   }
 }
@@ -554,7 +567,7 @@ function readSection(
   raw: unknown,
   path: string,
   scalarSpec: SectionSpec,
-  nestedSpecs: Record<string, SectionSpec> = {},
+  nestedSpecs: Record<string, SectionSpec> = {}
 ): Record<string, unknown> {
   if (raw === undefined || raw === null) return {};
   if (!isPlainObject(raw)) {
@@ -563,9 +576,7 @@ function readSection(
   const allowed = [...Object.keys(scalarSpec), ...Object.keys(nestedSpecs)];
   for (const key of Object.keys(raw)) {
     if (!allowed.includes(key)) {
-      throw new ConfigError(`${path}.${key} 不是可识别的配置项`, [
-        `可用项：${allowed.join('、')}`,
-      ]);
+      throw new ConfigError(`${path}.${key} 不是可识别的配置项`, [`可用项：${allowed.join('、')}`]);
     }
   }
   const out: Record<string, unknown> = {};
@@ -588,7 +599,7 @@ function parseYamlMapping(text: string, source: string): Record<string, unknown>
   } catch (error) {
     throw new ConfigError(
       `${source} 不是合法 YAML：${error instanceof Error ? error.message : String(error)}`,
-      ['缩进必须用空格（不能用 Tab）；注意冒号后面要有空格：port: 6700'],
+      ['缩进必须用空格（不能用 Tab）；注意冒号后面要有空格：port: 6700']
     );
   }
   if (root === null || root === undefined) return {}; // 空文件 = 全部走默认
@@ -612,9 +623,7 @@ function parseConfigObject(raw: Record<string, unknown>, source: string): FileCo
       throw new ConfigError(`${source}: 配置项 "${key}" 不能写在配置文件里`, rejected);
     }
     if (!allowedTop.includes(key)) {
-      throw new ConfigError(`${source}: 未知配置项 "${key}"`, [
-        `可用项：${allowedTop.join('、')}`,
-      ]);
+      throw new ConfigError(`${source}: 未知配置项 "${key}"`, [`可用项：${allowedTop.join('、')}`]);
     }
   }
 
@@ -644,7 +653,7 @@ function parseConfigObject(raw: Record<string, unknown>, source: string): FileCo
  */
 export function parseConfigDocument(
   text: string,
-  source = DEFAULT_CONFIG_FILE,
+  source = DEFAULT_CONFIG_FILE
 ): ParsedConfigDocument<FileConfig> {
   const root = parseYamlMapping(text, source);
   const includes = parseIncludeDirectives(root['include'], source);
@@ -712,7 +721,7 @@ export interface LoadedConfigFile {
  * EISDIR。
  */
 export function loadConfigFile(
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = process.env
 ): LoadedConfigFile {
   const { path, explicit } = resolveConfigFilePath(env);
 
@@ -745,7 +754,7 @@ export function loadConfigFile(
       ]);
     }
     throw new ConfigError(
-      `读取配置文件失败：${path}（${error instanceof Error ? error.message : String(error)}）`,
+      `读取配置文件失败：${path}（${error instanceof Error ? error.message : String(error)}）`
     );
   }
 

@@ -87,7 +87,12 @@ function evidence(overrides: Partial<SceneEvidence> = {}): SceneEvidence {
 }
 
 /** 造一条旁听消息（旁听不需要 parts，只要判定需要的字段）。 */
-function makeObserved(msgId: string, senderId: string, text: string, ts: number): NormalizedMessage {
+function makeObserved(
+  msgId: string,
+  senderId: string,
+  text: string,
+  ts: number
+): NormalizedMessage {
   return {
     kind: 'group-message',
     target: { platform: 'onebot', kind: 'group', id: '1', key: 'ob11:g1' },
@@ -102,14 +107,14 @@ function makeObserved(msgId: string, senderId: string, text: string, ts: number)
 
 function candidate(
   scene: SceneCandidate['scene'],
-  overrides: Partial<SceneCandidate> = {},
+  overrides: Partial<SceneCandidate> = {}
 ): SceneCandidate {
   return { scene, localConfidence: 0.5, expectedRate: 0.4, ...overrides };
 }
 
 function verdict(
   scene: SceneVerdict['scene'],
-  overrides: Partial<SceneVerdict> = {},
+  overrides: Partial<SceneVerdict> = {}
 ): SceneVerdict {
   return { scene, satisfied: true, confidence: 0.8, reason: '成立', ...overrides };
 }
@@ -127,7 +132,7 @@ function vetoContext(overrides: Partial<VetoContext> = {}): VetoContext {
 
 /** 一个开启中的话题 session（三字段，见 docs/TOPIC-SESSION-REQUIREMENT.md §一）。 */
 function sessionFact(
-  overrides: Partial<{ openedAt: number; budgetLeft: number; lastSpokeAt?: number }> = {},
+  overrides: Partial<{ openedAt: number; budgetLeft: number; lastSpokeAt?: number }> = {}
 ): TopicSession {
   return { openedAt: 900_000, budgetLeft: 2, ...overrides };
 }
@@ -148,7 +153,7 @@ function yieldingVerdict(targetId: string, overrides: Partial<SceneVerdict> = {}
 /** 一个仍挂起的对象（wait 票据要挂上去的那一行）。 */
 function waitTarget(
   targetId: string,
-  overrides: Partial<{ exists: boolean; open: boolean; yieldBudgetUsed: number }> = {},
+  overrides: Partial<{ exists: boolean; open: boolean; yieldBudgetUsed: number }> = {}
 ) {
   return { id: targetId, exists: true, open: true, yieldBudgetUsed: 0, ...overrides };
 }
@@ -187,9 +192,15 @@ describe('① 搜集层：本地、只判断可能、不做裁决', () => {
       evidence({
         inBotTopicWindow: true,
         lastBotSpeakAt: 999_000,
-        topic: { id: 't1', startedAt: 990_000, lastAt: 999_500, humanParticipants: 2, botSpeaks: 1 },
+        topic: {
+          id: 't1',
+          startedAt: 990_000,
+          lastAt: 999_500,
+          humanParticipants: 2,
+          botSpeaks: 1,
+        },
         message: { text: '小助手你刚才说的那个再讲一下', atSelf: false },
-      }),
+      })
     );
     // 同时命中指代(4) 与续聊(1)：候选按 order 排，4 在前
     expect(hits.map((item) => item.scene)).toEqual(['scene-4', 'scene-1']);
@@ -205,7 +216,9 @@ describe('① 搜集层：本地、只判断可能、不做裁决', () => {
       trigger: 'topic-roll',
     });
     expect(collectCandidates(noisy, { maxUnansweredStreak: 2 }).length).toBeGreaterThan(0);
-    expect(collectCandidates({ ...noisy, unansweredStreak: 2 }, { maxUnansweredStreak: 2 })).toEqual([]);
+    expect(
+      collectCandidates({ ...noisy, unansweredStreak: 2 }, { maxUnansweredStreak: 2 })
+    ).toEqual([]);
   });
 
   it('验收5：指代检测宁漏不误报——议论 bot 不算，@ 了 bot 也不算', () => {
@@ -214,7 +227,7 @@ describe('① 搜集层：本地、只判断可能、不做裁决', () => {
       matched: '小助手',
     });
     expect(
-      detectBotReference({ text: '小助手在吗', botAliases: ['小助手'], atSelf: true }),
+      detectBotReference({ text: '小助手在吗', botAliases: ['小助手'], atSelf: true })
     ).toBeUndefined();
     expect(detectBotReference({ text: '这机器人是不是坏了', botAliases: [] })).toBeUndefined();
     expect(detectBotReference({ text: '机器人能帮我转个表吗', botAliases: [] })).toEqual({
@@ -226,10 +239,16 @@ describe('① 搜集层：本地、只判断可能、不做裁决', () => {
   it('验收6：场景 2 要求多人多轮且 bot 未参与；场景 5 要求命中兴趣且本话题没说过', () => {
     const scene2 = getScene('scene-2');
     expect(
-      scene2?.precheck?.({ ...evidence({ recentHumanCount: 1, recentMessageCount: 9 }), scene: 'scene-2' }),
+      scene2?.precheck?.({
+        ...evidence({ recentHumanCount: 1, recentMessageCount: 9 }),
+        scene: 'scene-2',
+      })
     ).toBeUndefined();
     expect(
-      scene2?.precheck?.({ ...evidence({ recentHumanCount: 2, recentMessageCount: 3 }), scene: 'scene-2' }),
+      scene2?.precheck?.({
+        ...evidence({ recentHumanCount: 2, recentMessageCount: 3 }),
+        scene: 'scene-2',
+      })
     ).toBeDefined();
     expect(
       scene2?.precheck?.({
@@ -239,22 +258,22 @@ describe('① 搜集层：本地、只判断可能、不做裁决', () => {
           topic: { id: 't1', startedAt: 1, lastAt: 2, humanParticipants: 3, botSpeaks: 1 },
         }),
         scene: 'scene-2',
-      }),
+      })
     ).toBeUndefined();
 
     const scene5 = getScene('scene-5');
     expect(
-      scene5?.precheck?.({ ...evidence({ matchedInterestIds: [] }), scene: 'scene-5' }),
+      scene5?.precheck?.({ ...evidence({ matchedInterestIds: [] }), scene: 'scene-5' })
     ).toBeUndefined();
     expect(
-      scene5?.precheck?.({ ...evidence({ matchedInterestIds: ['plotting'] }), scene: 'scene-5' }),
+      scene5?.precheck?.({ ...evidence({ matchedInterestIds: ['plotting'] }), scene: 'scene-5' })
     ).toBeDefined();
   });
 
   it('验收7b：buildSceneEvidence 从会话状态与兴趣池推导全部字段（调用方不手填）', () => {
     const pool = parseInterestPool(
       'interests:\n  - {id: plotting, topic: 画图, keywords: [折线图]}',
-      'test.yml',
+      'test.yml'
     );
     const state = stateFor('ob11:g1');
     const now = 1_000_000;
@@ -322,7 +341,7 @@ describe('① 搜集层：本地、只判断可能、不做裁决', () => {
         recentMessageCount: 4,
         matchedInterestIds: ['x'],
         sceneRates: { 'scene-2': 0.9 },
-      }),
+      })
     );
     expect(rated.map((item) => item.scene)).toEqual(['scene-2', 'scene-5']);
     expect(rated[0]?.expectedRate).toBe(0.9);
@@ -350,11 +369,17 @@ describe('② LLM 层：逐场景判定与容错', () => {
     const parsed = parseSceneVerdicts(
       JSON.stringify({
         verdicts: [
-          { scene: 'scene-3', satisfied: true, confidence: 0.9, reason: '无人答', evidence: '谁能跑一下' },
+          {
+            scene: 'scene-3',
+            satisfied: true,
+            confidence: 0.9,
+            reason: '无人答',
+            evidence: '谁能跑一下',
+          },
           { scene: 'scene-4', satisfied: false, confidence: 0.2, reason: '在议论' },
         ],
       }),
-      candidates,
+      candidates
     );
     expect(parsed?.map((item) => item.scene)).toEqual(['scene-4', 'scene-3']);
     expect(parsed?.[1]).toMatchObject({ satisfied: true, evidence: '谁能跑一下' });
@@ -368,7 +393,7 @@ describe('② LLM 层：逐场景判定与容错', () => {
           { scene: 'scene-3', satisfied: true, confidence: 5, reason: '无人答' },
         ],
       }),
-      candidates,
+      candidates
     );
     expect(parsed).toHaveLength(2);
     expect(parsed?.[0]).toMatchObject({ scene: 'scene-4', satisfied: false }); // 缺失 → 不成立
@@ -379,11 +404,11 @@ describe('② LLM 层：逐场景判定与容错', () => {
     expect(parseSceneVerdicts('模型今天不想输出 JSON', candidates)).toBeUndefined();
     expect(parseSceneVerdicts('{"verdicts":"nope"}', candidates)).toBeUndefined();
     expect(
-      parseSceneVerdicts('{"verdicts":[{"scene":"scene-99","satisfied":true}]}', candidates),
+      parseSceneVerdicts('{"verdicts":[{"scene":"scene-99","satisfied":true}]}', candidates)
     ).toBeUndefined();
     const fenced = parseSceneVerdicts(
       '好的，结果如下：\n```json\n{"verdicts":[{"scene":"scene-3","satisfied":true,"confidence":0.7,"reason":"x"}]}\n```\n',
-      candidates,
+      candidates
     );
     expect(fenced?.[1]).toMatchObject({ scene: 'scene-3', satisfied: true, confidence: 0.7 });
   });
@@ -392,10 +417,16 @@ describe('② LLM 层：逐场景判定与容错', () => {
     const parsed = parseSceneVerdicts(
       JSON.stringify({
         verdicts: [
-          { scene: 'scene-3', satisfied: false, confidence: 0.5, reason: '有人正在答', waitReason: 'yielding' },
+          {
+            scene: 'scene-3',
+            satisfied: false,
+            confidence: 0.5,
+            reason: '有人正在答',
+            waitReason: 'yielding',
+          },
         ],
       }),
-      candidates,
+      candidates
     );
     expect(parsed?.[1]?.waitReason).toBe('yielding');
 
@@ -403,9 +434,17 @@ describe('② LLM 层：逐场景判定与容错', () => {
     for (const reason of ['not-yet', 'watching'] as const) {
       const one = parseSceneVerdicts(
         JSON.stringify({
-          verdicts: [{ scene: 'scene-3', satisfied: false, confidence: 0.5, reason: 'x', waitReason: reason }],
+          verdicts: [
+            {
+              scene: 'scene-3',
+              satisfied: false,
+              confidence: 0.5,
+              reason: 'x',
+              waitReason: reason,
+            },
+          ],
         }),
-        candidates,
+        candidates
       );
       expect(one?.[1]?.waitReason).toBe(reason);
     }
@@ -413,18 +452,34 @@ describe('② LLM 层：逐场景判定与容错', () => {
     // 模型编出来的第四个理由 → 丢弃该字段（不是整条降级），判据描述需要更明确
     const bogus = parseSceneVerdicts(
       JSON.stringify({
-        verdicts: [{ scene: 'scene-3', satisfied: false, confidence: 0.5, reason: 'x', waitReason: 'maybe-later' }],
+        verdicts: [
+          {
+            scene: 'scene-3',
+            satisfied: false,
+            confidence: 0.5,
+            reason: 'x',
+            waitReason: 'maybe-later',
+          },
+        ],
       }),
-      candidates,
+      candidates
     );
     expect(bogus?.[1]?.waitReason).toBeUndefined();
 
     // 已成立的判定不再带理由："成立"与"先别说"不可能同时为真
     const satisfied = parseSceneVerdicts(
       JSON.stringify({
-        verdicts: [{ scene: 'scene-3', satisfied: true, confidence: 0.9, reason: 'x', waitReason: 'yielding' }],
+        verdicts: [
+          {
+            scene: 'scene-3',
+            satisfied: true,
+            confidence: 0.9,
+            reason: 'x',
+            waitReason: 'yielding',
+          },
+        ],
       }),
-      candidates,
+      candidates
     );
     expect(satisfied?.[1]?.waitReason).toBeUndefined();
     expect(satisfied?.[1]?.satisfied).toBe(true);
@@ -487,7 +542,7 @@ describe('③ 否决层：顺序、额度与终局', () => {
         verdicts: [verdict('scene-4')],
         context: vetoContext({ spokeCount10Min: 3 }),
       },
-      DEFAULT_VETO_POLICY,
+      DEFAULT_VETO_POLICY
     );
     expect(limited).toMatchObject({ action: 'silent', reason: 'rate-limit' });
 
@@ -497,7 +552,7 @@ describe('③ 否决层：顺序、额度与终局', () => {
         verdicts: [verdict('scene-4')],
         context: vetoContext({ spokeCount1Hour: 8 }),
       },
-      DEFAULT_VETO_POLICY,
+      DEFAULT_VETO_POLICY
     );
     expect(hourly).toMatchObject({ action: 'silent', reason: 'rate-limit' });
 
@@ -509,7 +564,7 @@ describe('③ 否决层：顺序、额度与终局', () => {
         verdicts: [verdict('scene-4')],
         context: vetoContext({ session: sessionFact({ budgetLeft: 1, lastSpokeAt: 900_000 }) }),
       },
-      DEFAULT_VETO_POLICY,
+      DEFAULT_VETO_POLICY
     );
     expect(inSession).toMatchObject({ action: 'speak', scene: 'scene-4' });
 
@@ -520,7 +575,7 @@ describe('③ 否决层：顺序、额度与终局', () => {
         verdicts: [verdict('scene-4')],
         context: vetoContext({ session: sessionFact({ budgetLeft: 1, lastSpokeAt: 999_000 }) }),
       },
-      DEFAULT_VETO_POLICY,
+      DEFAULT_VETO_POLICY
     );
     expect(gap).toMatchObject({ action: 'silent', reason: 'min-gap' });
 
@@ -531,7 +586,7 @@ describe('③ 否决层：顺序、额度与终局', () => {
         verdicts: [verdict('scene-4')],
         context: vetoContext({ session: sessionFact({ budgetLeft: 0, lastSpokeAt: 900_000 }) }),
       },
-      DEFAULT_VETO_POLICY,
+      DEFAULT_VETO_POLICY
     );
     expect(spent).toMatchObject({ action: 'silent', reason: 'budget-exhausted' });
   });
@@ -547,7 +602,7 @@ describe('③ 否决层：顺序、额度与终局', () => {
         candidates: [candidate('scene-4')],
         verdicts: [verdict('scene-4', { satisfied: false })],
         context: vetoContext(),
-      }),
+      })
     ).toMatchObject({ action: 'silent', reason: 'no-session' });
     // 有 session：模型自己说这次没什么可补 → no-scene（session 保持开启）
     expect(
@@ -555,7 +610,7 @@ describe('③ 否决层：顺序、额度与终局', () => {
         candidates: [candidate('scene-4')],
         verdicts: [verdict('scene-4', { satisfied: false })],
         context: vetoContext({ session: sessionFact() }),
-      }),
+      })
     ).toMatchObject({ action: 'silent', reason: 'no-scene' });
   });
 
@@ -586,7 +641,7 @@ describe('③ 否决层：顺序、额度与终局', () => {
         verdicts: waiting,
         context: vetoContext({ wait: waitTarget(id, { yieldBudgetUsed: 1 }) }),
       },
-      { ...DEFAULT_VETO_POLICY, maxWaitPerItem: 2 },
+      { ...DEFAULT_VETO_POLICY, maxWaitPerItem: 2 }
     );
     expect(again).toMatchObject({ action: 'wait' });
 
@@ -597,7 +652,7 @@ describe('③ 否决层：顺序、额度与终局', () => {
         verdicts: waiting,
         context: vetoContext({ wait: waitTarget(id, { yieldBudgetUsed: 3 }) }),
       },
-      { ...DEFAULT_VETO_POLICY, maxWaitPerItem: 5 },
+      { ...DEFAULT_VETO_POLICY, maxWaitPerItem: 5 }
     );
     expect(capped).toMatchObject({ action: 'silent', reason: 'wait-spent' });
   });
@@ -607,7 +662,7 @@ describe('③ 否决层：顺序、额度与终局', () => {
     const veto = (
       v: SceneVerdict,
       wait?: { id: string; exists: boolean; open: boolean; yieldBudgetUsed: number },
-      session?: TopicSession,
+      session?: TopicSession
     ) =>
       evaluateVeto({
         candidates: [candidate('scene-3')],
@@ -634,18 +689,22 @@ describe('③ 否决层：顺序、额度与终局', () => {
 
     // 引用无效：台账里**从来没有过**这个 id（模型回抄错了 / 幻觉）→ silent，
     // 且必须与"曾经有过但已关闭"分开计数（后者是好消息：省下了一次调用）
-    expect(veto(yieldingVerdict(id), waitTarget(id, { exists: false, open: false }))).toMatchObject({
-      action: 'silent',
-      reason: 'wait-declined',
-    });
-    expect(veto(yieldingVerdict(id), waitTarget(id, { exists: false, open: false }))).toHaveProperty(
-      'detail',
-      expect.stringContaining('invalid-target'),
+    expect(veto(yieldingVerdict(id), waitTarget(id, { exists: false, open: false }))).toMatchObject(
+      {
+        action: 'silent',
+        reason: 'wait-declined',
+      }
     );
+    expect(
+      veto(yieldingVerdict(id), waitTarget(id, { exists: false, open: false }))
+    ).toHaveProperty('detail', expect.stringContaining('invalid-target'));
 
     // 压根没给引用（模型只说"有人在答"，没说在等谁）→ 同样按引用无效处理
     expect(veto(yieldingVerdict(id))).toMatchObject({ action: 'silent', reason: 'wait-declined' });
-    expect(veto(yieldingVerdict(id))).toHaveProperty('detail', expect.stringContaining('invalid-target'));
+    expect(veto(yieldingVerdict(id))).toHaveProperty(
+      'detail',
+      expect.stringContaining('invalid-target')
+    );
 
     // 没有任何"等一等"的判定：没有 session → no-session（模型没判"值得"就不会开）；
     // 有 session → no-scene（模型自己说这次没什么可补，session 保持开启）
@@ -656,13 +715,13 @@ describe('③ 否决层：顺序、额度与终局', () => {
     expect(
       veto(verdict('scene-3', { satisfied: false }), undefined, {
         session: sessionFact(),
-      }),
+      })
     ).toMatchObject({ action: 'silent', reason: 'no-scene' });
 
     // 旧版布尔位只为存量回放数据保留：等价于 yielding
     const legacy = veto(
       { scene: 'scene-3', satisfied: false, confidence: 0.5, reason: 'x', suggestsWait: true },
-      waitTarget(id),
+      waitTarget(id)
     );
     expect(legacy).toMatchObject({ action: 'wait', reason: 'yielding', targetId: id });
 
@@ -700,10 +759,13 @@ describe('③ 否决层：顺序、额度与终局', () => {
     const withBudget = evaluateVeto(
       {
         candidates: [candidate('scene-4'), candidate('scene-5', { expectedRate: 0.1 })],
-        verdicts: [verdict('scene-4', { confidence: 0.9 }), verdict('scene-5', { confidence: 0.2 })],
+        verdicts: [
+          verdict('scene-4', { confidence: 0.9 }),
+          verdict('scene-5', { confidence: 0.2 }),
+        ],
         context: vetoContext(),
       },
-      { ...DEFAULT_VETO_POLICY, quantileBudget: true, targetRate: 1.0 },
+      { ...DEFAULT_VETO_POLICY, quantileBudget: true, targetRate: 1.0 }
     );
     expect(withBudget).toMatchObject({ action: 'speak', scene: 'scene-4' });
   });

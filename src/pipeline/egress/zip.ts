@@ -99,7 +99,9 @@ export function packZip(entries: readonly ZipEntry[], now: Date = new Date()): B
 }
 
 /** 从磁盘读入若干文件并打包。调用方负责体积预算与路径安全（outbox 扫描已做）。 */
-export async function packFiles(files: readonly { absPath: string; fileName: string }[]): Promise<Buffer> {
+export async function packFiles(
+  files: readonly { absPath: string; fileName: string }[]
+): Promise<Buffer> {
   const entries: ZipEntry[] = [];
   for (const file of files) {
     entries.push({ name: file.fileName, data: await readFile(file.absPath) });

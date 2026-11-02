@@ -260,14 +260,22 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * 这些头的值就是凭证本身，写进配置文件违反"密钥不进配置文件"的纪律；
  * 正确做法是用 apiKeyEnv 让适配器自己带上认证头。
  */
-const SECRET_HEADER_NAMES = /^(authorization|proxy-authorization|x-api-key|api-key|apikey|x-auth-token|x-access-token)$/i;
+const SECRET_HEADER_NAMES =
+  /^(authorization|proxy-authorization|x-api-key|api-key|apikey|x-auth-token|x-access-token)$/i;
 
 /**
  * models: 段任何层级都不允许出现的键（内联密钥）。
  * DSH 自己的配置源校验也拒绝这些键的内联值（verify-config-source-ownership 的
  * INLINE_DENY），qqbot 在配置解析期就拒，报错离出错行更近。
  */
-const FORBIDDEN_SECRET_KEYS = new Set(['apikey', 'authtoken', 'apisecret', 'secretkey', 'password', 'token']);
+const FORBIDDEN_SECRET_KEYS = new Set([
+  'apikey',
+  'authtoken',
+  'apisecret',
+  'secretkey',
+  'password',
+  'token',
+]);
 
 // ---------------------------------------------------------------------------
 // 形状校验小工具（与 config-file.ts 同款风格：报错带 YAML 路径与可照做的提示）
@@ -283,7 +291,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function assertNoUnknownKeys(raw: Record<string, unknown>, allowed: readonly string[], path: string): void {
+function assertNoUnknownKeys(
+  raw: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string
+): void {
   for (const key of Object.keys(raw)) {
     if (FORBIDDEN_SECRET_KEYS.has(key.toLowerCase())) {
       throw new ConfigError(`${path}.${key} 是内联密钥写法，配置层不接受`, [
@@ -310,7 +322,7 @@ function readInt(
   raw: Record<string, unknown>,
   key: string,
   path: string,
-  range: { min: number; max?: number },
+  range: { min: number; max?: number }
 ): number | undefined {
   const value = raw[key];
   if (value === undefined || value === null) return undefined;
@@ -320,7 +332,8 @@ function readInt(
     ]);
   }
   if (value < range.min || (range.max !== undefined && value > range.max)) {
-    const span = range.max === undefined ? `≥ ${range.min}` : `在 [${range.min}, ${range.max}] 之间`;
+    const span =
+      range.max === undefined ? `≥ ${range.min}` : `在 [${range.min}, ${range.max}] 之间`;
     throw new ConfigError(`${path}.${key} 必须${span}，收到 ${value}`);
   }
   return value;
@@ -339,12 +352,14 @@ function readEnum<T extends string>(
   raw: Record<string, unknown>,
   key: string,
   path: string,
-  allowed: readonly T[],
+  allowed: readonly T[]
 ): T | undefined {
   const value = raw[key];
   if (value === undefined || value === null) return undefined;
   if (typeof value !== 'string' || !allowed.includes(value as T)) {
-    throw new ConfigError(`${path}.${key} 只能是 ${allowed.join(' | ')}，收到 ${describeValue(value)}`);
+    throw new ConfigError(
+      `${path}.${key} 只能是 ${allowed.join(' | ')}，收到 ${describeValue(value)}`
+    );
   }
   return value as T;
 }
@@ -352,7 +367,7 @@ function readEnum<T extends string>(
 function readStringList(
   raw: Record<string, unknown>,
   key: string,
-  path: string,
+  path: string
 ): string[] | undefined {
   const value = raw[key];
   if (value === undefined || value === null) return undefined;
@@ -364,13 +379,19 @@ function readStringList(
 
 const MODALITIES = ['text', 'image'] as const;
 
-function readModalities(raw: Record<string, unknown>, key: string, path: string): Array<'text' | 'image'> | undefined {
+function readModalities(
+  raw: Record<string, unknown>,
+  key: string,
+  path: string
+): Array<'text' | 'image'> | undefined {
   const value = raw[key];
   if (value === undefined || value === null) return undefined;
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
-    value.some((item) => typeof item !== 'string' || !(MODALITIES as readonly string[]).includes(item))
+    value.some(
+      (item) => typeof item !== 'string' || !(MODALITIES as readonly string[]).includes(item)
+    )
   ) {
     throw new ConfigError(`${path}.${key} 必须是非空的模态数组，收到 ${describeValue(value)}`, [
       '可用值：text、image（本桥接层只会向模型发送文本与图片两种块）',
@@ -394,7 +415,9 @@ function readRetryPolicy(raw: unknown, path: string): RetryPolicyConfig | undefi
   assertNoUnknownKeys(raw, RETRY_POLICY_KEYS, path);
   const mode = readEnum(raw, 'mode', path, ['normal', 'always'] as const);
   if (mode === undefined) {
-    throw new ConfigError(`${path}.mode 是必填项`, ['取值：normal（有界重试）| always（直到成功/取消）']);
+    throw new ConfigError(`${path}.mode 是必填项`, [
+      '取值：normal（有界重试）| always（直到成功/取消）',
+    ]);
   }
   const policy: RetryPolicyConfig = { mode };
   if (mode === 'normal') {
@@ -417,7 +440,9 @@ function readRetryPolicy(raw: unknown, path: string): RetryPolicyConfig | undefi
     const jitterRaw = backoffRaw['jitterRatio'];
     if (jitterRaw !== undefined && jitterRaw !== null) {
       if (typeof jitterRaw !== 'number' || jitterRaw < 0 || jitterRaw > 1) {
-        throw new ConfigError(`${path}.backoff.jitterRatio 必须是 [0, 1] 之间的数字，收到 ${describeValue(jitterRaw)}`);
+        throw new ConfigError(
+          `${path}.backoff.jitterRatio 必须是 [0, 1] 之间的数字，收到 ${describeValue(jitterRaw)}`
+        );
       }
       backoff.jitterRatio = jitterRaw;
     }
@@ -521,7 +546,10 @@ function readCompat(raw: unknown, path: string): PiAiCompatConfig | undefined {
     const value = readBool(raw, key, path);
     if (value !== undefined) (compat as Record<string, unknown>)[key] = value;
   }
-  compat.maxTokensField = readEnum(raw, 'maxTokensField', path, ['max_completion_tokens', 'max_tokens'] as const);
+  compat.maxTokensField = readEnum(raw, 'maxTokensField', path, [
+    'max_completion_tokens',
+    'max_tokens',
+  ] as const);
   compat.thinkingFormat = readEnum(raw, 'thinkingFormat', path, THINKING_FORMATS);
   compat.thinkingTokenBudgetField = readEnum(raw, 'thinkingTokenBudgetField', path, [
     'thinking_token_budget',
@@ -530,19 +558,35 @@ function readCompat(raw: unknown, path: string): PiAiCompatConfig | undefined {
   ] as const);
   compat.cacheControlFormat = readEnum(raw, 'cacheControlFormat', path, ['anthropic'] as const);
   compat.vllmPriority = readInt(raw, 'vllmPriority', path, { min: 0 });
-  compat.chatTemplateKwargs = readTemplateArgs(raw['chatTemplateKwargs'], `${path}.chatTemplateKwargs`);
+  compat.chatTemplateKwargs = readTemplateArgs(
+    raw['chatTemplateKwargs'],
+    `${path}.chatTemplateKwargs`
+  );
   compat.chatTemplateArgs = readTemplateArgs(raw['chatTemplateArgs'], `${path}.chatTemplateArgs`);
   return compat;
 }
 
-const PI_AI_MODEL_KEYS = ['id', 'name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat'] as const;
+const PI_AI_MODEL_KEYS = [
+  'id',
+  'name',
+  'contextWindow',
+  'maxTokens',
+  'input',
+  'reasoningEfforts',
+  'compat',
+] as const;
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
-function readReasoningEfforts(raw: unknown, path: string): false | PiAiReasoningEfforts | undefined {
+function readReasoningEfforts(
+  raw: unknown,
+  path: string
+): false | PiAiReasoningEfforts | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (raw === false) return false;
   if (!isPlainObject(raw)) {
-    throw new ConfigError(`${path} 必须是 false 或映射（档位: 线上拼写），收到 ${describeValue(raw)}`);
+    throw new ConfigError(
+      `${path} 必须是 false 或映射（档位: 线上拼写），收到 ${describeValue(raw)}`
+    );
   }
   const out: PiAiReasoningEfforts = {};
   for (const [level, wire] of Object.entries(raw)) {
@@ -552,7 +596,9 @@ function readReasoningEfforts(raw: unknown, path: string): false | PiAiReasoning
       ]);
     }
     if (wire !== null && typeof wire !== 'string') {
-      throw new ConfigError(`${path}.${level} 的值必须是字符串或 null，收到 ${describeValue(wire)}`);
+      throw new ConfigError(
+        `${path}.${level} 的值必须是字符串或 null，收到 ${describeValue(wire)}`
+      );
     }
     if (level !== 'off' && (wire === null || wire === '')) {
       throw new ConfigError(`${path}.${level} 必须给出线上拼写`, [
@@ -565,14 +611,20 @@ function readReasoningEfforts(raw: unknown, path: string): false | PiAiReasoning
 }
 
 /** 读一个 pi-ai 模型条目；`idInKey` 为 true 时是 modelOverrides 条目（id 由键提供，条目里不许再写）。 */
-function readPiAiModel(raw: unknown, path: string, idInKey: boolean): PiAiModelConfig | PiAiModelOverride {
+function readPiAiModel(
+  raw: unknown,
+  path: string,
+  idInKey: boolean
+): PiAiModelConfig | PiAiModelOverride {
   if (!isPlainObject(raw)) {
     throw new ConfigError(`${path} 必须是映射（key: value），收到 ${describeValue(raw)}`);
   }
   assertNoUnknownKeys(raw, PI_AI_MODEL_KEYS, path);
   const id = readString(raw, 'id', path);
   if (!idInKey && id === undefined) {
-    throw new ConfigError(`${path}.id 是必填项`, ['每个模型条目都必须有 id（发给提供商的模型标识）']);
+    throw new ConfigError(`${path}.id 是必填项`, [
+      '每个模型条目都必须有 id（发给提供商的模型标识）',
+    ]);
   }
   if (idInKey && id !== undefined) {
     throw new ConfigError(`${path}.id 不该出现在 modelOverrides 条目里`, [
@@ -643,10 +695,16 @@ function readDeepSeekCatalogModel(raw: unknown, path: string): DeepSeekCatalogMo
   if (imagePixelBudgetRaw !== undefined && imagePixelBudgetRaw !== null) {
     if (imagePixelBudgetRaw === 'low') {
       imagePixelBudget = 'low';
-    } else if (typeof imagePixelBudgetRaw === 'number' && Number.isInteger(imagePixelBudgetRaw) && imagePixelBudgetRaw >= 1) {
+    } else if (
+      typeof imagePixelBudgetRaw === 'number' &&
+      Number.isInteger(imagePixelBudgetRaw) &&
+      imagePixelBudgetRaw >= 1
+    ) {
       imagePixelBudget = imagePixelBudgetRaw;
     } else {
-      throw new ConfigError(`${path}.imagePixelBudget 必须是正整数或 "low"，收到 ${describeValue(imagePixelBudgetRaw)}`);
+      throw new ConfigError(
+        `${path}.imagePixelBudget 必须是正整数或 "low"，收到 ${describeValue(imagePixelBudgetRaw)}`
+      );
     }
   }
   return stripUndefined({
@@ -672,9 +730,13 @@ function readDeepSeekRoute(raw: unknown, path: string): DeepSeekRouteConfig {
   let models: DeepSeekCatalogModelConfig[] | undefined;
   if (modelsRaw !== undefined && modelsRaw !== null) {
     if (!Array.isArray(modelsRaw) || modelsRaw.length === 0) {
-      throw new ConfigError(`${path}.models 必须是非空数组（整份替换默认目录），收到 ${describeValue(modelsRaw)}`);
+      throw new ConfigError(
+        `${path}.models 必须是非空数组（整份替换默认目录），收到 ${describeValue(modelsRaw)}`
+      );
     }
-    models = modelsRaw.map((entry, index) => readDeepSeekCatalogModel(entry, `${path}.models[${index}]`));
+    models = modelsRaw.map((entry, index) =>
+      readDeepSeekCatalogModel(entry, `${path}.models[${index}]`)
+    );
   }
   return stripUndefined({
     apiKeyEnv: readApiKeyEnv(raw, path),
@@ -693,7 +755,10 @@ function readDeepSeekRoute(raw: unknown, path: string): DeepSeekRouteConfig {
     imageOffloadCountQuantum: readInt(raw, 'imageOffloadCountQuantum', path, { min: 1 }),
     filesApiTimeoutMs: readInt(raw, 'filesApiTimeoutMs', path, { min: 1 }),
     // 与 llm-deepseek 的 schema 同界：1 小时到 30 天
-    fileExpiresAfterSeconds: readInt(raw, 'fileExpiresAfterSeconds', path, { min: 3_600, max: 2_592_000 }),
+    fileExpiresAfterSeconds: readInt(raw, 'fileExpiresAfterSeconds', path, {
+      min: 3_600,
+      max: 2_592_000,
+    }),
     fileRefreshMarginSeconds: readInt(raw, 'fileRefreshMarginSeconds', path, { min: 0 }),
     fileQuotaCleanupBatch: readInt(raw, 'fileQuotaCleanupBatch', path, { min: 1, max: 1_000 }),
     retryPolicy: readRetryPolicy(raw['retryPolicy'], `${path}.retryPolicy`),
@@ -732,9 +797,10 @@ const PI_AI_PROVIDER_KEYS = [
 function readApiKeyEnv(raw: Record<string, unknown>, path: string): string | undefined {
   const value = readString(raw, 'apiKeyEnv', path);
   if (value !== undefined && !ENV_NAME_PATTERN.test(value)) {
-    throw new ConfigError(`${path}.apiKeyEnv 必须是合法的环境变量名，收到 ${JSON.stringify(value)}`, [
-      '它是"变量名引用"而不是密钥本身：写 apiKeyEnv: OPENAI_API_KEY，把值放进 .env',
-    ]);
+    throw new ConfigError(
+      `${path}.apiKeyEnv 必须是合法的环境变量名，收到 ${JSON.stringify(value)}`,
+      ['它是"变量名引用"而不是密钥本身：写 apiKeyEnv: OPENAI_API_KEY，把值放进 .env']
+    );
   }
   return value;
 }
@@ -784,20 +850,30 @@ function readPiAiProvider(raw: unknown, path: string): PiAiProviderConfig {
   let models: PiAiModelConfig[] | undefined;
   if (modelsRaw !== undefined && modelsRaw !== null) {
     if (!Array.isArray(modelsRaw) || modelsRaw.length === 0) {
-      throw new ConfigError(`${path}.models 必须是非空数组（整份替换目录），收到 ${describeValue(modelsRaw)}`);
+      throw new ConfigError(
+        `${path}.models 必须是非空数组（整份替换目录），收到 ${describeValue(modelsRaw)}`
+      );
     }
-    models = modelsRaw.map((entry, index) => readPiAiModel(entry, `${path}.models[${index}]`, false) as PiAiModelConfig);
+    models = modelsRaw.map(
+      (entry, index) => readPiAiModel(entry, `${path}.models[${index}]`, false) as PiAiModelConfig
+    );
   }
 
   const overridesRaw = raw['modelOverrides'];
   let modelOverrides: Record<string, PiAiModelOverride> | undefined;
   if (overridesRaw !== undefined && overridesRaw !== null) {
     if (!isPlainObject(overridesRaw) || Object.keys(overridesRaw).length === 0) {
-      throw new ConfigError(`${path}.modelOverrides 必须是非空映射（模型 id: 覆写项），收到 ${describeValue(overridesRaw)}`);
+      throw new ConfigError(
+        `${path}.modelOverrides 必须是非空映射（模型 id: 覆写项），收到 ${describeValue(overridesRaw)}`
+      );
     }
     modelOverrides = {};
     for (const [modelId, entry] of Object.entries(overridesRaw)) {
-      modelOverrides[modelId] = readPiAiModel(entry, `${path}.modelOverrides.${modelId}`, true) as PiAiModelOverride;
+      modelOverrides[modelId] = readPiAiModel(
+        entry,
+        `${path}.modelOverrides.${modelId}`,
+        true
+      ) as PiAiModelOverride;
     }
   }
   // DSH 侧的同一条规则：models 已经整份替换目录，再配覆写必有一个被静默忽略
@@ -822,7 +898,12 @@ function readPiAiProvider(raw: unknown, path: string): PiAiProviderConfig {
     reasoning: readEnum(raw, 'reasoning', path, THINKING_LEVELS),
     thinkingBudgets: readThinkingBudgets(raw['thinkingBudgets'], `${path}.thinkingBudgets`),
     cacheRetention: readEnum(raw, 'cacheRetention', path, ['none', 'short', 'long'] as const),
-    transport: readEnum(raw, 'transport', path, ['sse', 'websocket', 'websocket-cached', 'auto'] as const),
+    transport: readEnum(raw, 'transport', path, [
+      'sse',
+      'websocket',
+      'websocket-cached',
+      'auto',
+    ] as const),
     timeoutMs: readInt(raw, 'timeoutMs', path, { min: 1 }),
     websocketConnectTimeoutMs: readInt(raw, 'websocketConnectTimeoutMs', path, { min: 1 }),
     streamIdleTimeoutMs: readInt(raw, 'streamIdleTimeoutMs', path, { min: 1 }),
@@ -850,15 +931,18 @@ export function parseModelApiSection(raw: unknown, path: string): ModelApiConfig
   assertNoUnknownKeys(raw, ['deepseek', 'providers'], path);
 
   const deepseekRaw = raw['deepseek'];
-  const deepseek = deepseekRaw === undefined || deepseekRaw === null
-    ? undefined
-    : readDeepSeekRoute(deepseekRaw, `${path}.deepseek`);
+  const deepseek =
+    deepseekRaw === undefined || deepseekRaw === null
+      ? undefined
+      : readDeepSeekRoute(deepseekRaw, `${path}.deepseek`);
 
   const providersRaw = raw['providers'];
   const providers: Record<string, PiAiProviderConfig> = {};
   if (providersRaw !== undefined && providersRaw !== null) {
     if (!isPlainObject(providersRaw)) {
-      throw new ConfigError(`${path}.providers 必须是映射（路由名: 路由配置），收到 ${describeValue(providersRaw)}`);
+      throw new ConfigError(
+        `${path}.providers 必须是映射（路由名: 路由配置），收到 ${describeValue(providersRaw)}`
+      );
     }
     for (const [id, entry] of Object.entries(providersRaw)) {
       if (!PROVIDER_ID_PATTERN.test(id)) {
@@ -900,14 +984,23 @@ type Env = Record<string, string | undefined>;
  *      环境（src/dsh/process.ts），缺了它 DSH 会在首次请求时以 MISSING_CREDENTIAL
  *      失败，同样该在启动期就拦住。
  */
-export function assertModelApiConfig(modelApi: ModelApiConfig, selectedProvider: string, env: Env, selectionKey = 'dsh.provider'): void {
+export function assertModelApiConfig(
+  modelApi: ModelApiConfig,
+  selectedProvider: string,
+  env: Env,
+  selectionKey = 'dsh.provider'
+): void {
   const declaredRoutes = Object.keys(modelApi.providers);
-  if (selectedProvider !== DEEPSEEK_OFFICIAL_PROVIDER && !declaredRoutes.includes(selectedProvider)) {
+  if (
+    selectedProvider !== DEEPSEEK_OFFICIAL_PROVIDER &&
+    !declaredRoutes.includes(selectedProvider)
+  ) {
     throw new ConfigError(
-      `${selectionKey} 选中的提供商 ${JSON.stringify(selectedProvider)} 没有对应的模型路由配置`, [
+      `${selectionKey} 选中的提供商 ${JSON.stringify(selectedProvider)} 没有对应的模型路由配置`,
+      [
         `可用路由：${[DEEPSEEK_OFFICIAL_PROVIDER, ...declaredRoutes].join('、')}`,
         `在 config/local/models.yml（或声明 models 的模块）的 models.providers.${selectedProvider} 下声明它，或把 ${selectionKey} 改回已声明的路由`,
-      ],
+      ]
     );
   }
   const refs: Array<{ route: string; envName: string }> = [];
@@ -957,7 +1050,7 @@ export interface AuxRouteResolution {
 export function resolveAuxRoute(
   modelApi: ModelApiConfig,
   provider: string,
-  path: string,
+  path: string
 ): AuxRouteResolution {
   if (provider === DEEPSEEK_OFFICIAL_PROVIDER) {
     // 注意：llm-deepseek 的 baseURL 是 Anthropic Messages 端点（…/anthropic），
@@ -967,22 +1060,31 @@ export function resolveAuxRoute(
   }
   const route = modelApi.providers[provider];
   if (route === undefined) {
-    throw new ConfigError(`${path} 指定的模型路由 ${JSON.stringify(provider)} 未在 models.providers 里声明`, [
-      `已声明的路由：${[DEEPSEEK_OFFICIAL_PROVIDER, ...Object.keys(modelApi.providers)].join('、')}`,
-    ]);
+    throw new ConfigError(
+      `${path} 指定的模型路由 ${JSON.stringify(provider)} 未在 models.providers 里声明`,
+      [
+        `已声明的路由：${[DEEPSEEK_OFFICIAL_PROVIDER, ...Object.keys(modelApi.providers)].join('、')}`,
+      ]
+    );
   }
   if (route.api !== undefined && route.api !== 'openai-completions') {
-    throw new ConfigError(`${path} 指向的路由 ${provider} 声明了 api: ${route.api}，判定调用无法使用`, [
-      '话题/介入判定是不经 DSH 的直调，只会说 OpenAI 兼容的 /chat/completions',
-      '换一条 openai-completions 路由，或不给该路由显式声明 api（目录默认协议可兼容时）',
-    ]);
+    throw new ConfigError(
+      `${path} 指向的路由 ${provider} 声明了 api: ${route.api}，判定调用无法使用`,
+      [
+        '话题/介入判定是不经 DSH 的直调，只会说 OpenAI 兼容的 /chat/completions',
+        '换一条 openai-completions 路由，或不给该路由显式声明 api（目录默认协议可兼容时）',
+      ]
+    );
   }
   if (route.apiKeyEnv === undefined) {
     throw new ConfigError(`${path} 指向的路由 ${provider} 没有 apiKeyEnv，判定调用拿不到凭证`, [
       '判定是 qqbot 进程内的直调，pi-ai 的"环境发现"在这里不存在；请给该路由配 apiKeyEnv',
     ]);
   }
-  return { apiKeyEnv: route.apiKeyEnv, ...(route.baseURL === undefined ? {} : { baseURL: route.baseURL }) };
+  return {
+    apiKeyEnv: route.apiKeyEnv,
+    ...(route.baseURL === undefined ? {} : { baseURL: route.baseURL }),
+  };
 }
 
 // ---------------------------------------------------------------------------

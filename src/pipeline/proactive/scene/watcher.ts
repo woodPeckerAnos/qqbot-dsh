@@ -595,7 +595,9 @@ export class ProactiveWatcher {
    */
   private onSessionClosed(convKey: string, cause: SessionCloseCause, session: TopicSession): void {
     this.cancelIdleTimer(convKey);
-    const speaks = this.deps.submitTask ? this.states.for(convKey).committedTaskCount(session) : Math.max(0, this.sessionBudget - session.budgetLeft);
+    const speaks = this.deps.submitTask
+      ? this.states.for(convKey).committedTaskCount(session)
+      : Math.max(0, this.sessionBudget - session.budgetLeft);
     this.counters.sessionClosed += 1;
     this.bump(this.counters.sessionClosedBy, cause);
     this.bump(this.counters.spokeInSession, String(speaks));
@@ -698,7 +700,7 @@ export class ProactiveWatcher {
     const cutoff = ts - 3_600_000;
     this.proposals.set(
       convKey,
-      list.filter((item) => item >= cutoff),
+      list.filter((item) => item >= cutoff)
     );
   }
 
@@ -800,7 +802,7 @@ export class ProactiveWatcher {
     convKey: string,
     target: ConversationTarget,
     trigger: WatcherTrigger,
-    extra: { text?: string; waitWakeup?: SceneEvidence['waitWakeup'] } = {},
+    extra: { text?: string; waitWakeup?: SceneEvidence['waitWakeup'] } = {}
   ): void {
     if (this.suspended.has(convKey)) return;
 
@@ -857,7 +859,7 @@ export class ProactiveWatcher {
     target: ConversationTarget,
     trigger: WatcherTrigger,
     evidence: SceneEvidence,
-    candidates: readonly SceneCandidate[],
+    candidates: readonly SceneCandidate[]
   ): void {
     if (candidates.length === 0) {
       // 成本闸：连标记都不占（这是最高频的路径）
@@ -883,7 +885,7 @@ export class ProactiveWatcher {
   private buildEvidence(
     convKey: string,
     trigger: WatcherTrigger,
-    extra: { text?: string; waitWakeup?: SceneEvidence['waitWakeup'] } = {},
+    extra: { text?: string; waitWakeup?: SceneEvidence['waitWakeup'] } = {}
   ) {
     const state = this.states.for(convKey);
     const now = this.now();
@@ -971,7 +973,7 @@ export class ProactiveWatcher {
         }
         this.sinceRoll.set(convKey, 0);
         this.kick(convKey, target, 'topic-roll');
-      }, this.config.topicRollMs),
+      }, this.config.topicRollMs)
     );
   }
 
@@ -998,7 +1000,7 @@ export class ProactiveWatcher {
         if (stillPending.length === 0) return;
         for (const question of stillPending) current.recordProbe(question.id);
         this.kick(convKey, target, 'question-probe');
-      }, this.config.questionProbeMs),
+      }, this.config.questionProbeMs)
     );
   }
 
@@ -1027,7 +1029,7 @@ export class ProactiveWatcher {
         this.yieldTimers.delete(convKey);
         // 到点后**先跑本地检查**，过了才调 LLM；没过的票据就地作废。
         this.wakeWaitTickets(convKey, target);
-      }, delay),
+      }, delay)
     );
   }
 
@@ -1096,27 +1098,22 @@ export class ProactiveWatcher {
       this.waitTickets.delete(convKey);
       return;
     }
-    this.rearmWaitYield(
-      convKey,
-      target,
-      Math.min(...upcoming.map((ticket) => ticket.dueAt)),
-    );
+    this.rearmWaitYield(convKey, target, Math.min(...upcoming.map((ticket) => ticket.dueAt)));
   }
 
   /** 按明确的到期时间重排唤醒点（不重新计算 min，避免被浮点/边界绕进去）。 */
-  private rearmWaitYield(
-    convKey: string,
-    target: ConversationTarget,
-    dueAt: number,
-  ): void {
+  private rearmWaitYield(convKey: string, target: ConversationTarget, dueAt: number): void {
     this.yieldTimers.get(convKey)?.();
     this.yieldTimers.delete(convKey);
     this.yieldTimers.set(
       convKey,
-      this.schedule(() => {
-        this.yieldTimers.delete(convKey);
-        this.wakeWaitTickets(convKey, target);
-      }, Math.max(0, dueAt - this.now())),
+      this.schedule(
+        () => {
+          this.yieldTimers.delete(convKey);
+          this.wakeWaitTickets(convKey, target);
+        },
+        Math.max(0, dueAt - this.now())
+      )
     );
   }
 
@@ -1129,7 +1126,7 @@ export class ProactiveWatcher {
   private async rejudgeWaitTickets(
     convKey: string,
     target: ConversationTarget,
-    woken: readonly WaitTicket[],
+    woken: readonly WaitTicket[]
   ): Promise<void> {
     for (const ticket of woken) {
       const state = this.states.for(convKey);
@@ -1220,7 +1217,7 @@ export class ProactiveWatcher {
     now: number,
     scene: SceneId | undefined,
     spoken: boolean,
-    directive: { restart: boolean; close: boolean },
+    directive: { restart: boolean; close: boolean }
   ): void {
     const state = this.states.for(convKey);
     if (spoken) {
@@ -1284,7 +1281,7 @@ export class ProactiveWatcher {
       this.schedule(() => {
         this.idleTimers.delete(convKey);
         this.closeIdleSession(convKey);
-      }, delay),
+      }, delay)
     );
   }
 
@@ -1349,7 +1346,7 @@ export class ProactiveWatcher {
     trigger: WatcherTrigger,
     evidence: SceneEvidence,
     candidates: readonly SceneCandidate[],
-    wait?: { ticket: WaitTicket; pendingAtEval: readonly { id: string }[] },
+    wait?: { ticket: WaitTicket; pendingAtEval: readonly { id: string }[] }
   ): Promise<void> {
     const state = this.states.for(convKey);
     const now = evidence.now;
@@ -1390,7 +1387,7 @@ export class ProactiveWatcher {
       candidates,
       evidence,
       transcript: `${renderFacts(evidence, pendingTexts)}\n\n${renderTranscript(
-        this.judgeTranscriptEntries(state),
+        this.judgeTranscriptEntries(state)
       )}`,
     });
     if (verdicts === undefined) {
@@ -1432,7 +1429,7 @@ export class ProactiveWatcher {
         verdicts,
         context: this.vetoContext(convKey, state, now, evidence, verdicts, wait?.ticket),
       },
-      this.policy,
+      this.policy
     );
 
     // 唤醒后的重新判定：**任何结果都消耗票据**（同一对象不会再有第二次唤醒）。
@@ -1493,7 +1490,7 @@ export class ProactiveWatcher {
     targetId: string,
     reason: WaitReason,
     now: number,
-    evaluatedAt: number,
+    evaluatedAt: number
   ): void {
     const state = this.states.for(convKey);
     const byTarget = this.waitTickets.get(convKey) ?? new Map<string, WaitTicket>();
@@ -1542,7 +1539,7 @@ export class ProactiveWatcher {
   private countWaitDeclined(
     reason: string,
     detail: string | undefined,
-    verdicts: readonly SceneVerdict[],
+    verdicts: readonly SceneVerdict[]
   ): void {
     if (reason !== 'wait-declined' || detail === undefined) return;
     const scene = verdicts.find((verdict) => verdict.waitReason !== undefined)?.scene ?? 'scene-3';
@@ -1567,7 +1564,7 @@ export class ProactiveWatcher {
     now: number,
     evidence: SceneEvidence,
     verdicts: readonly SceneVerdict[],
-    woken?: WaitTicket,
+    woken?: WaitTicket
   ): VetoContext {
     const list = this.proposals.get(convKey) ?? [];
     const wait = this.resolveWaitTarget(state, evidence, verdicts, woken);
@@ -1601,7 +1598,7 @@ export class ProactiveWatcher {
     state: ConversationState,
     evidence: SceneEvidence,
     verdicts: readonly SceneVerdict[],
-    woken?: WaitTicket,
+    woken?: WaitTicket
   ): WaitTarget | undefined {
     // ⚠️ 这里只筛"有没有说先别说"，**不筛理由是不是 yielding**：
     // 理由的采纳与否是否决层的决定（`not-yet` / `watching` 会被按下并单独计数）。
@@ -1611,7 +1608,7 @@ export class ProactiveWatcher {
       (verdict) =>
         !verdict.satisfied &&
         (verdict.waitReason ?? (verdict.suggestsWait === true ? 'yielding' : undefined)) !==
-          undefined,
+          undefined
     );
     if (waiter === undefined) return undefined;
 
@@ -1665,7 +1662,7 @@ export class ProactiveWatcher {
     target: ConversationTarget,
     decision: Extract<ProactiveDecision, { action: 'speak' }>,
     now: number,
-    sessionDirective: { restart: boolean; close: boolean } = { restart: false, close: false },
+    sessionDirective: { restart: boolean; close: boolean } = { restart: false, close: false }
   ): Promise<boolean> {
     const gist = decision.directive ?? decision.reason;
     if (this.deps.submitTask && !this.config.dryRun) {
@@ -1673,21 +1670,64 @@ export class ProactiveWatcher {
       if (state.session && sessionDirective.restart) state.closeSession('topic-changed');
       if (!state.session) this.openTopicSession(convKey, now, decision.scene);
       const scope = state.taskBudgetScope(this.sessionBudget);
-      const entries = this.windows.read(convKey).filter(e => !e.isBot);
-      const entry = entries.findLast(e => !!decision.evidence && e.text && (e.text.includes(decision.evidence) || decision.evidence.includes(e.text))) ?? (decision.scene === 'scene-1' || decision.scene === 'scene-4' ? entries.at(-1) : undefined);
-      const reference: NormalizedMessage | undefined = entry ? {
-        kind: 'group-message', target, eventId: entry.eventId, msgId: entry.msgId,
-        senderId: entry.senderId, username: entry.senderName, content: entry.text, ts: entry.ts, raw: {},
-      } : { kind: 'group-message', target, eventId: '', msgId: '', senderId: 'context', username: '触发时的群聊上下文', content: decision.evidence ?? entries.slice(-4).map(e => `[${e.senderName ?? e.senderId}] ${e.text}`).join('\n'), ts: now, raw: {} };
+      const entries = this.windows.read(convKey).filter((e) => !e.isBot);
+      const entry =
+        entries.findLast(
+          (e) =>
+            !!decision.evidence &&
+            e.text &&
+            (e.text.includes(decision.evidence) || decision.evidence.includes(e.text))
+        ) ??
+        (decision.scene === 'scene-1' || decision.scene === 'scene-4' ? entries.at(-1) : undefined);
+      const reference: NormalizedMessage | undefined = entry
+        ? {
+            kind: 'group-message',
+            target,
+            eventId: entry.eventId,
+            msgId: entry.msgId,
+            senderId: entry.senderId,
+            username: entry.senderName,
+            content: entry.text,
+            ts: entry.ts,
+            raw: {},
+          }
+        : {
+            kind: 'group-message',
+            target,
+            eventId: '',
+            msgId: '',
+            senderId: 'context',
+            username: '触发时的群聊上下文',
+            content:
+              decision.evidence ??
+              entries
+                .slice(-4)
+                .map((e) => `[${e.senderName ?? e.senderId}] ${e.text}`)
+                .join('\n'),
+            ts: now,
+            raw: {},
+          };
       const accepted = await this.deps.submitTask({
-        input: { target, scene: decision.scene, directive: gist, reason: decision.reason, evidence: decision.evidence }, scope, reference,
+        input: {
+          target,
+          scene: decision.scene,
+          directive: gist,
+          reason: decision.reason,
+          evidence: decision.evidence,
+        },
+        scope,
+        reference,
         onSpoke: (_text, ts) => {
-          this.counters.spoke++; this.metrics.spoke(decision.scene, false);
+          this.counters.spoke++;
+          this.metrics.spoke(decision.scene, false);
           this.notifyBotSpoke(convKey, ts);
           if (scope.isCurrent()) this.armSessionIdle(convKey);
         },
       });
-      if (!accepted) { this.bump(this.counters.deliveryDegraded, 'task-rejected'); this.metrics.deliveryDegraded('task-rejected', decision.scene); }
+      if (!accepted) {
+        this.bump(this.counters.deliveryDegraded, 'task-rejected');
+        this.metrics.deliveryDegraded('task-rejected', decision.scene);
+      }
       // Scope reservation owns budget; actual delivery records speech asynchronously.
       return false;
     }

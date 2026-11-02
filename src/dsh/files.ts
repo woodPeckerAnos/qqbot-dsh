@@ -182,7 +182,7 @@ export async function ingestFiles(options: FileIngestOptions): Promise<FileInges
 async function ingestOne(
   file: MessageMediaPart,
   options: FileIngestOptions,
-  result: FileIngestResult,
+  result: FileIngestResult
 ): Promise<string> {
   const { config, logger } = options;
   const label = `${options.labelPrefix?.(file) ?? ''}${fileLabel(file)}`;

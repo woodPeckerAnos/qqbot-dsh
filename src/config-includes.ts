@@ -89,7 +89,9 @@ export function parseIncludeDirectives(raw: unknown, source: string): IncludeDir
     if (typeof item === 'string') {
       const path = item.trim();
       if (path === '') {
-        throw new ConfigError(`${at} 的模块路径不能为空`, ['写相对路径，例如 config/connectors.yml']);
+        throw new ConfigError(`${at} 的模块路径不能为空`, [
+          '写相对路径，例如 config/connectors.yml',
+        ]);
       }
       out.push({ path, optional: false, enabled: true });
       return;
@@ -168,7 +170,7 @@ function readModuleText(
   target: string,
   parent: string,
   index: number,
-  optional: boolean,
+  optional: boolean
 ): string | undefined {
   let stat;
   try {
@@ -187,7 +189,7 @@ function readModuleText(
     }
     throw new ConfigError(
       `读取配置模块失败：${target}（${error instanceof Error ? error.message : String(error)}）`,
-      [`由 ${parent}: include[${index}] 引用`],
+      [`由 ${parent}: include[${index}] 引用`]
     );
   }
 
@@ -212,7 +214,7 @@ function readModuleText(
     }
     throw new ConfigError(
       `读取配置模块失败：${target}（${error instanceof Error ? error.message : String(error)}）`,
-      [`由 ${parent}: include[${index}] 引用`],
+      [`由 ${parent}: include[${index}] 引用`]
     );
   }
 }
@@ -222,7 +224,7 @@ function loadOne<T extends object>(
   text: string,
   ancestors: string[],
   parseFile: ConfigFileParser<T>,
-  files: string[],
+  files: string[]
 ): T {
   const identity = identityOf(filePath);
   if (ancestors.includes(identity)) {
@@ -280,7 +282,7 @@ function loadOne<T extends object>(
 export function loadConfigGraph<T extends object>(
   rootPath: string,
   rootText: string,
-  parseFile: ConfigFileParser<T>,
+  parseFile: ConfigFileParser<T>
 ): { config: T; files: string[] } {
   const files: string[] = [];
   const config = loadOne(rootPath, rootText, [], parseFile, files);

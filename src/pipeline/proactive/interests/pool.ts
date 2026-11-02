@@ -180,7 +180,7 @@ export function parseInterestPool(raw: string, source = 'interests.yml'): Intere
   if (list.length > MAX_INTEREST_ENTRIES) {
     throw new ConfigError(
       `${source} 的兴趣条目有 ${list.length} 条，超过上限 ${MAX_INTEREST_ENTRIES}`,
-      ['整份兴趣池会进 prompt；宁缺勿滥，或把不常用的条目先删掉'],
+      ['整份兴趣池会进 prompt；宁缺勿滥，或把不常用的条目先删掉']
     );
   }
 

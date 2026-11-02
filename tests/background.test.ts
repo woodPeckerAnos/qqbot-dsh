@@ -48,7 +48,7 @@ function fakeConnector(
   platform: string,
   pol: ReplyPolicy,
   sent: SentRecord[],
-  opts: { fail?: boolean } = {},
+  opts: { fail?: boolean } = {}
 ): BotConnector {
   return {
     platform,
@@ -80,7 +80,10 @@ let conversations: ConversationStore;
 
 function setupStore(): void {
   root = mkdtempSync(join(tmpdir(), 'qqbot-bg-'));
-  const paths = resolveStorePaths({ workspacesRoot: join(root, 'ws'), stateDir: join(root, 'bot') });
+  const paths = resolveStorePaths({
+    workspacesRoot: join(root, 'ws'),
+    stateDir: join(root, 'bot'),
+  });
   ensureStoreDirs(paths);
   conversations = new ConversationStore(paths, createNullLogger());
 }
@@ -94,7 +97,11 @@ describe('BackgroundPusher A：OneBot 完成即主动推送', () => {
     setupStore();
     const sent: SentRecord[] = [];
     const stats = new PipelineStats();
-    const connector = fakeConnector('onebot', policy({ passiveWindowMs: Number.POSITIVE_INFINITY, maxRepliesPerMsg: 10 }), sent);
+    const connector = fakeConnector(
+      'onebot',
+      policy({ passiveWindowMs: Number.POSITIVE_INFINITY, maxRepliesPerMsg: 10 }),
+      sent
+    );
     const pusher = new BackgroundPusher({
       connectors: new Map([['onebot', connector]]),
       conversations,
@@ -229,7 +236,11 @@ describe('BackgroundPusher B：官方窗口内即时投递 / 超窗暂存', () =
   it('长文本按剩余配额分段，seq 连续递增', async () => {
     setupStore();
     const sent: SentRecord[] = [];
-    const connector = fakeConnector('qq-official', policy({ maxChars: 10, maxRepliesPerMsg: 5 }), sent);
+    const connector = fakeConnector(
+      'qq-official',
+      policy({ maxChars: 10, maxRepliesPerMsg: 5 }),
+      sent
+    );
     const pusher = new BackgroundPusher({
       connectors: new Map([['qq-official', connector]]),
       conversations,

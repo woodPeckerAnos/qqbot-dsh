@@ -7,13 +7,13 @@
 
 ## 0. 前置条件
 
-| 项 | 要求 | 说明 |
-|---|---|---|
-| 操作系统 | Linux x86_64 / arm64 | 需要内核支持 Landlock（≥ 5.13）或允许非特权 user namespace |
-| Docker | 24+ | 需要 `docker compose` 子命令 |
-| 内存 | ≥ 2 GB 可用 | 默认给容器 2 GB 上限；每活跃会话一个 DSH 进程 |
-| 磁盘 | ≥ 5 GB | 镜像约 1.5 GB，另加会话日志与工作区 |
-| 出网 | 可访问 `api.bot.qq.com` 与 `api.deepseek.com` | WebSocket 长连接是主动出网，**不需要公网 IP、域名或证书** |
+| 项       | 要求                                          | 说明                                                       |
+| -------- | --------------------------------------------- | ---------------------------------------------------------- |
+| 操作系统 | Linux x86_64 / arm64                          | 需要内核支持 Landlock（≥ 5.13）或允许非特权 user namespace |
+| Docker   | 24+                                           | 需要 `docker compose` 子命令                               |
+| 内存     | ≥ 2 GB 可用                                   | 默认给容器 2 GB 上限；每活跃会话一个 DSH 进程              |
+| 磁盘     | ≥ 5 GB                                        | 镜像约 1.5 GB，另加会话日志与工作区                        |
+| 出网     | 可访问 `api.bot.qq.com` 与 `api.deepseek.com` | WebSocket 长连接是主动出网，**不需要公网 IP、域名或证书**  |
 
 **不需要**：公网入口、反向代理、TLS 证书、固定端口映射。
 
@@ -70,7 +70,7 @@ docker compose logs -f qqbot
 ```
 
 > 如果 `up` 报 `can't set distinct values on 'pids_limit' and
-> 'deploy.resources.limits.pids'`，说明资源限制被同时写在了顶层旧式字段与
+'deploy.resources.limits.pids'`，说明资源限制被同时写在了顶层旧式字段与
 > `deploy.resources.limits` 两处。本仓库的 `docker-compose.yml` 已统一放在
 > `deploy.resources.limits` 下；手动改过该文件的话请只保留一处，详见
 > [RUNBOOK 7.0](RUNBOOK.md)。改完用 `docker compose config >/dev/null` 先验证。
@@ -118,10 +118,10 @@ Desktop 会「QQ 无法启动」（建议 OrbStack）。
 
 macOS 上截至本文撰写时的支持现状：
 
-| 框架 | macOS 形态 | 结论 |
-|---|---|---|
-| **NapCat** | [官方 Mac 安装器](https://github.com/NapNeko/NapCat-Mac-Installer/releases/)修改 QQ.app 入口、注入真实客户端 = **有头** | **macOS 首选** |
-| **LLBot** | 有头组件（`bin/pmhq`）不可用，**实际只有无头（纯协议）** | 备选，掉线频繁是预期内的 |
+| 框架       | macOS 形态                                                                                                              | 结论                     |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| **NapCat** | [官方 Mac 安装器](https://github.com/NapNeko/NapCat-Mac-Installer/releases/)修改 QQ.app 入口、注入真实客户端 = **有头** | **macOS 首选**           |
+| **LLBot**  | 有头组件（`bin/pmhq`）不可用，**实际只有无头（纯协议）**                                                                | 备选，掉线频繁是预期内的 |
 
 LLBot 的有头模式在 Windows / Linux 上可用；坚持要跑 LLBot 有头就得换宿主平台。
 
@@ -169,10 +169,10 @@ LLBot 的有头模式在 Windows / Linux 上可用；坚持要跑 LLBot 有头�
 
 LLBot 官方支持 **macOS 12 及以上**，两个包：
 
-| 包 | 特点 |
-|---|---|
+| 包                                 | 特点                                     |
+| ---------------------------------- | ---------------------------------------- |
 | `LLBot-Desktop-macos-arm64.tar.xz` | 图形界面、可视化配置、实时日志；新手优先 |
-| `LLBot-CLI-macos-arm64.tar.xz` | 命令行，`./llbot --help` 看参数 |
+| `LLBot-CLI-macos-arm64.tar.xz`     | 命令行，`./llbot --help` 看参数          |
 
 从 [LuckyLilliaBot Releases](https://github.com/LLOneBot/LuckyLilliaBot/releases)
 下载（Mac mini 是 Apple Silicon，选 `arm64`），解压到固定目录：
@@ -215,10 +215,10 @@ DEEPSEEK_API_KEY=...
 `config/connectors.yml`（接入平台模块，仓库自带）：
 
 ```yaml
-connectors: [onebot]        # 或 [qq-official, onebot] 与官方通道并存
+connectors: [onebot] # 或 [qq-official, onebot] 与官方通道并存
 onebot:
-  host: 0.0.0.0             # ⚠ 别改成 127.0.0.1，原因见下面
-  port: 6700                # ⚠ 别改：compose 的端口映射写死了 6700
+  host: 0.0.0.0 # ⚠ 别改成 127.0.0.1，原因见下面
+  port: 6700 # ⚠ 别改：compose 的端口映射写死了 6700
 ```
 
 `docker-compose.yml` 里的 6700 端口映射**默认已经打开**（只绑 `127.0.0.1`，
@@ -362,6 +362,7 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.text()).then(console.log)"
 ```
 
 预期：
+
 1. 约 90 秒内如果还没做完，会先收到一条"仍在处理中…"；
 2. 随后收到结果；
 3. 容器内确实出现了脚本文件：
@@ -389,10 +390,10 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 
 两种结果：
 
-| 输出 | 含义 | 处置 |
-|---|---|---|
+| 输出                         | 含义                            | 处置                         |
+| ---------------------------- | ------------------------------- | ---------------------------- |
 | `VERDICT: SANDBOX-EFFECTIVE` | 有可用后端（bwrap 或 landlock） | 无需处理，工作区边界真实有效 |
-| `VERDICT: DEGRADED` | 没有可用后端 | 见下 |
+| `VERDICT: DEGRADED`          | 没有可用后端                    | 见下                         |
 
 `DEGRADED` 时的选择：
 
@@ -446,30 +447,29 @@ docker stats qqbot-dsh
 
 > **`.env` 是整份注入的**，好处是以后新增字段不用同时改 compose；代价是文件里
 > 任何一行格式不对都会让**容器创建**失败。最典型的是"一行全是 `="——从 Markdown
-> 预览里复制配置时，`# =====` 会被当成标题、`#` 被吃掉，然后 Compose 按第一个 `=`
-> 切开得到"变量名为空"的条目，报 `invalid environment variable: =====...`，
+预览里复制配置时，`# =====` 会被当成标题、`#`被吃掉，然后 Compose 按第一个`=`切开得到"变量名为空"的条目，报`invalid environment variable: =====...`，
 > 完全看不出该改哪一行。
 >
 > 自查与修复见 [RUNBOOK 1.2](RUNBOOK.md)；仓库里的 `.env.example` 分隔线已改用
 > 短横线（裸的 `----` 行会被 Compose 忽略），从它复制不会再踩这个坑。
 
-| 场景 | 调整 |
-|---|---|
-| 模型回答太慢/太贵 | `DSH_MODEL=deepseek-flash`（默认，最快）；需要更强推理换 `deepseek-v4-pro` |
-| 群里人多、并发高 | 提高 `tasks.fastRuntimes` / `slowRuntimes` 并同步调整 `pool.maxRuntimes` 和容器资源 |
-| 容器内存紧张 | 降低 `QQ_MAX_RUNTIMES`（更频繁地回收 runtime，代价是更频繁的历史回放） |
-| 不想让机器人记很久之前的事 | 降低 `QQ_REPLAY_TURNS`（0 = 完全不回放，重启即失忆） |
-| 回答太长被截断 | 提高 `QQ_MAX_CHARS`，但注意平台上限未知（超限会报 40054007 并自动折半重试） |
-| 希望代码块渲染更好看 | `QQ_MSG_TYPE=2`（Markdown）。注意部分客户端版本渲染效果不稳定 |
-| 只想服务群聊，不接受私聊 | `QQ_C2C_ENABLED=false`（`1<<25` 无法只订群聊，只能在这里关） |
-| 单聊回复条数不够 | 调小 `QQ_C2C_PROGRESS_MAX`；上限 `QQ_C2C_MAX_REPLIES_PER_MSG=4`，不能再高 |
-| 日志太吵 | `QQ_LOG_LEVEL=warn` |
-| 图片烧 token / 模型不支持图片 | `BOT_ATTACHMENT_ENABLED=false`（消息照收，图片变成 `[图片]` 占位） |
-| 图片太多/太大读不进来 | `BOT_ATTACHMENT_MAX_IMAGES`（默认 4）、`BOT_ATTACHMENT_MAX_BYTES`（默认 8MB）；排查看 `/metrics` 里的 `imagesInlined`/`imagesSkipped`，见 [RUNBOOK 4.5](RUNBOOK.md) |
-| 群里刚发的图/文件，@ bot 后它说"看不到" | 那是**上下文（滚窗）**里的媒体：`BOT_OBSERVATION_INJECT_IMAGES`（默认 2）、`BOT_OBSERVATION_INJECT_FILES`（默认 1），0 = 不读；排查看 `/metrics` 里的 `windowImagesInlined`/`windowImagesSkipped`/`windowFilesFetched` |
-| 想给某个会话定规矩 | 在该会话工作区目录下写 `AGENTS.md`，DSH 会自动加载（改规则不用重建镜像） |
-| 想换某个会话的应答风格 | 群里发 `/persona <预设名>`（仅管理员；预设 = `dsh-profile/personas/*.md`，`BOT_PERSONA_DIR` 换目录）；`/persona` 列出可选项，`/persona off` 恢复默认 |
-| 长任务把会话卡死（新闻核查/抓取类最常见） | 查看 `/metrics` 的 `tasks.fast` / `slow` 与 `messages`；慢执行和上传不应阻塞快正文，时限在 `tasks.*TimeoutMs` 配置；见 [架构](ARCHITECTURE.md) |
+| 场景                                      | 调整                                                                                                                                                                                                                   |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 模型回答太慢/太贵                         | `DSH_MODEL=deepseek-flash`（默认，最快）；需要更强推理换 `deepseek-v4-pro`                                                                                                                                             |
+| 群里人多、并发高                          | 提高 `tasks.fastRuntimes` / `slowRuntimes` 并同步调整 `pool.maxRuntimes` 和容器资源                                                                                                                                    |
+| 容器内存紧张                              | 降低 `QQ_MAX_RUNTIMES`（更频繁地回收 runtime，代价是更频繁的历史回放）                                                                                                                                                 |
+| 不想让机器人记很久之前的事                | 降低 `QQ_REPLAY_TURNS`（0 = 完全不回放，重启即失忆）                                                                                                                                                                   |
+| 回答太长被截断                            | 提高 `QQ_MAX_CHARS`，但注意平台上限未知（超限会报 40054007 并自动折半重试）                                                                                                                                            |
+| 希望代码块渲染更好看                      | `QQ_MSG_TYPE=2`（Markdown）。注意部分客户端版本渲染效果不稳定                                                                                                                                                          |
+| 只想服务群聊，不接受私聊                  | `QQ_C2C_ENABLED=false`（`1<<25` 无法只订群聊，只能在这里关）                                                                                                                                                           |
+| 单聊回复条数不够                          | 调小 `QQ_C2C_PROGRESS_MAX`；上限 `QQ_C2C_MAX_REPLIES_PER_MSG=4`，不能再高                                                                                                                                              |
+| 日志太吵                                  | `QQ_LOG_LEVEL=warn`                                                                                                                                                                                                    |
+| 图片烧 token / 模型不支持图片             | `BOT_ATTACHMENT_ENABLED=false`（消息照收，图片变成 `[图片]` 占位）                                                                                                                                                     |
+| 图片太多/太大读不进来                     | `BOT_ATTACHMENT_MAX_IMAGES`（默认 4）、`BOT_ATTACHMENT_MAX_BYTES`（默认 8MB）；排查看 `/metrics` 里的 `imagesInlined`/`imagesSkipped`，见 [RUNBOOK 4.5](RUNBOOK.md)                                                    |
+| 群里刚发的图/文件，@ bot 后它说"看不到"   | 那是**上下文（滚窗）**里的媒体：`BOT_OBSERVATION_INJECT_IMAGES`（默认 2）、`BOT_OBSERVATION_INJECT_FILES`（默认 1），0 = 不读；排查看 `/metrics` 里的 `windowImagesInlined`/`windowImagesSkipped`/`windowFilesFetched` |
+| 想给某个会话定规矩                        | 在该会话工作区目录下写 `AGENTS.md`，DSH 会自动加载（改规则不用重建镜像）                                                                                                                                               |
+| 想换某个会话的应答风格                    | 群里发 `/persona <预设名>`（仅管理员；预设 = `dsh-profile/personas/*.md`，`BOT_PERSONA_DIR` 换目录）；`/persona` 列出可选项，`/persona off` 恢复默认                                                                   |
+| 长任务把会话卡死（新闻核查/抓取类最常见） | 查看 `/metrics` 的 `tasks.fast` / `slow` 与 `messages`；慢执行和上传不应阻塞快正文，时限在 `tasks.*TimeoutMs` 配置；见 [架构](ARCHITECTURE.md)                                                                         |
 
 ---
 
@@ -478,15 +478,15 @@ docker stats qqbot-dsh
 本项目**没有热更新**：后端代码编译进镜像，配置在进程启动时读取。但**不同层次的
 改动代价差别很大**——只有前两种才需要重建镜像。
 
-| 你想改的东西 | 需要做什么 | 需要重建镜像？ | 需要 `down`？ |
-|---|---|---|---|
-| 后端代码（`src/**`） | `docker compose up -d --build` | **是** | 否 |
-| `package.json` 依赖 | `docker compose up -d --build` | **是**（要重跑 `npm ci`） | 否 |
-| `.env`（密钥） | `docker compose up -d` | 否（重建容器即可） | 否 |
-| `qqbot.yml`、`config/**`（行为参数） | `docker compose restart qqbot` | 否 | 否 |
-| `dsh-profile/**`（profile 补丁、人设预设、审批桩、搜索端点） | `docker compose restart qqbot` | 否 | 否 |
-| 某个会话的行为规矩（`AGENTS.md`） | 直接改文件 | **都不用** | 否 |
-| `docker-compose.yml` 本身 | `docker compose up -d` | 否 | 否 |
+| 你想改的东西                                                 | 需要做什么                     | 需要重建镜像？            | 需要 `down`？ |
+| ------------------------------------------------------------ | ------------------------------ | ------------------------- | ------------- |
+| 后端代码（`src/**`）                                         | `docker compose up -d --build` | **是**                    | 否            |
+| `package.json` 依赖                                          | `docker compose up -d --build` | **是**（要重跑 `npm ci`） | 否            |
+| `.env`（密钥）                                               | `docker compose up -d`         | 否（重建容器即可）        | 否            |
+| `qqbot.yml`、`config/**`（行为参数）                         | `docker compose restart qqbot` | 否                        | 否            |
+| `dsh-profile/**`（profile 补丁、人设预设、审批桩、搜索端点） | `docker compose restart qqbot` | 否                        | 否            |
+| 某个会话的行为规矩（`AGENTS.md`）                            | 直接改文件                     | **都不用**                | 否            |
+| `docker-compose.yml` 本身                                    | `docker compose up -d`         | 否                        | 否            |
 
 **永远不需要 `docker compose down`。** `up -d --build` 会自己重建镜像并替换容器；
 `down` 只用于"要改网络/端口映射，或想彻底停止服务"。注意 `down` 默认删容器但
@@ -540,6 +540,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml restart qqbot
 `restart`）。
 
 **两个限制**：
+
 - `node_modules` 仍来自镜像，改了 `package.json` 必须重建镜像；
 - 绑定挂载要求容器内用户（uid 10001）能读到这些文件。原生 Linux 上若文件权限是
   `600` 会失败，用 `sudo chmod a+r -R dist dsh-profile` 修一下（本仓库的文件权限
@@ -574,6 +575,7 @@ HTTP 抓取后端（`@deepseek-ai/dsh-web-fetch-http`）：
    Docker Desktop 的 DNS 转发到宿主解析器，容器里解析出来是同一批 fake IP。
 
 **注意区分两条链路**：
+
 - `web_search` 走的是 **DeepSeek 服务端搜索**，只回标题/URL/摘要，与容器出网无关，
   所以它一直是好的；
 - `web_fetch` 才是容器自己发请求的那个，被上面的校验挡住。
@@ -585,8 +587,8 @@ HTTP 抓取后端（`@deepseek-ai/dsh-web-fetch-http`）：
 dispatcher，所以只需在 `docker-compose.yml` 的 `qqbot.environment` 里给出：
 
 ```yaml
-      HTTPS_PROXY: http://host.docker.internal:7897
-      HTTP_PROXY: http://host.docker.internal:7897
+HTTPS_PROXY: http://host.docker.internal:7897
+HTTP_PROXY: http://host.docker.internal:7897
 ```
 
 配套的 `extra_hosts: ["host.docker.internal:host-gateway"]` 也要在（Linux 原生
@@ -604,6 +606,7 @@ Docker 没有 `host.docker.internal` 这个名字，靠它补上；Docker Deskto
    NO_PROXY=example.com  →  example.com 抓取失败（WEB_BLOCKED_URL）
    NO_PROXY=example.com  →  baidu.com   抓取成功（走代理）
    ```
+
 3. **代理变量不要写进项目根目录的 `.env`**。`dsh` 启动器对项目 `.env` 里的代理
    名字有 fail-loud 守卫（怕仓库决定流量去向），写进去会**拒绝启动**。要覆盖就用
    `docker-compose.yml` 的 `environment`，或 `$DSH_HOME/.env`（容器内

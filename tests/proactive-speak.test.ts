@@ -59,7 +59,9 @@ class FakeRuntime {
   readonly prompts: Array<{ sessionId: string; text: string }> = [];
   ready = true;
   private readonly eventHandlers: Array<(n: SessionEventNotification) => void> = [];
-  private readonly statusHandlers: Array<(n: { sessionId: string; status: 'idle' | 'running' }) => void> = [];
+  private readonly statusHandlers: Array<
+    (n: { sessionId: string; status: 'idle' | 'running' }) => void
+  > = [];
 
   get isReady(): boolean {
     return this.ready;
@@ -83,7 +85,10 @@ class FakeRuntime {
     this.ready = false;
   }
 
-  emitEvent(sessionId: string, event: { type: string; seq: number; data: Record<string, unknown> }): void {
+  emitEvent(
+    sessionId: string,
+    event: { type: string; seq: number; data: Record<string, unknown> }
+  ): void {
     for (const handler of this.eventHandlers) handler({ sessionId, event });
   }
 
@@ -92,7 +97,11 @@ class FakeRuntime {
   }
 
   /** 模拟一轮完整回答：running → assistant 文本 → turn/end → idle */
-  completeTurn(sessionId: string, texts: string[], reason: { kind: string } = { kind: 'completed' }): void {
+  completeTurn(
+    sessionId: string,
+    texts: string[],
+    reason: { kind: string } = { kind: 'completed' }
+  ): void {
     this.emitStatus(sessionId, 'running');
     texts.forEach((text, index) => {
       this.emitEvent(sessionId, {

@@ -60,9 +60,9 @@ services:
       HTTP_PROXY: http://host.docker.internal:7897
 
     volumes:
-      - dsh-home:/data/dsh            # DSH 会话日志、settings、凭证
-      - workspaces:/data/workspaces   # 每个 QQ 群一个工作区目录
-      - bot-state:/data/bot           # 机器人自身的对话记录 / 去重 / 会话映射
+      - dsh-home:/data/dsh # DSH 会话日志、settings、凭证
+      - workspaces:/data/workspaces # 每个 QQ 群一个工作区目录
+      - bot-state:/data/bot # 机器人自身的对话记录 / 去重 / 会话映射
       # 配置入口（只读，随仓库提供，不需要复制）。
       # ⚠ 别把这个文件删掉：bind mount 的宿主文件不存在时 Docker 会自动建一个同名
       #   **目录**，容器里读到目录会拒绝启动（报错里会告诉你用 git checkout 恢复）。
@@ -112,7 +112,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
+          cpus: '2.0'
           memory: 2g
           pids: 512
         reservations:
@@ -120,7 +120,7 @@ services:
 
     # --- 可观测性 -----------------------------------------------------------
     healthcheck:
-      test: ["CMD", "node", "dist/health-probe.js"]
+      test: ['CMD', 'node', 'dist/health-probe.js']
       interval: 30s
       timeout: 5s
       retries: 3
@@ -128,8 +128,8 @@ services:
     logging:
       driver: json-file
       options:
-        max-size: "20m"
-        max-file: "5"
+        max-size: '20m'
+        max-file: '5'
 
     # 出网：容器需要访问 api.bot.qq.com（QQ 官方网关）、api.deepseek.com（模型）
     # 以及上面 HTTPS_PROXY 指向的宿主代理。默认 bridge 网络即可。
@@ -137,14 +137,14 @@ services:
     # extra_hosts 是代理方案的一部分：让 host.docker.internal 在所有平台上都
     # 指向宿主（Docker Desktop 自带该名称，Linux 原生 Docker 没有，靠这行补上）。
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 'host.docker.internal:host-gateway'
 
     # OneBot 反向 WS 监听端口（BOT_CONNECTORS 含 onebot 时才需要）。
     # 框架（LLBot / NapCat）原生跑在宿主时，它作为客户端连到这里的 6700。
     # 只绑 127.0.0.1：家庭局域网里其他设备也连不上；框架在别的机器上才改成宿主局域网 IP。
     # ⚠ 端口有 ONEBOT_ACCESS_TOKEN 鉴权，但不要映射到公网。
     ports:
-      - "127.0.0.1:6700:6700"
+      - '127.0.0.1:6700:6700'
 
     networks:
       - qqbot-net

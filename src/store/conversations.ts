@@ -39,7 +39,7 @@ export interface ConversationTurn {
 export class ConversationStore {
   constructor(
     private readonly paths: StorePaths,
-    private readonly logger: Logger,
+    private readonly logger: Logger
   ) {
     mkdirSync(paths.conversationsDir, { recursive: true });
   }

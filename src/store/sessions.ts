@@ -90,7 +90,7 @@ export class SessionStore {
     this.persist();
     this.options.logger.info(
       existing === undefined ? '为会话创建 DSH 会话' : '为会话轮换 DSH 会话（runtime 重建）',
-      { conversation: record.logicalId, generation, sessionId: record.currentSessionId },
+      { conversation: record.logicalId, generation, sessionId: record.currentSessionId }
     );
     return record;
   }

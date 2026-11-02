@@ -33,7 +33,10 @@ beforeEach(() => {
   ensureStoreDirs(paths);
   presetDir = join(root, 'personas');
   mkdirSync(presetDir, { recursive: true });
-  writeFileSync(join(presetDir, 'concise.md'), '你在本对话里启用「极简」风格：能一句话说完的绝不用两句。\n');
+  writeFileSync(
+    join(presetDir, 'concise.md'),
+    '你在本对话里启用「极简」风格：能一句话说完的绝不用两句。\n'
+  );
   writeFileSync(join(presetDir, 'teacher.md'), '你在本对话里启用「讲解员」风格。\n');
   store = new PersonaStore({
     dir: presetDir,

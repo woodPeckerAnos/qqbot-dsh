@@ -60,7 +60,7 @@ if (bwrapPresent.error !== undefined) {
   const probe = spawnSync(
     'bwrap',
     ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--unshare-pid', '--', 'true'],
-    { encoding: 'utf8', timeout: 5_000 },
+    { encoding: 'utf8', timeout: 5_000 }
   );
   const ok = probe.status === 0;
   record(
@@ -68,7 +68,7 @@ if (bwrapPresent.error !== undefined) {
     ok,
     ok
       ? '工作区内操作可由 bwrap 强制'
-      : `退出码 ${probe.status ?? 'n/a'}：${(probe.stderr ?? '').trim().split('\n').slice(-2).join(' ').slice(0, 200)}`,
+      : `退出码 ${probe.status ?? 'n/a'}：${(probe.stderr ?? '').trim().split('\n').slice(-2).join(' ').slice(0, 200)}`
   );
 }
 
@@ -80,11 +80,7 @@ let landlockVerdict = 'unusable';
 try {
   const mod = await import('@deepseek-ai/node-addon-system/landlock-run');
   landlockVerdict = mod.probe();
-  record(
-    'Landlock 内核强制可用',
-    landlockVerdict !== 'unusable',
-    `verdict=${landlockVerdict}`,
-  );
+  record('Landlock 内核强制可用', landlockVerdict !== 'unusable', `verdict=${landlockVerdict}`);
 } catch (error) {
   record('Landlock 内核强制可用', false, `无法加载探针：${error.message}`);
 }
@@ -100,9 +96,12 @@ const effective = bwrapOk || landlockOk;
 console.log('\n================ 结论 ================');
 if (effective) {
   console.log(
-    `VERDICT: SANDBOX-EFFECTIVE —— 可用后端：${[bwrapOk ? 'bwrap' : null, landlockOk ? `landlock(${landlockVerdict})` : null]
+    `VERDICT: SANDBOX-EFFECTIVE —— 可用后端：${[
+      bwrapOk ? 'bwrap' : null,
+      landlockOk ? `landlock(${landlockVerdict})` : null,
+    ]
       .filter(Boolean)
-      .join(', ')}`,
+      .join(', ')}`
   );
   console.log('workspace-write 是一道真闸，A 方案成立。');
 } else {

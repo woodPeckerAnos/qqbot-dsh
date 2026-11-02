@@ -21,11 +21,34 @@ const baseEnv = {
 describe('loadConfig', () => {
   it('Task 默认值、独立模型路由与 runtime 硬上限', () => {
     const config = loadConfig(baseEnv);
-    expect(config.tasks).toMatchObject({ fastTimeoutMs: 30_000, slowTimeoutMs: 1_800_000, fastRuntimes: 4, slowRuntimes: 4, maxPerSession: 32, maxGlobal: 128, retentionMs: 7 * 86400_000, reminderMs: 300_000 });
-    const separate = loadConfig({ ...baseEnv, BOT_FAST_MODEL: 'fast-model', BOT_SLOW_MODEL: 'slow-model', QQ_MAX_RUNTIMES: '2' });
-    expect(separate.tasks.fastModel).toBe('fast-model'); expect(separate.tasks.slowModel).toBe('slow-model'); expect(separate.tasks.fastRuntimes + separate.tasks.slowRuntimes).toBe(2);
+    expect(config.tasks).toMatchObject({
+      fastTimeoutMs: 30_000,
+      slowTimeoutMs: 1_800_000,
+      fastRuntimes: 4,
+      slowRuntimes: 4,
+      maxPerSession: 32,
+      maxGlobal: 128,
+      retentionMs: 7 * 86400_000,
+      reminderMs: 300_000,
+    });
+    const separate = loadConfig({
+      ...baseEnv,
+      BOT_FAST_MODEL: 'fast-model',
+      BOT_SLOW_MODEL: 'slow-model',
+      QQ_MAX_RUNTIMES: '2',
+    });
+    expect(separate.tasks.fastModel).toBe('fast-model');
+    expect(separate.tasks.slowModel).toBe('slow-model');
+    expect(separate.tasks.fastRuntimes + separate.tasks.slowRuntimes).toBe(2);
     expect(() => loadConfig({ ...baseEnv, QQ_MAX_RUNTIMES: '1' })).toThrow();
-    expect(() => loadConfig({ ...baseEnv, QQ_MAX_RUNTIMES: '2', BOT_FAST_RUNTIMES: '2', BOT_SLOW_RUNTIMES: '2' })).toThrow('不得超过');
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        QQ_MAX_RUNTIMES: '2',
+        BOT_FAST_RUNTIMES: '2',
+        BOT_SLOW_RUNTIMES: '2',
+      })
+    ).toThrow('不得超过');
   });
   it('最小必填项即可加载，并给出一致的默认值', () => {
     const config = loadConfig(baseEnv);
@@ -104,10 +127,10 @@ describe('loadConfig', () => {
     expect(fromFile.attachments.files.maxPdfPages).toBe(5);
 
     expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_FORWARD_MAX_NODES: '0' })).toThrow(
-      ConfigError,
+      ConfigError
     );
     expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_FILE_MAX_CHARS: '10' })).toThrow(
-      ConfigError,
+      ConfigError
     );
   });
 
@@ -116,14 +139,14 @@ describe('loadConfig', () => {
     // `?? fallback`，而 path.join(ws, '') 恰好等于工作区根——落盘落在工作区根、
     // 清理把 AGENTS.md 与 agent 产物当垃圾删。outboxDir 同理（且会把文件发回用户）。
     // 配置文件里的空串是真正的洞：'' 不是 nullish，会穿过 `?? fallback`
-    expect(() =>
-      loadConfig(baseEnv, { attachments: { files: { inboxDir: '' } } }),
-    ).toThrow(ConfigError);
+    expect(() => loadConfig(baseEnv, { attachments: { files: { inboxDir: '' } } })).toThrow(
+      ConfigError
+    );
     expect(() => loadConfig(baseEnv, { media: { outboxDir: '' } })).toThrow(ConfigError);
     // env 里的纯空白视同"没设"（envRaw 会 trim），回落到默认值——这是既有语义
-    expect(loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: '   ' }).attachments.files.inboxDir).toBe(
-      'inbox',
-    );
+    expect(
+      loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: '   ' }).attachments.files.inboxDir
+    ).toBe('inbox');
     expect(loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: '   ' }).media.outboxDir).toBe('outbox');
     expect(() => loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: 'a/b' })).toThrow(ConfigError);
     expect(() => loadConfig({ ...baseEnv, BOT_MEDIA_OUTBOX_DIR: '.' })).toThrow(ConfigError);
@@ -132,15 +155,18 @@ describe('loadConfig', () => {
 
   it('inboxDir 必须是纯目录名，且不能与 media.outboxDir 同名', () => {
     // 同名的后果：用户发来的文件被 egress 立刻回发给自己
-    expect(() =>
-      loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: 'outbox' }),
-    ).toThrow(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: 'outbox' })).toThrow(
+      ConfigError
+    );
     expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: 'a/b' })).toThrow(ConfigError);
     expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: '..' })).toThrow(ConfigError);
     // 改名后同名冲突随之消失
     expect(
-      loadConfig({ ...baseEnv, BOT_ATTACHMENT_INBOX_DIR: 'outbox', BOT_MEDIA_OUTBOX_DIR: 'deliverables' })
-        .attachments.files.inboxDir,
+      loadConfig({
+        ...baseEnv,
+        BOT_ATTACHMENT_INBOX_DIR: 'outbox',
+        BOT_MEDIA_OUTBOX_DIR: 'deliverables',
+      }).attachments.files.inboxDir
     ).toBe('outbox');
   });
 
@@ -150,7 +176,12 @@ describe('loadConfig', () => {
     expect(config.attachments.maxImages).toBe(4);
 
     const fromFile = loadConfig(baseEnv, {
-      attachments: { maxImages: 2, maxImageBytes: 1024 * 1024, maxImageTiles: 3, downloadTimeoutMs: 3_000 },
+      attachments: {
+        maxImages: 2,
+        maxImageBytes: 1024 * 1024,
+        maxImageTiles: 3,
+        downloadTimeoutMs: 3_000,
+      },
     });
     expect(fromFile.attachments).toMatchObject({
       maxImages: 2,
@@ -162,7 +193,9 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_IMAGES: '99' })).toThrow(ConfigError);
     expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_BYTES: '10' })).toThrow(ConfigError);
     // 21 > runtime 单条 prompt 的 20 张上限：越界必须在启动期就被拒
-    expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_IMAGE_TILES: '21' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_ATTACHMENT_MAX_IMAGE_TILES: '21' })).toThrow(
+      ConfigError
+    );
   });
 
   it('主动发言：默认关（fail-closed），兴趣池路径与滚动周期可被 env / 文件覆盖', () => {
@@ -234,16 +267,16 @@ describe('loadConfig', () => {
 
     // 少写平台前缀是最容易犯的配置错误（会静默不生效）
     expect(() => loadConfig({ ...baseEnv, BOT_LISTEN_GROUPS: '123456' })).toThrowError(
-      /缺少平台前缀/,
+      /缺少平台前缀/
     );
     // 灰度可显式关掉（关掉之后才会真的发言）
     expect(loadConfig({ ...baseEnv, BOT_PROACTIVE_DRY_RUN: 'false' }).proactive.dryRun).toBe(false);
     // 判定超时可单独调（借用话题判定的 10 秒是"从不说话"的常见成因）
     expect(
-      loadConfig({ ...baseEnv, BOT_PROACTIVE_JUDGE_TIMEOUT_MS: '45000' }).proactive.judgeTimeoutMs,
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_JUDGE_TIMEOUT_MS: '45000' }).proactive.judgeTimeoutMs
     ).toBe(45_000);
     expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_JUDGE_TIMEOUT_MS: '999' })).toThrowError(
-      ConfigError,
+      ConfigError
     );
 
     // --- 观察窗口的旧键兼容（它从 proactive.* 搬到了 observation.*）------------
@@ -277,42 +310,43 @@ describe('loadConfig', () => {
         ...baseEnv,
         BOT_OBSERVATION_INJECT_IMAGES: '4',
         BOT_OBSERVATION_INJECT_FILES: '3',
-      }).observation,
+      }).observation
     ).toMatchObject({ injectImages: 4, injectFiles: 3 });
     // 0 是合法值，负数与越界值都是配置错误（env 与配置文件两条路都要挡住）
     expect(
-      loadConfig({ ...baseEnv, BOT_OBSERVATION_INJECT_IMAGES: '0' }).observation.injectImages,
+      loadConfig({ ...baseEnv, BOT_OBSERVATION_INJECT_IMAGES: '0' }).observation.injectImages
     ).toBe(0);
     expect(() => loadConfig({ ...baseEnv, BOT_OBSERVATION_INJECT_IMAGES: '-1' })).toThrowError(
-      ConfigError,
+      ConfigError
     );
     expect(() => loadConfig({ ...baseEnv, BOT_OBSERVATION_INJECT_FILES: '99' })).toThrowError(
-      ConfigError,
+      ConfigError
     );
-    expect(loadConfig(baseEnv, { observation: { injectImages: 20, injectFiles: 0 } }).observation)
-      .toMatchObject({ injectImages: 20, injectFiles: 0 });
+    expect(
+      loadConfig(baseEnv, { observation: { injectImages: 20, injectFiles: 0 } }).observation
+    ).toMatchObject({ injectImages: 20, injectFiles: 0 });
     expect(() => loadConfig(baseEnv, { observation: { injectImages: 21 } })).toThrowError(
-      ConfigError,
+      ConfigError
     );
 
     // 「让路」参数：默认保守（1 次 / 45 秒），且两端都有校验
     expect(
-      loadConfig({ ...baseEnv, BOT_PROACTIVE_MAX_WAIT_PER_ITEM: '2' }).proactive.maxWaitPerItem,
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_MAX_WAIT_PER_ITEM: '2' }).proactive.maxWaitPerItem
     ).toBe(2);
-    expect(loadConfig({ ...baseEnv, BOT_PROACTIVE_WAIT_YIELD_MS: '60000' }).proactive.waitYieldMs).toBe(
-      60_000,
-    );
+    expect(
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_WAIT_YIELD_MS: '60000' }).proactive.waitYieldMs
+    ).toBe(60_000);
     // 范围外的值在启动期被拒（等待时长下限 15 秒：短于它就不是"让路"而是抢话）
     expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_WAIT_YIELD_MS: '1000' })).toThrowError(
-      ConfigError,
+      ConfigError
     );
     expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_WAIT_YIELD_MS: '999999' })).toThrowError(
-      ConfigError,
+      ConfigError
     );
     // ⚠️ 配成 5 **不报错**：正确的行为是"按硬上限 3 处理并 warn"，
     // 因为那是运行期约束（上限必须活在模型之下），不是配置语法错误。
     expect(
-      loadConfig({ ...baseEnv, BOT_PROACTIVE_MAX_WAIT_PER_ITEM: '5' }).proactive.maxWaitPerItem,
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_MAX_WAIT_PER_ITEM: '5' }).proactive.maxWaitPerItem
     ).toBe(5);
   });
 
@@ -334,54 +368,56 @@ describe('loadConfig', () => {
 
     // env 优先
     expect(
-      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '1' }).proactive.sessionBudget,
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '1' }).proactive.sessionBudget
     ).toBe(1);
     expect(
-      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '60000' }).proactive.sessionIdleMs,
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '60000' }).proactive.sessionIdleMs
     ).toBe(60_000);
     expect(
       loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '300000' }).proactive
-        .sessionMinGapMs,
+        .sessionMinGapMs
     ).toBe(300_000);
 
     // ⚠️ 预算配成 9 **不报错**：按硬上限 5 处理并 warn（验收 9），
     // 与 maxWaitPerItem 同一口径——硬上限是运行期约束，不是配置语法错误。
     expect(
-      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '9' }).proactive.sessionBudget,
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '9' }).proactive.sessionBudget
     ).toBe(9);
     // 三个参数的两端都有校验（静默时长 1–60 分钟、最小间隔 10–300 秒）
     expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_BUDGET: '0' })).toThrowError(
-      ConfigError,
+      ConfigError
     );
     expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '1000' })).toThrowError(
-      ConfigError,
-    );
-    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '99999999' })).toThrowError(
-      ConfigError,
-    );
-    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '100' })).toThrowError(
-      ConfigError,
+      ConfigError
     );
     expect(() =>
-      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '999999' }),
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_IDLE_MS: '99999999' })
+    ).toThrowError(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '100' })).toThrowError(
+      ConfigError
+    );
+    expect(() =>
+      loadConfig({ ...baseEnv, BOT_PROACTIVE_SESSION_MIN_GAP_MS: '999999' })
     ).toThrowError(ConfigError);
   });
 
   it('主动发言：session 参数写在配置文件里也要过范围校验，未知键启动期报错', () => {
-    expect(() =>
-      loadConfig(baseEnv, { proactive: { sessionBudget: 0 } }),
-    ).toThrowError(/proactive.sessionBudget/);
-    expect(() =>
-      loadConfig(baseEnv, { proactive: { sessionMinGapMs: 1 } }),
-    ).toThrowError(/proactive.sessionMinGapMs/);
+    expect(() => loadConfig(baseEnv, { proactive: { sessionBudget: 0 } })).toThrowError(
+      /proactive.sessionBudget/
+    );
+    expect(() => loadConfig(baseEnv, { proactive: { sessionMinGapMs: 1 } })).toThrowError(
+      /proactive.sessionMinGapMs/
+    );
   });
 
   it('主动发言：别名太短或太多、滚动周期越界都在启动期被拒（安静故障要拦住）', () => {
     expect(() => loadConfig({ ...baseEnv, BOT_BOT_ALIASES: '助' })).toThrowError(ConfigError);
-    expect(() =>
-      loadConfig({ ...baseEnv, BOT_BOT_ALIASES: 'a1,a2,a3,a4,a5,a6' }),
-    ).toThrowError(/最多 5 个/);
-    expect(() => loadConfig({ ...baseEnv, BOT_TOPIC_ROLL_MESSAGES: '1' })).toThrowError(ConfigError);
+    expect(() => loadConfig({ ...baseEnv, BOT_BOT_ALIASES: 'a1,a2,a3,a4,a5,a6' })).toThrowError(
+      /最多 5 个/
+    );
+    expect(() => loadConfig({ ...baseEnv, BOT_TOPIC_ROLL_MESSAGES: '1' })).toThrowError(
+      ConfigError
+    );
     expect(() => loadConfig({ ...baseEnv, BOT_TOPIC_ROLL_MS: '100' })).toThrowError(ConfigError);
     // 描述摘要把兴趣池状态暴露出来（排障第一眼要看的就是它）
     const described = describeConfig(loadConfig(baseEnv)) as {
@@ -403,17 +439,17 @@ describe('loadConfig', () => {
 
   it('intents 缺少 GROUP_AND_C2C_EVENT 时快速失败（否则收不到任何群消息）', () => {
     expect(() => loadConfig({ ...baseEnv, QQ_INTENTS: String(Intent.GUILDS) })).toThrow(
-      /GROUP_AND_C2C_EVENT/,
+      /GROUP_AND_C2C_EVENT/
     );
     // 带上 1<<25 就没问题
     expect(() =>
-      loadConfig({ ...baseEnv, QQ_INTENTS: String(Intent.GROUP_AND_C2C_EVENT) }),
+      loadConfig({ ...baseEnv, QQ_INTENTS: String(Intent.GROUP_AND_C2C_EVENT) })
     ).not.toThrow();
   });
 
   it('旧进度参数不再限制有效 QQ 平台回复配额', () => {
     expect(() =>
-      loadConfig({ ...baseEnv, QQ_MAX_REPLIES_PER_MSG: '3', QQ_PROGRESS_MAX: '3' }),
+      loadConfig({ ...baseEnv, QQ_MAX_REPLIES_PER_MSG: '3', QQ_PROGRESS_MAX: '3' })
     ).not.toThrow();
     expect(loadConfig({ ...baseEnv, QQ_MAX_REPLIES_PER_MSG: '1' }).qq.maxRepliesPerMsg).toBe(1);
   });
@@ -425,7 +461,7 @@ describe('loadConfig', () => {
       progressMax: 2,
     });
     expect(() =>
-      loadConfig({ ...baseEnv, QQ_C2C_MAX_REPLIES_PER_MSG: '2', QQ_C2C_PROGRESS_MAX: '2' }),
+      loadConfig({ ...baseEnv, QQ_C2C_MAX_REPLIES_PER_MSG: '2', QQ_C2C_PROGRESS_MAX: '2' })
     ).not.toThrow();
     // 单聊每条消息官方最多回 4 次，配 5 必须被拒绝（群聊才是 5）
     expect(() => loadConfig({ ...baseEnv, QQ_C2C_MAX_REPLIES_PER_MSG: '5' })).toThrow(/必须在/);
@@ -445,7 +481,7 @@ describe('loadConfig', () => {
 
   it('旧进度与轮次时限只保留解析，不再相互约束', () => {
     expect(() =>
-      loadConfig({ ...baseEnv, QQ_TURN_TIMEOUT_MS: '60000', QQ_PROGRESS_AFTER_MS: '90000' }),
+      loadConfig({ ...baseEnv, QQ_TURN_TIMEOUT_MS: '60000', QQ_PROGRESS_AFTER_MS: '90000' })
     ).not.toThrow();
   });
 
@@ -488,14 +524,14 @@ describe('loadConfig', () => {
 
   it('QQ_OFFPEAK_WINDOWS 支持多窗口，非法配置在启动期爆出来', () => {
     expect(
-      loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '08:00-12:00,22:00-24:00' }).offpeak.windows,
+      loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '08:00-12:00,22:00-24:00' }).offpeak.windows
     ).toEqual([
       { startMin: 8 * 60, endMin: 12 * 60 },
       { startMin: 22 * 60, endMin: 24 * 60 },
     ]);
     // 中文逗号分隔也认
     expect(
-      loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '00:00-09:00，12:00-14:00' }).offpeak.windows,
+      loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '00:00-09:00，12:00-14:00' }).offpeak.windows
     ).toHaveLength(2);
 
     expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '八点半-九点' })).toThrow(/HH:MM/);
@@ -503,16 +539,16 @@ describe('loadConfig', () => {
     // 空窗口（起止相同）没有语义，直接拒绝
     expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '08:30-08:30' })).toThrow(/空窗口/);
     // 重叠窗口拒绝
-    expect(() =>
-      loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '00:00-09:00,08:00-12:00' }),
-    ).toThrow(/重叠/);
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: '00:00-09:00,08:00-12:00' })).toThrow(
+      /重叠/
+    );
     // 全空拒绝
     expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_WINDOWS: ' , ' })).toThrow(/不能为空/);
   });
 
   it('旧的 QQ_OFFPEAK_START / QQ_OFFPEAK_END 仍可用（当单窗口处理），新变量优先', () => {
     expect(
-      loadConfig({ ...baseEnv, QQ_OFFPEAK_START: '00:30', QQ_OFFPEAK_END: '08:30' }).offpeak.windows,
+      loadConfig({ ...baseEnv, QQ_OFFPEAK_START: '00:30', QQ_OFFPEAK_END: '08:30' }).offpeak.windows
     ).toEqual([{ startMin: 30, endMin: 8 * 60 + 30 }]);
     // 只设其中一个时，另一个用旧默认值
     expect(loadConfig({ ...baseEnv, QQ_OFFPEAK_START: '01:00' }).offpeak.windows).toEqual([
@@ -525,31 +561,29 @@ describe('loadConfig', () => {
         QQ_OFFPEAK_WINDOWS: '00:00-09:00',
         QQ_OFFPEAK_START: '00:30',
         QQ_OFFPEAK_END: '08:30',
-      }).offpeak.windows,
+      }).offpeak.windows
     ).toEqual([{ startMin: 0, endMin: 9 * 60 }]);
   });
 
   it('QQ_OFFPEAK_TZ 必须是有效 IANA 时区', () => {
     expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_TZ: 'Mars/Olympus_Mons' })).toThrow(
-      /不是有效时区/,
+      /不是有效时区/
     );
     expect(loadConfig({ ...baseEnv, QQ_OFFPEAK_TZ: 'UTC' }).offpeak.timeZone).toBe('UTC');
   });
 
   it('QQ_OFFPEAK_HOLIDAYS 校验日期合法性（跨年数据由此追加）', () => {
     expect(
-      loadConfig({ ...baseEnv, QQ_OFFPEAK_HOLIDAYS: '2027-01-01, 2027-01-02' }).offpeak.holidays,
+      loadConfig({ ...baseEnv, QQ_OFFPEAK_HOLIDAYS: '2027-01-01, 2027-01-02' }).offpeak.holidays
     ).toEqual(['2027-01-01', '2027-01-02']);
-    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_HOLIDAYS: '2027-02-30' })).toThrow(
-      /无效日期/,
-    );
+    expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_HOLIDAYS: '2027-02-30' })).toThrow(/无效日期/);
     expect(() => loadConfig({ ...baseEnv, QQ_OFFPEAK_HOLIDAYS: '元旦' })).toThrow(/无效日期/);
   });
 
   it('QQ_OFFPEAK_WEEKENDS 默认 true，可显式关闭', () => {
     expect(loadConfig(baseEnv).offpeak.weekendsAllDay).toBe(true);
     expect(loadConfig({ ...baseEnv, QQ_OFFPEAK_WEEKENDS: 'false' }).offpeak.weekendsAllDay).toBe(
-      false,
+      false
     );
   });
 
@@ -560,7 +594,7 @@ describe('loadConfig', () => {
       'qq-official:bob',
     ]);
     expect(
-      loadConfig({ ...baseEnv, BOT_ADMINS: 'onebot:123456, qq-official:alice' }).admins,
+      loadConfig({ ...baseEnv, BOT_ADMINS: 'onebot:123456, qq-official:alice' }).admins
     ).toEqual(['onebot:123456', 'qq-official:alice']);
   });
 
@@ -577,10 +611,12 @@ describe('loadConfig', () => {
     // 并存
     expect(
       loadConfig({ ...baseEnv, BOT_CONNECTORS: 'qq-official,onebot', ONEBOT_ACCESS_TOKEN: 'tok' })
-        .connectors,
+        .connectors
     ).toEqual(['qq-official', 'onebot']);
     // 缺 token 快速失败
-    expect(() => loadConfig({ ...baseEnv, BOT_CONNECTORS: 'onebot' })).toThrow(/ONEBOT_ACCESS_TOKEN/);
+    expect(() => loadConfig({ ...baseEnv, BOT_CONNECTORS: 'onebot' })).toThrow(
+      /ONEBOT_ACCESS_TOKEN/
+    );
     // 未知平台快速失败
     expect(() => loadConfig({ ...baseEnv, BOT_CONNECTORS: 'mirai' })).toThrow(/未知平台/);
   });
@@ -661,7 +697,7 @@ offpeak:
         BOT_ADMINS: 'onebot:111',
         QQ_OFFPEAK_ENABLED: 'false',
       },
-      file,
+      file
     );
     expect(config.onebot.port).toBe(8888);
     expect(config.dsh.model).toBe('from-env');
@@ -703,7 +739,7 @@ offpeak:
     expect(() => loadConfig({}, file)).toThrow(/QQ_APP_ID/);
     expect(() => loadConfig({ QQ_APP_ID: 'a' }, file)).toThrow(/QQ_APP_SECRET/);
     expect(() => loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's' }, file)).toThrow(
-      /DEEPSEEK_API_KEY/,
+      /DEEPSEEK_API_KEY/
     );
     // onebot 的 access token 同理
     const onebotFile = parseConfigFileText('connectors: [onebot]\n');
@@ -717,7 +753,14 @@ offpeak:
     const entry = fileURLToPath(new URL('../qqbot.yml', import.meta.url));
     const loaded = loadConfigFile({ QQ_CONFIG_FILE: entry });
     // include 展开后必须包含全部共享模块；安全配置类文件是可选的，不在此断言。
-    for (const module of ['connectors', 'runtime', 'media', 'interaction', 'proactive', 'offpeak']) {
+    for (const module of [
+      'connectors',
+      'runtime',
+      'media',
+      'interaction',
+      'proactive',
+      'offpeak',
+    ]) {
       expect(loaded.files?.some((file) => file.endsWith(`/config/${module}.yml`))).toBe(true);
     }
     const config = loadConfig(
@@ -727,7 +770,7 @@ offpeak:
         DEEPSEEK_API_KEY: 'sk-test',
         ONEBOT_ACCESS_TOKEN: 'token-1',
       },
-      loaded.config,
+      loaded.config
     );
     expect(config.connectors.length).toBeGreaterThan(0);
     // 范围校验保证恒成立：turnTimeout 上限 295000
@@ -741,9 +784,19 @@ offpeak:
 describe('personas 与 hints（三层合并）', () => {
   it('两个 lane 路由采用相同启动校验，未知声明和缺失凭证在准入前报错', () => {
     for (const key of ['fastProvider', 'slowProvider'] as const) {
-      expect(() => loadConfig(baseEnv, { models: { providers: {} }, tasks: { [key]: 'missing-route' } })).toThrow(`tasks.${key}`);
+      expect(() =>
+        loadConfig(baseEnv, { models: { providers: {} }, tasks: { [key]: 'missing-route' } })
+      ).toThrow(`tasks.${key}`);
     }
-    expect(() => loadConfig({ BOT_CONNECTORS: 'onebot', ONEBOT_ACCESS_TOKEN: 'test', DSH_PROVIDER: 'external', BOT_TOPIC_ENABLED: 'false', BOT_FAST_PROVIDER: 'deepseek-official' })).toThrow('DEEPSEEK_API_KEY');
+    expect(() =>
+      loadConfig({
+        BOT_CONNECTORS: 'onebot',
+        ONEBOT_ACCESS_TOKEN: 'test',
+        DSH_PROVIDER: 'external',
+        BOT_TOPIC_ENABLED: 'false',
+        BOT_FAST_PROVIDER: 'deepseek-official',
+      })
+    ).toThrow('DEEPSEEK_API_KEY');
   });
   it('默认值：预设目录相对 CWD，长任务提示默认开', () => {
     const config = loadConfig(baseEnv);
@@ -774,7 +827,7 @@ describe('personas 与 hints（三层合并）', () => {
 
   it('空关键词是配置错误（会命中一切），启动期拒绝', () => {
     expect(() =>
-      loadConfig(baseEnv, { hints: { longTask: { patterns: ['核查', '  '] } } }),
+      loadConfig(baseEnv, { hints: { longTask: { patterns: ['核查', '  '] } } })
     ).toThrow(ConfigError);
   });
 });

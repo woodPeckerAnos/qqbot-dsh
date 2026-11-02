@@ -80,7 +80,7 @@ export function messageTextLength(body: SendMessageRequest): number {
  */
 export function renderMediaMessage(
   fileInfo: string,
-  options: Pick<RenderOptions, 'msgId' | 'eventId' | 'msgSeq'>,
+  options: Pick<RenderOptions, 'msgId' | 'eventId' | 'msgSeq'>
 ): SendMessageRequest {
   const body: SendMessageRequest = {
     msg_type: MsgType.MEDIA,

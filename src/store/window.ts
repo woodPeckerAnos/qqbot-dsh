@@ -34,12 +34,13 @@
  * 在注入时按配额挑出来，再交给与当前消息**同一条**下载/降采样/落盘通路。
  */
 
-import type {
-  MessageImagePart,
-  MessageMediaPart,
-  NormalizedMessage,
-} from '../core/connector.js';
-import { flattenParts, messageForwardRefIds, messageImageParts, messageMediaParts } from '../core/content.js';
+import type { MessageImagePart, MessageMediaPart, NormalizedMessage } from '../core/connector.js';
+import {
+  flattenParts,
+  messageForwardRefIds,
+  messageImageParts,
+  messageMediaParts,
+} from '../core/content.js';
 
 // ---------------------------------------------------------------------------
 // 白名单（纯函数：介入层与本模块共用同一份判据）
@@ -149,7 +150,10 @@ export interface ObservationMedia {
  * 两边各拼一份的话，"旁听消息带不带媒体引用"就会有两个答案，而这类分叉的表现是
  * "旁听消息的图能进来、@ 消息的图进不来"这种没人能解释的状态。
  */
-export function toObservationEntry(message: NormalizedMessage, addressed: boolean): ObservationEntry {
+export function toObservationEntry(
+  message: NormalizedMessage,
+  addressed: boolean
+): ObservationEntry {
   const images = messageImageParts(message);
   const files = messageMediaParts(message).filter((part) => part.mediaKind === 'file');
   const records = messageForwardRefIds(message);
@@ -258,7 +262,15 @@ export class ObservationWindow {
    * （`docs/PROACTIVE-INTERVENTION-ARCH.md` §3.6 的未修缺口），被动注入也会
    * 看到"群友追问、没有回答"的半截对话。
    */
-  recordBotReply(input: { msgId?: string; text: string; ts: number; dryRun?: boolean; reference?: import('../core/connector.js').OriginalMessageReference; taskId?: string; lane?: 'fast' | 'slow' }): void {
+  recordBotReply(input: {
+    msgId?: string;
+    text: string;
+    ts: number;
+    dryRun?: boolean;
+    reference?: import('../core/connector.js').OriginalMessageReference;
+    taskId?: string;
+    lane?: 'fast' | 'slow';
+  }): void {
     const text = input.dryRun === true ? `（灰度未发送）${input.text}` : input.text;
     if (text.trim() === '') return;
     this.observeEntry({
@@ -419,7 +431,15 @@ export class ObservationWindowStore {
   /** 记一条 bot 自己的发言。 @returns 是否真的记下了 */
   recordBotReply(
     convKey: string,
-    input: { msgId?: string; text: string; ts: number; dryRun?: boolean; reference?: import('../core/connector.js').OriginalMessageReference; taskId?: string; lane?: 'fast' | 'slow' },
+    input: {
+      msgId?: string;
+      text: string;
+      ts: number;
+      dryRun?: boolean;
+      reference?: import('../core/connector.js').OriginalMessageReference;
+      taskId?: string;
+      lane?: 'fast' | 'slow';
+    }
   ): boolean {
     if (!this.accepts(convKey)) return false;
     this.for(convKey).recordBotReply(input);
@@ -511,7 +531,7 @@ export interface CollectWindowMediaOptions {
  */
 export function collectWindowMedia(
   entries: readonly ObservationEntry[],
-  options: CollectWindowMediaOptions = {},
+  options: CollectWindowMediaOptions = {}
 ): WindowMediaSelection {
   const maxImages = Math.max(0, options.maxImages ?? 0);
   const maxFiles = Math.max(0, options.maxFiles ?? 0);
@@ -531,7 +551,10 @@ export function collectWindowMedia(
    */
   const claim = (part: { url?: string; fileId?: string }): boolean => {
     if (part.url === undefined && part.fileId === undefined) return false;
-    if (part.url !== undefined && (excluded?.urls.has(part.url) === true || seen.urls.has(part.url))) {
+    if (
+      part.url !== undefined &&
+      (excluded?.urls.has(part.url) === true || seen.urls.has(part.url))
+    ) {
       return false;
     }
     if (
@@ -601,7 +624,7 @@ export interface PendingRecordRef {
  * 指的就是刚发的那条。
  */
 export function latestPendingRecord(
-  entries: readonly ObservationEntry[],
+  entries: readonly ObservationEntry[]
 ): PendingRecordRef | undefined {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i]!;
@@ -653,7 +676,7 @@ export interface RenderWindowOptions {
  */
 export function renderWindowBlock(
   entries: readonly ObservationEntry[],
-  options: RenderWindowOptions = {},
+  options: RenderWindowOptions = {}
 ): string {
   const botLabel = options.botLabel ?? '我';
   const maxChars = options.maxChars ?? WINDOW_BLOCK_MAX_CHARS;

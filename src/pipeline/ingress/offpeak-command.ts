@@ -34,7 +34,7 @@ export class OffpeakCommandRouter {
       config: Config;
       stats: PipelineStats;
       now?: () => number;
-    },
+    }
   ) {}
 
   stage(): IngressStage {
@@ -72,7 +72,7 @@ export class OffpeakCommandRouter {
           .error(
             `你的管理员身份键：${message.target.platform}:${message.senderId}` +
               `（${idKind}，平台 ${message.target.platform}）。` +
-              '把它加进环境变量 BOT_ADMINS（逗号分隔）即可成为管理员。',
+              '把它加进环境变量 BOT_ADMINS（逗号分隔）即可成为管理员。'
           )
           .catch(() => {});
         return;
@@ -91,7 +91,7 @@ export class OffpeakCommandRouter {
         await responder
           .error(
             `谷时段闸已${command.enabled ? '开启' : '关闭'}（运行期覆盖，重启后保留）。` +
-              `当前窗口：${formatWindows(effective.windows)}（${effective.timeZone}）。`,
+              `当前窗口：${formatWindows(effective.windows)}（${effective.timeZone}）。`
           )
           .catch(() => {});
         return;
@@ -107,7 +107,7 @@ export class OffpeakCommandRouter {
           });
           await responder
             .error(
-              `谷时段窗口已更新为 ${formatWindows(effective.windows)}（${effective.timeZone}，运行期覆盖）。`,
+              `谷时段窗口已更新为 ${formatWindows(effective.windows)}（${effective.timeZone}，运行期覆盖）。`
             )
             .catch(() => {});
         } catch (error) {
@@ -135,7 +135,7 @@ export class OffpeakCommandRouter {
           await responder
             .error(
               `已${adding ? '追加' : '移除'}全天谷价日期 ${command.date}（运行期覆盖）。` +
-                `当前节假日表共 ${snapshot.holidaysCount} 天。`,
+                `当前节假日表共 ${snapshot.holidaysCount} 天。`
             )
             .catch(() => {});
         } catch (error) {

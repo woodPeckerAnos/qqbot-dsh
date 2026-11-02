@@ -174,9 +174,18 @@ export interface Config {
    */
   modelApi: ModelApiConfig;
   tasks: {
-    fastTimeoutMs: number; slowTimeoutMs: number;
-    fastProvider: string; fastModel: string; slowProvider: string; slowModel: string;
-    fastRuntimes: number; slowRuntimes: number; maxPerSession: number; maxGlobal: number; retentionMs: number; reminderMs: number;
+    fastTimeoutMs: number;
+    slowTimeoutMs: number;
+    fastProvider: string;
+    fastModel: string;
+    slowProvider: string;
+    slowModel: string;
+    fastRuntimes: number;
+    slowRuntimes: number;
+    maxPerSession: number;
+    maxGlobal: number;
+    retentionMs: number;
+    reminderMs: number;
   };
   pool: {
     maxConcurrentTurns: number;
@@ -539,7 +548,12 @@ function envRaw(env: Env, key: string): string | undefined {
   return raw === undefined || raw.trim() === '' ? undefined : raw.trim();
 }
 
-function pickString(env: Env, envKey: string, fileValue: string | undefined, fallback: string): string {
+function pickString(
+  env: Env,
+  envKey: string,
+  fileValue: string | undefined,
+  fallback: string
+): string {
   return envRaw(env, envKey) ?? fileValue ?? fallback;
 }
 
@@ -570,7 +584,7 @@ function assertWorkspaceSubdirName(value: string, label: string, hints: string[]
   if (reason === undefined) return;
   throw new ConfigError(
     `${label} 必须是工作区内的纯子目录名：${reason}，收到 ${JSON.stringify(value)}`,
-    hints,
+    hints
   );
 }
 
@@ -580,7 +594,7 @@ function pickInt(
   fileValue: number | undefined,
   fallback: number,
   range: { min: number; max: number },
-  filePath: string,
+  filePath: string
 ): number {
   const raw = envRaw(env, envKey);
   let value: number;
@@ -597,7 +611,7 @@ function pickInt(
   if (fileValue !== undefined) {
     if (fileValue < range.min || fileValue > range.max) {
       throw new ConfigError(
-        `配置文件里的 ${filePath} 必须在 [${range.min}, ${range.max}] 之间，收到 ${fileValue}`,
+        `配置文件里的 ${filePath} 必须在 [${range.min}, ${range.max}] 之间，收到 ${fileValue}`
       );
     }
     return fileValue;
@@ -609,7 +623,7 @@ function pickBool(
   env: Env,
   envKey: string,
   fileValue: boolean | undefined,
-  fallback: boolean,
+  fallback: boolean
 ): boolean {
   const raw = envRaw(env, envKey);
   if (raw === undefined) return fileValue ?? fallback;
@@ -625,7 +639,7 @@ function pickEnum<T extends string>(
   fileValue: string | undefined,
   allowed: readonly T[],
   fallback: T,
-  filePath: string,
+  filePath: string
 ): T {
   const raw = envRaw(env, envKey);
   if (raw !== undefined) {
@@ -637,7 +651,7 @@ function pickEnum<T extends string>(
   if (fileValue !== undefined) {
     if (!allowed.includes(fileValue as T)) {
       throw new ConfigError(
-        `配置文件里的 ${filePath} 只能是 ${allowed.join(' | ')}，收到 ${JSON.stringify(fileValue)}`,
+        `配置文件里的 ${filePath} 只能是 ${allowed.join(' | ')}，收到 ${JSON.stringify(fileValue)}`
       );
     }
     return fileValue as T;
@@ -658,7 +672,10 @@ function pickEnum<T extends string>(
  *     弱信号场景每 30 条才有一次机会，见架构方案 §6 的成本模型）；
  *   - `topicRollMs` 5 分钟（消息少但话题在延续时的兜底收敛）。
  */
-function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): Config['proactive'] {
+function buildProactiveConfig(
+  env: Env,
+  file: ProactiveFileConfig | undefined
+): Config['proactive'] {
   const aliases = pickList(env, 'BOT_BOT_ALIASES', file?.botAliases);
   if (aliases.length > 5) {
     throw new ConfigError(`bot 别名最多 5 个，收到 ${aliases.length} 个`, [
@@ -701,7 +718,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       file?.topicRollMessages,
       30,
       { min: 3, max: 500 },
-      'proactive.topicRollMessages',
+      'proactive.topicRollMessages'
     ),
     topicRollMs: pickInt(
       env,
@@ -709,7 +726,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       file?.topicRollMs,
       300_000,
       { min: 10_000, max: 3_600_000 },
-      'proactive.topicRollMs',
+      'proactive.topicRollMs'
     ),
     questionProbeMs: pickInt(
       env,
@@ -717,7 +734,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       file?.questionProbeMs,
       90_000,
       { min: 10_000, max: 3_600_000 },
-      'proactive.questionProbeMs',
+      'proactive.questionProbeMs'
     ),
     // 让路预算：默认 1（让路只能让一次）。
     //
@@ -731,7 +748,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       file?.maxWaitPerItem,
       DEFAULT_MAX_WAIT_PER_ITEM,
       { min: 0, max: MAX_WAIT_PER_ITEM_CAP * 10 },
-      'proactive.maxWaitPerItem',
+      'proactive.maxWaitPerItem'
     ),
     waitYieldMs: pickInt(
       env,
@@ -739,7 +756,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       file?.waitYieldMs,
       DEFAULT_WAIT_YIELD_MS,
       { min: WAIT_YIELD_MS_MIN, max: WAIT_YIELD_MS_MAX },
-      'proactive.waitYieldMs',
+      'proactive.waitYieldMs'
     ),
     // 话题 session（主动发言的唯一放行闸门）：
     //
@@ -752,7 +769,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       file?.sessionBudget,
       DEFAULT_SESSION_BUDGET,
       { min: 1, max: MAX_SESSION_BUDGET_CAP * 20 },
-      'proactive.sessionBudget',
+      'proactive.sessionBudget'
     ),
     sessionIdleMs: pickInt(
       env,
@@ -760,7 +777,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       file?.sessionIdleMs,
       DEFAULT_SESSION_IDLE_MS,
       { min: SESSION_IDLE_MS_MIN, max: SESSION_IDLE_MS_MAX },
-      'proactive.sessionIdleMs',
+      'proactive.sessionIdleMs'
     ),
     sessionMinGapMs: pickInt(
       env,
@@ -768,7 +785,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       file?.sessionMinGapMs,
       DEFAULT_SESSION_MIN_GAP_MS,
       { min: SESSION_MIN_GAP_MS_MIN, max: SESSION_MIN_GAP_MS_MAX },
-      'proactive.sessionMinGapMs',
+      'proactive.sessionMinGapMs'
     ),
     // 判定超时比话题判定宽一倍：输出是多段 JSON 而不是一个布尔值
     judgeTimeoutMs: pickInt(
@@ -777,7 +794,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       file?.judgeTimeoutMs,
       20_000,
       { min: 1_000, max: 120_000 },
-      'proactive.judgeTimeoutMs',
+      'proactive.judgeTimeoutMs'
     ),
     // 发言生成（措辞轮次）超时：是"插一句话"不是"跑一个任务"，
     // 上限刻意低于被动轮次——超时的表现是本次不发言，不是报错。
@@ -787,7 +804,7 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       file?.speakTimeoutMs,
       120_000,
       { min: 30_000, max: 300_000 },
-      'proactive.speakTimeoutMs',
+      'proactive.speakTimeoutMs'
     ),
     // 旁听缓冲的两个限制：**取值搬到 `observation.*`**（滚窗不再属于介入层，
     // 见 Config.observation 的说明），这里只保留**旧键的读取**（`undefined` = 用户
@@ -799,14 +816,14 @@ function buildProactiveConfig(env: Env, file: ProactiveFileConfig | undefined): 
       'BOT_PROACTIVE_BUFFER_MAX_MESSAGES',
       file?.bufferMaxMessages,
       { min: 10, max: 10_000 },
-      'proactive.bufferMaxMessages',
+      'proactive.bufferMaxMessages'
     ),
     bufferMaxAgeMs: pickOptionalInt(
       env,
       'BOT_PROACTIVE_BUFFER_MAX_AGE_MS',
       file?.bufferMaxAgeMs,
       { min: 60_000, max: 72 * 3_600_000 },
-      'proactive.bufferMaxAgeMs',
+      'proactive.bufferMaxAgeMs'
     ),
   };
 }
@@ -822,7 +839,7 @@ function pickOptionalInt(
   envKey: string,
   fileValue: number | undefined,
   range: { min: number; max: number },
-  filePath: string,
+  filePath: string
 ): number | undefined {
   const raw = envRaw(env, envKey);
   if (raw === undefined && fileValue === undefined) return undefined;
@@ -839,7 +856,7 @@ function pickOptionalInt(
   const value = fileValue as number;
   if (value < range.min || value > range.max) {
     throw new ConfigError(
-      `配置文件里的 ${filePath} 必须在 [${range.min}, ${range.max}] 之间，收到 ${value}`,
+      `配置文件里的 ${filePath} 必须在 [${range.min}, ${range.max}] 之间，收到 ${value}`
     );
   }
   return value;
@@ -861,7 +878,7 @@ function pickOptionalInt(
 function buildObservationConfig(
   env: Env,
   file: ObservationFileConfig | undefined,
-  proactive: { bufferMaxMessages?: number; bufferMaxAgeMs?: number },
+  proactive: { bufferMaxMessages?: number; bufferMaxAgeMs?: number }
 ): Config['observation'] {
   const maxMessages = pickInt(
     env,
@@ -869,7 +886,7 @@ function buildObservationConfig(
     file?.maxMessages,
     proactive.bufferMaxMessages ?? DEFAULT_OBSERVATION_MAX_MESSAGES,
     { min: 10, max: 10_000 },
-    'observation.maxMessages',
+    'observation.maxMessages'
   );
   const maxAgeMs = pickInt(
     env,
@@ -877,7 +894,7 @@ function buildObservationConfig(
     file?.maxAgeMs,
     proactive.bufferMaxAgeMs ?? DEFAULT_OBSERVATION_MAX_AGE_MS,
     { min: 60_000, max: 72 * 3_600_000 },
-    'observation.maxAgeMs',
+    'observation.maxAgeMs'
   );
   // 配置层**不持有 logger**（它比日志先构造，报错走 stderr + exit 2）。所以旧键
   // 这件事只在这里生成一句提示，由启动摘要打出来——比在 config.ts 里造一个
@@ -885,13 +902,11 @@ function buildObservationConfig(
   const deprecations: string[] = [];
   if (proactive.bufferMaxMessages !== undefined) {
     deprecations.push(
-      `proactive.bufferMaxMessages → observation.maxMessages（当前生效：${maxMessages}）`,
+      `proactive.bufferMaxMessages → observation.maxMessages（当前生效：${maxMessages}）`
     );
   }
   if (proactive.bufferMaxAgeMs !== undefined) {
-    deprecations.push(
-      `proactive.bufferMaxAgeMs → observation.maxAgeMs（当前生效：${maxAgeMs}）`,
-    );
+    deprecations.push(`proactive.bufferMaxAgeMs → observation.maxAgeMs（当前生效：${maxAgeMs}）`);
   }
 
   // 注入宽度与活动窗口同值：判定层已经定义过"当前话题有多长"（活动窗口），
@@ -902,7 +917,7 @@ function buildObservationConfig(
     file?.injectWindowMs,
     DEFAULT_ACTIVITY_WINDOW_MS,
     { min: 60_000, max: 3_600_000 },
-    'observation.injectWindowMs',
+    'observation.injectWindowMs'
   );
 
   // 上下文里的媒体配额：**刻意小于 `attachments.maxImages` / `files.maxFiles`**。
@@ -915,7 +930,7 @@ function buildObservationConfig(
     file?.injectImages,
     DEFAULT_OBSERVATION_INJECT_IMAGES,
     { min: 0, max: 20 },
-    'observation.injectImages',
+    'observation.injectImages'
   );
   const injectFiles = pickInt(
     env,
@@ -923,7 +938,7 @@ function buildObservationConfig(
     file?.injectFiles,
     DEFAULT_OBSERVATION_INJECT_FILES,
     { min: 0, max: 10 },
-    'observation.injectFiles',
+    'observation.injectFiles'
   );
 
   return {
@@ -938,7 +953,11 @@ function buildObservationConfig(
   };
 }
 
-/** 列表：env 用逗号分隔，配置文件用 YAML 数组；env 非空时以 env 为准。 */function pickList(env: Env, envKey: string, fileValue: string[] | undefined): string[] {
+/** 列表：env 用逗号分隔，配置文件用 YAML 数组；env 非空时以 env 为准。 */ function pickList(
+  env: Env,
+  envKey: string,
+  fileValue: string[] | undefined
+): string[] {
   const raw = envRaw(env, envKey);
   if (raw !== undefined) {
     return raw
@@ -970,7 +989,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
           if (name !== QQ_OFFICIAL_PLATFORM && name !== ONEBOT_PLATFORM) {
             throw new ConfigError(
               `接入平台（BOT_CONNECTORS / connectors）含未知平台：${JSON.stringify(name)}`,
-              [`可选值：${QQ_OFFICIAL_PLATFORM} | ${ONEBOT_PLATFORM}（逗号分隔可并存）`],
+              [`可选值：${QQ_OFFICIAL_PLATFORM} | ${ONEBOT_PLATFORM}（逗号分隔可并存）`]
             );
           }
           return name;
@@ -982,7 +1001,9 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
 
   // --- 官方开放平台（仅启用时校验必填项与配额不变量） ------------------------
   // appId/appSecret 是密钥，只能来自 env：仅启用官方接入时必填。
-  const appId = officialEnabled ? requiredSecret(env, 'QQ_APP_ID', hints) : (envRaw(env, 'QQ_APP_ID') ?? '');
+  const appId = officialEnabled
+    ? requiredSecret(env, 'QQ_APP_ID', hints)
+    : (envRaw(env, 'QQ_APP_ID') ?? '');
   const appSecret = officialEnabled
     ? requiredSecret(env, 'QQ_APP_SECRET', hints)
     : (envRaw(env, 'QQ_APP_SECRET') ?? '');
@@ -993,29 +1014,73 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   // 配置文件它读不到。
 
   const qqFile = file.qqOfficial ?? {};
-  const intents = pickInt(env, 'QQ_INTENTS', qqFile.intents, DEFAULT_INTENTS, { min: 1, max: 0x7fffffff }, 'qq-official.intents');
+  const intents = pickInt(
+    env,
+    'QQ_INTENTS',
+    qqFile.intents,
+    DEFAULT_INTENTS,
+    { min: 1, max: 0x7fffffff },
+    'qq-official.intents'
+  );
   if (officialEnabled && (intents & Intent.GROUP_AND_C2C_EVENT) === 0) {
     // GROUP_AND_C2C_EVENT(1<<25) 是收群聊/单聊消息的最低要求。缺了它机器人会连着但收不到
     // 消息，属于"看起来正常其实废掉"的配置错误，直接快速失败。
     throw new ConfigError(
       `QQ_INTENTS=${intents} 未包含 GROUP_AND_C2C_EVENT(1<<25)=33554432，将收不到任何群聊/单聊消息`,
-      [`正确示例：QQ_INTENTS=${DEFAULT_INTENTS}（= ${describeIntents(DEFAULT_INTENTS).join(' | ')}）`],
+      [
+        `正确示例：QQ_INTENTS=${DEFAULT_INTENTS}（= ${describeIntents(DEFAULT_INTENTS).join(' | ')}）`,
+      ]
     );
   }
 
-  const maxRepliesPerMsg = pickInt(env, 'QQ_MAX_REPLIES_PER_MSG', qqFile.maxRepliesPerMsg, 4, { min: 1, max: 5 }, 'qq-official.maxRepliesPerMsg');
-  const progressMax = pickInt(env, 'QQ_PROGRESS_MAX', qqFile.progressMax, 3, { min: 0, max: 5 }, 'qq-official.progressMax');
+  const maxRepliesPerMsg = pickInt(
+    env,
+    'QQ_MAX_REPLIES_PER_MSG',
+    qqFile.maxRepliesPerMsg,
+    4,
+    { min: 1, max: 5 },
+    'qq-official.maxRepliesPerMsg'
+  );
+  const progressMax = pickInt(
+    env,
+    'QQ_PROGRESS_MAX',
+    qqFile.progressMax,
+    3,
+    { min: 0, max: 5 },
+    'qq-official.progressMax'
+  );
 
   // 单聊：官方上限是 4 次（群聊是 5），所以单独校验，不能共用群聊的上限。
   const qqC2cFile = qqFile.c2c ?? {};
-  const c2cMaxReplies = pickInt(env, 'QQ_C2C_MAX_REPLIES_PER_MSG', qqC2cFile.maxRepliesPerMsg, 4, { min: 1, max: 4 }, 'qq-official.c2c.maxRepliesPerMsg');
-  const c2cProgressMax = pickInt(env, 'QQ_C2C_PROGRESS_MAX', qqC2cFile.progressMax, 2, { min: 0, max: 4 }, 'qq-official.c2c.progressMax');
+  const c2cMaxReplies = pickInt(
+    env,
+    'QQ_C2C_MAX_REPLIES_PER_MSG',
+    qqC2cFile.maxRepliesPerMsg,
+    4,
+    { min: 1, max: 4 },
+    'qq-official.c2c.maxRepliesPerMsg'
+  );
+  const c2cProgressMax = pickInt(
+    env,
+    'QQ_C2C_PROGRESS_MAX',
+    qqC2cFile.progressMax,
+    2,
+    { min: 0, max: 4 },
+    'qq-official.c2c.progressMax'
+  );
 
-  const msgTypeRaw = pickInt(env, 'QQ_MSG_TYPE', qqFile.msgType, 0, { min: 0, max: 7 }, 'qq-official.msgType');
+  const msgTypeRaw = pickInt(
+    env,
+    'QQ_MSG_TYPE',
+    qqFile.msgType,
+    0,
+    { min: 0, max: 7 },
+    'qq-official.msgType'
+  );
   if (msgTypeRaw !== 0 && msgTypeRaw !== 2) {
     throw new ConfigError(
       `QQ_MSG_TYPE 本 MVP 只支持 0(纯文本) 或 2(markdown)，收到 ${msgTypeRaw}`,
-      ['6(input_notify 打字状态)只有单聊支持，且本 MVP 不发送打字状态'],
+      ['6(input_notify 打字状态)只有单聊支持，且本 MVP 不发送打字状态']
     );
   }
 
@@ -1025,9 +1090,23 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   //
   // 单聊的被动窗口更宽（官方文档为 60 分钟），这里**故意共用**同一个更保守的
   // 上限：更容易配错也更难排查的是"超时提示发不出去"，而不是任务跑得不够久。
-  const turnTimeoutMs = pickInt(env, 'QQ_TURN_TIMEOUT_MS', qqFile.turnTimeoutMs, 240_000, { min: 5_000, max: 295_000 }, 'qq-official.turnTimeoutMs');
+  const turnTimeoutMs = pickInt(
+    env,
+    'QQ_TURN_TIMEOUT_MS',
+    qqFile.turnTimeoutMs,
+    240_000,
+    { min: 5_000, max: 295_000 },
+    'qq-official.turnTimeoutMs'
+  );
 
-  const progressAfterMs = pickInt(env, 'QQ_PROGRESS_AFTER_MS', qqFile.progressAfterMs, 90_000, { min: 1_000, max: 280_000 }, 'qq-official.progressAfterMs');
+  const progressAfterMs = pickInt(
+    env,
+    'QQ_PROGRESS_AFTER_MS',
+    qqFile.progressAfterMs,
+    90_000,
+    { min: 1_000, max: 280_000 },
+    'qq-official.progressAfterMs'
+  );
 
   // --- OneBot（社区框架；无被动窗口，配额只是防失控的安全阀） ----------------
   // access token 是密钥：只认 env，启用 onebot 时必填。
@@ -1037,10 +1116,38 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       ])
     : (envRaw(env, 'ONEBOT_ACCESS_TOKEN') ?? '');
   const obFile = file.onebot ?? {};
-  const onebotMaxReplies = pickInt(env, 'ONEBOT_MAX_REPLIES_PER_MSG', obFile.maxRepliesPerMsg, 10, { min: 1, max: 50 }, 'onebot.maxRepliesPerMsg');
-  const onebotProgressMax = pickInt(env, 'ONEBOT_PROGRESS_MAX', obFile.progressMax, 3, { min: 0, max: 49 }, 'onebot.progressMax');
-  const onebotTurnTimeoutMs = pickInt(env, 'ONEBOT_TURN_TIMEOUT_MS', obFile.turnTimeoutMs, 600_000, { min: 5_000, max: 3_600_000 }, 'onebot.turnTimeoutMs');
-  const onebotProgressAfterMs = pickInt(env, 'ONEBOT_PROGRESS_AFTER_MS', obFile.progressAfterMs, 90_000, { min: 1_000, max: 600_000 }, 'onebot.progressAfterMs');
+  const onebotMaxReplies = pickInt(
+    env,
+    'ONEBOT_MAX_REPLIES_PER_MSG',
+    obFile.maxRepliesPerMsg,
+    10,
+    { min: 1, max: 50 },
+    'onebot.maxRepliesPerMsg'
+  );
+  const onebotProgressMax = pickInt(
+    env,
+    'ONEBOT_PROGRESS_MAX',
+    obFile.progressMax,
+    3,
+    { min: 0, max: 49 },
+    'onebot.progressMax'
+  );
+  const onebotTurnTimeoutMs = pickInt(
+    env,
+    'ONEBOT_TURN_TIMEOUT_MS',
+    obFile.turnTimeoutMs,
+    600_000,
+    { min: 5_000, max: 3_600_000 },
+    'onebot.turnTimeoutMs'
+  );
+  const onebotProgressAfterMs = pickInt(
+    env,
+    'ONEBOT_PROGRESS_AFTER_MS',
+    obFile.progressAfterMs,
+    90_000,
+    { min: 1_000, max: 600_000 },
+    'onebot.progressAfterMs'
+  );
 
   // --- 管理员白名单：platform:senderId，只认 env ----------------------------
   // 不读配置文件：那里是真实 QQ 号/openid，属于个人标识（见 Config.admins 注释）。
@@ -1129,9 +1236,10 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       topicApiBaseFallback = route.baseURL;
     } else if (topicProvider !== DEEPSEEK_OFFICIAL_PROVIDER && explicitApiBase === undefined) {
       throw new ConfigError(
-        `topic.provider 指向的路由 ${topicProvider} 没有 baseURL，判定调用不知道往哪里发`, [
+        `topic.provider 指向的路由 ${topicProvider} 没有 baseURL，判定调用不知道往哪里发`,
+        [
           '给该路由配 baseURL，或显式设置 topic.apiBase（chat-completions 基址，不含 /chat/completions 后缀）',
-        ],
+        ]
       );
     }
   }
@@ -1155,10 +1263,32 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   const topicApiKey = envRaw(env, topicApiKeyEnv) ?? '';
 
   const poolFile = file.pool ?? {};
-  const hardRuntimes = pickInt(env, 'QQ_MAX_RUNTIMES', poolFile.maxRuntimes, 8, { min: 2, max: 128 }, 'pool.maxRuntimes');
-  const fastRuntimes = pickInt(env, 'BOT_FAST_RUNTIMES', taskFile.fastRuntimes, Math.min(4, Math.floor(hardRuntimes / 2)), { min: 1, max: 127 }, 'tasks.fastRuntimes');
-  const slowRuntimes = pickInt(env, 'BOT_SLOW_RUNTIMES', taskFile.slowRuntimes, Math.min(4, hardRuntimes - fastRuntimes), { min: 1, max: 127 }, 'tasks.slowRuntimes');
-  if (fastRuntimes + slowRuntimes > hardRuntimes) throw new ConfigError('tasks.fastRuntimes + tasks.slowRuntimes 不得超过 pool.maxRuntimes');
+  const hardRuntimes = pickInt(
+    env,
+    'QQ_MAX_RUNTIMES',
+    poolFile.maxRuntimes,
+    8,
+    { min: 2, max: 128 },
+    'pool.maxRuntimes'
+  );
+  const fastRuntimes = pickInt(
+    env,
+    'BOT_FAST_RUNTIMES',
+    taskFile.fastRuntimes,
+    Math.min(4, Math.floor(hardRuntimes / 2)),
+    { min: 1, max: 127 },
+    'tasks.fastRuntimes'
+  );
+  const slowRuntimes = pickInt(
+    env,
+    'BOT_SLOW_RUNTIMES',
+    taskFile.slowRuntimes,
+    Math.min(4, hardRuntimes - fastRuntimes),
+    { min: 1, max: 127 },
+    'tasks.slowRuntimes'
+  );
+  if (fastRuntimes + slowRuntimes > hardRuntimes)
+    throw new ConfigError('tasks.fastRuntimes + tasks.slowRuntimes 不得超过 pool.maxRuntimes');
 
   const pathsFile = file.paths ?? {};
   const attachmentsFile = file.attachments ?? {};
@@ -1171,7 +1301,11 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     '正确示例：outbox、deliverables',
   ]);
 
-  const mediaImageExtensionsRaw = pickList(env, 'BOT_MEDIA_IMAGE_EXTENSIONS', mediaFile.imageExtensions);
+  const mediaImageExtensionsRaw = pickList(
+    env,
+    'BOT_MEDIA_IMAGE_EXTENSIONS',
+    mediaFile.imageExtensions
+  );
   const mediaImageExtensions = (
     mediaImageExtensionsRaw.length > 0 ? mediaImageExtensionsRaw : ['png', 'jpg', 'jpeg', 'gif']
   ).map((ext) => ext.trim().toLowerCase().replace(/^\./, ''));
@@ -1183,7 +1317,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     env,
     'BOT_ATTACHMENT_INBOX_DIR',
     attachmentsFile.files?.inboxDir,
-    'inbox',
+    'inbox'
   );
   assertWorkspaceSubdirName(attachmentInboxDir, 'attachments.files.inboxDir', [
     '正确示例：inbox、uploads',
@@ -1191,16 +1325,14 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   if (attachmentInboxDir === mediaOutboxDir) {
     throw new ConfigError(
       `attachments.files.inboxDir 与 media.outboxDir 不能同名（都是 ${JSON.stringify(attachmentInboxDir)}）`,
-      [
-        'inbox 放用户发来的文件、outbox 放要发回用户的产物；同名会让用户发来的文件被立刻回发给自己',
-      ],
+      ['inbox 放用户发来的文件、outbox 放要发回用户的产物；同名会让用户发来的文件被立刻回发给自己']
     );
   }
 
   const attachmentExtensionsRaw = pickList(
     env,
     'BOT_ATTACHMENT_FILE_EXTENSIONS',
-    attachmentsFile.files?.extractExtensions,
+    attachmentsFile.files?.extractExtensions
   );
   const attachmentExtensions = (
     attachmentExtensionsRaw.length > 0
@@ -1231,7 +1363,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       `\n配置提示：observation.maxAgeMs（${observationConfig.maxAgeMs}ms）比判定层的活动窗口` +
         `（${DEFAULT_ACTIVITY_WINDOW_MS}ms）还短，\n` +
         '  判定看到的条数/人数会少算。建议 maxAgeMs ≥ 活动窗口，或把 proactive 的\n' +
-        '  活动窗口一并调小（ConversationStateOptions.activityWindowMs）。\n\n',
+        '  活动窗口一并调小（ConversationStateOptions.activityWindowMs）。\n\n'
     );
   }
 
@@ -1244,10 +1376,24 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       apiBase: pickString(env, 'QQ_API_BASE', qqFile.apiBase, 'https://api.bot.qq.com'),
       intents,
       msgType: msgTypeRaw as 0 | 2,
-      maxChars: pickInt(env, 'QQ_MAX_CHARS', qqFile.maxChars, 1500, { min: 100, max: 4000 }, 'qq-official.maxChars'),
+      maxChars: pickInt(
+        env,
+        'QQ_MAX_CHARS',
+        qqFile.maxChars,
+        1500,
+        { min: 100, max: 4000 },
+        'qq-official.maxChars'
+      ),
       maxRepliesPerMsg,
       progressAfterMs,
-      progressIntervalMs: pickInt(env, 'QQ_PROGRESS_INTERVAL_MS', qqFile.progressIntervalMs, 90_000, { min: 1_000, max: 280_000 }, 'qq-official.progressIntervalMs'),
+      progressIntervalMs: pickInt(
+        env,
+        'QQ_PROGRESS_INTERVAL_MS',
+        qqFile.progressIntervalMs,
+        90_000,
+        { min: 1_000, max: 280_000 },
+        'qq-official.progressIntervalMs'
+      ),
       progressMax,
       turnTimeoutMs,
       c2c: {
@@ -1258,46 +1404,172 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     },
     onebot: {
       host: pickString(env, 'ONEBOT_WS_HOST', obFile.host, '0.0.0.0'),
-      port: pickInt(env, 'ONEBOT_WS_PORT', obFile.port, 6700, { min: 0, max: 65_535 }, 'onebot.port'),
+      port: pickInt(
+        env,
+        'ONEBOT_WS_PORT',
+        obFile.port,
+        6700,
+        { min: 0, max: 65_535 },
+        'onebot.port'
+      ),
       accessToken: onebotAccessToken,
       c2cEnabled: pickBool(env, 'ONEBOT_C2C_ENABLED', obFile.c2cEnabled, true),
-      maxChars: pickInt(env, 'ONEBOT_MAX_CHARS', obFile.maxChars, 1500, { min: 100, max: 4500 }, 'onebot.maxChars'),
+      maxChars: pickInt(
+        env,
+        'ONEBOT_MAX_CHARS',
+        obFile.maxChars,
+        1500,
+        { min: 100, max: 4500 },
+        'onebot.maxChars'
+      ),
       maxRepliesPerMsg: onebotMaxReplies,
       progressMax: onebotProgressMax,
       progressAfterMs: onebotProgressAfterMs,
-      progressIntervalMs: pickInt(env, 'ONEBOT_PROGRESS_INTERVAL_MS', obFile.progressIntervalMs, 90_000, { min: 1_000, max: 600_000 }, 'onebot.progressIntervalMs'),
+      progressIntervalMs: pickInt(
+        env,
+        'ONEBOT_PROGRESS_INTERVAL_MS',
+        obFile.progressIntervalMs,
+        90_000,
+        { min: 1_000, max: 600_000 },
+        'onebot.progressIntervalMs'
+      ),
       turnTimeoutMs: onebotTurnTimeoutMs,
       autoAcceptFriend: pickBool(env, 'ONEBOT_AUTO_ACCEPT_FRIEND', obFile.autoAcceptFriend, true),
-      autoAcceptGroupInvite: pickBool(env, 'ONEBOT_AUTO_ACCEPT_GROUP_INVITE', obFile.autoAcceptGroupInvite, false),
-      fileTransport: pickEnum(env, 'ONEBOT_FILE_TRANSPORT', obFile.fileTransport, ['base64', 'path'] as const, 'base64', 'onebot.fileTransport'),
+      autoAcceptGroupInvite: pickBool(
+        env,
+        'ONEBOT_AUTO_ACCEPT_GROUP_INVITE',
+        obFile.autoAcceptGroupInvite,
+        false
+      ),
+      fileTransport: pickEnum(
+        env,
+        'ONEBOT_FILE_TRANSPORT',
+        obFile.fileTransport,
+        ['base64', 'path'] as const,
+        'base64',
+        'onebot.fileTransport'
+      ),
     },
     dsh: {
       provider: dshProvider,
       model: pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash'),
-      profilePatch: pickString(env, 'QQ_DSH_PROFILE_PATCH', dshFile.profilePatch, '/app/dsh-profile/cordis.patch.yml'),
+      profilePatch: pickString(
+        env,
+        'QQ_DSH_PROFILE_PATCH',
+        dshFile.profilePatch,
+        '/app/dsh-profile/cordis.patch.yml'
+      ),
       bin: pickString(env, 'QQ_DSH_BIN', dshFile.bin, 'dsh'),
-      runtimeStartTimeoutMs: pickInt(env, 'QQ_DSH_START_TIMEOUT_MS', dshFile.startTimeoutMs, 60_000, { min: 5_000, max: 300_000 }, 'dsh.startTimeoutMs'),
-      runtimeShutdownTimeoutMs: pickInt(env, 'QQ_DSH_SHUTDOWN_TIMEOUT_MS', dshFile.shutdownTimeoutMs, 15_000, { min: 2_000, max: 120_000 }, 'dsh.shutdownTimeoutMs'),
+      runtimeStartTimeoutMs: pickInt(
+        env,
+        'QQ_DSH_START_TIMEOUT_MS',
+        dshFile.startTimeoutMs,
+        60_000,
+        { min: 5_000, max: 300_000 },
+        'dsh.startTimeoutMs'
+      ),
+      runtimeShutdownTimeoutMs: pickInt(
+        env,
+        'QQ_DSH_SHUTDOWN_TIMEOUT_MS',
+        dshFile.shutdownTimeoutMs,
+        15_000,
+        { min: 2_000, max: 120_000 },
+        'dsh.shutdownTimeoutMs'
+      ),
     },
     modelApi,
     tasks: {
-      fastTimeoutMs: pickInt(env, 'BOT_FAST_TIMEOUT_MS', taskFile.fastTimeoutMs, 30_000, { min: 100, max: 3_600_000 }, 'tasks.fastTimeoutMs'),
-      slowTimeoutMs: pickInt(env, 'BOT_SLOW_TIMEOUT_MS', taskFile.slowTimeoutMs, 1_800_000, { min: 100, max: 86_400_000 }, 'tasks.slowTimeoutMs'),
+      fastTimeoutMs: pickInt(
+        env,
+        'BOT_FAST_TIMEOUT_MS',
+        taskFile.fastTimeoutMs,
+        30_000,
+        { min: 100, max: 3_600_000 },
+        'tasks.fastTimeoutMs'
+      ),
+      slowTimeoutMs: pickInt(
+        env,
+        'BOT_SLOW_TIMEOUT_MS',
+        taskFile.slowTimeoutMs,
+        1_800_000,
+        { min: 100, max: 86_400_000 },
+        'tasks.slowTimeoutMs'
+      ),
       fastProvider,
-      fastModel: pickString(env, 'BOT_FAST_MODEL', taskFile.fastModel, pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash')),
+      fastModel: pickString(
+        env,
+        'BOT_FAST_MODEL',
+        taskFile.fastModel,
+        pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash')
+      ),
       slowProvider,
-      slowModel: pickString(env, 'BOT_SLOW_MODEL', taskFile.slowModel, pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash')),
-      fastRuntimes, slowRuntimes,
-      maxPerSession: pickInt(env, 'BOT_TASKS_PER_SESSION', taskFile.maxPerSession, 32, { min: 1, max: 1024 }, 'tasks.maxPerSession'),
-      maxGlobal: pickInt(env, 'BOT_TASKS_GLOBAL', taskFile.maxGlobal, 128, { min: 1, max: 65536 }, 'tasks.maxGlobal'),
-      retentionMs: pickInt(env, 'BOT_TASK_RETENTION_MS', taskFile.retentionMs, 7 * 86400_000, { min: 1, max: 365 * 86400_000 }, 'tasks.retentionMs'),
-      reminderMs: pickInt(env, 'BOT_TASK_REMINDER_MS', taskFile.reminderMs, 300_000, { min: 300_000, max: 86400_000 }, 'tasks.reminderMs'),
+      slowModel: pickString(
+        env,
+        'BOT_SLOW_MODEL',
+        taskFile.slowModel,
+        pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash')
+      ),
+      fastRuntimes,
+      slowRuntimes,
+      maxPerSession: pickInt(
+        env,
+        'BOT_TASKS_PER_SESSION',
+        taskFile.maxPerSession,
+        32,
+        { min: 1, max: 1024 },
+        'tasks.maxPerSession'
+      ),
+      maxGlobal: pickInt(
+        env,
+        'BOT_TASKS_GLOBAL',
+        taskFile.maxGlobal,
+        128,
+        { min: 1, max: 65536 },
+        'tasks.maxGlobal'
+      ),
+      retentionMs: pickInt(
+        env,
+        'BOT_TASK_RETENTION_MS',
+        taskFile.retentionMs,
+        7 * 86400_000,
+        { min: 1, max: 365 * 86400_000 },
+        'tasks.retentionMs'
+      ),
+      reminderMs: pickInt(
+        env,
+        'BOT_TASK_REMINDER_MS',
+        taskFile.reminderMs,
+        300_000,
+        { min: 300_000, max: 86400_000 },
+        'tasks.reminderMs'
+      ),
     },
     pool: {
-      maxConcurrentTurns: pickInt(env, 'QQ_MAX_CONCURRENT_TURNS', poolFile.maxConcurrentTurns, 4, { min: 1, max: 64 }, 'pool.maxConcurrentTurns'),
+      maxConcurrentTurns: pickInt(
+        env,
+        'QQ_MAX_CONCURRENT_TURNS',
+        poolFile.maxConcurrentTurns,
+        4,
+        { min: 1, max: 64 },
+        'pool.maxConcurrentTurns'
+      ),
       maxRuntimes: hardRuntimes,
-      runtimeIdleMs: pickInt(env, 'QQ_RUNTIME_IDLE_MS', poolFile.runtimeIdleMs, 1_800_000, { min: 0, max: 86_400_000 }, 'pool.runtimeIdleMs'),
-      replayTurns: pickInt(env, 'QQ_REPLAY_TURNS', poolFile.replayTurns, 12, { min: 0, max: 200 }, 'pool.replayTurns'),
+      runtimeIdleMs: pickInt(
+        env,
+        'QQ_RUNTIME_IDLE_MS',
+        poolFile.runtimeIdleMs,
+        1_800_000,
+        { min: 0, max: 86_400_000 },
+        'pool.runtimeIdleMs'
+      ),
+      replayTurns: pickInt(
+        env,
+        'QQ_REPLAY_TURNS',
+        poolFile.replayTurns,
+        12,
+        { min: 0, max: 200 },
+        'pool.replayTurns'
+      ),
     },
     topic: {
       enabled: topicEnabled,
@@ -1306,19 +1578,43 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       apiKey: topicApiKey,
       apiBase: pickString(env, 'BOT_TOPIC_API_BASE', file.topic?.apiBase, topicApiBaseFallback),
       model: pickString(env, 'BOT_TOPIC_MODEL', file.topic?.model, 'deepseek-flash'),
-      timeoutMs: pickInt(env, 'BOT_TOPIC_TIMEOUT_MS', file.topic?.timeoutMs, 10_000, { min: 1_000, max: 60_000 }, 'topic.timeoutMs'),
-      contextTurns: pickInt(env, 'BOT_TOPIC_CONTEXT_TURNS', file.topic?.contextTurns, 10, { min: 1, max: 50 }, 'topic.contextTurns'),
+      timeoutMs: pickInt(
+        env,
+        'BOT_TOPIC_TIMEOUT_MS',
+        file.topic?.timeoutMs,
+        10_000,
+        { min: 1_000, max: 60_000 },
+        'topic.timeoutMs'
+      ),
+      contextTurns: pickInt(
+        env,
+        'BOT_TOPIC_CONTEXT_TURNS',
+        file.topic?.contextTurns,
+        10,
+        { min: 1, max: 50 },
+        'topic.contextTurns'
+      ),
     },
     paths: {
       dshHome: pickString(env, 'DSH_HOME', pathsFile.dshHome, '/data/dsh'),
-      workspacesRoot: pickString(env, 'QQ_WORKSPACES_ROOT', pathsFile.workspacesRoot, '/data/workspaces'),
+      workspacesRoot: pickString(
+        env,
+        'QQ_WORKSPACES_ROOT',
+        pathsFile.workspacesRoot,
+        '/data/workspaces'
+      ),
       stateDir: pickString(env, 'QQ_STATE_DIR', pathsFile.stateDir, '/data/bot'),
     },
     offpeak: {
       enabled: pickBool(env, 'QQ_OFFPEAK_ENABLED', file.offpeak?.enabled, false),
       windows: offpeakWindows,
       timeZone: offpeakTimeZone,
-      modelPattern: pickString(env, 'QQ_OFFPEAK_MODEL_PATTERN', file.offpeak?.modelPattern, 'deepseek'),
+      modelPattern: pickString(
+        env,
+        'QQ_OFFPEAK_MODEL_PATTERN',
+        file.offpeak?.modelPattern,
+        'deepseek'
+      ),
       weekendsAllDay: pickBool(env, 'QQ_OFFPEAK_WEEKENDS', file.offpeak?.weekendsAllDay, true),
       holidays: offpeakHolidays,
     },
@@ -1326,41 +1622,163 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       enabled: pickBool(env, 'BOT_ATTACHMENT_ENABLED', attachmentsFile.enabled, true),
       // 上限都刻意保守：一条消息塞十几张图既烧 token 又压不住延迟，
       // 而 QQ 单图硬上限是 200MB，绝不能照抄。
-      maxImages: pickInt(env, 'BOT_ATTACHMENT_MAX_IMAGES', attachmentsFile.maxImages, 4, { min: 0, max: 20 }, 'attachments.maxImages'),
-      maxImageBytes: pickInt(env, 'BOT_ATTACHMENT_MAX_BYTES', attachmentsFile.maxImageBytes, 8 * 1024 * 1024, { min: 1024, max: 200 * 1024 * 1024 }, 'attachments.maxImageBytes'),
+      maxImages: pickInt(
+        env,
+        'BOT_ATTACHMENT_MAX_IMAGES',
+        attachmentsFile.maxImages,
+        4,
+        { min: 0, max: 20 },
+        'attachments.maxImages'
+      ),
+      maxImageBytes: pickInt(
+        env,
+        'BOT_ATTACHMENT_MAX_BYTES',
+        attachmentsFile.maxImageBytes,
+        8 * 1024 * 1024,
+        { min: 1024, max: 200 * 1024 * 1024 },
+        'attachments.maxImageBytes'
+      ),
       // 长截图只有切成小块才读得清：模型对**每张图**只有 64 万像素的预算
       // （deepseek-flash 的 imagePixelBudget），整张缩下去文字就糊成一团。
       // 12 块 ≈ 一张 1080×7100 的聊天记录，token 代价约 1 万；上限 20 是 runtime
       // 单条 prompt 的图片张数上限，不能越过。
-      maxImageTiles: pickInt(env, 'BOT_ATTACHMENT_MAX_IMAGE_TILES', attachmentsFile.maxImageTiles, 12, { min: 1, max: 20 }, 'attachments.maxImageTiles'),
-      downloadTimeoutMs: pickInt(env, 'BOT_ATTACHMENT_TIMEOUT_MS', attachmentsFile.downloadTimeoutMs, 15_000, { min: 1_000, max: 120_000 }, 'attachments.downloadTimeoutMs'),
+      maxImageTiles: pickInt(
+        env,
+        'BOT_ATTACHMENT_MAX_IMAGE_TILES',
+        attachmentsFile.maxImageTiles,
+        12,
+        { min: 1, max: 20 },
+        'attachments.maxImageTiles'
+      ),
+      downloadTimeoutMs: pickInt(
+        env,
+        'BOT_ATTACHMENT_TIMEOUT_MS',
+        attachmentsFile.downloadTimeoutMs,
+        15_000,
+        { min: 1_000, max: 120_000 },
+        'attachments.downloadTimeoutMs'
+      ),
       forward: {
-        enabled: pickBool(env, 'BOT_ATTACHMENT_FORWARD_ENABLED', attachmentsFile.forward?.enabled, true),
+        enabled: pickBool(
+          env,
+          'BOT_ATTACHMENT_FORWARD_ENABLED',
+          attachmentsFile.forward?.enabled,
+          true
+        ),
         // 20 条 ≈ 群里一次"爬楼"转发的常见规模；再多模型也读不完，只是烧 token。
-        maxNodes: pickInt(env, 'BOT_ATTACHMENT_FORWARD_MAX_NODES', attachmentsFile.forward?.maxNodes, 20, { min: 1, max: 100 }, 'attachments.forward.maxNodes'),
-        maxNodeChars: pickInt(env, 'BOT_ATTACHMENT_FORWARD_MAX_NODE_CHARS', attachmentsFile.forward?.maxNodeChars, 500, { min: 50, max: 5_000 }, 'attachments.forward.maxNodeChars'),
+        maxNodes: pickInt(
+          env,
+          'BOT_ATTACHMENT_FORWARD_MAX_NODES',
+          attachmentsFile.forward?.maxNodes,
+          20,
+          { min: 1, max: 100 },
+          'attachments.forward.maxNodes'
+        ),
+        maxNodeChars: pickInt(
+          env,
+          'BOT_ATTACHMENT_FORWARD_MAX_NODE_CHARS',
+          attachmentsFile.forward?.maxNodeChars,
+          500,
+          { min: 50, max: 5_000 },
+          'attachments.forward.maxNodeChars'
+        ),
         // 总字符上限：4000 字 ≈ 一篇长文，足够读懂"这捆记录在聊什么"。
-        maxChars: pickInt(env, 'BOT_ATTACHMENT_FORWARD_MAX_CHARS', attachmentsFile.forward?.maxChars, 4_000, { min: 200, max: 40_000 }, 'attachments.forward.maxChars'),
-        maxDepth: pickInt(env, 'BOT_ATTACHMENT_FORWARD_MAX_DEPTH', attachmentsFile.forward?.maxDepth, 2, { min: 0, max: 5 }, 'attachments.forward.maxDepth'),
-        timeoutMs: pickInt(env, 'BOT_ATTACHMENT_FORWARD_TIMEOUT_MS', attachmentsFile.forward?.timeoutMs, 10_000, { min: 1_000, max: 60_000 }, 'attachments.forward.timeoutMs'),
+        maxChars: pickInt(
+          env,
+          'BOT_ATTACHMENT_FORWARD_MAX_CHARS',
+          attachmentsFile.forward?.maxChars,
+          4_000,
+          { min: 200, max: 40_000 },
+          'attachments.forward.maxChars'
+        ),
+        maxDepth: pickInt(
+          env,
+          'BOT_ATTACHMENT_FORWARD_MAX_DEPTH',
+          attachmentsFile.forward?.maxDepth,
+          2,
+          { min: 0, max: 5 },
+          'attachments.forward.maxDepth'
+        ),
+        timeoutMs: pickInt(
+          env,
+          'BOT_ATTACHMENT_FORWARD_TIMEOUT_MS',
+          attachmentsFile.forward?.timeoutMs,
+          10_000,
+          { min: 1_000, max: 60_000 },
+          'attachments.forward.timeoutMs'
+        ),
       },
       files: {
         enabled: pickBool(env, 'BOT_ATTACHMENT_FILE_ENABLED', attachmentsFile.files?.enabled, true),
-        maxFiles: pickInt(env, 'BOT_ATTACHMENT_FILE_MAX_FILES', attachmentsFile.files?.maxFiles, 2, { min: 0, max: 10 }, 'attachments.files.maxFiles'),
+        maxFiles: pickInt(
+          env,
+          'BOT_ATTACHMENT_FILE_MAX_FILES',
+          attachmentsFile.files?.maxFiles,
+          2,
+          { min: 0, max: 10 },
+          'attachments.files.maxFiles'
+        ),
         // 16MB：够放下常规 PDF/报表，又不至于让下载+落盘+解析把一轮拖垮。
-        maxFileBytes: pickInt(env, 'BOT_ATTACHMENT_FILE_MAX_BYTES', attachmentsFile.files?.maxFileBytes, 16 * 1024 * 1024, { min: 1024, max: 200 * 1024 * 1024 }, 'attachments.files.maxFileBytes'),
+        maxFileBytes: pickInt(
+          env,
+          'BOT_ATTACHMENT_FILE_MAX_BYTES',
+          attachmentsFile.files?.maxFileBytes,
+          16 * 1024 * 1024,
+          { min: 1024, max: 200 * 1024 * 1024 },
+          'attachments.files.maxFileBytes'
+        ),
         // 20000 字 ≈ 30 页纯文字 PDF，是"能读懂"与"不撑爆 prompt"的分界。
-        maxExtractChars: pickInt(env, 'BOT_ATTACHMENT_FILE_MAX_CHARS', attachmentsFile.files?.maxExtractChars, 20_000, { min: 200, max: 200_000 }, 'attachments.files.maxExtractChars'),
-        maxPdfPages: pickInt(env, 'BOT_ATTACHMENT_FILE_MAX_PDF_PAGES', attachmentsFile.files?.maxPdfPages, 30, { min: 1, max: 500 }, 'attachments.files.maxPdfPages'),
-        extractTimeoutMs: pickInt(env, 'BOT_ATTACHMENT_FILE_TIMEOUT_MS', attachmentsFile.files?.extractTimeoutMs, 10_000, { min: 1_000, max: 120_000 }, 'attachments.files.extractTimeoutMs'),
-        saveToInbox: pickBool(env, 'BOT_ATTACHMENT_FILE_SAVE', attachmentsFile.files?.saveToInbox, true),
+        maxExtractChars: pickInt(
+          env,
+          'BOT_ATTACHMENT_FILE_MAX_CHARS',
+          attachmentsFile.files?.maxExtractChars,
+          20_000,
+          { min: 200, max: 200_000 },
+          'attachments.files.maxExtractChars'
+        ),
+        maxPdfPages: pickInt(
+          env,
+          'BOT_ATTACHMENT_FILE_MAX_PDF_PAGES',
+          attachmentsFile.files?.maxPdfPages,
+          30,
+          { min: 1, max: 500 },
+          'attachments.files.maxPdfPages'
+        ),
+        extractTimeoutMs: pickInt(
+          env,
+          'BOT_ATTACHMENT_FILE_TIMEOUT_MS',
+          attachmentsFile.files?.extractTimeoutMs,
+          10_000,
+          { min: 1_000, max: 120_000 },
+          'attachments.files.extractTimeoutMs'
+        ),
+        saveToInbox: pickBool(
+          env,
+          'BOT_ATTACHMENT_FILE_SAVE',
+          attachmentsFile.files?.saveToInbox,
+          true
+        ),
         inboxDir: attachmentInboxDir,
         // 0 = 永不清理；默认 7 天，让"上周发的那份 PDF"还找得到。
-        retentionDays: pickInt(env, 'BOT_ATTACHMENT_INBOX_RETENTION_DAYS', attachmentsFile.files?.retentionDays, 7, { min: 0, max: 365 }, 'attachments.files.retentionDays'),
+        retentionDays: pickInt(
+          env,
+          'BOT_ATTACHMENT_INBOX_RETENTION_DAYS',
+          attachmentsFile.files?.retentionDays,
+          7,
+          { min: 0, max: 365 },
+          'attachments.files.retentionDays'
+        ),
         // 单会话 200MB 上限；与 media.maxFileMB 一样用 MB —— 这是运维旋钮，
         // 不需要字节级精度（单文件上限才是安全边界，用字节）。
         maxInboxBytes:
-          pickInt(env, 'BOT_ATTACHMENT_INBOX_MAX_MB', attachmentsFile.files?.maxInboxMB, 200, { min: 1, max: 5_000 }, 'attachments.files.maxInboxMB') *
+          pickInt(
+            env,
+            'BOT_ATTACHMENT_INBOX_MAX_MB',
+            attachmentsFile.files?.maxInboxMB,
+            200,
+            { min: 1, max: 5_000 },
+            'attachments.files.maxInboxMB'
+          ) *
           1024 *
           1024,
         extractExtensions: attachmentExtensions,
@@ -1370,15 +1788,36 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       enabled: pickBool(env, 'BOT_MEDIA_ENABLED', mediaFile.enabled, true),
       // 默认 20MB：base64 传输膨胀 +33%，再大既拖慢发送也容易撞上平台/框架的上限
       maxFileBytes:
-        pickInt(env, 'BOT_MEDIA_MAX_FILE_MB', mediaFile.maxFileMB, 20, { min: 1, max: 100 }, 'media.maxFileMB') *
+        pickInt(
+          env,
+          'BOT_MEDIA_MAX_FILE_MB',
+          mediaFile.maxFileMB,
+          20,
+          { min: 1, max: 100 },
+          'media.maxFileMB'
+        ) *
         1024 *
         1024,
-      maxAttachmentsPerMsg: pickInt(env, 'BOT_MEDIA_MAX_ATTACHMENTS', mediaFile.maxAttachmentsPerMsg, 4, { min: 1, max: 10 }, 'media.maxAttachmentsPerMsg'),
+      maxAttachmentsPerMsg: pickInt(
+        env,
+        'BOT_MEDIA_MAX_ATTACHMENTS',
+        mediaFile.maxAttachmentsPerMsg,
+        4,
+        { min: 1, max: 10 },
+        'media.maxAttachmentsPerMsg'
+      ),
       imageExtensions: mediaImageExtensions,
       outboxDir: mediaOutboxDir,
     },
     health: {
-      port: pickInt(env, 'QQ_HEALTH_PORT', file.health?.port, 8080, { min: 0, max: 65_535 }, 'health.port'),
+      port: pickInt(
+        env,
+        'QQ_HEALTH_PORT',
+        file.health?.port,
+        8080,
+        { min: 0, max: 65_535 },
+        'health.port'
+      ),
     },
     proactive: proactiveConfig,
     // 观察窗口：**放在 proactive 之后**构造，因为旧键的兼容读取要拿到
@@ -1390,7 +1829,14 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     hints: {
       longTask: buildLongTaskHintConfig(env, file.hints?.longTask),
     },
-    logLevel: pickEnum(env, 'QQ_LOG_LEVEL', file.logLevel, ['debug', 'info', 'warn', 'error'] as const, 'info', 'logLevel'),
+    logLevel: pickEnum(
+      env,
+      'QQ_LOG_LEVEL',
+      file.logLevel,
+      ['debug', 'info', 'warn', 'error'] as const,
+      'info',
+      'logLevel'
+    ),
   };
 }
 
@@ -1402,7 +1848,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
  */
 function buildLongTaskHintConfig(
   env: Env,
-  file: { enabled?: boolean; patterns?: string[]; text?: string } | undefined,
+  file: { enabled?: boolean; patterns?: string[]; text?: string } | undefined
 ): LongTaskHintConfig {
   const raw = pickList(env, 'BOT_HINT_LONG_TASK_PATTERNS', file?.patterns);
   const patterns = (raw.length > 0 ? raw : DEFAULT_LONG_TASK_PATTERNS).map((p) => p.trim());
@@ -1506,7 +1952,18 @@ export function describeConfig(config: Config): Record<string, unknown> {
     },
     attachments: config.attachments,
     personas: { dir: config.personas.dir },
-    deprecated: { ignored: ['pool.maxConcurrentTurns', 'qq-official.progress*', 'qq-official.turnTimeoutMs', 'onebot.maxRepliesPerMsg', 'onebot.progress*', 'onebot.turnTimeoutMs', 'hints.longTask', 'proactive.speakTimeoutMs'] },
+    deprecated: {
+      ignored: [
+        'pool.maxConcurrentTurns',
+        'qq-official.progress*',
+        'qq-official.turnTimeoutMs',
+        'onebot.maxRepliesPerMsg',
+        'onebot.progress*',
+        'onebot.turnTimeoutMs',
+        'hints.longTask',
+        'proactive.speakTimeoutMs',
+      ],
+    },
     media: {
       enabled: config.media.enabled,
       maxFileBytes: config.media.maxFileBytes,

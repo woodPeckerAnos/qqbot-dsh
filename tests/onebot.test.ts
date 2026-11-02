@@ -148,7 +148,7 @@ describe('OneBot 归一化', () => {
     ]);
     // url 过期（NapCat 约 2 小时）时还有 fileId 回查这条路
     expect(collectWindowMedia([entry], { maxImages: 1 }).images[0]!.part.fileId).toBe(
-      'DF77A739.jpg',
+      'DF77A739.jpg'
     );
   });
 
@@ -166,7 +166,10 @@ describe('OneBot 归一化', () => {
   });
 
   it('CQ 码字符串形式也能识别 at 与正文', () => {
-    const { content, atSelf } = extractGroupContent('[CQ:at,qq=10000] 统计一下 [CQ:face,id=178]', 10000);
+    const { content, atSelf } = extractGroupContent(
+      '[CQ:at,qq=10000] 统计一下 [CQ:face,id=178]',
+      10000
+    );
     expect(atSelf).toBe(true);
     // 表情段现在保留为可读标记（旧行为是整段丢弃）
     expect(content).toBe('统计一下\n[表情]');
@@ -292,7 +295,7 @@ describe('OneBot 归一化', () => {
           { type: 'image', data: { url: 'https://cdn.example.com/q.jpg' } },
         ],
       },
-      10000,
+      10000
     );
     expect(parts).toEqual([
       { type: 'text', text: '原来那条' },
@@ -430,14 +433,22 @@ function makeConnector(port: number, overrides: Partial<OnebotConnectorOptions> 
 /** 连上并发送一条 lifecycle connect，完成"框架就绪" */
 async function connectClient(
   port: number,
-  headers: Record<string, string> = { Authorization: 'Bearer test-token' },
+  headers: Record<string, string> = { Authorization: 'Bearer test-token' }
 ): Promise<WebSocket> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/onebot/v11/ws`, { headers });
   await new Promise<void>((resolve, reject) => {
     ws.once('open', () => resolve());
     ws.once('error', reject);
   });
-  ws.send(JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10000, time: 0 }));
+  ws.send(
+    JSON.stringify({
+      post_type: 'meta_event',
+      meta_event_type: 'lifecycle',
+      sub_type: 'connect',
+      self_id: 10000,
+      time: 0,
+    })
+  );
   return ws;
 }
 
@@ -457,7 +468,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     connector = c;
     // port 0 = 随机端口，从 health 里拿不到，直接从 server 读
     await connector.start();
-    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const address = (
+      connector as unknown as { server: { address: () => { port: number } } }
+    ).server.address();
     const ws = await connectClient(address.port);
     clients.push(ws);
 
@@ -472,9 +485,12 @@ socketDescribe('OneBot 反向 WS 回路', () => {
         group_id: 8888,
         user_id: 12345,
         time: 1_700_000_000,
-        message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 你好' } }],
+        message: [
+          { type: 'at', data: { qq: '10000' } },
+          { type: 'text', data: { text: ' 你好' } },
+        ],
         sender: { user_id: 12345, nickname: '小明' },
-      }),
+      })
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
     const message = events.find((e) => e.kind === 'group-at-message');
@@ -486,17 +502,22 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     });
     const replyPromise = connector.reply(
       { target: onebotGroupTarget(8888), seq: 1, kind: 'final', msgId: '42' },
-      { text: '**你好**，世界' },
+      { text: '**你好**，世界' }
     );
     const action = await actionPromise;
     expect(action['action']).toBe('send_group_msg');
-    const params = action['params'] as { group_id: number; message: Array<{ type: string; data: { text: string } }> };
+    const params = action['params'] as {
+      group_id: number;
+      message: Array<{ type: string; data: { text: string } }>;
+    };
     expect(params.group_id).toBe(8888);
     // markdown 被剥成纯文本
     expect(params.message[0]!.data.text).toBe('你好，世界');
 
     // 框架回响应（echo 对回）→ reply promise 落定
-    ws.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 100 }, echo: action['echo'] }));
+    ws.send(
+      JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 100 }, echo: action['echo'] })
+    );
     await replyPromise;
   });
 
@@ -504,7 +525,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     const { connector: c, events } = makeConnector(0);
     connector = c;
     await connector.start();
-    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const address = (
+      connector as unknown as { server: { address: () => { port: number } } }
+    ).server.address();
     const ws = await connectClient(address.port);
     clients.push(ws);
 
@@ -524,7 +547,7 @@ socketDescribe('OneBot 反向 WS 回路', () => {
           { type: 'text', data: { text: '这个怎么说' } },
         ],
         sender: { user_id: 12345, nickname: '小明' },
-      }),
+      })
     );
 
     // 服务 → 框架：先回查被引用的消息
@@ -543,7 +566,7 @@ socketDescribe('OneBot 反向 WS 回路', () => {
           message: [{ type: 'text', data: { text: '原来那条' } }],
         },
         echo: action['echo'],
-      }),
+      })
     );
 
     for (let i = 0; i < 100 && !events.some((e) => e.kind === 'group-at-message'); i += 1) {
@@ -558,7 +581,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     const { connector: c } = makeConnector(0);
     connector = c;
     await connector.start();
-    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const address = (
+      connector as unknown as { server: { address: () => { port: number } } }
+    ).server.address();
     const ws = await connectClient(address.port);
     clients.push(ws);
 
@@ -567,11 +592,18 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     });
     const replyPromise = connector.reply(
       { target: onebotC2cTarget(12345), seq: 1, kind: 'final' },
-      { text: 'hi' },
+      { text: 'hi' }
     );
     const action = await actionPromise;
     expect(action['action']).toBe('send_private_msg');
-    ws.send(JSON.stringify({ status: 'failed', retcode: 1404, wording: '消息发送失败', echo: action['echo'] }));
+    ws.send(
+      JSON.stringify({
+        status: 'failed',
+        retcode: 1404,
+        wording: '消息发送失败',
+        echo: action['echo'],
+      })
+    );
     await expect(replyPromise).rejects.toThrow(/1404/);
   });
 
@@ -579,7 +611,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     const { connector: c } = makeConnector(0);
     connector = c;
     await connector.start();
-    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const address = (
+      connector as unknown as { server: { address: () => { port: number } } }
+    ).server.address();
     await expect(
       new Promise<void>((resolve, reject) => {
         const ws = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/v11/ws`, {
@@ -588,7 +622,7 @@ socketDescribe('OneBot 反向 WS 回路', () => {
         ws.once('open', () => resolve());
         ws.once('error', (error) => reject(error));
         ws.once('unexpected-response', () => reject(new Error('unexpected-response')));
-      }),
+      })
     ).rejects.toThrow();
   });
 
@@ -596,7 +630,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     const { connector: c } = makeConnector(0);
     connector = c;
     await connector.start();
-    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const address = (
+      connector as unknown as { server: { address: () => { port: number } } }
+    ).server.address();
     const ws = await connectClient(address.port);
     clients.push(ws);
 
@@ -611,7 +647,7 @@ socketDescribe('OneBot 反向 WS 回路', () => {
         user_id: 12345,
         flag: 'FLAG-1',
         time: 0,
-      }),
+      })
     );
     const action = await actionPromise;
     expect(action['action']).toBe('set_friend_add_request');
@@ -622,7 +658,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     const { connector: c, events } = makeConnector(0);
     connector = c;
     await connector.start();
-    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const address = (
+      connector as unknown as { server: { address: () => { port: number } } }
+    ).server.address();
     const ws = await connectClient(address.port);
     clients.push(ws);
 
@@ -640,7 +678,7 @@ socketDescribe('OneBot 反向 WS 回路', () => {
         group_id: 8888,
         flag: 'FLAG-2',
         time: 0,
-      }),
+      })
     );
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(gotAction).toBe(false);
@@ -676,7 +714,7 @@ socketDescribe('OneBot 反向 WS 回路', () => {
   async function replyAndCollect(
     ws: WebSocket,
     replyPromise: Promise<void>,
-    count: number,
+    count: number
   ): Promise<Record<string, unknown>[]> {
     const actions: Record<string, unknown>[] = [];
     const allReceived = new Promise<void>((resolve) => {
@@ -684,7 +722,14 @@ socketDescribe('OneBot 反向 WS 回路', () => {
         const frame = JSON.parse(String(data)) as Record<string, unknown>;
         if (frame['action'] === undefined) return;
         actions.push(frame);
-        ws.send(JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 100 }, echo: frame['echo'] }));
+        ws.send(
+          JSON.stringify({
+            status: 'ok',
+            retcode: 0,
+            data: { message_id: 100 },
+            echo: frame['echo'],
+          })
+        );
         if (actions.length >= count) {
           ws.off('message', handler);
           resolve();
@@ -700,7 +745,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     const { connector: c } = makeConnector(0);
     connector = c;
     await connector.start();
-    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const address = (
+      connector as unknown as { server: { address: () => { port: number } } }
+    ).server.address();
     const ws = await connectClient(address.port);
     clients.push(ws);
 
@@ -709,22 +756,29 @@ socketDescribe('OneBot 反向 WS 回路', () => {
       ws,
       connector.reply(
         { target: onebotGroupTarget(8888), seq: 1, kind: 'final' },
-        { text: '', attachments: [{ kind: 'image', absPath, fileName: 'pic.png', sizeBytes: 14 }] },
+        { text: '', attachments: [{ kind: 'image', absPath, fileName: 'pic.png', sizeBytes: 14 }] }
       ),
-      1,
+      1
     );
     expect(actions[0]!['action']).toBe('send_group_msg');
-    const params = actions[0]!['params'] as { group_id: number; message: Array<{ type: string; data: { file: string } }> };
+    const params = actions[0]!['params'] as {
+      group_id: number;
+      message: Array<{ type: string; data: { file: string } }>;
+    };
     expect(params.group_id).toBe(8888);
     expect(params.message[0]!.type).toBe('image');
-    expect(params.message[0]!.data.file).toBe(`base64://${Buffer.from('fake-png-bytes').toString('base64')}`);
+    expect(params.message[0]!.data.file).toBe(
+      `base64://${Buffer.from('fake-png-bytes').toString('base64')}`
+    );
   });
 
   it('文件附件：群走 upload_group_file，单聊走 upload_private_file', async () => {
     const { connector: c } = makeConnector(0);
     connector = c;
     await connector.start();
-    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const address = (
+      connector as unknown as { server: { address: () => { port: number } } }
+    ).server.address();
     const ws = await connectClient(address.port);
     clients.push(ws);
 
@@ -733,12 +787,19 @@ socketDescribe('OneBot 反向 WS 回路', () => {
       ws,
       connector.reply(
         { target: onebotGroupTarget(8888), seq: 1, kind: 'final' },
-        { text: '', attachments: [{ kind: 'file', absPath: groupFile, fileName: 'run.sh', sizeBytes: 9 }] },
+        {
+          text: '',
+          attachments: [{ kind: 'file', absPath: groupFile, fileName: 'run.sh', sizeBytes: 9 }],
+        }
       ),
-      1,
+      1
     );
     expect(groupActions[0]!['action']).toBe('upload_group_file');
-    const groupParams = groupActions[0]!['params'] as { group_id: number; file: string; name: string };
+    const groupParams = groupActions[0]!['params'] as {
+      group_id: number;
+      file: string;
+      name: string;
+    };
     expect(groupParams.group_id).toBe(8888);
     expect(groupParams.name).toBe('run.sh');
     expect(groupParams.file.startsWith('base64://')).toBe(true);
@@ -748,9 +809,12 @@ socketDescribe('OneBot 反向 WS 回路', () => {
       ws,
       connector.reply(
         { target: onebotC2cTarget(12345), seq: 1, kind: 'final' },
-        { text: '', attachments: [{ kind: 'file', absPath: c2cFile, fileName: 'page.html', sizeBytes: 7 }] },
+        {
+          text: '',
+          attachments: [{ kind: 'file', absPath: c2cFile, fileName: 'page.html', sizeBytes: 7 }],
+        }
       ),
-      1,
+      1
     );
     expect(c2cActions[0]!['action']).toBe('upload_private_file');
     const c2cParams = c2cActions[0]!['params'] as { user_id: number; name: string };
@@ -762,7 +826,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     const { connector: c } = makeConnector(0, { fileTransport: 'path' });
     connector = c;
     await connector.start();
-    const address = (connector as unknown as { server: { address: () => { port: number } } }).server.address();
+    const address = (
+      connector as unknown as { server: { address: () => { port: number } } }
+    ).server.address();
     const ws = await connectClient(address.port);
     clients.push(ws);
 
@@ -771,9 +837,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
       ws,
       connector.reply(
         { target: onebotGroupTarget(8888), seq: 1, kind: 'final' },
-        { text: '', attachments: [{ kind: 'image', absPath, fileName: 'pic.png', sizeBytes: 14 }] },
+        { text: '', attachments: [{ kind: 'image', absPath, fileName: 'pic.png', sizeBytes: 14 }] }
       ),
-      1,
+      1
     );
     const params = actions[0]!['params'] as { message: Array<{ data: { file: string } }> };
     expect(params.message[0]!.data.file).toBe(absPath);
@@ -798,7 +864,9 @@ socketDescribe('OneBot fetchMedia', () => {
     const made = makeConnector(0);
     connector = made.connector;
     await connector.start();
-    const address = (connector as unknown as { server: { address(): { port: number } } }).server.address();
+    const address = (
+      connector as unknown as { server: { address(): { port: number } } }
+    ).server.address();
     const ws = await connectClient(address.port);
     clients.push(ws);
     return { ws };
@@ -813,7 +881,10 @@ socketDescribe('OneBot fetchMedia', () => {
 
   it('无 URL、只有文件标识时：经 get_file 动作取回 base64 字节', async () => {
     const { ws } = await started();
-    const fetchPromise = connector!.fetchMedia({ fileId: 'IMG-ABC' }, { maxBytes: 1024, timeoutMs: 5000 });
+    const fetchPromise = connector!.fetchMedia(
+      { fileId: 'IMG-ABC' },
+      { maxBytes: 1024, timeoutMs: 5000 }
+    );
 
     const action = await nextAction(ws);
     expect(action['action']).toBe('get_file');
@@ -824,7 +895,7 @@ socketDescribe('OneBot fetchMedia', () => {
         retcode: 0,
         data: { base64: Buffer.from('png-bytes').toString('base64'), file_name: 'a.png' },
         echo: action['echo'],
-      }),
+      })
     );
 
     const bytes = await fetchPromise;
@@ -837,7 +908,7 @@ socketDescribe('OneBot fetchMedia', () => {
     // 127.0.0.1:1 必然连接被拒（离线安全）
     const fetchPromise = connector!.fetchMedia(
       { url: 'http://127.0.0.1:1/expired.jpg', fileId: 'RPT-1' },
-      { maxBytes: 1024, timeoutMs: 2000 },
+      { maxBytes: 1024, timeoutMs: 2000 }
     );
 
     const action = await nextAction(ws);
@@ -848,7 +919,7 @@ socketDescribe('OneBot fetchMedia', () => {
         retcode: 0,
         data: { base64: Buffer.from('refreshed').toString('base64') },
         echo: action['echo'],
-      }),
+      })
     );
     const bytes = await fetchPromise;
     expect(Buffer.from(bytes!.data).toString()).toBe('refreshed');
@@ -856,11 +927,21 @@ socketDescribe('OneBot fetchMedia', () => {
 
   it('get_file 不支持/失败时再试 get_image；都失败返回 undefined 而不是抛错', async () => {
     const { ws } = await started();
-    const fetchPromise = connector!.fetchMedia({ fileId: 'X' }, { maxBytes: 1024, timeoutMs: 2000 });
+    const fetchPromise = connector!.fetchMedia(
+      { fileId: 'X' },
+      { maxBytes: 1024, timeoutMs: 2000 }
+    );
 
     const first = await nextAction(ws);
     expect(first['action']).toBe('get_file');
-    ws.send(JSON.stringify({ status: 'failed', retcode: 1404, wording: 'action not found', echo: first['echo'] }));
+    ws.send(
+      JSON.stringify({
+        status: 'failed',
+        retcode: 1404,
+        wording: 'action not found',
+        echo: first['echo'],
+      })
+    );
 
     const second = await nextAction(ws);
     expect(second['action']).toBe('get_image');
@@ -871,7 +952,7 @@ socketDescribe('OneBot fetchMedia', () => {
         retcode: 0,
         data: { file: '/home/qq/.config/QQ/NapCat/cache/x.jpg' },
         echo: second['echo'],
-      }),
+      })
     );
 
     await expect(fetchPromise).resolves.toBeUndefined();
@@ -882,7 +963,7 @@ socketDescribe('OneBot fetchMedia', () => {
     connector = made.connector;
     await connector.start();
     await expect(
-      connector.fetchMedia({ fileId: 'X' }, { maxBytes: 1024, timeoutMs: 1000 }),
+      connector.fetchMedia({ fileId: 'X' }, { maxBytes: 1024, timeoutMs: 1000 })
     ).resolves.toBeUndefined();
   });
 });

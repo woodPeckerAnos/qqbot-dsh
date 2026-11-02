@@ -22,7 +22,11 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { BotConnector, ConversationTarget, ReplyPolicy } from '../../../../src/core/connector.js';
+import type {
+  BotConnector,
+  ConversationTarget,
+  ReplyPolicy,
+} from '../../../../src/core/connector.js';
 import type { Logger } from '../../../../src/logger.js';
 import type { ConversationStore } from '../../../../src/store/conversations.js';
 import type { PipelineStats } from '../../../../src/pipeline/stats.js';
@@ -147,7 +151,7 @@ export class BackgroundPusher {
    */
   private planPush(
     conversationKey: string,
-    text: string,
+    text: string
   ): { send: () => Promise<boolean> } | undefined {
     const anchor = this.anchors.get(conversationKey);
     if (anchor === undefined) return undefined;
@@ -174,7 +178,7 @@ export class BackgroundPusher {
     anchor: ReplyAnchor,
     policy: ReplyPolicy,
     text: string,
-    remaining: number,
+    remaining: number
   ): Promise<boolean> {
     const result = segmentText(text, { maxChars: policy.maxChars, maxSegments: remaining });
     let seq = anchor.usedSeq;
@@ -189,7 +193,7 @@ export class BackgroundPusher {
             kind: 'final',
             ...(anchor.msgId !== '' ? { msgId: anchor.msgId } : {}),
           },
-          { text: segment },
+          { text: segment }
         );
         sent += 1;
         this.deps.stats.repliesSent += 1;

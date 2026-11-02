@@ -134,18 +134,31 @@ export class DshRuntime extends EventEmitter {
       control.setEncoding('utf8');
       control.on('data', (chunk: string) => {
         buffer += chunk;
-        if (buffer.length > 65536) { control.destroy(); return; }
+        if (buffer.length > 65536) {
+          control.destroy();
+          return;
+        }
         let newline: number;
         while ((newline = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
           try {
-            const request = JSON.parse(line) as { id: string; action: string; taskId?: string; sessionId?: string };
+            const request = JSON.parse(line) as {
+              id: string;
+              action: string;
+              taskId?: string;
+              sessionId?: string;
+            };
             const value = options.taskControl!(request);
             control.write(JSON.stringify({ id: request.id, value }) + '\n');
-          } catch (error) { options.logger.warn('Task 控制请求失败', { error: String(error) }); }
+          } catch (error) {
+            options.logger.warn('Task 控制请求失败', { error: String(error) });
+          }
         }
       });
-      control.on('error', error => options.logger.warn('Task 控制通道关闭', { error: error.message }));
+      control.on('error', (error) =>
+        options.logger.warn('Task 控制通道关闭', { error: error.message })
+      );
     }
 
     this.exitPromise = new Promise<void>((resolve) => {
@@ -202,14 +215,19 @@ export class DshRuntime extends EventEmitter {
 
     try {
       const result = await client.initialize(
-        { cwd: options.cwd, provider: options.provider, model: options.model, ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}) },
-        { timeoutMs: options.startTimeoutMs },
+        {
+          cwd: options.cwd,
+          provider: options.provider,
+          model: options.model,
+          ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+        },
+        { timeoutMs: options.startTimeoutMs }
       );
       // 协议漂移检测：服务端身份是 wire-stable 的，变了说明协议不兼容。
       if (result?.serverInfo?.name !== SDK_SERVER_INFO_NAME) {
         throw new Error(
           `initialize 返回了意外的服务端身份 ${JSON.stringify(result?.serverInfo)}，` +
-            `预期 name=${SDK_SERVER_INFO_NAME}。DSH 版本可能不兼容。`,
+            `预期 name=${SDK_SERVER_INFO_NAME}。DSH 版本可能不兼容。`
         );
       }
       this._serverInfo = result.serverInfo;
@@ -225,7 +243,7 @@ export class DshRuntime extends EventEmitter {
       throw new Error(
         `DSH runtime initialize 失败：${error instanceof Error ? error.message : String(error)}` +
           (detail ? `\n--- dsh stderr 末 15 行 ---\n${detail}` : ''),
-        { cause: error },
+        { cause: error }
       );
     }
   }
@@ -295,7 +313,8 @@ export class DshRuntime extends EventEmitter {
   }
 
   private waitForExit(timeoutMs: number): Promise<void> {
-    if (this.child?.exitCode !== null && this.child?.exitCode !== undefined) return Promise.resolve();
+    if (this.child?.exitCode !== null && this.child?.exitCode !== undefined)
+      return Promise.resolve();
     const exit = this.exitPromise ?? Promise.resolve();
     return new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, timeoutMs);

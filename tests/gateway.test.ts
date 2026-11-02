@@ -11,7 +11,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createNullLogger } from '../src/logger.js';
-import { QqGateway, parseTimestamp, type WebSocketLike } from '../src/adapters/qq-official/gateway.js';
+import {
+  QqGateway,
+  parseTimestamp,
+  type WebSocketLike,
+} from '../src/adapters/qq-official/gateway.js';
 import { OpCode } from '../src/adapters/qq-official/types.js';
 
 const logger = createNullLogger();
@@ -31,7 +35,10 @@ class FakeWebSocket implements WebSocketLike {
   }
 
   close(code?: number, reason?: string): void {
-    this.closed = { ...(code !== undefined ? { code } : {}), ...(reason !== undefined ? { reason } : {}) };
+    this.closed = {
+      ...(code !== undefined ? { code } : {}),
+      ...(reason !== undefined ? { reason } : {}),
+    };
   }
 
   /** 测试侧触发事件 */
@@ -57,7 +64,9 @@ class FakeWebSocket implements WebSocketLike {
   }
 }
 
-function makeGateway(options: { intents?: number; token?: string; backoffMs?: { baseMs: number; maxMs: number } } = {}) {
+function makeGateway(
+  options: { intents?: number; token?: string; backoffMs?: { baseMs: number; maxMs: number } } = {}
+) {
   let socketIndex = 0;
   const sockets: FakeWebSocket[] = [];
   const getGateway = vi.fn(async () => ({ url: 'wss://api.bot.qq.com/websocket/' }));
@@ -84,7 +93,15 @@ function makeGateway(options: { intents?: number; token?: string; backoffMs?: { 
     random: () => 0.5,
   });
 
-  return { gateway, sockets, tokenManager, getGateway, get current() { return sockets[socketIndex - 1]; } };
+  return {
+    gateway,
+    sockets,
+    tokenManager,
+    getGateway,
+    get current() {
+      return sockets[socketIndex - 1];
+    },
+  };
 }
 
 /** 让 start() 里注册的 await 有机会推进，并推进 uv 上的定时器。 */
@@ -130,7 +147,11 @@ describe('QqGateway 握手', () => {
     });
     await started;
 
-    expect(gateway.health()).toMatchObject({ connected: true, state: 'ready', sessionId: 'sess-1' });
+    expect(gateway.health()).toMatchObject({
+      connected: true,
+      state: 'ready',
+      sessionId: 'sess-1',
+    });
     await gateway.stop();
   });
 
@@ -223,7 +244,12 @@ describe('QqGateway 断线与恢复', () => {
       await flush(0);
       sockets[0]!.fireMessage({ op: OpCode.HELLO, d: { heartbeat_interval: 60_000 } });
       await flush(0);
-      sockets[0]!.fireMessage({ op: OpCode.DISPATCH, s: 42, t: 'READY', d: { session_id: 'sess-X' } });
+      sockets[0]!.fireMessage({
+        op: OpCode.DISPATCH,
+        s: 42,
+        t: 'READY',
+        d: { session_id: 'sess-X' },
+      });
       await flush(0);
 
       // 4009：可以 Resume
@@ -251,7 +277,12 @@ describe('QqGateway 断线与恢复', () => {
       await flush(0);
       sockets[0]!.fireMessage({ op: OpCode.HELLO, d: { heartbeat_interval: 60_000 } });
       await flush(0);
-      sockets[0]!.fireMessage({ op: OpCode.DISPATCH, s: 9, t: 'READY', d: { session_id: 'sess-Y' } });
+      sockets[0]!.fireMessage({
+        op: OpCode.DISPATCH,
+        s: 9,
+        t: 'READY',
+        d: { session_id: 'sess-Y' },
+      });
       await flush(0);
 
       sockets[0]!.fireClose(4006, 'invalid session');
@@ -274,7 +305,12 @@ describe('QqGateway 断线与恢复', () => {
       await flush(0);
       sockets[0]!.fireMessage({ op: OpCode.HELLO, d: { heartbeat_interval: 60_000 } });
       await flush(0);
-      sockets[0]!.fireMessage({ op: OpCode.DISPATCH, s: 3, t: 'READY', d: { session_id: 'sess-Z' } });
+      sockets[0]!.fireMessage({
+        op: OpCode.DISPATCH,
+        s: 3,
+        t: 'READY',
+        d: { session_id: 'sess-Z' },
+      });
       await flush(0);
 
       sockets[0]!.fireMessage({ op: OpCode.INVALID_SESSION, d: true });
@@ -362,7 +398,12 @@ describe('QqGateway 事件归一化', () => {
     expect(message.eventId).toBe('EVENT-1');
     expect(message.msgId).toBe('MSG-1');
     // 群聊沿用原始 group_openid 作为会话键（不迁移既有目录）
-    expect(message.target).toEqual({ platform: 'qq-official', kind: 'group', id: 'GROUP-A', key: 'GROUP-A' });
+    expect(message.target).toEqual({
+      platform: 'qq-official',
+      kind: 'group',
+      id: 'GROUP-A',
+      key: 'GROUP-A',
+    });
     expect(message.senderId).toBe('MEMBER-1');
     expect(message.username).toBe('小明');
     expect(message.content).toBe('帮我算个数');
@@ -446,7 +487,12 @@ describe('QqGateway 事件归一化', () => {
     expect(message).toBeDefined();
     expect(message.eventId).toBe('EVENT-C2C');
     expect(message.msgId).toBe('MSG-C2C');
-    expect(message.target).toEqual({ platform: 'qq-official', kind: 'c2c', id: 'USER-1', key: 'c2c:USER-1' });
+    expect(message.target).toEqual({
+      platform: 'qq-official',
+      kind: 'c2c',
+      id: 'USER-1',
+      key: 'c2c:USER-1',
+    });
     expect(message.senderId).toBe('USER-1');
     expect(message.content).toBe('你好');
     await gateway.stop();
@@ -491,7 +537,12 @@ describe('QqGateway 事件归一化', () => {
       target: { kind: string; id: string; key: string };
       eventId: string;
     };
-    expect(event.target).toEqual({ platform: 'qq-official', kind: 'group', id: 'GROUP-B', key: 'GROUP-B' });
+    expect(event.target).toEqual({
+      platform: 'qq-official',
+      kind: 'group',
+      id: 'GROUP-B',
+      key: 'GROUP-B',
+    });
     expect(event.eventId).toBe('EVENT-ADD');
     await gateway.stop();
   });
@@ -510,7 +561,12 @@ describe('QqGateway 事件归一化', () => {
       eventId: string;
     };
     expect(event).toBeDefined();
-    expect(event.target).toEqual({ platform: 'qq-official', kind: 'c2c', id: 'USER-F', key: 'c2c:USER-F' });
+    expect(event.target).toEqual({
+      platform: 'qq-official',
+      kind: 'c2c',
+      id: 'USER-F',
+      key: 'c2c:USER-F',
+    });
     expect(event.eventId).toBe('EVENT-FRIEND');
     await gateway.stop();
   });

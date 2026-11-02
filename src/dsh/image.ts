@@ -147,7 +147,7 @@ function loadSharp(): Promise<SharpModule | undefined> {
     (error: unknown) => {
       sharpFailureReason = reasonOf(error);
       return undefined;
-    },
+    }
   );
   return sharpLoad;
 }
@@ -164,7 +164,7 @@ export async function probeImagePreparer(): Promise<boolean> {
 /** 把一张图片字节变成"一定能被 runtime 收下"的 1..maxTiles 个块。 */
 export async function prepareImageForPrompt(
   data: Uint8Array,
-  options: ImagePrepareOptions,
+  options: ImagePrepareOptions
 ): Promise<ImagePrepareResult> {
   const logger = options.logger;
   const sharpModule = await loadSharp();
@@ -178,9 +178,15 @@ export async function prepareImageForPrompt(
   // 本身的硬约束，比任何本地默认值都更有依据。
   const maxBytes = positiveInteger(options.maxBytes, TILE_TARGET_BYTES);
   const maxTiles = positiveInteger(options.maxTiles, 1);
-  const maxDimension = positiveInteger(options.maxDimension ?? ADMIT_MAX_DIMENSION, ADMIT_MAX_DIMENSION);
+  const maxDimension = positiveInteger(
+    options.maxDimension ?? ADMIT_MAX_DIMENSION,
+    ADMIT_MAX_DIMENSION
+  );
   const maxPixels = positiveInteger(options.maxPixels ?? ADMIT_MAX_PIXELS, ADMIT_MAX_PIXELS);
-  const tilePixels = positiveInteger(options.tilePixels ?? MODEL_IMAGE_PIXEL_BUDGET, MODEL_IMAGE_PIXEL_BUDGET);
+  const tilePixels = positiveInteger(
+    options.tilePixels ?? MODEL_IMAGE_PIXEL_BUDGET,
+    MODEL_IMAGE_PIXEL_BUDGET
+  );
 
   const notes: string[] = [];
 
@@ -262,20 +268,24 @@ export async function prepareImageForPrompt(
   const count = Math.min(maxTiles, needed);
 
   if (sliceable && count >= 2) {
-    const sliced = await sliceIntoTiles(sharpModule, {
-      data,
-      orientation,
-      hasAlpha,
-      sourceIsPng,
-      maxBytes,
-      logger,
-    }, {
-      width: viewWidth,
-      height: viewHeight,
-      vertical,
-      count,
-      perTileLong,
-    });
+    const sliced = await sliceIntoTiles(
+      sharpModule,
+      {
+        data,
+        orientation,
+        hasAlpha,
+        sourceIsPng,
+        maxBytes,
+        logger,
+      },
+      {
+        width: viewWidth,
+        height: viewHeight,
+        vertical,
+        count,
+        perTileLong,
+      }
+    );
     if (sliced.tiles.length === 0) {
       return { kind: 'undecodable', reason: sliced.failure ?? '图片切片失败（每一块都无法编码）' };
     }
@@ -286,7 +296,7 @@ export async function prepareImageForPrompt(
       const percent = Math.max(1, Math.min(100, Math.round((sliced.covered / longSide) * 100)));
       notes.push(
         `（长图过长：按可读分辨率共需 ${needed} 块，本次按${direction}只送入前 ${sliced.tiles.length} 块` +
-          `（约 ${percent}%），其余未读入——建议请对方分段发送）`,
+          `（约 ${percent}%），其余未读入——建议请对方分段发送）`
       );
     }
     logger?.info('长图已切片送入', {
@@ -327,7 +337,7 @@ export async function prepareImageForPrompt(
       overDimensionLimit
         ? `（原图 ${viewWidth}×${viewHeight} 超出模型可读上限，已等比缩放到 ` +
             `${encoded.width}×${encoded.height} 后送入）`
-        : `（图片体积超过上限，已压缩到 ${encoded.width}×${encoded.height} 后送入）`,
+        : `（图片体积超过上限，已压缩到 ${encoded.width}×${encoded.height} 后送入）`
     );
     logger?.info('图片已等比缩放', {
       from: `${viewWidth}×${viewHeight}`,
@@ -387,7 +397,7 @@ interface SliceOutcome {
 async function sliceIntoTiles(
   sharpModule: SharpModule,
   request: SliceRequest,
-  geometry: SliceGeometry,
+  geometry: SliceGeometry
 ): Promise<SliceOutcome> {
   const { logger } = request;
   let source = request.data;
@@ -450,7 +460,7 @@ async function bakeOrientation(
   sharpModule: SharpModule,
   data: Uint8Array,
   hasAlpha: boolean,
-  logger?: Logger,
+  logger?: Logger
 ): Promise<Uint8Array | undefined> {
   try {
     // .rotate() 不带角度 = 按 EXIF 自动定向，并且顺手把 Orientation 标签去掉，
@@ -498,7 +508,7 @@ interface EncodeRequest {
  */
 async function encodeWithin(
   sharpModule: SharpModule,
-  request: EncodeRequest,
+  request: EncodeRequest
 ): Promise<EncodedImage | undefined> {
   const variants = encodeVariants(request.losslessPng, request.hasAlpha);
 
@@ -523,7 +533,10 @@ async function encodeWithin(
     return pipeline.toColourspace('srgb');
   };
 
-  const attempt = async (box?: { width: number; height: number }): Promise<EncodedImage | undefined> => {
+  const attempt = async (box?: {
+    width: number;
+    height: number;
+  }): Promise<EncodedImage | undefined> => {
     let best: EncodedImage | undefined;
     // 逐档串行 await：同一时刻只有一份解码在内存里。大图并发编码看着快，实际是
     // 把容器往 OOM 上推——单张 21.6M 像素的图解码就是几十 MB。
@@ -571,7 +584,10 @@ interface EncodeVariant {
 function encodeVariants(losslessPng: boolean, hasAlpha: boolean): EncodeVariant[] {
   const variants: EncodeVariant[] = [];
   if (losslessPng) {
-    variants.push({ mimeType: 'image/png', apply: (pipeline) => pipeline.png({ compressionLevel: 9 }) });
+    variants.push({
+      mimeType: 'image/png',
+      apply: (pipeline) => pipeline.png({ compressionLevel: 9 }),
+    });
   }
   if (hasAlpha) {
     for (const quality of QUALITY_LADDER) {
@@ -595,7 +611,7 @@ async function render(
   pipeline: Sharp,
   apply: (pipeline: Sharp) => Sharp,
   mimeType: AdmittedMimeType,
-  logger?: Logger,
+  logger?: Logger
 ): Promise<EncodedImage | undefined> {
   try {
     // resolveWithObject 顺手给出 info.width/height：它是 libvips 舍入后的**真实**尺寸，
@@ -633,9 +649,13 @@ function fitWithin(
   width: number,
   height: number,
   maxDimension: number,
-  maxPixels: number,
+  maxPixels: number
 ): { width: number; height: number } {
-  const scale = Math.min(1, maxDimension / Math.max(width, height), Math.sqrt(maxPixels / (width * height)));
+  const scale = Math.min(
+    1,
+    maxDimension / Math.max(width, height),
+    Math.sqrt(maxPixels / (width * height))
+  );
   if (!(scale < 1)) return { width, height };
   return {
     width: Math.max(1, Math.floor(width * scale)),

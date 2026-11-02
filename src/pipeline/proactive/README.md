@@ -18,23 +18,23 @@ flowchart LR
   S --> O
 ```
 
-| 模块 | 所有权与公共接缝 |
-| --- | --- |
-| `interests/pool.ts` | 兴趣池加载、校验和本地匹配；`replaceEntries` 可替换来源 |
-| `scene/collect.ts` | 本地候选与证据，不调用模型 |
-| `judge/judge.ts` | 逐候选判据、JSON 输出契约及解析；不决定场景优先级 |
-| `judge/client.ts` | 调用并发与错误降级；失败按本次沉默处理 |
-| `veto/veto.ts` | `evaluateVeto` 纯函数，按 `SCENE_ORDER`、硬限流、session 闸门和 wait 策略裁决 |
-| `scene/state.ts` | 问题台账、话题 session、wait 票据和预算剩余投影 |
-| `scene/watcher.ts` | `observe` / `observeAddressed` / `stop`；管理三个触发面、同 Session 判定串行和定时器 |
+| 模块                        | 所有权与公共接缝                                                                                  |
+| --------------------------- | ------------------------------------------------------------------------------------------------- |
+| `interests/pool.ts`         | 兴趣池加载、校验和本地匹配；`replaceEntries` 可替换来源                                           |
+| `scene/collect.ts`          | 本地候选与证据，不调用模型                                                                        |
+| `judge/judge.ts`            | 逐候选判据、JSON 输出契约及解析；不决定场景优先级                                                 |
+| `judge/client.ts`           | 调用并发与错误降级；失败按本次沉默处理                                                            |
+| `veto/veto.ts`              | `evaluateVeto` 纯函数，按 `SCENE_ORDER`、硬限流、session 闸门和 wait 策略裁决                     |
+| `scene/state.ts`            | 问题台账、话题 session、wait 票据和预算剩余投影                                                   |
+| `scene/watcher.ts`          | `observe` / `observeAddressed` / `stop`；管理三个触发面、同 Session 判定串行和定时器              |
 | `task/proactive-adapter.ts` | `submit` / `delivered` / `settled`；冻结触发依据、引用、预算范围，提交 Task，首次成功记录实际发言 |
-| `deliver/speaker.ts` | dryRun 和旧接口回归的能力/降级适配；生产实际产物统一进入 MessageQueue |
+| `deliver/speaker.ts`        | dryRun 和旧接口回归的能力/降级适配；生产实际产物统一进入 MessageQueue                             |
 
-| 触发面 | 时机 | 场景 |
-| --- | --- | --- |
-| `message` | 每条旁听消息 | 1 续聊追问、4 指代 |
-| `question-probe` | 问题挂起默认 90 秒 | 3 无人应答 |
-| `topic-roll` | 默认 30 条消息或静默 5 分钟 | 2 持续讨论、5 兴趣 |
+| 触发面           | 时机                        | 场景               |
+| ---------------- | --------------------------- | ------------------ |
+| `message`        | 每条旁听消息                | 1 续聊追问、4 指代 |
+| `question-probe` | 问题挂起默认 90 秒          | 3 无人应答         |
+| `topic-roll`     | 默认 30 条消息或静默 5 分钟 | 2 持续讨论、5 兴趣 |
 
 判定通过后预留一个主动 Task 单位，两个 lane 完整进入队列。正文、附件、存活提醒和失败通知不增加业务扣费；任一消息首次成功送达提交一次。完全静默、取消且没有待发产物，或全部投递终结且均失败，则释放预留。预算范围在触发时绑定，旧结果不扣新话题。`state.session.budgetLeft` 是 TaskBudget 的剩余额度投影。
 

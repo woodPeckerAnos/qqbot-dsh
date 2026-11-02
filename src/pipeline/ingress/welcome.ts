@@ -16,7 +16,7 @@ export async function handleWelcomeEvent(
     connectors: ReadonlyMap<string, BotConnector>;
     stats: PipelineStats;
     logger: Logger;
-  },
+  }
 ): Promise<void> {
   if (event.kind !== 'group-add-robot' && event.kind !== 'c2c-friend-add') return;
   const target = event.target;
@@ -49,7 +49,7 @@ export async function handleWelcomeEvent(
         kind: 'final',
         ...(event.eventId !== undefined && event.eventId !== '' ? { eventId: event.eventId } : {}),
       },
-      { text },
+      { text }
     );
     deps.stats.repliesSent += 1;
   } catch (error) {

@@ -23,7 +23,10 @@ import { createNullLogger } from '../src/logger.js';
 import type { SceneCandidate, SceneVerdict } from '../src/pipeline/proactive/contract.js';
 import type { ProactiveCompose } from '../src/pipeline/proactive/contract.js';
 import { ProactiveSpeaker } from '../src/pipeline/proactive/deliver/speaker.js';
-import type { ProactiveJudge, ProactiveJudgeInput } from '../src/pipeline/proactive/judge/client.js';
+import type {
+  ProactiveJudge,
+  ProactiveJudgeInput,
+} from '../src/pipeline/proactive/judge/client.js';
 import {
   ProactiveWatcher,
   DEFAULT_WATCHER_CONFIG,
@@ -113,7 +116,10 @@ interface JudgeOptions {
   waitEvidence?: string;
 }
 
-function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proactive?: boolean; compose?: ProactiveCompose } = {}): Harness {
+function setup(
+  overrides: Partial<ProactiveWatcherConfig> = {},
+  options: { proactive?: boolean; compose?: ProactiveCompose } = {}
+): Harness {
   let clock = 1_700_000_000_000;
   const timers: Array<{ at: number; fn: () => void; cancelled: boolean }> = [];
   const judgeCalls: ProactiveJudgeInput[] = [];
@@ -206,7 +212,7 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}, options: { proac
     windows: windowsFor(config.whitelistGroups),
     interests: parseInterestPool(
       'interests:\n  - {id: plotting, topic: 画图, keywords: [折线图]}',
-      'test.yml',
+      'test.yml'
     ),
     logger: createNullLogger(),
     now: () => clock,
@@ -602,7 +608,7 @@ describe('发言生成（compose 接缝）', () => {
           seen.push(input.directive);
           return 'NAS 上跑没问题，给容器挂上数据卷就行';
         },
-      },
+      }
     );
     h.setVerdicts(['scene-4']);
     h.observe('u1', '机器人帮我看下');
@@ -638,7 +644,7 @@ describe('发言生成（compose 接缝）', () => {
           called += 1;
           return 'x';
         },
-      },
+      }
     );
     h.setVerdicts(['scene-4']);
     h.observe('u1', '机器人帮我看下');

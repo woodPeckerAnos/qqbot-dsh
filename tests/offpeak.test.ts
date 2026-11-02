@@ -241,11 +241,7 @@ describe('evaluateGate', () => {
   });
 
   it('三个谷时段窗口内都放行', () => {
-    for (const now of [
-      SHANGHAI_OFFPEAK_DAWN,
-      SHANGHAI_OFFPEAK_NOON,
-      SHANGHAI_OFFPEAK_EVENING,
-    ]) {
+    for (const now of [SHANGHAI_OFFPEAK_DAWN, SHANGHAI_OFFPEAK_NOON, SHANGHAI_OFFPEAK_EVENING]) {
       expect(evaluateGate({ ...base, isAdmin: false, now })).toEqual({
         gated: false,
         reason: 'in-window',
@@ -255,7 +251,9 @@ describe('evaluateGate', () => {
 
   it('窗口边界：起点算谷内，终点算谷外', () => {
     // 00:00 是第一个窗口的起点（谷内）；09:00 是它的终点（正价）
-    expect(evaluateGate({ ...base, isAdmin: false, now: SHANGHAI_NEXT_MIDNIGHT }).gated).toBe(false);
+    expect(evaluateGate({ ...base, isAdmin: false, now: SHANGHAI_NEXT_MIDNIGHT }).gated).toBe(
+      false
+    );
     expect(evaluateGate({ ...base, isAdmin: false, now: SHANGHAI_0900 })).toEqual({
       gated: true,
       reason: 'peak-hours',
@@ -295,13 +293,15 @@ describe('evaluateGate', () => {
   it('weekendsAllDay=false 时周末回到时间窗口判定', () => {
     const config = { ...DEFAULT_CONFIG, weekendsAllDay: false };
     // 周末正午（12:00–14:00 是谷时段）→ 放行
-    expect(
-      evaluateGate({ ...base, config, isAdmin: false, now: SHANGHAI_SATURDAY_NOON }),
-    ).toEqual({ gated: false, reason: 'in-window' });
+    expect(evaluateGate({ ...base, config, isAdmin: false, now: SHANGHAI_SATURDAY_NOON })).toEqual({
+      gated: false,
+      reason: 'in-window',
+    });
     // 周末上午 10:00 是正价段 → 拦截
-    expect(
-      evaluateGate({ ...base, config, isAdmin: false, now: SHANGHAI_SATURDAY_PEAK }),
-    ).toEqual({ gated: true, reason: 'peak-hours' });
+    expect(evaluateGate({ ...base, config, isAdmin: false, now: SHANGHAI_SATURDAY_PEAK })).toEqual({
+      gated: true,
+      reason: 'peak-hours',
+    });
   });
 
   it('模型不匹配时不拦（大小写不敏感，匹配 provider/model 组合）', () => {
@@ -370,9 +370,9 @@ describe('OffpeakGate（覆盖与持久化）', () => {
   it('持久化的窗口写成可读的 HH:MM 列表（24:00 也能往返）', () => {
     const gate = makeGate();
     gate.setWindows(parseWindowsSpec('18:00-24:00'), 'ADMIN-1');
-    const file = JSON.parse(
-      readFileSync(join(dir, 'offpeak-override.json'), 'utf8'),
-    ) as { windows?: Array<{ start: string; end: string }> };
+    const file = JSON.parse(readFileSync(join(dir, 'offpeak-override.json'), 'utf8')) as {
+      windows?: Array<{ start: string; end: string }>;
+    };
     expect(file.windows).toEqual([{ start: '18:00', end: '24:00' }]);
 
     const revived = new OffpeakGate({
@@ -389,7 +389,7 @@ describe('OffpeakGate（覆盖与持久化）', () => {
     writeFileSync(
       join(dir, 'offpeak-override.json'),
       JSON.stringify({ window: { start: '00:30', end: '08:30' }, updatedBy: 'ADMIN-9' }),
-      'utf8',
+      'utf8'
     );
     const revived = new OffpeakGate({
       defaults: DEFAULT_CONFIG,
@@ -409,9 +409,7 @@ describe('OffpeakGate（覆盖与持久化）', () => {
   it('setWindows 拒绝空窗口列表与重叠窗口', () => {
     const gate = makeGate();
     expect(() => gate.setWindows([], 'ADMIN-1')).toThrow(OffpeakConfigError);
-    expect(() =>
-      gate.setWindows(parseWindowsSpec('00:00-09:00'), 'ADMIN-1'),
-    ).not.toThrow();
+    expect(() => gate.setWindows(parseWindowsSpec('00:00-09:00'), 'ADMIN-1')).not.toThrow();
     // 重叠在 parseWindowsSpec 就被拦下（setWindows 只接受已解析结果，这里直接构造验证兜底）
     expect(() =>
       gate.setWindows(
@@ -419,8 +417,8 @@ describe('OffpeakGate（覆盖与持久化）', () => {
           { startMin: 0, endMin: 9 * 60 },
           { startMin: 8 * 60, endMin: 12 * 60 },
         ],
-        'ADMIN-1',
-      ),
+        'ADMIN-1'
+      )
     ).toThrow(/重叠/);
     expect(() => parseWindowsSpec('08:30-08:30')).toThrow(/空窗口/);
   });
@@ -448,7 +446,10 @@ describe('OffpeakGate（覆盖与持久化）', () => {
   it('持久化文件是可读 JSON（便于人工排查）', () => {
     const gate = makeGate();
     gate.setEnabled(false, 'ADMIN-1');
-    const file = JSON.parse(readFileSync(join(dir, 'offpeak-override.json'), 'utf8')) as Record<string, unknown>;
+    const file = JSON.parse(readFileSync(join(dir, 'offpeak-override.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
     expect(file['enabled']).toBe(false);
     expect(file['updatedBy']).toBe('ADMIN-1');
   });

@@ -37,7 +37,7 @@ export class SessionCommandRouter {
       pool: RuntimePool;
       turns: TurnRunner;
       stats: PipelineStats;
-    },
+    }
   ) {}
 
   stage(): IngressStage {
@@ -68,7 +68,7 @@ export class SessionCommandRouter {
           .error(
             aborted
               ? '已强制中断当前任务（进行中的后台子代理也一并终止）。'
-              : '当前没有进行中的任务。',
+              : '当前没有进行中的任务。'
           )
           .catch(() => {});
         return;

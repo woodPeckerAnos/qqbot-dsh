@@ -29,7 +29,12 @@ import type {
   RemoteMedia,
 } from '../core/connector.js';
 import type { Logger } from '../logger.js';
-import { ADMIT_MAX_DIMENSION, MAX_DECODE_PIXELS, prepareImageForPrompt, probeImagePreparer } from './image.js';
+import {
+  ADMIT_MAX_DIMENSION,
+  MAX_DECODE_PIXELS,
+  prepareImageForPrompt,
+  probeImagePreparer,
+} from './image.js';
 import type { PromptContentBlock, PromptImageMimeType } from './protocol.js';
 
 export interface BuildImageBlocksOptions {
@@ -153,7 +158,7 @@ export function describeImageRejection(reason: string): string {
  */
 export async function buildImageBlocks(
   images: readonly MessageImagePart[],
-  options: BuildImageBlocksOptions,
+  options: BuildImageBlocksOptions
 ): Promise<ImageBlocksResult> {
   const { maxImages, maxBytes, maxTiles, timeoutMs, fetchMedia, logger } = options;
   const blocks: PromptContentBlock[] = [];
@@ -162,7 +167,8 @@ export async function buildImageBlocks(
   // 共享预算：调用方给的额度与全局硬上限取小（给 0 也不会把上限解释成"不限"）
   const maxBlocks = Math.min(options.maxBlocks ?? MAX_BLOCKS_PER_PROMPT, MAX_BLOCKS_PER_PROMPT);
   const indexLabel =
-    options.indexLabel ?? ((index: number, total: number) => (total > 1 ? `第 ${index + 1} 张图：` : ''));
+    options.indexLabel ??
+    ((index: number, total: number) => (total > 1 ? `第 ${index + 1} 张图：` : ''));
   /** 批量注记的来源前缀（缺省空串 = 与既有文案逐字一致） */
   const source = options.sourceLabel ?? '';
 
@@ -193,16 +199,14 @@ export async function buildImageBlocks(
     const declaredPixels = (image.width ?? 0) * (image.height ?? 0);
     if (declaredPixels > MAX_DECODE_PIXELS) {
       notes.push(
-        `（${label}过大（${image.width ?? '?'}×${image.height ?? '?'}），超出可解码范围，未读入）`,
+        `（${label}过大（${image.width ?? '?'}×${image.height ?? '?'}），超出可解码范围，未读入）`
       );
       continue;
     }
     // 没有降采样能力时保持旧行为：先挡掉注定被 runtime 拒绝的图，别浪费下载。
     const declaredLongSide = Math.max(image.width ?? 0, image.height ?? 0);
     if (!canPrepare && declaredLongSide > ADMIT_MAX_DIMENSION) {
-      notes.push(
-        `（${label}尺寸过大（${image.width ?? '?'}×${image.height ?? '?'}），未读入）`,
-      );
+      notes.push(`（${label}尺寸过大（${image.width ?? '?'}×${image.height ?? '?'}），未读入）`);
       continue;
     }
 
@@ -315,7 +319,7 @@ function withImageLabel(note: string, label: string): string {
 /** 兜底实现：普通 GET（OneBot 的图片地址通常不需要鉴权）。 */
 export async function defaultFetchMedia(
   media: RemoteMedia,
-  options: MediaFetchOptions,
+  options: MediaFetchOptions
 ): Promise<MediaBytes | undefined> {
   if (media.url === undefined) return undefined;
   const controller = new AbortController();

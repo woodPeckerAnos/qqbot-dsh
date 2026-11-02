@@ -45,7 +45,8 @@ import type { PipelineStats } from '../../../../src/pipeline/stats.js';
 /** 打包 zip 的临时子目录（隐藏目录，outbox 扫描器天然跳过）。 */
 const PACKED_DIR_NAME = '.packed';
 
-export interface ResponderOptions {  /** 触发本次回复的用户消息（target / msgId 都从这里取） */
+export interface ResponderOptions {
+  /** 触发本次回复的用户消息（target / msgId 都从这里取） */
   message: NormalizedMessage;
   connector: BotConnector;
   policy: ReplyPolicy;
@@ -186,7 +187,9 @@ export class Responder {
         logger,
       });
       if (scan.oversize.length > 0) {
-        degradeNotes.push(`（有 ${scan.oversize.length} 个文件超过大小上限，未发出：${scan.oversize.join('、')}）`);
+        degradeNotes.push(
+          `（有 ${scan.oversize.length} 个文件超过大小上限，未发出：${scan.oversize.join('、')}）`
+        );
       }
       if (scan.attachments.length > 0) {
         const remaining = this.ledger.remaining;
@@ -199,19 +202,24 @@ export class Responder {
           degradeNotes.push(
             `（回复条数有限，还有 ${overflow.length} 个文件未发出：${overflow
               .map((item) => item.fileName)
-              .join('、')}；需要的话跟我说一声）`,
+              .join('、')}；需要的话跟我说一声）`
           );
         }
         // 多个文件合并成一个 zip 发一条消息（"发送文件本身仅允许单文件"的
         // 桥接侧兑现）：群聊里逐条发文件既刷屏又割裂阅读。
         if (selected.length > 1) {
-          const packed = await this.packAsZip(media.outboxDir, selected, media.maxFileBytes, logger);
+          const packed = await this.packAsZip(
+            media.outboxDir,
+            selected,
+            media.maxFileBytes,
+            logger
+          );
           if (packed.attachment !== undefined) {
             packedZipPath = packed.attachment.absPath;
             packOriginals = selected.map((item) => item.fileName);
             selected = [packed.attachment];
             degradeNotes.push(
-              `（${packed.fileCount} 个产物已打包为 ${packed.attachment.fileName}）`,
+              `（${packed.fileCount} 个产物已打包为 ${packed.attachment.fileName}）`
             );
           } else {
             selected = [];
@@ -375,7 +383,7 @@ export class Responder {
         kind: ticket.kind,
         ...(message.msgId !== '' ? { msgId: message.msgId } : {}),
       },
-      out,
+      out
     );
     stats.repliesSent += 1;
     logger.debug('已发送回复', {
@@ -419,9 +427,10 @@ export class Responder {
     outboxDir: string,
     files: OutgoingAttachment[],
     maxFileBytes: number,
-    logger: Logger,
+    logger: Logger
   ): Promise<{ attachment?: OutgoingAttachment; fileCount: number; note?: string }> {
-    const estimated = files.reduce((acc, file) => acc + file.sizeBytes, 0) + files.length * 160 + 22;
+    const estimated =
+      files.reduce((acc, file) => acc + file.sizeBytes, 0) + files.length * 160 + 22;
     if (estimated > maxFileBytes) {
       return {
         fileCount: files.length,

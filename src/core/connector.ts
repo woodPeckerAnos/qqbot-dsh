@@ -261,13 +261,7 @@ export interface NormalizedMessage {
 }
 
 export interface NormalizedSystemEvent {
-  kind:
-    | 'ready'
-    | 'resumed'
-    | 'connected'
-    | 'disconnected'
-    | 'group-add-robot'
-    | 'c2c-friend-add';
+  kind: 'ready' | 'resumed' | 'connected' | 'disconnected' | 'group-add-robot' | 'c2c-friend-add';
   at: number;
   reason?: string;
   /** 需要主动回一条问候语时的目标（进群 / 加好友事件） */
@@ -397,8 +391,7 @@ export interface BotConnector {
  * 补投通常没有意义（话题已经翻篇），所以上层默认记为降级而不是重试。
  */
 export type ProactiveResult =
-  | { ok: true }
-  | { ok: false; reason: ProactiveRejectReason; detail?: string; retryable: boolean };
+  { ok: true } | { ok: false; reason: ProactiveRejectReason; detail?: string; retryable: boolean };
 
 export type ProactiveRejectReason =
   /** 平台不提供主动推送能力（官方通道的默认实现） */

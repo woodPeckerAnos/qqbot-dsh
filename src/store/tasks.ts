@@ -11,7 +11,8 @@ export class TaskStore<T> {
   load(): T[] {
     if (!this.file || !existsSync(this.file)) return [];
     const data = JSON.parse(readFileSync(this.file, 'utf8')) as { version: number; records: T[] };
-    if (data.version !== 1 || !Array.isArray(data.records)) throw new Error(`无法读取持久化记录：${this.file}`);
+    if (data.version !== 1 || !Array.isArray(data.records))
+      throw new Error(`无法读取持久化记录：${this.file}`);
     return data.records;
   }
   save(records: readonly T[]): void {

@@ -53,7 +53,10 @@ const INPUT: TopicJudgeInput = { history: HISTORY, newMessage: '端口是多少�
 
 describe('parseJudgeOutput', () => {
   it('解析严格 JSON', () => {
-    expect(parseJudgeOutput('{"related": true}')).toEqual({ related: true, mentionsChatRecord: false });
+    expect(parseJudgeOutput('{"related": true}')).toEqual({
+      related: true,
+      mentionsChatRecord: false,
+    });
     expect(parseJudgeOutput('{"related": false}')).toEqual({
       related: false,
       mentionsChatRecord: false,
@@ -101,8 +104,11 @@ describe('renderJudgePrompt', () => {
 
   it('超长记录被截断', () => {
     const prompt = renderJudgePrompt(
-      { history: [{ role: 'user', speaker: '老王', text: 'X'.repeat(500), ts: 1 }], newMessage: '嗯' },
-      100,
+      {
+        history: [{ role: 'user', speaker: '老王', text: 'X'.repeat(500), ts: 1 }],
+        newMessage: '嗯',
+      },
+      100
     );
     expect(prompt).not.toContain('X'.repeat(200));
   });
@@ -127,15 +133,17 @@ describe('createTopicJudge', () => {
 
   it('fetch 抛错（超时/网络） → fail-safe 相关且不展开', async () => {
     await expect(
-      makeJudge(makeFetch(() => {
-        throw new Error('aborted');
-      }))(INPUT),
+      makeJudge(
+        makeFetch(() => {
+          throw new Error('aborted');
+        })
+      )(INPUT)
     ).resolves.toEqual({ related: true, mentionsChatRecord: false });
   });
 
   it('没有历史时：没问聊天记录就不调 API；问了则照调（问题与历史无关）', async () => {
     let called = 0;
-    const judge = makeJudge(((async () => {
+    const judge = makeJudge((async () => {
       called += 1;
       return {
         ok: true,
@@ -143,7 +151,7 @@ describe('createTopicJudge', () => {
           choices: [{ message: { content: '{"related": true, "mentions_chat_record": true}' } }],
         }),
       } as Response;
-    }) as unknown) as typeof fetch);
+    }) as unknown as typeof fetch);
 
     await expect(judge({ history: [], newMessage: '你好' })).resolves.toEqual({
       related: true,
@@ -154,7 +162,7 @@ describe('createTopicJudge', () => {
     // 窗口里躺着一条没展开的聊天记录：即使没有历史也要问一次（否则"看看这个记录"
     // 这种第一次 @ 就点名要记录的场景永远读不到）
     await expect(
-      judge({ history: [], newMessage: '看看这个聊天记录', askAboutChatRecord: true }),
+      judge({ history: [], newMessage: '看看这个聊天记录', askAboutChatRecord: true })
     ).resolves.toEqual({ related: true, mentionsChatRecord: true });
     expect(called).toBe(1);
   });
@@ -168,7 +176,7 @@ describe('createTopicJudge', () => {
         timeoutMs: 1000,
         perTurnMaxChars: 100,
         logger: createNullLogger(),
-      }),
+      })
     ).toBeUndefined();
   });
 

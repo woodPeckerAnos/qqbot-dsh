@@ -28,7 +28,9 @@ if (command !== 'install' && command !== 'prune') {
 }
 
 if (command === 'install') {
-  console.log('[docker-install] npm ci（含 devDependencies，编译需要 typescript；按 package-lock.json 精确安装）');
+  console.log(
+    '[docker-install] npm ci（含 devDependencies，编译需要 typescript；按 package-lock.json 精确安装）'
+  );
   execFileSync('npm', ['ci', '--no-audit', '--no-fund'], { stdio: 'inherit' });
   process.exit(0);
 }
@@ -60,7 +62,8 @@ function listTopLevel(root) {
     const full = join(root, entry);
     if (entry.startsWith('@')) {
       if (!statSync(full).isDirectory()) continue;
-      for (const sub of readdirSync(full)) out.push({ name: `${entry}/${sub}`, dir: join(full, sub) });
+      for (const sub of readdirSync(full))
+        out.push({ name: `${entry}/${sub}`, dir: join(full, sub) });
       continue;
     }
     if (!statSync(full).isDirectory()) continue;
@@ -133,6 +136,6 @@ for (const { name, dir } of listTopLevel('node_modules')) {
 }
 
 console.log(
-  `[docker-install] 删除 ${removed} 个包，释放约 ${(freedBytes / 1024 / 1024).toFixed(1)} MB`,
+  `[docker-install] 删除 ${removed} 个包，释放约 ${(freedBytes / 1024 / 1024).toFixed(1)} MB`
 );
 if (removedNames.length <= 12) console.log(`[docker-install] ${removedNames.join(', ')}`);

@@ -28,7 +28,7 @@ try {
 } catch (error) {
   clearTimeout(timeout);
   process.stderr.write(
-    `health-probe: 无法连接健康检查端口 ${port}：${error instanceof Error ? error.message : String(error)}\n`,
+    `health-probe: 无法连接健康检查端口 ${port}：${error instanceof Error ? error.message : String(error)}\n`
   );
   process.exit(1);
 }

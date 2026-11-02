@@ -78,7 +78,10 @@ export interface OutboxScanResult {
  *
  * 任何单个文件出问题都只影响它自己，绝不抛出中断整轮发送。
  */
-export async function scanOutbox(dir: string, options: OutboxScanOptions): Promise<OutboxScanResult> {
+export async function scanOutbox(
+  dir: string,
+  options: OutboxScanOptions
+): Promise<OutboxScanResult> {
   const result: OutboxScanResult = { attachments: [], oversize: [], skipped: [] };
 
   let realDir: string;
@@ -172,7 +175,7 @@ export async function archiveSent(
   dir: string,
   fileNames: readonly string[],
   logger: Logger,
-  now: () => number = Date.now,
+  now: () => number = Date.now
 ): Promise<void> {
   if (fileNames.length === 0) return;
   const sentDir = join(dir, SENT_DIR_NAME);

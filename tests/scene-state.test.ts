@@ -30,7 +30,7 @@ function msg(
   senderId: string,
   content: string,
   ts: number,
-  username?: string,
+  username?: string
 ): NormalizedMessage {
   return {
     kind: 'group-message',

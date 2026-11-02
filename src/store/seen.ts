@@ -11,7 +11,15 @@
  * 定期按 mtime 清理超过保留期的标记，避免无界增长。
  */
 
-import { closeSync, mkdirSync, openSync, readdirSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import type { Logger } from '../logger.js';

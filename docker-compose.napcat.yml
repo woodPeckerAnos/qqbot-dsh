@@ -44,18 +44,18 @@ services:
     env_file:
       - napcat.env
     environment:
-      NAPCAT_UID: "10001"
-      NAPCAT_GID: "10001"
+      NAPCAT_UID: '10001'
+      NAPCAT_GID: '10001'
       MODE: reverse_ws
       # 反向 WS：NapCat 当客户端连 qqbot 的内部端口。token 走查询参数，
       # qqbot 的 OneBot 适配器支持 ?access_token= 形式（见 connector.ts）。
       # token 用 hex 生成即可，避免 URL 转义问题：openssl rand -hex 32
-      ONEBOT_URL: "ws://qqbot:6700/onebot/v11/ws?access_token=${ONEBOT_ACCESS_TOKEN:?ONEBOT_ACCESS_TOKEN 未设置}"
+      ONEBOT_URL: 'ws://qqbot:6700/onebot/v11/ws?access_token=${ONEBOT_ACCESS_TOKEN:?ONEBOT_ACCESS_TOKEN 未设置}'
       TZ: Asia/Shanghai
 
     # 仅首次扫码/排障用；登录完成后可以不再映射，或继续保留 SSH 隧道访问。
     ports:
-      - "127.0.0.1:6099:6099"
+      - '127.0.0.1:6099:6099'
 
     volumes:
       # 登录态与设备信息：**必须持久化**，这是设备指纹稳定的关键。
@@ -66,12 +66,12 @@ services:
       - napcat-plugins:/app/napcat/plugins
 
     # Electron/QQ 客户端对 /dev/shm 有要求，默认 64MB 容易崩。
-    shm_size: "256m"
+    shm_size: '256m'
 
     # 固定 MAC。Docker 重建容器默认会换 MAC，属于可被观察的环境变化；
     # 同一网络内不能与其它容器重复。
     # 服务级写法与 NapCat 官方 compose 模板一致，兼容旧版 Compose。
-    mac_address: "02:42:ac:11:00:02"
+    mac_address: '02:42:ac:11:00:02'
     networks:
       - qqbot-net
 
@@ -91,7 +91,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.5"
+          cpus: '1.5'
           memory: 1024m
           pids: 512
 
@@ -102,8 +102,8 @@ services:
     logging:
       driver: json-file
       options:
-        max-size: "20m"
-        max-file: "5"
+        max-size: '20m'
+        max-file: '5'
 
 volumes:
   napcat-qq:

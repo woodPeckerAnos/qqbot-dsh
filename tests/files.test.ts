@@ -292,7 +292,7 @@ describe('inbox 落盘', () => {
         retentionDays: 7,
         maxBytes: 1024,
         logger,
-      }),
+      })
     ).resolves.toBeUndefined();
   });
 });
@@ -586,7 +586,7 @@ describe('OneBot file 段归一化', () => {
           data: { file_id: 'fid-1', name: '报告.pdf', size: 2048 },
         },
       ],
-      10000,
+      10000
     );
     expect(extracted.parts).toEqual([
       { type: 'media', mediaKind: 'file', fileId: 'fid-1', filename: '报告.pdf', sizeBytes: 2048 },
@@ -646,7 +646,7 @@ socketDescribe('OneBot 文件取字节', () => {
         sub_type: 'connect',
         self_id: 10000,
         time: 0,
-      }),
+      })
     );
     return ws;
   }
@@ -679,7 +679,7 @@ socketDescribe('OneBot 文件取字节', () => {
 
     const fetchPromise = c.fetchMedia(
       { kind: 'file', fileId: 'fid-1', context: { groupId: '8888' } },
-      { maxBytes: 1024, timeoutMs: 3_000 },
+      { maxBytes: 1024, timeoutMs: 3_000 }
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
@@ -702,7 +702,7 @@ socketDescribe('OneBot 文件取字节', () => {
 
     const fetchPromise = c.fetchMedia(
       { kind: 'file', fileId: 'fid-2', context: { userId: '12345' } },
-      { maxBytes: 1024, timeoutMs: 3_000 },
+      { maxBytes: 1024, timeoutMs: 3_000 }
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
@@ -723,7 +723,7 @@ socketDescribe('OneBot 文件取字节', () => {
 
     const fetchPromise = c.fetchMedia(
       { kind: 'file', fileId: 'fid-3', context: { groupId: '8888' } },
-      { maxBytes: 1024, timeoutMs: 3_000 },
+      { maxBytes: 1024, timeoutMs: 3_000 }
     );
     const first = await new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
@@ -742,7 +742,7 @@ socketDescribe('OneBot 文件取字节', () => {
         retcode: 0,
         echo: second['echo'],
         data: { base64: Buffer.from([7, 7, 7]).toString('base64') },
-      }),
+      })
     );
 
     expect([...(await fetchPromise)!.data]).toEqual([7, 7, 7]);
@@ -758,7 +758,8 @@ socketDescribe('OneBot 文件取字节', () => {
     servers.push(stale);
     await new Promise<void>((resolve) => stale.listen(0, '127.0.0.1', () => resolve()));
     const staleAddress = stale.address();
-    const stalePort = typeof staleAddress === 'object' && staleAddress !== null ? staleAddress.port : 0;
+    const stalePort =
+      typeof staleAddress === 'object' && staleAddress !== null ? staleAddress.port : 0;
 
     const fresh = await serveBytes(new Uint8Array([0x25, 0x50, 0x44, 0x46]));
     const c = makeConnector(0);
@@ -774,14 +775,16 @@ socketDescribe('OneBot 文件取字节', () => {
         context: { groupId: '8888' },
         url: `http://127.0.0.1:${stalePort}/a.pdf`,
       },
-      { maxBytes: 1024, timeoutMs: 3_000 },
+      { maxBytes: 1024, timeoutMs: 3_000 }
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
     });
     // 第一个动作就是申请直链，而不是先去 GET 那个已过期的 url
     expect(action['action']).toBe('get_group_file_url');
-    ws.send(JSON.stringify({ status: 'ok', retcode: 0, echo: action['echo'], data: { url: fresh } }));
+    ws.send(
+      JSON.stringify({ status: 'ok', retcode: 0, echo: action['echo'], data: { url: fresh } })
+    );
 
     expect([...(await fetchPromise)!.data]).toEqual([0x25, 0x50, 0x44, 0x46]);
   });
@@ -795,7 +798,7 @@ socketDescribe('OneBot 文件取字节', () => {
 
     const fetchPromise = c.fetchMedia(
       { kind: 'file', fileId: 'fid-4' },
-      { maxBytes: 1024, timeoutMs: 500 },
+      { maxBytes: 1024, timeoutMs: 500 }
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
@@ -820,7 +823,7 @@ describe('文件链路端到端（真子进程桩）', () => {
       const stub = join(stubDir, 'pdftotext');
       writeFileSync(
         stub,
-        ['#!/bin/sh', "cat > /dev/null", "printf '报表正文第一段\\n第二段\\n'", ''].join('\n'),
+        ['#!/bin/sh', 'cat > /dev/null', "printf '报表正文第一段\\n第二段\\n'", ''].join('\n')
       );
       chmodSync(stub, 0o755);
 
@@ -854,7 +857,7 @@ describe('文件链路端到端（真子进程桩）', () => {
       expect(note).toContain(`inbox/${saved[0]}`);
       // 取件时带上了 kind 与会话上下文
       expect(fetched[0]).toMatchObject({ kind: 'file', context: { groupId: '8888' } });
-    },
+    }
   );
 });
 

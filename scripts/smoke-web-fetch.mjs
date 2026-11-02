@@ -159,7 +159,7 @@ try {
   check(
     'initialize 返回 wire-stable 身份',
     init?.serverInfo?.name === 'deepseek-harness-sdk-runtime',
-    JSON.stringify(init?.serverInfo),
+    JSON.stringify(init?.serverInfo)
   );
 
   await request('session/prompt', {
@@ -188,7 +188,11 @@ try {
   check('调用了 web_fetch', toolCalls.includes('web_fetch'), toolCalls.join(', ') || '无工具调用');
 
   const hitExpected = EXPECTED.filter((s) => answer.includes(s));
-  check('回复包含页面正文独有内容', hitExpected.length > 0, `命中: ${hitExpected.join(', ') || '无'}`);
+  check(
+    '回复包含页面正文独有内容',
+    hitExpected.length > 0,
+    `命中: ${hitExpected.join(', ') || '无'}`
+  );
 
   const hitFailure = FAILURE_WORDS.filter((s) => answer.includes(s));
   check('回复没有失败措辞', hitFailure.length === 0, hitFailure.join(', '));

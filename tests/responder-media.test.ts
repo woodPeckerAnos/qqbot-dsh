@@ -84,7 +84,10 @@ async function setup(fileNames: Record<string, string>, policy: ReplyPolicy = PO
   dirs.push(root);
   const outboxDir = join(root, 'outbox');
   await mkdir(outboxDir, { recursive: true });
-  const paths = resolveStorePaths({ workspacesRoot: join(root, 'ws'), stateDir: join(root, 'state') });
+  const paths = resolveStorePaths({
+    workspacesRoot: join(root, 'ws'),
+    stateDir: join(root, 'state'),
+  });
   await mkdir(paths.conversationsDir, { recursive: true });
   const conversations = new ConversationStore(paths, createNullLogger());
   const stats = new PipelineStats();
@@ -278,7 +281,10 @@ describe('Responder 富媒体出站', () => {
   it('没有 outbox 目录时行为与纯文本一致', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qqbot-responder-test-'));
     dirs.push(root);
-    const paths = resolveStorePaths({ workspacesRoot: join(root, 'ws'), stateDir: join(root, 'state') });
+    const paths = resolveStorePaths({
+      workspacesRoot: join(root, 'ws'),
+      stateDir: join(root, 'state'),
+    });
     await mkdir(paths.conversationsDir, { recursive: true });
     const sent: SentCall[] = [];
     const responder = new Responder({

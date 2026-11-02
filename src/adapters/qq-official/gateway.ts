@@ -84,7 +84,10 @@ export interface WebSocketLike {
   close(code?: number, reason?: string): void;
   addEventListener(type: 'open', listener: () => void): void;
   addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
-  addEventListener(type: 'close', listener: (event: { code: number; reason?: string }) => void): void;
+  addEventListener(
+    type: 'close',
+    listener: (event: { code: number; reason?: string }) => void
+  ): void;
   addEventListener(type: 'error', listener: (event: { message?: string }) => void): void;
 }
 
@@ -107,12 +110,7 @@ export interface EventSourceHealth {
 }
 
 export type GatewayState =
-  | 'stopped'
-  | 'connecting'
-  | 'identifying'
-  | 'ready'
-  | 'reconnecting'
-  | 'resuming';
+  'stopped' | 'connecting' | 'identifying' | 'ready' | 'reconnecting' | 'resuming';
 
 // ---------------------------------------------------------------------------
 // 实现
@@ -263,7 +261,12 @@ export class QqGateway implements QqEventSource {
   }
 
   private handleRawMessage(data: unknown): void {
-    const text = typeof data === 'string' ? data : data instanceof Uint8Array ? new TextDecoder().decode(data) : String(data);
+    const text =
+      typeof data === 'string'
+        ? data
+        : data instanceof Uint8Array
+          ? new TextDecoder().decode(data)
+          : String(data);
     let payload: GatewayPayload;
     try {
       payload = JSON.parse(text) as GatewayPayload;
@@ -309,7 +312,8 @@ export class QqGateway implements QqEventSource {
       return;
     }
 
-    const shouldResume = this.state === 'resuming' && this.sessionId !== undefined && this.lastSeq !== undefined;
+    const shouldResume =
+      this.state === 'resuming' && this.sessionId !== undefined && this.lastSeq !== undefined;
     this.state = shouldResume ? 'resuming' : 'identifying';
 
     try {
@@ -353,14 +357,22 @@ export class QqGateway implements QqEventSource {
           bot: d.user?.username,
           shard: d.shard,
         });
-        this.emit({ kind: 'ready', at: this.now(), raw: payload as unknown as Record<string, unknown> });
+        this.emit({
+          kind: 'ready',
+          at: this.now(),
+          raw: payload as unknown as Record<string, unknown>,
+        });
         return;
       }
       case 'RESUMED': {
         this.state = 'ready';
         this.reconnectAttempts = 0;
         this.options.logger.info('会话已恢复（RESUMED）');
-        this.emit({ kind: 'resumed', at: this.now(), raw: payload as unknown as Record<string, unknown> });
+        this.emit({
+          kind: 'resumed',
+          at: this.now(),
+          raw: payload as unknown as Record<string, unknown>,
+        });
         return;
       }
       default:
@@ -686,10 +698,11 @@ export function parseTimestamp(value: unknown): number | undefined {
 }
 
 const defaultWebSocketFactory: WebSocketFactory = (url) => {
-  const Ctor = (globalThis as unknown as { WebSocket?: new (url: string) => WebSocketLike }).WebSocket;
+  const Ctor = (globalThis as unknown as { WebSocket?: new (url: string) => WebSocketLike })
+    .WebSocket;
   if (Ctor === undefined) {
     throw new Error(
-      '当前 Node 运行时没有全局 WebSocket。需要 Node 22+；更早版本请传入 webSocketFactory。',
+      '当前 Node 运行时没有全局 WebSocket。需要 Node 22+；更早版本请传入 webSocketFactory。'
     );
   }
   return new Ctor(url);

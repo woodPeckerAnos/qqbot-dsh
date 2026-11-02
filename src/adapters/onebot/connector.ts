@@ -93,7 +93,10 @@ export interface OnebotConnectorOptions {
   actionTimeoutMs?: number;
   now?: () => number;
   /** Inject the authenticated socket channel for deterministic contract tests. */
-  transport?: { start(onConnection: (socket: WebSocket) => void): Promise<void>; stop(): Promise<void> };
+  transport?: {
+    start(onConnection: (socket: WebSocket) => void): Promise<void>;
+    stop(): Promise<void>;
+  };
 }
 
 /** 一条已鉴权的框架连接 */
@@ -108,7 +111,7 @@ interface Session {
 class OnebotActionError extends Error {
   constructor(
     message: string,
-    readonly retcode?: number,
+    readonly retcode?: number
   ) {
     super(message);
     this.name = 'OnebotActionError';
@@ -166,7 +169,12 @@ export class OnebotConnector implements BotConnector {
   private readonly conversationSessions = new Map<string, Session>();
   private readonly pending = new Map<
     string,
-    { session: Session; resolve: (data: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
+    {
+      session: Session;
+      resolve: (data: unknown) => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout;
+    }
   >();
   private readonly emitterHandlers = new Set<(event: NormalizedEvent) => void>();
   /**
@@ -198,9 +206,11 @@ export class OnebotConnector implements BotConnector {
   async start(): Promise<void> {
     if (this.options.transport) {
       if (this.transportStarted) return;
-      this.stopping = false; this.startedAt = this.now();
-      await this.options.transport.start(socket => this.onConnection(socket));
-      this.transportStarted = true; return;
+      this.stopping = false;
+      this.startedAt = this.now();
+      await this.options.transport.start((socket) => this.onConnection(socket));
+      this.transportStarted = true;
+      return;
     }
     if (this.server !== undefined) return;
     this.stopping = false;
@@ -212,7 +222,9 @@ export class OnebotConnector implements BotConnector {
     this.server = createServer((req, res) => {
       // 本端口只服务 WS upgrade；普通 HTTP 请求给个明确答复，便于排障
       res.writeHead(426, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('OneBot reverse WebSocket endpoint. 请在框架侧配置 ws://<host>:<port>/ 并升级连接。\n');
+      res.end(
+        'OneBot reverse WebSocket endpoint. 请在框架侧配置 ws://<host>:<port>/ 并升级连接。\n'
+      );
       void req;
     });
 
@@ -257,7 +269,10 @@ export class OnebotConnector implements BotConnector {
       entry.reject(new OnebotActionError('连接器正在关闭'));
     }
     this.pending.clear();
-    if (this.transportStarted) { this.transportStarted = false; await this.options.transport?.stop(); }
+    if (this.transportStarted) {
+      this.transportStarted = false;
+      await this.options.transport?.stop();
+    }
 
     const wss = this.wss;
     this.wss = undefined;
@@ -275,8 +290,11 @@ export class OnebotConnector implements BotConnector {
     const clients = [...this.sessions];
     const anyClient = clients.some((s) => s.selfId !== undefined);
     const lastEventAt = clients.reduce<number | undefined>(
-      (acc, s) => (s.lastEventAt !== undefined && (acc === undefined || s.lastEventAt > acc) ? s.lastEventAt : acc),
-      undefined,
+      (acc, s) =>
+        s.lastEventAt !== undefined && (acc === undefined || s.lastEventAt > acc)
+          ? s.lastEventAt
+          : acc,
+      undefined
     );
     const warnings: string[] = [];
     if (!anyClient) {
@@ -323,8 +341,11 @@ export class OnebotConnector implements BotConnector {
   }
 
   canReply(target: ConversationTarget): boolean {
-    try { return this.pickSession(target.key).socket.readyState === WebSocket.OPEN; }
-    catch { return false; }
+    try {
+      return this.pickSession(target.key).socket.readyState === WebSocket.OPEN;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -358,9 +379,12 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     ctx: ReplyContext,
     text: string,
-    quoteMessageId?: string,
+    quoteMessageId?: string
   ): Promise<void> {
-    const message = [...(quoteMessageId ? [{ type: 'reply', data: { id: quoteMessageId } }] : []), { type: 'text', data: { text } }];
+    const message = [
+      ...(quoteMessageId ? [{ type: 'reply', data: { id: quoteMessageId } }] : []),
+      { type: 'text', data: { text } },
+    ];
     const data =
       ctx.target.kind === 'c2c'
         ? await this.callAction(session, 'send_private_msg', {
@@ -389,7 +413,7 @@ export class OnebotConnector implements BotConnector {
   private async sendAttachment(
     session: Session,
     ctx: ReplyContext,
-    attachment: OutgoingAttachment,
+    attachment: OutgoingAttachment
   ): Promise<void> {
     const file = await this.encodeAttachment(attachment);
     // A queue timeout can occur during encoding, before the first platform action.
@@ -421,7 +445,7 @@ export class OnebotConnector implements BotConnector {
     await this.callAction(
       session,
       ctx.target.kind === 'c2c' ? 'upload_private_file' : 'upload_group_file',
-      params,
+      params
     );
     this.options.logger.debug('OneBot 文件已上传', {
       conversation: ctx.target.key,
@@ -473,7 +497,10 @@ export class OnebotConnector implements BotConnector {
         }
       }
       this.emit({ kind: 'disconnected', at: this.now(), reason: 'onebot client closed' });
-      this.options.logger.warn('OneBot 客户端断开', { total: this.sessions.size, selfId: session.selfId });
+      this.options.logger.warn('OneBot 客户端断开', {
+        total: this.sessions.size,
+        selfId: session.selfId,
+      });
     });
     socket.on('error', (error) => {
       this.options.logger.warn('OneBot 连接错误', { error: error.message });
@@ -564,9 +591,12 @@ export class OnebotConnector implements BotConnector {
       }
       case 'friend-request': {
         if (!this.options.autoAcceptFriend) {
-          this.options.logger.info('收到加好友请求，未自动同意（ONEBOT_AUTO_ACCEPT_FRIEND=false）', {
-            userId: result.userId,
-          });
+          this.options.logger.info(
+            '收到加好友请求，未自动同意（ONEBOT_AUTO_ACCEPT_FRIEND=false）',
+            {
+              userId: result.userId,
+            }
+          );
           return;
         }
         this.options.logger.info('自动同意加好友请求', { userId: result.userId });
@@ -582,13 +612,19 @@ export class OnebotConnector implements BotConnector {
       }
       case 'group-invite': {
         if (!this.options.autoAcceptGroupInvite) {
-          this.options.logger.warn('收到拉群邀请，未自动同意（ONEBOT_AUTO_ACCEPT_GROUP_INVITE=false）', {
-            groupId: result.groupId,
-            inviter: result.userId,
-          });
+          this.options.logger.warn(
+            '收到拉群邀请，未自动同意（ONEBOT_AUTO_ACCEPT_GROUP_INVITE=false）',
+            {
+              groupId: result.groupId,
+              inviter: result.userId,
+            }
+          );
           return;
         }
-        this.options.logger.warn('自动同意拉群邀请', { groupId: result.groupId, inviter: result.userId });
+        this.options.logger.warn('自动同意拉群邀请', {
+          groupId: result.groupId,
+          inviter: result.userId,
+        });
         void this.callAction(session, 'set_group_add_request', {
           flag: result.flag,
           sub_type: 'invite',
@@ -641,7 +677,7 @@ export class OnebotConnector implements BotConnector {
   private async enrichEvent(
     session: Session,
     event: NormalizedMessage,
-    enrichment: { quotedMessageId?: string; forwardRefs?: ForwardRef[] },
+    enrichment: { quotedMessageId?: string; forwardRefs?: ForwardRef[] }
   ): Promise<NormalizedMessage> {
     let parts: MessagePart[] = event.parts ?? [];
     // 预算在整个事件内共享：引用里的转发与消息本身的转发消耗同一份额度
@@ -656,7 +692,7 @@ export class OnebotConnector implements BotConnector {
         session,
         enrichment.quotedMessageId,
         event.target.key,
-        budget,
+        budget
       );
       if (quote !== undefined) parts = [quote, ...parts];
     }
@@ -674,7 +710,7 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     quotedMessageId: string,
     conversationKey: string,
-    budget: ForwardBudget,
+    budget: ForwardBudget
   ): Promise<MessageQuotePart | undefined> {
     try {
       const data = await this.callAction(session, 'get_msg', {
@@ -686,7 +722,13 @@ export class OnebotConnector implements BotConnector {
       // 因为它已经在"引用"这层结构里了；预算仍与消息本身共享）
       const parts =
         extracted.forwardRefs !== undefined && extracted.forwardRefs.length > 0
-          ? await this.resolveForwardRefs(session, extracted.parts, extracted.forwardRefs, 1, budget)
+          ? await this.resolveForwardRefs(
+              session,
+              extracted.parts,
+              extracted.forwardRefs,
+              1,
+              budget
+            )
           : extracted.parts;
       const author = quotedAuthorFromGetMsg(data);
       return {
@@ -719,7 +761,7 @@ export class OnebotConnector implements BotConnector {
     parts: readonly MessagePart[],
     refs: readonly ForwardRef[],
     depth: number,
-    budget: ForwardBudget,
+    budget: ForwardBudget
   ): Promise<MessagePart[]> {
     const resolved = [...parts];
     for (const ref of refs) {
@@ -747,7 +789,7 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     ref: ForwardRef,
     depth: number,
-    budget: ForwardBudget,
+    budget: ForwardBudget
   ): Promise<MessagePart> {
     const config = this.options.forward;
     // 关掉 / 没配：保持既有行为（`[聊天记录]`），不做任何网络请求。
@@ -812,10 +854,18 @@ export class OnebotConnector implements BotConnector {
       // 嵌套转发：先就地展开，再整体压平成这一条发言的文本
       let nodeParts = node.parts;
       if (node.forwardRefs !== undefined && node.forwardRefs.length > 0) {
-        nodeParts = await this.resolveForwardRefs(session, nodeParts, node.forwardRefs, depth + 1, budget);
+        nodeParts = await this.resolveForwardRefs(
+          session,
+          nodeParts,
+          node.forwardRefs,
+          depth + 1,
+          budget
+        );
       }
 
-      let text = flattenParts(nodeParts).replace(/\s*\n\s*/g, ' ').trim();
+      let text = flattenParts(nodeParts)
+        .replace(/\s*\n\s*/g, ' ')
+        .trim();
       if (text === '') continue;
       if (text.length > config.maxNodeChars) {
         text = `${text.slice(0, config.maxNodeChars)}…`;
@@ -827,7 +877,10 @@ export class OnebotConnector implements BotConnector {
       budget.charsLeft -= text.length;
 
       // 每条发言一个 text 片段（发言人前缀烘进去）：渲染层按"一个元素 = 一条"编号
-      outParts.push({ type: 'text', text: node.author !== undefined ? `${node.author}: ${text}` : text });
+      outParts.push({
+        type: 'text',
+        text: node.author !== undefined ? `${node.author}: ${text}` : text,
+      });
     }
 
     const part: MessageForwardPart = {
@@ -947,17 +1000,20 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     action: string,
     params: Record<string, unknown>,
-    timeoutMs?: number,
+    timeoutMs?: number
   ): Promise<unknown> {
     if (session.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new OnebotActionError('连接不可用（非 OPEN 状态）'));
     }
     const echo = randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(echo);
-        reject(new OnebotActionError(`动作 ${action} 等待响应超时`));
-      }, timeoutMs ?? this.options.actionTimeoutMs ?? 15_000);
+      const timer = setTimeout(
+        () => {
+          this.pending.delete(echo);
+          reject(new OnebotActionError(`动作 ${action} 等待响应超时`));
+        },
+        timeoutMs ?? this.options.actionTimeoutMs ?? 15_000
+      );
       timer.unref?.();
       this.pending.set(echo, { session, resolve, reject, timer });
       session.socket.send(JSON.stringify({ action, params, echo }), (error) => {
@@ -977,7 +1033,8 @@ export class OnebotConnector implements BotConnector {
     if (entry === undefined) return;
     this.pending.delete(echo);
     clearTimeout(entry.timer);
-    const retcode = response.retcode ?? (response.status === 'ok' || response.status === 'async' ? 0 : -1);
+    const retcode =
+      response.retcode ?? (response.status === 'ok' || response.status === 'async' ? 0 : -1);
     if (retcode === 0) {
       entry.resolve(response.data);
       return;
@@ -985,8 +1042,8 @@ export class OnebotConnector implements BotConnector {
     entry.reject(
       new OnebotActionError(
         `动作失败（retcode=${retcode}）：${response.wording ?? response.message ?? '未知错误'}`,
-        retcode,
-      ),
+        retcode
+      )
     );
   }
 
@@ -1015,7 +1072,10 @@ export class OnebotConnector implements BotConnector {
    *
    * 任何一步失败都返回 undefined（由编排层降级成文字说明），绝不抛错打断整轮。
    */
-  async fetchMedia(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined> {
+  async fetchMedia(
+    media: RemoteMedia,
+    options: MediaFetchOptions
+  ): Promise<MediaBytes | undefined> {
     // 图片与视频：上报的 url 是可靠快路径（过期了再由动作刷新），照旧先试它
     if (media.kind !== 'file' && media.url !== undefined) {
       const direct = await this.httpGet(media.url, options);
@@ -1068,7 +1128,7 @@ export class OnebotConnector implements BotConnector {
    */
   async fetchForward(
     target: ConversationTarget,
-    refId: string,
+    refId: string
   ): Promise<MessageForwardPart | undefined> {
     const config = this.options.forward;
     // 关掉转发展开时**不发任何请求**（与 @ 路径同一个开关、同一条纪律）
@@ -1085,7 +1145,7 @@ export class OnebotConnector implements BotConnector {
         session,
         { index: 0, id: refId },
         0,
-        this.newForwardBudget(),
+        this.newForwardBudget()
       );
       // expandForward 在失败/超限时给的是 text 占位（`[聊天记录]`、`[转发消息（…）]`）：
       // 那对调用方等于"没拿到"，如实返回 undefined，而不是把占位当内容传下去。
@@ -1151,7 +1211,7 @@ export class OnebotConnector implements BotConnector {
   private async fetchViaFileUrl(
     session: Session,
     media: RemoteMedia,
-    options: MediaFetchOptions,
+    options: MediaFetchOptions
   ): Promise<MediaBytes | undefined> {
     const fileId = media.fileId;
     if (fileId === undefined) return undefined;
@@ -1183,7 +1243,7 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     action: 'get_file' | 'get_image',
     fileId: string,
-    options: MediaFetchOptions,
+    options: MediaFetchOptions
   ): Promise<MediaBytes | undefined> {
     let data: Record<string, unknown>;
     try {

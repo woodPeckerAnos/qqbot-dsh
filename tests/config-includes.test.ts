@@ -52,7 +52,7 @@ include:
 onebot:
   port: 9999
 logLevel: warn
-`,
+`
     );
     writeFile(
       'config/a.yml',
@@ -66,7 +66,7 @@ pool:
   replayTurns: 3
 offpeak:
   windows: ["00:00-09:00"]
-`,
+`
     );
     writeFile(
       'config/b.yml',
@@ -78,7 +78,7 @@ pool:
   maxRuntimes: 8
 offpeak:
   windows: ["12:00-14:00"]
-`,
+`
     );
 
     const loaded = load();
@@ -108,7 +108,7 @@ include:
   - ../b.yml
 onebot:
   port: 1234
-`,
+`
     );
     writeFile('config/b.yml', 'onebot:\n  host: 0.0.0.0\n  port: 5678\n');
 
@@ -127,7 +127,7 @@ include:
   - path: config/skipped.yml
     enabled: false
 logLevel: info
-`,
+`
     );
 
     const loaded = load();
@@ -137,10 +137,7 @@ logLevel: info
 
   it('enabled: false 时不读取文件内容（即使内容非法）', () => {
     tempDir();
-    writeFile(
-      'qqbot.yml',
-      'include:\n  - path: config/skipped.yml\n    enabled: false\n',
-    );
+    writeFile('qqbot.yml', 'include:\n  - path: config/skipped.yml\n    enabled: false\n');
     writeFile('config/skipped.yml', 'onebot:\n  portt: 6700\n');
 
     expect(load().config).toEqual({});
@@ -163,20 +160,14 @@ logLevel: info
 
   it('optional 文件存在但内容错时仍然报错（不静默跳过）', () => {
     tempDir();
-    writeFile(
-      'qqbot.yml',
-      'include:\n  - path: config/local/bad.yml\n    optional: true\n',
-    );
+    writeFile('qqbot.yml', 'include:\n  - path: config/local/bad.yml\n    optional: true\n');
     writeFile('config/local/bad.yml', 'onebot:\n  port: "6700"\n');
     expect(() => load()).toThrow(/必须是整数/);
   });
 
   it('模块路径是目录时报错（optional 也不跳过）', () => {
     tempDir();
-    writeFile(
-      'qqbot.yml',
-      'include:\n  - path: config/dir.yml\n    optional: true\n',
-    );
+    writeFile('qqbot.yml', 'include:\n  - path: config/dir.yml\n    optional: true\n');
     mkdirSync(join(dir!, 'config/dir.yml'), { recursive: true });
     try {
       load();
@@ -219,17 +210,17 @@ describe('include 的形状校验', () => {
 
   it('对象写法只接受 path / optional / enabled', () => {
     expect(() => parseConfigFileText('include:\n  - p: config/a.yml\n')).toThrow(
-      /不是可识别的 include 项/,
+      /不是可识别的 include 项/
     );
     expect(() => parseConfigFileText('include:\n  - path: ""\n')).toThrow(/path 必须是非空字符串/);
     expect(() => parseConfigFileText('include:\n  - path: a.yml\n    optional: yes\n')).toThrow(
-      /必须是 true \/ false/,
+      /必须是 true \/ false/
     );
   });
 
   it('单文件解析器遇到 include 时明确指向 loadConfigFile', () => {
     expect(() => parseConfigFileText('include:\n  - config/a.yml\n', 'qqbot.yml')).toThrow(
-      /loadConfigFile/,
+      /loadConfigFile/
     );
   });
 });
@@ -245,7 +236,7 @@ onebot:
   host: 0.0.0.0
   port: 6700
 logLevel: debug
-`,
+`
     );
     const loaded = load('legacy.yml');
     expect(loaded.config.connectors).toEqual(['onebot']);

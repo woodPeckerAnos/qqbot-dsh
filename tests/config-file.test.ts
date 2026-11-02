@@ -60,13 +60,17 @@ offpeak:
 health:
   port: 8080
 `,
-      'test.yml',
+      'test.yml'
     );
     expect(config.connectors).toEqual(['qq-official', 'onebot']);
     expect(config.logLevel).toBe('debug');
     expect(config.qqOfficial).toMatchObject({ intents: 50331648, msgType: 0 });
     expect(config.qqOfficial?.c2c).toEqual({ enabled: false, progressMax: 1 });
-    expect(config.onebot).toMatchObject({ host: '0.0.0.0', port: 6700, autoAcceptGroupInvite: true });
+    expect(config.onebot).toMatchObject({
+      host: '0.0.0.0',
+      port: 6700,
+      autoAcceptGroupInvite: true,
+    });
     expect(config.dsh).toMatchObject({ provider: 'deepseek-official' });
     expect(config.pool).toEqual({ maxRuntimes: 8 });
     expect(config.paths).toEqual({ stateDir: '/data/bot' });
@@ -79,7 +83,7 @@ health:
     expect(asString.offpeak?.windows).toBe('00:00-09:00,12:00-14:00');
 
     const asArray = parseConfigFileText(
-      'offpeak:\n  windows:\n    - 00:00-09:00\n    - "12:00-14:00"\n    - 18:00-24:00\n',
+      'offpeak:\n  windows:\n    - 00:00-09:00\n    - "12:00-14:00"\n    - 18:00-24:00\n'
     );
     expect(asArray.offpeak?.windows).toBe('00:00-09:00,12:00-14:00,18:00-24:00');
   });
@@ -129,7 +133,9 @@ health:
       expect((error as ConfigError).message).toMatch(/必须是整数/);
       expect((error as ConfigError).hints.join(' ')).toMatch(/不要加引号/);
     }
-    expect(() => parseConfigFileText('onebot:\n  c2cEnabled: yes\n')).toThrow(/必须是 true \/ false/);
+    expect(() => parseConfigFileText('onebot:\n  c2cEnabled: yes\n')).toThrow(
+      /必须是 true \/ false/
+    );
     expect(() => parseConfigFileText('connectors: qq-official\n')).toThrow(/必须是字符串数组/);
     expect(() => parseConfigFileText('offpeak:\n  windows: 123\n')).toThrow(/窗口串或字符串数组/);
   });
@@ -238,10 +244,10 @@ describe('嵌套子节的未知键', () => {
     // NESTED_SECTIONS 的重构把"子节必须注册"变成了表驱动——这条守住它：
     // 少注册一个子节，该键会被当成未知项，而不是静默忽略（"改了没生效"最难查）。
     expect(() => parseConfigFileText('attachments:\n  forward2:\n    maxNodes: 3\n')).toThrow(
-      ConfigError,
+      ConfigError
     );
     expect(() => parseConfigFileText('attachments:\n  files:\n    noSuchKey: 1\n')).toThrow(
-      ConfigError,
+      ConfigError
     );
     // 已注册的子节正常通过
     const file = parseConfigFileText('attachments:\n  forward:\n    maxNodes: 3\n');

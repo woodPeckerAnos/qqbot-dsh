@@ -111,7 +111,7 @@ function pumpStdout() {
     if (frame.id !== undefined && frame.method === undefined) {
       const p = pending.get(frame.id);
       pending.delete(frame.id);
-      if (p) (frame.error ? p.rej(new Error(JSON.stringify(frame.error))) : p.res(frame.result));
+      if (p) frame.error ? p.rej(new Error(JSON.stringify(frame.error))) : p.res(frame.result);
     } else if (frame.method !== undefined) {
       handleFrame(frame);
     }
@@ -143,7 +143,11 @@ const tick = setInterval(pumpStdout, 100);
 
 try {
   await waitFor(() => true, 1, 'start');
-  await request('initialize', { cwd: WORKSPACE, provider: 'deepseek-official', model: 'deepseek-flash' });
+  await request('initialize', {
+    cwd: WORKSPACE,
+    provider: 'deepseek-official',
+    model: 'deepseek-flash',
+  });
 
   await request('session/prompt', {
     sessionId: SESSION_ID,
@@ -180,7 +184,7 @@ try {
   check(
     '沙箱后端有效（工作区内操作无需提权）',
     !degraded,
-    degraded ? `出现 ${escalationReasons.length} 次提权请求` : '未出现提权请求',
+    degraded ? `出现 ${escalationReasons.length} 次提权请求` : '未出现提权请求'
   );
 
   await request('shutdown', undefined);
@@ -214,5 +218,7 @@ try {
     rmSync(DSH_HOME, { recursive: true, force: true });
     rmSync(WORKSPACE, { recursive: true, force: true });
   }
-  process.exit(failed.some((f) => !f.ok && f.name.startsWith('沙箱后端有效')) ? 3 : failed.length ? 1 : 0);
+  process.exit(
+    failed.some((f) => !f.ok && f.name.startsWith('沙箱后端有效')) ? 3 : failed.length ? 1 : 0
+  );
 }

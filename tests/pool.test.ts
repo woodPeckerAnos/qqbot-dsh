@@ -54,7 +54,9 @@ class FakeRuntime {
   }
 }
 
-function makePool(options: { maxRuntimes?: number; runtimeIdleMs?: number; now?: () => number } = {}) {
+function makePool(
+  options: { maxRuntimes?: number; runtimeIdleMs?: number; now?: () => number } = {}
+) {
   const created: FakeRuntime[] = [];
   const pool = new RuntimePool({
     maxRuntimes: options.maxRuntimes ?? 4,
@@ -83,28 +85,52 @@ describe('RuntimePool', () => {
   it('初始化失败释放创建中的 runtime，不占硬额度', async () => {
     const { pool, created } = makePool({ maxRuntimes: 1 });
     const originalStart = FakeRuntime.prototype.start;
-    FakeRuntime.prototype.start = async () => { throw new Error('initialize-failed'); };
-    try { await expect(pool.acquireLease('failure', '/workspace')).rejects.toThrow('initialize-failed'); }
-    finally { FakeRuntime.prototype.start = originalStart; }
-    expect(created[0]!.disposeCount).toBe(1); expect(pool.size).toBe(0);
-    await pool.acquireLease('next', '/workspace'); expect(pool.size).toBe(1); await pool.disposeAll();
+    FakeRuntime.prototype.start = async () => {
+      throw new Error('initialize-failed');
+    };
+    try {
+      await expect(pool.acquireLease('failure', '/workspace')).rejects.toThrow('initialize-failed');
+    } finally {
+      FakeRuntime.prototype.start = originalStart;
+    }
+    expect(created[0]!.disposeCount).toBe(1);
+    expect(pool.size).toBe(0);
+    await pool.acquireLease('next', '/workspace');
+    expect(pool.size).toBe(1);
+    await pool.disposeAll();
   });
   it('并发租约在返回前已标 busy，满池等待；旧租约不能释放新实例', async () => {
     const { pool, created } = makePool({ maxRuntimes: 2 });
     const [a, b] = await Promise.all([pool.acquireLease('A', '/a'), pool.acquireLease('B', '/b')]);
-    expect(a.busy).toBe(true); expect(b.busy).toBe(true);
-    const waiting = pool.acquireLease('C', '/c'); await Promise.resolve(); await Promise.resolve();
-    expect(created).toHaveLength(2); expect(pool.size).toBe(2);
-    pool.release(a); await waiting; expect(pool.size).toBe(2);
-    await pool.drop(b); const replacement = await pool.acquireLease('B', '/b');
-    pool.release(b); await pool.drop(b); expect(replacement.busy).toBe(true); expect(replacement.runtime.isReady).toBe(true);
+    expect(a.busy).toBe(true);
+    expect(b.busy).toBe(true);
+    const waiting = pool.acquireLease('C', '/c');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(created).toHaveLength(2);
+    expect(pool.size).toBe(2);
+    pool.release(a);
+    await waiting;
+    expect(pool.size).toBe(2);
+    await pool.drop(b);
+    const replacement = await pool.acquireLease('B', '/b');
+    pool.release(b);
+    await pool.drop(b);
+    expect(replacement.busy).toBe(true);
+    expect(replacement.runtime.isReady).toBe(true);
     await pool.disposeAll();
   });
   it('取消满池等待不新建进程，也不等待正在执行的任务结束', async () => {
-    const { pool, created } = makePool({ maxRuntimes: 1 }); await pool.acquireLease('A', '/a');
-    const controller = new AbortController(); const waiting = pool.acquireLease('B', '/b', {}, controller.signal);
-    await Promise.resolve(); await Promise.resolve(); controller.abort(); await expect(waiting).rejects.toThrow();
-    expect(created).toHaveLength(1); await pool.disposeAll();
+    const { pool, created } = makePool({ maxRuntimes: 1 });
+    await pool.acquireLease('A', '/a');
+    const controller = new AbortController();
+    const waiting = pool.acquireLease('B', '/b', {}, controller.signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+    await expect(waiting).rejects.toThrow();
+    expect(created).toHaveLength(1);
+    await pool.disposeAll();
   });
   it('同一会话复用同一个 runtime', async () => {
     const { pool, created } = makePool();
@@ -187,7 +213,8 @@ describe('RuntimePool', () => {
 
     // 池已满且唯一成员在忙：不应丢弃 G1
     const waiting = pool.acquire('G2', '/ws/2');
-    await Promise.resolve(); await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     expect(pool.activeConversationKeys()).toContain('G1');
     expect(pool.size).toBe(1);
     pool.release(entry);
@@ -253,7 +280,8 @@ describe('RuntimePool', () => {
     const entry = await pool.acquire('G1', '/ws/1');
 
     const handlers = (entry.runtime as unknown as FakeRuntime).handlers['exit'] ?? [];
-    for (const handler of handlers) (handler as unknown as (c: number, s: string) => void)(1, 'SIGTERM');
+    for (const handler of handlers)
+      (handler as unknown as (c: number, s: string) => void)(1, 'SIGTERM');
 
     expect(onExit).toHaveBeenCalledWith('G1', 1, 'SIGTERM');
     await pool.disposeAll();
@@ -334,7 +362,8 @@ describe('RuntimePool', () => {
 
     // 池已满且唯一成员承载后台任务：与 busy 同样豁免，不强杀
     const waiting = pool.acquire('G2', '/ws/2');
-    await Promise.resolve(); await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     expect(pool.activeConversationKeys()).toContain('G1');
     expect((created[0] as unknown as FakeRuntime).disposeCount).toBe(0);
     (g1.runtime as unknown as FakeRuntime).emit('subagent.finished', FINISHED);

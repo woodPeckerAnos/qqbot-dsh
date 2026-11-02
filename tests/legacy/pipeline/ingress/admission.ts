@@ -24,7 +24,7 @@ export class AdmissionGate {
     private readonly deps: {
       maxConcurrentTurns: number;
       stats: PipelineStats;
-    },
+    }
   ) {
     this.semaphore = new Semaphore(deps.maxConcurrentTurns);
   }
@@ -52,7 +52,9 @@ export class AdmissionGate {
         // 只占一条回复配额；发不出去（窗口/配额）不阻塞排队。
         stats.busyNoticed += 1;
         await ctx.responder
-          .error('上一条消息还在处理中，你这条会在它完成后自动处理，不用重发。等不及的话管理员可以发 /stop 强制中断。')
+          .error(
+            '上一条消息还在处理中，你这条会在它完成后自动处理，不用重发。等不及的话管理员可以发 /stop 强制中断。'
+          )
           .catch(() => {});
       }
       const releaseLock = await this.conversationLock.acquire(key);
@@ -77,9 +79,7 @@ export class AdmissionGate {
           ctx.logger.error('处理提问时发生未预期错误', {
             error: error instanceof Error ? error.message : String(error),
           });
-          await ctx.responder
-            .error('处理你的请求时出错了，我已经记录到日志。')
-            .catch(() => {});
+          await ctx.responder.error('处理你的请求时出错了，我已经记录到日志。').catch(() => {});
         } finally {
           release();
         }

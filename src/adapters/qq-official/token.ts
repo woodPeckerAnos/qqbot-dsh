@@ -32,7 +32,7 @@ export interface TokenManagerOptions {
 export class TokenError extends Error {
   constructor(
     message: string,
-    readonly code?: number,
+    readonly code?: number
   ) {
     super(message);
     this.name = 'TokenError';
@@ -115,7 +115,7 @@ export class TokenManager {
       body = (await response.json()) as AppAccessTokenResponse;
     } catch (error) {
       throw new TokenError(
-        `access_token 响应体不是合法 JSON：${error instanceof Error ? error.message : String(error)}`,
+        `access_token 响应体不是合法 JSON：${error instanceof Error ? error.message : String(error)}`
       );
     }
 
@@ -124,7 +124,7 @@ export class TokenManager {
     }
     if (typeof body.access_token !== 'string' || body.access_token.trim() === '') {
       throw new TokenError(
-        `access_token 响应缺少 access_token 字段（body=${JSON.stringify(body).slice(0, 200)}）`,
+        `access_token 响应缺少 access_token 字段（body=${JSON.stringify(body).slice(0, 200)}）`
       );
     }
 

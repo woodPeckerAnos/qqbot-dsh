@@ -35,15 +35,11 @@ if (!apiKey) {
   process.exit(2);
 }
 
-const child = spawn(
-  'dsh',
-  ['--profile', 'sdk', '--patch', PATCH],
-  {
-    cwd: WORKSPACE,
-    env: { ...process.env, DSH_HOME, DEEPSEEK_API_KEY: apiKey },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  },
-);
+const child = spawn('dsh', ['--profile', 'sdk', '--patch', PATCH], {
+  cwd: WORKSPACE,
+  env: { ...process.env, DSH_HOME, DEEPSEEK_API_KEY: apiKey },
+  stdio: ['pipe', 'pipe', 'pipe'],
+});
 
 /** stdout 的每一行都必须是合法 JSON-RPC 帧——这是协议通道纯净性的断言。 */
 let stdoutLines = 0;
@@ -151,8 +147,11 @@ try {
     provider: 'deepseek-official',
     model: 'deepseek-flash',
   });
-  check('initialize 返回 wire-stable 身份', init?.serverInfo?.name === 'deepseek-harness-sdk-runtime',
-    JSON.stringify(init?.serverInfo));
+  check(
+    'initialize 返回 wire-stable 身份',
+    init?.serverInfo?.name === 'deepseek-harness-sdk-runtime',
+    JSON.stringify(init?.serverInfo)
+  );
 
   await request('session/prompt', {
     sessionId: SESSION_ID,
@@ -192,17 +191,25 @@ try {
     check(
       '无需审批即可完成（沙箱后端有效）',
       escalationWarnings.length === 0,
-      escalationWarnings.length > 0 ? '有提权请求但未被放行' : '工作区内操作全部被沙箱接受',
+      escalationWarnings.length > 0 ? '有提权请求但未被放行' : '工作区内操作全部被沙箱接受'
     );
   } else {
-    check('审批请求被放行', true, `${approved.length} 次，其中提权 ${escalationWarnings.length} 次`);
+    check(
+      '审批请求被放行',
+      true,
+      `${approved.length} 次，其中提权 ${escalationWarnings.length} 次`
+    );
   }
 
   await request('shutdown', undefined);
   await waitFor(() => child.exitCode !== null, 20_000, 'shutdown 退出');
   check('shutdown 后进程退出', child.exitCode === 0, `exitCode=${child.exitCode}`);
 
-  check('stdout 全程只有协议帧', stdoutNonJson === 0, `${stdoutLines} 帧, ${stdoutNonJson} 条非协议`);
+  check(
+    'stdout 全程只有协议帧',
+    stdoutNonJson === 0,
+    `${stdoutLines} 帧, ${stdoutNonJson} 条非协议`
+  );
 } catch (error) {
   check('流程未抛异常', false, String(error));
 } finally {
@@ -217,7 +224,7 @@ try {
     check(
       '存在 JSONL 会话文件',
       sessionArtifacts.length > 0,
-      sessionArtifacts.join(', ') || files.join(', '),
+      sessionArtifacts.join(', ') || files.join(', ')
     );
   }
   console.log('\n--- 失败项 ---');

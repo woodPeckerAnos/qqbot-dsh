@@ -6,26 +6,28 @@
 > 实现后的架构要点已回写 `docs/DESIGN.md` §11.6-11.8；排障入口见 `docs/RUNBOOK.md` §4.7。
 >
 > 关键决策（**已与维护者确认**）：
->   1. **转发块解析时机**：连接器期补全（与既有 `get_msg` 回查同构），
->      而不是 turn 期——因为 `content` 同时承担对话记录、冷启动回放、话题判定、
->      命令匹配，只有连接器期展开才能四处一致（§4）；
->   2. **转发块内容模型**：新增递归片段类型 `MessageForwardPart`，
->      不复用 `quote`（§5）；
->   3. **PDF 抽取实现**：镜像装 `poppler-utils` 走 `pdftotext` 子进程，
->      而不是引入 `pdfjs-dist` 这类重 npm 依赖（§7.2）；
->   4. **文件"解析"的落点**：抽取文本进 prompt **并且**原文落进工作区
->      `inbox/`，两条路都给——确定性基线 + 让 agent 自己深挖（§7.1、§8）；
->   5. **官方平台转发**：官方接收侧文档只有 `message_type` 0/3/103，**没有**
->      转发/聊天记录类型，只能"尽力而为 + 实测"，本期主要能力落在 OneBot（§3.2）。
+>
+> 1. **转发块解析时机**：连接器期补全（与既有 `get_msg` 回查同构），
+>    而不是 turn 期——因为 `content` 同时承担对话记录、冷启动回放、话题判定、
+>    命令匹配，只有连接器期展开才能四处一致（§4）；
+> 2. **转发块内容模型**：新增递归片段类型 `MessageForwardPart`，
+>    不复用 `quote`（§5）；
+> 3. **PDF 抽取实现**：镜像装 `poppler-utils` 走 `pdftotext` 子进程，
+>    而不是引入 `pdfjs-dist` 这类重 npm 依赖（§7.2）；
+> 4. **文件"解析"的落点**：抽取文本进 prompt **并且**原文落进工作区
+>    `inbox/`，两条路都给——确定性基线 + 让 agent 自己深挖（§7.1、§8）；
+> 5. **官方平台转发**：官方接收侧文档只有 `message_type` 0/3/103，**没有**
+>    转发/聊天记录类型，只能"尽力而为 + 实测"，本期主要能力落在 OneBot（§3.2）。
 >
 > 实现期与本文档的偏差（均已落实到 DESIGN.md §11）：
->   1. §10.1 里 `attachments.files.maxInboxBytes` 最终按 MB 暴露
->      （`maxInboxMB` / `BOT_ATTACHMENT_INBOX_MAX_MB`）——它是运维旋钮，不需要
->      字节级精度；单文件上限仍用字节（那是安全边界）。
->   2. 官方侧的转发块**不需要回查**（内容随事件一起推来），所以它没有
->      `forwardsFailed` 的失败路径，只有"翻译 + 限量"。
->   3. 转发块里嵌套转发的配额是**外层块共享**（而非每块各自重置），
->      避免 `maxNodes^maxDepth` 放大。
+>
+> 1. §10.1 里 `attachments.files.maxInboxBytes` 最终按 MB 暴露
+>    （`maxInboxMB` / `BOT_ATTACHMENT_INBOX_MAX_MB`）——它是运维旋钮，不需要
+>    字节级精度；单文件上限仍用字节（那是安全边界）。
+> 2. 官方侧的转发块**不需要回查**（内容随事件一起推来），所以它没有
+>    `forwardsFailed` 的失败路径，只有"翻译 + 限量"。
+> 3. 转发块里嵌套转发的配额是**外层块共享**（而非每块各自重置），
+>    避免 `maxNodes^maxDepth` 放大。
 
 ---
 
@@ -120,21 +122,21 @@ text | image(url,fileId,mimeType,filename,w/h)
 
 ### 2.2 转发消息的现状
 
-| 位置 | 现状 |
-|---|---|
-| OneBot `normalize.ts` `case 'forward'` | 直接 `parts.push({type:'text', text:'[聊天记录]'})`，不解析 |
-| 官方 `content.ts` | `message_type` 101/102 走 `partsFromElements(body.msg_elements)` 当普通文本平铺；**而官方接收侧文档只有 0/3/103**（§3.2），101/102 属未核实的历史注释 |
-| 事件顺序 | `get_msg` 引用回查已建立"按连接排队、失败降级、不丢消息"的先例（`onebot/connector.ts` 的 `enqueue`/`withQuotedContent`）——转发块回查是同一族的第二批 |
+| 位置                                   | 现状                                                                                                                                                  |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OneBot `normalize.ts` `case 'forward'` | 直接 `parts.push({type:'text', text:'[聊天记录]'})`，不解析                                                                                           |
+| 官方 `content.ts`                      | `message_type` 101/102 走 `partsFromElements(body.msg_elements)` 当普通文本平铺；**而官方接收侧文档只有 0/3/103**（§3.2），101/102 属未核实的历史注释 |
+| 事件顺序                               | `get_msg` 引用回查已建立"按连接排队、失败降级、不丢消息"的先例（`onebot/connector.ts` 的 `enqueue`/`withQuotedContent`）——转发块回查是同一族的第二批  |
 
 ### 2.3 文件的现状
 
-| 位置 | 现状 |
-|---|---|
-| OneBot `case 'file'` | 只认 `segment.data.url`，且 `httpUrl()` 过滤掉非 http(s)。而 NapCat 群文件段**通常不带可下载 url**，只有 `file_id`/`file`/`name`/`size` → 实际退化成 `[文件: x]` |
-| 官方 `partsFromAttachments` | `content_type === 'file'` 时产出 `media` 片段并带 `url`（官方文件是直链，可取） |
-| `RemoteMedia`（fetchMedia 入参） | 只有 `url / fileId / mimeType / filename`，**没有 `kind`、没有会话上下文**——而 OneBot 群文件直链刷新需要 `group_id`（§6.2） |
-| `TurnRunner.buildPromptBlocks` | 只处理图片：`messageImageParts` → `buildImageBlocks`。`media` 片段到此为止，不进 prompt 正文 |
-| `dsh/media.ts` | 只有 `sniffImageMimeType`，没有任何文档解析能力 |
+| 位置                             | 现状                                                                                                                                                             |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OneBot `case 'file'`             | 只认 `segment.data.url`，且 `httpUrl()` 过滤掉非 http(s)。而 NapCat 群文件段**通常不带可下载 url**，只有 `file_id`/`file`/`name`/`size` → 实际退化成 `[文件: x]` |
+| 官方 `partsFromAttachments`      | `content_type === 'file'` 时产出 `media` 片段并带 `url`（官方文件是直链，可取）                                                                                  |
+| `RemoteMedia`（fetchMedia 入参） | 只有 `url / fileId / mimeType / filename`，**没有 `kind`、没有会话上下文**——而 OneBot 群文件直链刷新需要 `group_id`（§6.2）                                      |
+| `TurnRunner.buildPromptBlocks`   | 只处理图片：`messageImageParts` → `buildImageBlocks`。`media` 片段到此为止，不进 prompt 正文                                                                     |
+| `dsh/media.ts`                   | 只有 `sniffImageMimeType`，没有任何文档解析能力                                                                                                                  |
 
 **差距 = ① 片段模型没有转发形态；② 适配器没有转发块回查；③ 取文件字节缺参数
 （kind + 会话上下文）；④ 没有文档抽取层；⑤ 没有落盘目录约定与保留策略。**
@@ -184,11 +186,11 @@ text | image(url,fileId,mimeType,filename,w/h)
 
 ### 选项
 
-| 选项 | 做法 | 优点 | 代价 |
-|---|---|---|---|
-| **A. 连接器期补全**（推荐） | 归一化时发现转发段 → 在连接器的每会话队列里回查 → 把展开结果并进 `parts`，再 emit | `content` 就是完整可读文本，**对话记录 / 回放 / 话题判定 / 命令匹配 / 日志五处自动一致**；与 `get_msg` 引用回查同构，不需要新机制 | 违反"闸之前不做 IO"的既有纪律：被去重/被谷时段闸拦掉的消息也付了一次回查 |
-| B. turn 期组装 | 把转发段当"引用型片段"带出去，`TurnRunner` 下载后再拼 prompt | 完全恪守"被拦消息零 IO" | `content` 永远是 `[聊天记录]` → **回放、话题判定、命令匹配全部失明**；模型看到的与记录里写的不是同一件事（正是 DESIGN §11 反复强调要避免的） |
-| C. 混合 | 连接器期只取"元信息"（条数），turn 期取正文 | 折中 | 两处逻辑、两套上限、两次状态，复杂度换来的收益不明显 |
+| 选项                        | 做法                                                                              | 优点                                                                                                                              | 代价                                                                                                                                         |
+| --------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A. 连接器期补全**（推荐） | 归一化时发现转发段 → 在连接器的每会话队列里回查 → 把展开结果并进 `parts`，再 emit | `content` 就是完整可读文本，**对话记录 / 回放 / 话题判定 / 命令匹配 / 日志五处自动一致**；与 `get_msg` 引用回查同构，不需要新机制 | 违反"闸之前不做 IO"的既有纪律：被去重/被谷时段闸拦掉的消息也付了一次回查                                                                     |
+| B. turn 期组装              | 把转发段当"引用型片段"带出去，`TurnRunner` 下载后再拼 prompt                      | 完全恪守"被拦消息零 IO"                                                                                                           | `content` 永远是 `[聊天记录]` → **回放、话题判定、命令匹配全部失明**；模型看到的与记录里写的不是同一件事（正是 DESIGN §11 反复强调要避免的） |
+| C. 混合                     | 连接器期只取"元信息"（条数），turn 期取正文                                       | 折中                                                                                                                              | 两处逻辑、两套上限、两次状态，复杂度换来的收益不明显                                                                                         |
 
 ### 推荐：A，并用三道闸把代价压回来
 
@@ -219,11 +221,11 @@ text | image(url,fileId,mimeType,filename,w/h)
 
 ### 选项
 
-| 选项 | 做法 | 评价 |
-|---|---|---|
-| A. 复用 `quote` | 转发内容塞进 `MessageQuotePart` | ✗ 语义错位：引用是"我回复的那条"，转发是"一捆别人的发言"。模型会把两者当成同一种东西，且渲染前缀 `[引用 谁]` 会误导 |
+| 选项                                     | 做法                                                                                | 评价                                                                                                                |
+| ---------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| A. 复用 `quote`                          | 转发内容塞进 `MessageQuotePart`                                                     | ✗ 语义错位：引用是"我回复的那条"，转发是"一捆别人的发言"。模型会把两者当成同一种东西，且渲染前缀 `[引用 谁]` 会误导 |
 | **B. 新增 `MessageForwardPart`**（推荐） | `{ type:'forward'; title?; nodeCount; truncated?; parts: MessagePart[] }`，**递归** | ✓ 语义准确；✓ 递归结构让 `collectImageParts` 等既有遍历器天然复用；✓ 渲染可带条号，`content` 保留"谁说了什么"的边界 |
-| C. 直接平铺成 text | 全部拼成一坨文本 | ✗ 丢失结构，模型分不清是转发内容还是用户本人说的（**prompt injection 的关键区别**） |
+| C. 直接平铺成 text                       | 全部拼成一坨文本                                                                    | ✗ 丢失结构，模型分不清是转发内容还是用户本人说的（**prompt injection 的关键区别**）                                 |
 
 ### 推荐：B，渲染规则如下
 
@@ -265,7 +267,10 @@ export interface RemoteMedia {
    * （get_group_file_url 的 group 参数），私聊文件只需要 file_id。
    */
   context?: { groupId?: string; userId?: string };
-  url?: string; fileId?: string; mimeType?: string; filename?: string;
+  url?: string;
+  fileId?: string;
+  mimeType?: string;
+  filename?: string;
 }
 ```
 
@@ -308,19 +313,19 @@ export interface RemoteMedia {
 
 ### 7.1 三条路线
 
-| 路线 | 做法 | 优点 | 代价 |
-|---|---|---|---|
-| A. 机器人抽取文本 | 下载 → 抽取 → 截断 → 塞进 prompt text 块 | 确定性；模型立即能答；不依赖 agent 的工具链 | 需要解析器（§7.2）；版式/表格丢失；大文件要截断 |
-| B. 只落盘交给 agent | 下载到工作区，prompt 只给路径，让 agent 用 bash/python 自己读 | 零解析依赖；agent 能做更深的处理（分页读、抽表格、二次检索） | 容器里没有 `pdftotext`、没有 PDF 的 Python 库，agent 很可能**翻车或烧掉大量 token/时间**；用户体验不确定 |
-| **C. A + B**（推荐） | 抽取文本进 prompt，**同时**原文落到 `inbox/`，prompt 里带上路径并说明"需要更多可让我继续读" | 基线确定 + 深挖可能；两条路共用同一次下载，边际成本只是一次写盘 | 落盘带来磁盘与保留策略问题（§8） |
+| 路线                 | 做法                                                                                        | 优点                                                            | 代价                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| A. 机器人抽取文本    | 下载 → 抽取 → 截断 → 塞进 prompt text 块                                                    | 确定性；模型立即能答；不依赖 agent 的工具链                     | 需要解析器（§7.2）；版式/表格丢失；大文件要截断                                                          |
+| B. 只落盘交给 agent  | 下载到工作区，prompt 只给路径，让 agent 用 bash/python 自己读                               | 零解析依赖；agent 能做更深的处理（分页读、抽表格、二次检索）    | 容器里没有 `pdftotext`、没有 PDF 的 Python 库，agent 很可能**翻车或烧掉大量 token/时间**；用户体验不确定 |
+| **C. A + B**（推荐） | 抽取文本进 prompt，**同时**原文落到 `inbox/`，prompt 里带上路径并说明"需要更多可让我继续读" | 基线确定 + 深挖可能；两条路共用同一次下载，边际成本只是一次写盘 | 落盘带来磁盘与保留策略问题（§8）                                                                         |
 
 ### 7.2 PDF 抽取的实现选择（⚠ 需要维护者拍板）
 
-| 方案 | 体积/依赖 | 健壮性 | 开发/调试 | 评价 |
-|---|---|---|---|---|
+| 方案                                               | 体积/依赖                             | 健壮性                                                         | 开发/调试                                        | 评价                                                                                 |
+| -------------------------------------------------- | ------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------ |
 | **① `poppler-utils` + `pdftotext` 子进程**（推荐） | 镜像 +约 15MB（apt），**零 npm 依赖** | 高：中文、损坏文件、加密、加密码页都能应付；`-layout` 保留版式 | 需要 `spawn` + 超时/输出上限；macOS 开发机需另装 | 与"仅支持 Docker 部署"的前提相符；本项目运行时依赖只有 3 个（ws/yaml/dsh），刻意保持 |
-| ② `pdfjs-dist`（或 `unpdf`） | npm +10MB 以上，含 legacy build | 中：越界/畸形 PDF 上更容易抛错或吃内存（纯 JS 解码） | 纯 JS，跨平台一致 | 打破"依赖极简"的项目基调，且换来的只是开发机少装一个包 |
-| ③ 只交给 agent | 零 | 低（见路线 B） | — | 作为 ①/② 都不可用时的降级路径保留 |
+| ② `pdfjs-dist`（或 `unpdf`）                       | npm +10MB 以上，含 legacy build       | 中：越界/畸形 PDF 上更容易抛错或吃内存（纯 JS 解码）           | 纯 JS，跨平台一致                                | 打破"依赖极简"的项目基调，且换来的只是开发机少装一个包                               |
+| ③ 只交给 agent                                     | 零                                    | 低（见路线 B）                                                 | —                                                | 作为 ①/② 都不可用时的降级路径保留                                                    |
 
 **推荐 ①**，并配一条硬性降级：**抽取器不可用**（`pdftotext` 不在 PATH、
 spawn 失败、超时）→ 不报错，prompt 里写
@@ -337,12 +342,12 @@ spawn 失败、超时）→ 不报错，prompt 里写
 
 ### 7.3 一期支持的抽取类型（白名单）
 
-| 类型 | 处理 |
-|---|---|
-| `pdf` | `pdftotext`，最多 `maxPdfPages` 页 |
-| `txt / md / log / csv / json / yaml / yml / xml / html / ts / py ...` | 按 UTF-8 直读 + 截断；非 UTF-8（含 NUL 字节）判定为二进制 → 降级为"未解析" |
-| `docx / xlsx / pptx` | 一期**只落盘**，prompt 说明"Office 文档未解析，原文在 inbox/，需要可让我用工具分析" |
-| 其他 | 只落盘（若在下载白名单内）+ 说明 |
+| 类型                                                                  | 处理                                                                                |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `pdf`                                                                 | `pdftotext`，最多 `maxPdfPages` 页                                                  |
+| `txt / md / log / csv / json / yaml / yml / xml / html / ts / py ...` | 按 UTF-8 直读 + 截断；非 UTF-8（含 NUL 字节）判定为二进制 → 降级为"未解析"          |
+| `docx / xlsx / pptx`                                                  | 一期**只落盘**，prompt 说明"Office 文档未解析，原文在 inbox/，需要可让我用工具分析" |
+| 其他                                                                  | 只落盘（若在下载白名单内）+ 说明                                                    |
 
 > 取舍说明：把 docx/xlsx 也接进来需要 zip + XML 解析（Node 无内置 zip 读；
 > 写一个 store-only 解压器本项目已经有先例——`egress/zip.ts`——但那是**写**，
@@ -432,24 +437,24 @@ attachments:
   # 转发消息块（env 前缀 BOT_ATTACHMENT_FORWARD_*）
   forward:
     enabled: true
-    maxNodes: 20          # 单个转发块最多展开几条
-    maxNodeChars: 500     # 单条发言的字符上限（超出截断）
-    maxChars: 4000        # 一个转发块展开后的总字符上限
-    maxDepth: 2           # 嵌套转发层数
-    timeoutMs: 10000      # get_forward_msg 超时
+    maxNodes: 20 # 单个转发块最多展开几条
+    maxNodeChars: 500 # 单条发言的字符上限（超出截断）
+    maxChars: 4000 # 一个转发块展开后的总字符上限
+    maxDepth: 2 # 嵌套转发层数
+    timeoutMs: 10000 # get_forward_msg 超时
 
   # 文件解析（env 前缀 BOT_ATTACHMENT_FILE_*）
   files:
     enabled: true
-    maxFiles: 2               # 单条消息最多解析几个文件
-    maxFileBytes: 16777216    # 单文件字节上限（超出不下载）
-    maxExtractChars: 20000    # 抽取文本字符上限
-    maxPdfPages: 30           # PDF 最多读多少页
-    extractTimeoutMs: 10000   # 解析子进程超时
-    saveToInbox: true         # 是否把原文落到工作区 inbox/
-    inboxDir: inbox           # 工作区内目录名（须为纯目录名）
-    retentionDays: 7          # inbox 文件保留天数
-    maxInboxBytes: 209715200  # 单会话 inbox 总字节上限
+    maxFiles: 2 # 单条消息最多解析几个文件
+    maxFileBytes: 16777216 # 单文件字节上限（超出不下载）
+    maxExtractChars: 20000 # 抽取文本字符上限
+    maxPdfPages: 30 # PDF 最多读多少页
+    extractTimeoutMs: 10000 # 解析子进程超时
+    saveToInbox: true # 是否把原文落到工作区 inbox/
+    inboxDir: inbox # 工作区内目录名（须为纯目录名）
+    retentionDays: 7 # inbox 文件保留天数
+    maxInboxBytes: 209715200 # 单会话 inbox 总字节上限
     extractExtensions: [pdf, txt, md, csv, json, yaml, yml, log, xml, html]
 ```
 
@@ -478,13 +483,13 @@ fileCharsInlined      送入 prompt 的文件正文字符数
 
 ## 11. 实施步骤（每步可独立合并，CI 全离线可跑）
 
-| # | 步骤 | 内容 | 可独立验证 |
-|---|---|---|---|
-| **P0** | 契约与配置（无行为变化） | `MessageForwardPart`、`MessageMediaPart.fileId`、`RemoteMedia.kind/context`、`AttachmentsConfig` 两个子块 + `config-file.ts` spec、`stats` 新计数、`qqbot.yml` 注释。类型与解析器纯函数 + 单测 | `tsc --noEmit` + 单测；行为零变化 |
-| **P1** | 转发块（OneBot 先行） | `normalize.ts` 产出 `forward` 片段（含 atSelf 后置触发）→ `connector.ts` 的 `get_forward_msg` 回查 + LRU 缓存 + 每会话队列 + 失败降级；`core/content.ts` 渲染与上限；`MessageForwardPart` 递归遍历 | 单测：多形状 fixture、超限截断、失败降级、@ 惰性、顺序性 |
-| **P2** | 文件落盘（还不解析） | `fetchMedia` 扩展（kind/context + 三个新动作）、`MessageMediaPart` 带 fileId、`dsh/media.ts` 拆出 `fetchDocument`、inbox 落盘（sanitize/包含性/配额/清理）、prompt 里给路径说明 | 端到端：fake connector 给字节 → 断言 inbox 文件存在且 prompt 含路径 |
-| **P3** | 文本抽取 | `src/dsh/document.ts`：白名单判定 + `pdftotext` 子进程 + 纯文本直读 + 截断；`TurnRunner.buildPromptBlocks` 纳入文件；`Dockerfile` 加 `poppler-utils`；不可用时降级 | 单测：抽取器缺席时的降级路径、非 UTF-8 判定、截断文案；PDF 真机用例留手工 |
-| **P4** | 官方侧收尾 + 文档 | 官方 `msg_elements` 深度/字符上限 + 未核实注释订正 + 文件路径打通（复用既有 fetchMedia）；`DESIGN.md` §11 补节、`RUNBOOK.md` 未实测项、`README.md` 能力表、`qqbot.yml` | 官方 fixture 单测；文档 review |
+| #      | 步骤                     | 内容                                                                                                                                                                                               | 可独立验证                                                                |
+| ------ | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| **P0** | 契约与配置（无行为变化） | `MessageForwardPart`、`MessageMediaPart.fileId`、`RemoteMedia.kind/context`、`AttachmentsConfig` 两个子块 + `config-file.ts` spec、`stats` 新计数、`qqbot.yml` 注释。类型与解析器纯函数 + 单测     | `tsc --noEmit` + 单测；行为零变化                                         |
+| **P1** | 转发块（OneBot 先行）    | `normalize.ts` 产出 `forward` 片段（含 atSelf 后置触发）→ `connector.ts` 的 `get_forward_msg` 回查 + LRU 缓存 + 每会话队列 + 失败降级；`core/content.ts` 渲染与上限；`MessageForwardPart` 递归遍历 | 单测：多形状 fixture、超限截断、失败降级、@ 惰性、顺序性                  |
+| **P2** | 文件落盘（还不解析）     | `fetchMedia` 扩展（kind/context + 三个新动作）、`MessageMediaPart` 带 fileId、`dsh/media.ts` 拆出 `fetchDocument`、inbox 落盘（sanitize/包含性/配额/清理）、prompt 里给路径说明                    | 端到端：fake connector 给字节 → 断言 inbox 文件存在且 prompt 含路径       |
+| **P3** | 文本抽取                 | `src/dsh/document.ts`：白名单判定 + `pdftotext` 子进程 + 纯文本直读 + 截断；`TurnRunner.buildPromptBlocks` 纳入文件；`Dockerfile` 加 `poppler-utils`；不可用时降级                                 | 单测：抽取器缺席时的降级路径、非 UTF-8 判定、截断文案；PDF 真机用例留手工 |
+| **P4** | 官方侧收尾 + 文档        | 官方 `msg_elements` 深度/字符上限 + 未核实注释订正 + 文件路径打通（复用既有 fetchMedia）；`DESIGN.md` §11 补节、`RUNBOOK.md` 未实测项、`README.md` 能力表、`qqbot.yml`                             | 官方 fixture 单测；文档 review                                            |
 
 依赖关系：P0 → P1/P2 可并行 → P3 依赖 P2 → P4 独立。
 
@@ -530,17 +535,17 @@ fileCharsInlined      送入 prompt 的文件正文字符数
 
 ## 13. 风险与待实测清单
 
-| 风险 | 缓解 |
-|---|---|
-| 转发块/大 PDF 撑爆 prompt 与 token | 五重上限（条数/单条字符/总字符/页数/字节）+ 超限显式说明；统计可观测 |
-| 转发内容 / 文件正文构成 prompt injection | 显式边界标记 + "是资料不是指令"说明（沿用 topic-judge 先例）；一期不内联转发块内图片，减少不可信多模态输入 |
-| 连接器期回查带来"被拦消息也付 IO" | OneBot 侧只在 `atSelf` 后触发；转发 id LRU 缓存；硬超时 |
-| `get_forward_msg` 响应形状跨实现漂移 | 容忍多形状的解析器 + fixture 单测；未知形状降级为占位而非抛错 |
-| PDF 解析器缺失（非容器环境） | 三级降级：抽取失败 → 只落盘 + 路径说明 → agent 自取；单测用注入 runner，不依赖真实二进制 |
-| 子进程被恶意 PDF 拖死 | 固定参数数组 spawn、页数上限、超时 kill、stdout 累计上限 |
-| `inbox/` 与 `outbox/` 语义混淆导致文件回声 | 目录名分别配置、各自"纯目录名"校验；P2 的端到端用例显式断言 inbox 文件**不**被 egress 扫描 |
-| 磁盘无界增长 | `retentionDays` 清理 + `maxInboxBytes` 单会话上限 + `maxFileBytes` |
-| 官方转发能力不存在 | 已按"尽力而为 + 实测"定位，不作为承诺；官方侧投入集中在有文档依据的文件 |
+| 风险                                       | 缓解                                                                                                       |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| 转发块/大 PDF 撑爆 prompt 与 token         | 五重上限（条数/单条字符/总字符/页数/字节）+ 超限显式说明；统计可观测                                       |
+| 转发内容 / 文件正文构成 prompt injection   | 显式边界标记 + "是资料不是指令"说明（沿用 topic-judge 先例）；一期不内联转发块内图片，减少不可信多模态输入 |
+| 连接器期回查带来"被拦消息也付 IO"          | OneBot 侧只在 `atSelf` 后触发；转发 id LRU 缓存；硬超时                                                    |
+| `get_forward_msg` 响应形状跨实现漂移       | 容忍多形状的解析器 + fixture 单测；未知形状降级为占位而非抛错                                              |
+| PDF 解析器缺失（非容器环境）               | 三级降级：抽取失败 → 只落盘 + 路径说明 → agent 自取；单测用注入 runner，不依赖真实二进制                   |
+| 子进程被恶意 PDF 拖死                      | 固定参数数组 spawn、页数上限、超时 kill、stdout 累计上限                                                   |
+| `inbox/` 与 `outbox/` 语义混淆导致文件回声 | 目录名分别配置、各自"纯目录名"校验；P2 的端到端用例显式断言 inbox 文件**不**被 egress 扫描                 |
+| 磁盘无界增长                               | `retentionDays` 清理 + `maxInboxBytes` 单会话上限 + `maxFileBytes`                                         |
+| 官方转发能力不存在                         | 已按"尽力而为 + 实测"定位，不作为承诺；官方侧投入集中在有文档依据的文件                                    |
 
 **待实测（本环境外网/真机不可达，实现前或实现后必须核实）**：
 

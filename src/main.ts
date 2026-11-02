@@ -48,10 +48,7 @@ import { ProactiveSpeaker } from './pipeline/proactive/deliver/speaker.js';
 import { loadInterestPool } from './pipeline/proactive/interests/pool.js';
 import { createChatClient } from './pipeline/proactive/judge/chat-client.js';
 import { createDefaultProactiveJudge } from './pipeline/proactive/judge/client.js';
-import {
-  DEFAULT_WATCHER_CONFIG,
-  ProactiveWatcher,
-} from './pipeline/proactive/scene/watcher.js';
+import { DEFAULT_WATCHER_CONFIG, ProactiveWatcher } from './pipeline/proactive/scene/watcher.js';
 import type { ProactiveHealthSnapshot } from './health.js';
 import { ConversationStore } from './store/conversations.js';
 import { ObservationWindowStore } from './store/window.js';
@@ -75,7 +72,7 @@ function buildConnector(
   name: string,
   config: Config,
   logger: ReturnType<typeof createLogger>,
-  stats: PipelineStats,
+  stats: PipelineStats
 ): BotConnector {
   if (name === QQ_OFFICIAL_PLATFORM) {
     return new QqOfficialConnector({
@@ -282,10 +279,27 @@ async function main(): Promise<void> {
   });
 
   const taskSystem = new TaskSystem({
-    config, logger: logger.child({ component: 'tasks' }), paths, connectors, conversations, windows, stats,
+    config,
+    logger: logger.child({ component: 'tasks' }),
+    paths,
+    connectors,
+    conversations,
+    windows,
+    stats,
     ...(modelApiPatch ? { modelPatches: [modelApiPatch] } : {}),
     extractDocument: createDocumentExtractor({ logger: logger.child({ component: 'document' }) }),
-    ...(config.topic.enabled ? { topicJudge: createTopicJudge({ apiBase: config.topic.apiBase, apiKey: config.topic.apiKey, model: config.topic.model, timeoutMs: config.topic.timeoutMs, perTurnMaxChars: 500, logger: logger.child({ component: 'topic-judge' }) }) } : {}),
+    ...(config.topic.enabled
+      ? {
+          topicJudge: createTopicJudge({
+            apiBase: config.topic.apiBase,
+            apiKey: config.topic.apiKey,
+            model: config.topic.model,
+            timeoutMs: config.topic.timeoutMs,
+            perTurnMaxChars: 500,
+            logger: logger.child({ component: 'topic-judge' }),
+          }),
+        }
+      : {}),
   });
 
   // --- 主动介入层（旁听 → 判定 → 主动发言）--------------------------------
@@ -323,7 +337,9 @@ async function main(): Promise<void> {
     const apiKey = config.topic.apiKey;
     if (apiKey === '') {
       // 明确警告：否则表现为"装配成功但从不说话"，是最难查的一种
-      logger.warn(`主动介入缺少模型凭证（${config.topic.apiKeyEnv}）：判定不会执行，只会收集旁听（只听不说）`);
+      logger.warn(
+        `主动介入缺少模型凭证（${config.topic.apiKeyEnv}）：判定不会执行，只会收集旁听（只听不说）`
+      );
     }
     const judge =
       apiKey === ''
@@ -369,7 +385,7 @@ async function main(): Promise<void> {
       speaker,
       // Task 提交：保存判定的 directive、依据、引用与旧预算范围；真实文案由两个 lane 生成。
       // 只在真实发言时被调用（dryRun 不碰它，见 watcher 的 deliver）。
-      submitTask: request => taskSystem.proactive.submit(request),
+      submitTask: (request) => taskSystem.proactive.submit(request),
       // 观察窗口：判定层与被动回复路径读同一份
       windows,
       ...(judge === undefined ? {} : { judge }),
@@ -530,12 +546,19 @@ async function main(): Promise<void> {
     admins: config.admins,
     stats,
     stages,
-    terminal: async ctx => {
-      try { const handle = await taskSystem.actor.submit(ctx); void handle.done.then(task => { if (task.status === 'failed') stats.failed++; else if (task.status === 'completed') stats.completed++; }); }
-      catch (error) { stats.rejectedBusy++; await ctx.responder.error(error instanceof Error ? error.message : '任务准入失败。'); }
+    terminal: async (ctx) => {
+      try {
+        const handle = await taskSystem.actor.submit(ctx);
+        void handle.done.then((task) => {
+          if (task.status === 'failed') stats.failed++;
+          else if (task.status === 'completed') stats.completed++;
+        });
+      } catch (error) {
+        stats.rejectedBusy++;
+        await ctx.responder.error(error instanceof Error ? error.message : '任务准入失败。');
+      }
     },
-    createResponder: message =>
-      new Responder({ message, queue: taskSystem.queue }),
+    createResponder: (message) => new Responder({ message, queue: taskSystem.queue }),
     // 旁听消息的去向：唯一入口是 watcher（未启用时留 undefined →
     // orchestrator 只计 skipped 计数）
     ...(proactive === undefined ? {} : { observe: (message) => proactive?.observe(message) }),
@@ -551,14 +574,23 @@ async function main(): Promise<void> {
   // 这里只留一层 .catch 作为组装级保险（Orchestrator 自身永不抛错）。
   for (const connector of connectors.values()) {
     connector.on((event) => {
-      if (event.kind === 'group-at-message' || event.kind === 'c2c-message' || event.kind === 'group-message') taskSystem.queue.observe(event);
+      if (
+        event.kind === 'group-at-message' ||
+        event.kind === 'c2c-message' ||
+        event.kind === 'group-message'
+      )
+        taskSystem.queue.observe(event);
       if (proactive === undefined) {
         if (event.kind === 'group-message') windows.observe(event);
-        else if (event.kind === 'group-at-message' || event.kind === 'c2c-message') windows.observeAddressed(event);
+        else if (event.kind === 'group-at-message' || event.kind === 'c2c-message')
+          windows.observeAddressed(event);
       }
       // 被 @ 的消息也记进旁听缓冲：否则判定看不到"bot 回答了谁、回答了什么"，
       // 场景 1（续聊追问）没有判断依据。只记不评（评估仍由旁听路径触发）。
-      if (proactive !== undefined && (event.kind === 'group-at-message' || event.kind === 'c2c-message')) {
+      if (
+        proactive !== undefined &&
+        (event.kind === 'group-at-message' || event.kind === 'c2c-message')
+      ) {
         proactive.observeAddressed(event);
       }
       void orchestrator.handleEvent(event).catch((error: unknown) => {
@@ -578,12 +610,16 @@ async function main(): Promise<void> {
       buildHealthSnapshot({
         startedAt,
         connectors: Object.fromEntries(
-          [...connectors.entries()].map(([name, connector]) => [name, connector.health()]),
+          [...connectors.entries()].map(([name, connector]) => [name, connector.health()])
         ),
         runtime: {
           size: taskSystem.pools.fast.size + taskSystem.pools.slow.size,
-          activeConversationKeys: [...taskSystem.pools.fast.activeConversationKeys(), ...taskSystem.pools.slow.activeConversationKeys()],
-          activeSubagents: taskSystem.pools.fast.activeSubagents() + taskSystem.pools.slow.activeSubagents(),
+          activeConversationKeys: [
+            ...taskSystem.pools.fast.activeConversationKeys(),
+            ...taskSystem.pools.slow.activeConversationKeys(),
+          ],
+          activeSubagents:
+            taskSystem.pools.fast.activeSubagents() + taskSystem.pools.slow.activeSubagents(),
         },
         tasks: taskSystem.actor.snapshot(),
         messages: taskSystem.queue.snapshot(),

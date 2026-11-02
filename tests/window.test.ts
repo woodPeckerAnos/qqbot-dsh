@@ -28,7 +28,7 @@ function msg(
   msgId: string,
   content: string,
   ts = T0,
-  options: { senderId?: string; username?: string; key?: string; parts?: MessagePart[] } = {},
+  options: { senderId?: string; username?: string; key?: string; parts?: MessagePart[] } = {}
 ): NormalizedMessage {
   const key = options.key ?? GROUP;
   return {
@@ -46,7 +46,9 @@ function msg(
   };
 }
 
-function store(options: { allowlist?: readonly string[]; maxMessages?: number; maxAgeMs?: number } = {}) {
+function store(
+  options: { allowlist?: readonly string[]; maxMessages?: number; maxAgeMs?: number } = {}
+) {
   return new ObservationWindowStore({
     allowlist: options.allowlist ?? [GROUP],
     ...(options.maxMessages === undefined ? {} : { maxMessages: options.maxMessages }),
@@ -191,7 +193,7 @@ describe('读取窗口', () => {
     ]);
     // 三个条件同时生效：先按时间/条数裁，再排除
     expect(
-      windows.read(GROUP, { sinceTs: T0 + 1, limit: 3, excludeMsgId: 'm4' }).map((e) => e.msgId),
+      windows.read(GROUP, { sinceTs: T0 + 1, limit: 3, excludeMsgId: 'm4' }).map((e) => e.msgId)
     ).toEqual(['m1', 'm2', 'm3']);
   });
 
@@ -227,10 +229,42 @@ describe('读取窗口', () => {
 
 describe('渲染（喂被动回复的上下文块）', () => {
   const entries = [
-    { msgId: 'm1', eventId: 'e1', senderId: 'u1', senderName: '小明', text: '这个报错怎么解', ts: T0, addressed: false },
-    { msgId: 'm2', eventId: 'e2', senderId: 'u2', senderName: '小红', text: '我也遇到了', ts: T0 + 1_000, addressed: false },
-    { msgId: 'm3', eventId: 'e3', senderId: 'bot', text: '试试加个索引', ts: T0 + 2_000, addressed: false, isBot: true },
-    { msgId: 'm4', eventId: 'e4', senderId: 'u1', senderName: '小明', text: '@bot 还是不行', ts: T0 + 3_000, addressed: true },
+    {
+      msgId: 'm1',
+      eventId: 'e1',
+      senderId: 'u1',
+      senderName: '小明',
+      text: '这个报错怎么解',
+      ts: T0,
+      addressed: false,
+    },
+    {
+      msgId: 'm2',
+      eventId: 'e2',
+      senderId: 'u2',
+      senderName: '小红',
+      text: '我也遇到了',
+      ts: T0 + 1_000,
+      addressed: false,
+    },
+    {
+      msgId: 'm3',
+      eventId: 'e3',
+      senderId: 'bot',
+      text: '试试加个索引',
+      ts: T0 + 2_000,
+      addressed: false,
+      isBot: true,
+    },
+    {
+      msgId: 'm4',
+      eventId: 'e4',
+      senderId: 'u1',
+      senderName: '小明',
+      text: '@bot 还是不行',
+      ts: T0 + 3_000,
+      addressed: true,
+    },
   ];
 
   it('验收16：空窗口渲染成空串（调用方据此回退到"只有当前这条"）', () => {
@@ -239,7 +273,7 @@ describe('渲染（喂被动回复的上下文块）', () => {
     expect(
       renderWindowBlock([
         { msgId: 'm', eventId: 'e', senderId: 'u1', text: '   ', ts: T0, addressed: false },
-      ]),
+      ])
     ).toBe('');
   });
 
@@ -298,7 +332,7 @@ describe('条目里的媒体引用（旁听消息也留引用，写入时不取�
     windows.observe(
       msg('m1', '看这个\n[图片: a.png]', T0, {
         parts: [{ type: 'text', text: '看这个' }, img('a.png')],
-      }),
+      })
     );
     windows.observe(msg('m2', '纯文本', T0 + 1));
 
@@ -317,7 +351,7 @@ describe('条目里的媒体引用（旁听消息也留引用，写入时不取�
     windows.observeAddressed(
       msg('m1', '看看\n[图片: q.png]', T0, {
         parts: [{ type: 'text', text: '看看' }, img('q.png')],
-      }),
+      })
     );
     expect(windows.read(GROUP)[0]!.media?.images[0]).toMatchObject({ filename: 'q.png' });
   });
@@ -341,7 +375,7 @@ describe('条目里的媒体引用（旁听消息也留引用，写入时不取�
             ],
           },
         ],
-      }),
+      })
     );
     const entry = windows.read(GROUP)[0]!;
     expect(entry.media?.images.map((part) => part.filename)).toEqual(['in-quote.png']);
@@ -356,7 +390,7 @@ describe('条目里的媒体引用（旁听消息也留引用，写入时不取�
           { type: 'text', text: '看看这个' },
           { type: 'forward', parts: [], refId: 'fwd-1' },
         ],
-      }),
+      })
     );
     const entry = windows.read(GROUP)[0]!;
     expect(entry.recordIds).toEqual(['fwd-1']);
@@ -366,8 +400,10 @@ describe('条目里的媒体引用（旁听消息也留引用，写入时不取�
     // 展开过的转发（连接器补全后的形态）没有 refId，也就不会被当成待展开
     windows.observe(
       msg('m2', '[转发消息 共 1 条]', T0 + 1, {
-        parts: [{ type: 'forward', parts: [{ type: 'text', text: '1. 张三: 在吗' }], nodeCount: 1 }],
-      }),
+        parts: [
+          { type: 'forward', parts: [{ type: 'text', text: '1. 张三: 在吗' }], nodeCount: 1 },
+        ],
+      })
     );
     expect(windows.read(GROUP)[1]!.recordIds).toBeUndefined();
   });
@@ -389,8 +425,15 @@ describe('条目里的媒体引用（旁听消息也留引用，写入时不取�
         record('m1', 'fwd-1', T0),
         record('m2', 'fwd-2', T0 + 1_000, '小明'),
         // 没有记录的消息照常跳过
-        { msgId: 'm3', eventId: 'e-m3', senderId: 'u1', text: '后来聊了别的', ts: T0 + 2_000, addressed: false },
-      ]),
+        {
+          msgId: 'm3',
+          eventId: 'e-m3',
+          senderId: 'u1',
+          text: '后来聊了别的',
+          ts: T0 + 2_000,
+          addressed: false,
+        },
+      ])
     ).toEqual({ refId: 'fwd-2', msgId: 'm2', sender: '小明' });
   });
 
@@ -399,7 +442,7 @@ describe('条目里的媒体引用（旁听消息也留引用，写入时不取�
     windows.observe(
       msg('m1', '[视频]', T0, {
         parts: [{ type: 'media', mediaKind: 'video', url: 'https://cdn.example.com/v.mp4' }],
-      }),
+      })
     );
     expect(windows.read(GROUP)[0]!.media).toBeUndefined();
   });
@@ -519,7 +562,7 @@ describe('collectWindowMedia（挑哪几张送给模型）', () => {
     // 没有显示名时退到 senderId，说明文本仍然指认得清
     const anonymous = collectWindowMedia(
       [{ ...imageEntry('m3', ['x.png'], T0), senderName: undefined }],
-      { maxImages: 1 },
+      { maxImages: 1 }
     );
     expect(anonymous.images[0]!.sender).toBe('u1');
   });

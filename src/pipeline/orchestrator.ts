@@ -39,7 +39,7 @@ export interface OrchestratorDeps {
     message: NormalizedMessage,
     connector: BotConnector,
     policy: ReplyPolicy,
-    logger: Logger,
+    logger: Logger
   ) => Responder;
   /**
    * 主动介入层的入口（旁听消息的唯一去向）。

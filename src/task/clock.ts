@@ -7,6 +7,10 @@ export interface TaskClock {
 /** 定时器不独占进程存活；关闭时仍由所属模块主动清理。 */
 export const SYSTEM_CLOCK: TaskClock = {
   now: Date.now,
-  setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref?.(); return timer; },
+  setTimeout: (fn, ms) => {
+    const timer = setTimeout(fn, ms);
+    timer.unref?.();
+    return timer;
+  },
   clearTimeout,
 };

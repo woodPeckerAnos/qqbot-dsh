@@ -2,7 +2,11 @@
  * Task 的公共值类型。执行快照由 TaskLifeCycleManager 写入，投递结果由
  * MessageQueue 写入；两个状态域通过 ReplyCandidate / DeliveryResult 连接。
  */
-import type { NormalizedMessage, OriginalMessageReference, OutgoingAttachment } from '../core/connector.js';
+import type {
+  NormalizedMessage,
+  OriginalMessageReference,
+  OutgoingAttachment,
+} from '../core/connector.js';
 import type { ObservationEntry } from '../store/window.js';
 
 export type Lane = 'fast' | 'slow';
@@ -64,7 +68,10 @@ export interface TaskSnapshot {
   lanes: Record<Lane, LaneSnapshot>;
 }
 /** done 在两个 lane 都终结后完成，不等待消息送达。 */
-export interface TaskHandle { taskId: string; done: Promise<Readonly<TaskSnapshot>> }
+export interface TaskHandle {
+  taskId: string;
+  done: Promise<Readonly<TaskSnapshot>>;
+}
 /** 可交付产物；一旦入队，后续 Task 取消或终结均不撤回它。 */
 export interface ReplyCandidate {
   taskId: string;

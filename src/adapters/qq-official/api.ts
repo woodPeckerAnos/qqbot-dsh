@@ -45,7 +45,7 @@ export class QqApiError_ extends Error {
     message: string,
     readonly code: number | undefined,
     readonly httpStatus: number | undefined,
-    readonly body: unknown,
+    readonly body: unknown
   ) {
     super(message);
     this.name = 'QqApiError';
@@ -90,14 +90,14 @@ export class QqApi {
     method: string,
     path: string,
     body?: unknown,
-    options: { retryOn401?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
+    options: { retryOn401?: boolean; timeoutMs?: number; signal?: AbortSignal } = {}
   ): Promise<T> {
     const token = await this.options.tokenManager.get();
     const url = `${this.options.apiBase.replace(/\/+$/, '')}${path}`;
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
-      options.timeoutMs ?? this.options.timeoutMs ?? 15_000,
+      options.timeoutMs ?? this.options.timeoutMs ?? 15_000
     );
     timeout.unref?.();
 
@@ -111,7 +111,9 @@ export class QqApi {
           'Content-Type': 'application/json; charset=utf-8',
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
+        signal: options.signal
+          ? AbortSignal.any([controller.signal, options.signal])
+          : controller.signal,
       });
       text = await response.text();
     } catch (error) {
@@ -119,7 +121,7 @@ export class QqApi {
         `请求 ${method} ${path} 失败：${error instanceof Error ? error.message : String(error)}`,
         undefined,
         undefined,
-        undefined,
+        undefined
       );
     } finally {
       clearTimeout(timeout);
@@ -151,7 +153,7 @@ export class QqApi {
         describeApiError(code, errorBody.message),
         code,
         response.status,
-        parsed,
+        parsed
       );
     }
 
@@ -175,13 +177,13 @@ export class QqApi {
   async uploadGroupFile(
     groupOpenid: string,
     file: UploadFileRequest,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<UploadFileResponse> {
     return this.request<UploadFileResponse>(
       'POST',
       `/v2/groups/${encodeURIComponent(groupOpenid)}/files`,
       file,
-      { timeoutMs: 60_000, retryOn401: false, signal },
+      { timeoutMs: 60_000, retryOn401: false, signal }
     );
   }
 
@@ -189,13 +191,13 @@ export class QqApi {
   async uploadUserFile(
     userOpenId: string,
     file: UploadFileRequest,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<UploadFileResponse> {
     return this.request<UploadFileResponse>(
       'POST',
       `/v2/users/${encodeURIComponent(userOpenId)}/files`,
       file,
-      { timeoutMs: 60_000, retryOn401: false, signal },
+      { timeoutMs: 60_000, retryOn401: false, signal }
     );
   }
 
@@ -208,13 +210,13 @@ export class QqApi {
   async sendGroupMessage(
     groupOpenid: string,
     message: SendGroupMessageRequest,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<SendMessageResponse> {
     return this.request<SendMessageResponse>(
       'POST',
       `/v2/groups/${encodeURIComponent(groupOpenid)}/messages`,
       message,
-      { retryOn401: false, signal },
+      { retryOn401: false, signal }
     );
   }
 
@@ -233,13 +235,13 @@ export class QqApi {
   async sendUserMessage(
     userOpenId: string,
     message: SendUserMessageRequest,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<SendMessageResponse> {
     return this.request<SendMessageResponse>(
       'POST',
       `/v2/users/${encodeURIComponent(userOpenId)}/messages`,
       message,
-      { retryOn401: false, signal },
+      { retryOn401: false, signal }
     );
   }
 
@@ -257,12 +259,12 @@ export class QqApi {
    */
   async sendUserStreamMessage(
     userOpenId: string,
-    message: SendUserStreamMessageRequest,
+    message: SendUserStreamMessageRequest
   ): Promise<SendMessageResponse> {
     return this.request<SendMessageResponse>(
       'POST',
       `/v2/users/${encodeURIComponent(userOpenId)}/stream_messages`,
-      message,
+      message
     );
   }
 }

@@ -125,8 +125,9 @@ const CRITERIA_TEXT: Readonly<Record<SceneId, string>> = {
  * 而不是靠人工维护的一致性（新增场景若忘了加 criteria，这里会少一项，
  * 契约测试立刻失败）。
  */
-export const SCENE_CRITERIA: ReadonlyArray<{ scene: SceneId; criteria: string }> =
-  SCENE_ORDER.map((scene) => ({ scene, criteria: CRITERIA_TEXT[scene] }));
+export const SCENE_CRITERIA: ReadonlyArray<{ scene: SceneId; criteria: string }> = SCENE_ORDER.map(
+  (scene) => ({ scene, criteria: CRITERIA_TEXT[scene] })
+);
 
 function criteriaFor(scene: SceneId): string {
   return CRITERIA_TEXT[scene];
@@ -166,25 +167,28 @@ function renderFacts(evidence: SceneEvidence, candidates: readonly SceneCandidat
     for (const question of evidence.pendingQuestions) {
       lines.push(
         `  id=${WAIT_TARGET_PREFIX}${question.id}｜${question.askerLabel}：${question.text}` +
-          `（已静默 ${question.silentSeconds} 秒，探针 ${question.probes} 次）`,
+          `（已静默 ${question.silentSeconds} 秒，探针 ${question.probes} 次）`
       );
     }
   }
   if (evidence.session !== undefined) {
-    const openedSeconds = Math.max(0, Math.round((evidence.now - evidence.session.openedAt) / 1000));
+    const openedSeconds = Math.max(
+      0,
+      Math.round((evidence.now - evidence.session.openedAt) / 1000)
+    );
     const spoke =
       evidence.session.lastSpokeAt === undefined
         ? '还没在本会话里发过言'
         : `上次发言 ${Math.max(0, Math.round((evidence.now - evidence.session.lastSpokeAt) / 1000))} 秒前`;
     lines.push(
       `本话题会话（session）：已开启 ${openedSeconds} 秒，${spoke}，` +
-        `本话题预算还剩 ${evidence.session.budgetLeft} 句`,
+        `本话题预算还剩 ${evidence.session.budgetLeft} 句`
     );
     if (evidence.session.budgetLeft <= 0) {
       lines.push(
         '⚠️ 本话题的预算已用尽：代码会挡住你在**这个话题**里继续发言。' +
           '若你判断话题已经换了，给 session="new-topic"（会重新开始一个会话）；' +
-          '若还是同一个话题，给 "keep-open" 即可（代码不会放行）。',
+          '若还是同一个话题，给 "keep-open" 即可（代码不会放行）。'
       );
     }
   } else {
@@ -193,7 +197,7 @@ function renderFacts(evidence: SceneEvidence, candidates: readonly SceneCandidat
   if (evidence.topic !== undefined) {
     lines.push(
       `当前话题：${evidence.topic.id}（参与 ${evidence.topic.humanParticipants} 人，` +
-        `bot 在该话题发过 ${evidence.topic.botSpeaks} 次）`,
+        `bot 在该话题发过 ${evidence.topic.botSpeaks} 次）`
     );
   }
   if (evidence.lastBotSpeakAt !== undefined) {
@@ -210,7 +214,7 @@ function renderFacts(evidence: SceneEvidence, candidates: readonly SceneCandidat
     lines.push(
       `本次是**让路后的重查**：你上一轮说"有人在答"，现在已过 ` +
         `${Math.round(evidence.waitWakeup.yieldedForMs / 1000)} 秒，对象是 ` +
-        `${WAIT_TARGET_PREFIX}${evidence.waitWakeup.targetId}。`,
+        `${WAIT_TARGET_PREFIX}${evidence.waitWakeup.targetId}。`
     );
   }
   if (candidates.length > 0) {
@@ -229,7 +233,7 @@ function renderFacts(evidence: SceneEvidence, candidates: readonly SceneCandidat
  */
 export function renderJudgeCriteria(candidates: readonly SceneCandidate[]): string {
   const ordered = [...candidates].sort(
-    (left, right) => sceneOrder(left.scene) - sceneOrder(right.scene),
+    (left, right) => sceneOrder(left.scene) - sceneOrder(right.scene)
   );
   const lines: string[] = [
     '你是 QQ 群里一个**任务型助手**（能查资料、跑代码、执行多步任务）的发言守门人。',
@@ -307,7 +311,7 @@ function optionalString(record: Record<string, unknown>, key: string): string | 
  */
 export function parseSceneVerdicts(
   raw: string,
-  candidates: readonly SceneCandidate[],
+  candidates: readonly SceneCandidate[]
 ): readonly SceneVerdict[] | undefined {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(raw);
   const text = (fenced?.[1] ?? raw).trim();
@@ -347,9 +351,7 @@ export function parseSceneVerdicts(
       scene: scene as SceneId,
       satisfied,
       confidence:
-        typeof confidence === 'number' && Number.isFinite(confidence)
-          ? clamp01(confidence)
-          : 0,
+        typeof confidence === 'number' && Number.isFinite(confidence) ? clamp01(confidence) : 0,
       reason: optionalString(record, 'reason') ?? '(无理由)',
       ...(optionalString(record, 'evidence') === undefined
         ? {}

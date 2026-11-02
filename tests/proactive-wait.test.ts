@@ -26,7 +26,10 @@ import type {
 import { createNullLogger } from '../src/logger.js';
 import type { SceneVerdict, WaitReason } from '../src/pipeline/proactive/contract.js';
 import { ProactiveSpeaker } from '../src/pipeline/proactive/deliver/speaker.js';
-import type { ProactiveJudge, ProactiveJudgeInput } from '../src/pipeline/proactive/judge/client.js';
+import type {
+  ProactiveJudge,
+  ProactiveJudgeInput,
+} from '../src/pipeline/proactive/judge/client.js';
 import {
   DEFAULT_WATCHER_CONFIG,
   ProactiveWatcher,
@@ -273,7 +276,7 @@ async function settle(): Promise<void> {
  */
 async function armYieldingTicket(
   h: Harness,
-  options: { waitYieldMs?: number; maxWaitPerItem?: number } = {},
+  options: { waitYieldMs?: number; maxWaitPerItem?: number } = {}
 ): Promise<string> {
   const id = h.armQuestion();
   await h.settle();
@@ -741,7 +744,7 @@ describe('每会话只有一个唤醒点', () => {
     const yieldTimers = timers.filter((timer) => !timer.cancelled && timer.delayMs === 45_000);
     expect(
       yieldTimers.length,
-      `唤醒点不该每张票据各排一个（票据 ${created} 张，唤路线定时器 ${yieldTimers.length} 个）`,
+      `唤醒点不该每张票据各排一个（票据 ${created} 张，唤路线定时器 ${yieldTimers.length} 个）`
     ).toBe(1);
     void scheduled;
     void verdictsFor;

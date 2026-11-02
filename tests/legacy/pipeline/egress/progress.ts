@@ -48,7 +48,7 @@ export class ReplyQuotaExhaustedError extends Error {
   constructor(
     readonly kind: ReplyKind,
     readonly used: number,
-    readonly total: number,
+    readonly total: number
   ) {
     super(`回复配额已用尽（${used}/${total}），无法再发送 ${kind} 消息`);
     this.name = 'ReplyQuotaExhaustedError';

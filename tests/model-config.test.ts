@@ -88,7 +88,7 @@ providers:
         reasoningEfforts: { off: null, high: high }
     retryPolicy: { mode: always }
 `),
-      'qqbot.yml: models',
+      'qqbot.yml: models'
     );
 
     expect(config.deepseek).toMatchObject({
@@ -97,7 +97,10 @@ providers:
       reasoningEffort: 'high',
       retryPolicy: { mode: 'normal', maxRetries: 3, backoff: { jitterRatio: 0.2 } },
     });
-    expect(config.deepseek?.models?.[0]).toMatchObject({ id: 'deepseek-flash', imagePixelBudget: 640000 });
+    expect(config.deepseek?.models?.[0]).toMatchObject({
+      id: 'deepseek-flash',
+      imagePixelBudget: 640000,
+    });
 
     const acme = config.providers['acme-gateway'];
     expect(acme).toMatchObject({
@@ -121,101 +124,151 @@ providers:
   });
 
   it('拒绝未知键（每一层都拒，拼错不能静默生效）', () => {
-    expect(() => parseModelApiSection(parseYaml('deeepseek: {}'), 'models')).toThrow(/不是可识别的配置项/);
-    expect(() => parseModelApiSection(parseYaml('deepseek:\n  baseUrl: x'), 'models')).toThrow(/models\.deepseek\.baseUrl/);
+    expect(() => parseModelApiSection(parseYaml('deeepseek: {}'), 'models')).toThrow(
+      /不是可识别的配置项/
+    );
+    expect(() => parseModelApiSection(parseYaml('deepseek:\n  baseUrl: x'), 'models')).toThrow(
+      /models\.deepseek\.baseUrl/
+    );
     expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    baseUrl: x'), 'models'),
+      parseModelApiSection(parseYaml('providers:\n  openai:\n    baseUrl: x'), 'models')
     ).toThrow(/providers\.openai\.baseUrl/);
     expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    compat:\n      thinkingformaat: deepseek'), 'models'),
+      parseModelApiSection(
+        parseYaml('providers:\n  openai:\n    compat:\n      thinkingformaat: deepseek'),
+        'models'
+      )
     ).toThrow(/compat\.thinkingformaat/);
     expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    models:\n      - id: m\n        contextwindow: 1'), 'models'),
+      parseModelApiSection(
+        parseYaml('providers:\n  openai:\n    models:\n      - id: m\n        contextwindow: 1'),
+        'models'
+      )
     ).toThrow(/models\[0\]\.contextwindow/);
   });
 
   it('拒绝内联密钥写法与带密钥语义的 header（密钥只允许 apiKeyEnv 引用）', () => {
     expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    apiKey: sk-live'), 'models'),
+      parseModelApiSection(parseYaml('providers:\n  openai:\n    apiKey: sk-live'), 'models')
     ).toThrow(/内联密钥/);
+    expect(() => parseModelApiSection(parseYaml('deepseek:\n  authToken: tok'), 'models')).toThrow(
+      /内联密钥/
+    );
     expect(() =>
-      parseModelApiSection(parseYaml('deepseek:\n  authToken: tok'), 'models'),
-    ).toThrow(/内联密钥/);
-    expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    headers: { Authorization: "Bearer x" }'), 'models'),
+      parseModelApiSection(
+        parseYaml('providers:\n  openai:\n    headers: { Authorization: "Bearer x" }'),
+        'models'
+      )
     ).toThrow(/密钥语义/);
     expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    headers: { x-api-key: x }'), 'models'),
+      parseModelApiSection(
+        parseYaml('providers:\n  openai:\n    headers: { x-api-key: x }'),
+        'models'
+      )
     ).toThrow(/密钥语义/);
   });
 
   it('apiKeyEnv 必须是合法的环境变量名', () => {
     expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    apiKeyEnv: "not a name!"'), 'models'),
+      parseModelApiSection(
+        parseYaml('providers:\n  openai:\n    apiKeyEnv: "not a name!"'),
+        'models'
+      )
     ).toThrow(/环境变量名/);
   });
 
   it('路由名必须是小写连字符标识符，且不能撞 DSH 原生路由', () => {
-    expect(() => parseModelApiSection(parseYaml('providers:\n  OpenAI: {}'), 'models')).toThrow(/路由名/);
-    expect(() => parseModelApiSection(parseYaml('providers:\n  deepseek-official: {}'), 'models')).toThrow(/占用/);
-    expect(() => parseModelApiSection(parseYaml('providers:\n  deepseek-account: {}'), 'models')).toThrow(/占用/);
+    expect(() => parseModelApiSection(parseYaml('providers:\n  OpenAI: {}'), 'models')).toThrow(
+      /路由名/
+    );
+    expect(() =>
+      parseModelApiSection(parseYaml('providers:\n  deepseek-official: {}'), 'models')
+    ).toThrow(/占用/);
+    expect(() =>
+      parseModelApiSection(parseYaml('providers:\n  deepseek-account: {}'), 'models')
+    ).toThrow(/占用/);
   });
 
   it('models 与 modelOverrides 互斥（DSH 同款规则，提前到解析期）', () => {
     expect(() =>
       parseModelApiSection(
         parseYaml('providers:\n  openai:\n    models: [{ id: a }]\n    modelOverrides: { b: {} }'),
-        'models',
-      ),
+        'models'
+      )
     ).toThrow(/不能同时配 models 与 modelOverrides/);
   });
 
   it('模型条目必须有 id；modelOverrides 条目不许再写 id', () => {
     expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    models: [{ name: 无名 }]'), 'models'),
+      parseModelApiSection(
+        parseYaml('providers:\n  openai:\n    models: [{ name: 无名 }]'),
+        'models'
+      )
     ).toThrow(/id 是必填项/);
     expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    modelOverrides: { gpt-5: { id: gpt-5 } }'), 'models'),
+      parseModelApiSection(
+        parseYaml('providers:\n  openai:\n    modelOverrides: { gpt-5: { id: gpt-5 } }'),
+        'models'
+      )
     ).toThrow(/不该出现在 modelOverrides/);
   });
 
   it('reasoningEfforts：false 合法；非 off 档必须给出线上拼写', () => {
     const parsed = parseModelApiSection(
-      parseYaml('providers:\n  openai:\n    models:\n      - id: m\n        reasoningEfforts: false'),
-      'models',
+      parseYaml(
+        'providers:\n  openai:\n    models:\n      - id: m\n        reasoningEfforts: false'
+      ),
+      'models'
     );
     expect(parsed.providers['openai']?.models?.[0]?.reasoningEfforts).toBe(false);
 
     expect(() =>
       parseModelApiSection(
-        parseYaml('providers:\n  openai:\n    models:\n      - id: m\n        reasoningEfforts: { high: null }'),
-        'models',
-      ),
+        parseYaml(
+          'providers:\n  openai:\n    models:\n      - id: m\n        reasoningEfforts: { high: null }'
+        ),
+        'models'
+      )
     ).toThrow(/必须给出线上拼写/);
     expect(() =>
       parseModelApiSection(
-        parseYaml('providers:\n  openai:\n    models:\n      - id: m\n        reasoningEfforts: { turbo: x }'),
-        'models',
-      ),
+        parseYaml(
+          'providers:\n  openai:\n    models:\n      - id: m\n        reasoningEfforts: { turbo: x }'
+        ),
+        'models'
+      )
     ).toThrow(/不是可识别的思考档位/);
   });
 
   it('retryPolicy：always 不接受 maxRetries；退避参数越界要拒', () => {
     expect(() =>
-      parseModelApiSection(parseYaml('deepseek:\n  retryPolicy: { mode: always, maxRetries: 3 }'), 'models'),
+      parseModelApiSection(
+        parseYaml('deepseek:\n  retryPolicy: { mode: always, maxRetries: 3 }'),
+        'models'
+      )
     ).toThrow(/mode: always/);
     expect(() =>
-      parseModelApiSection(parseYaml('deepseek:\n  retryPolicy: { mode: normal, backoff: { jitterRatio: 2 } }'), 'models'),
+      parseModelApiSection(
+        parseYaml('deepseek:\n  retryPolicy: { mode: normal, backoff: { jitterRatio: 2 } }'),
+        'models'
+      )
     ).toThrow(/jitterRatio/);
-    expect(() => parseModelApiSection(parseYaml('deepseek:\n  retryPolicy: {}'), 'models')).toThrow(/mode 是必填项/);
+    expect(() => parseModelApiSection(parseYaml('deepseek:\n  retryPolicy: {}'), 'models')).toThrow(
+      /mode 是必填项/
+    );
   });
 
   it('模态只接受 text / image（桥接层只会发这两种块）', () => {
     expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    models:\n      - id: m\n        input: [text, audio]'), 'models'),
+      parseModelApiSection(
+        parseYaml(
+          'providers:\n  openai:\n    models:\n      - id: m\n        input: [text, audio]'
+        ),
+        'models'
+      )
     ).toThrow(/模态/);
     expect(() =>
-      parseModelApiSection(parseYaml('providers:\n  openai:\n    defaultInput: []'), 'models'),
+      parseModelApiSection(parseYaml('providers:\n  openai:\n    defaultInput: []'), 'models')
     ).toThrow(/模态/);
   });
 
@@ -227,14 +280,14 @@ providers:
     expect(() =>
       parseModelApiSection(
         parseYaml('deepseek:\n  models:\n    - id: m\n      imagePixelBudget: huge'),
-        'models',
-      ),
+        'models'
+      )
     ).toThrow(/imagePixelBudget/);
     expect(() =>
       parseModelApiSection(
         parseYaml('deepseek:\n  models:\n    - id: m\n      toolUpdate: sometimes'),
-        'models',
-      ),
+        'models'
+      )
     ).toThrow(/toolUpdate/);
   });
 });
@@ -246,13 +299,19 @@ describe('assertModelApiConfig', () => {
 
   it('选中的 provider 必须是已声明的路由（否则运行期才炸）', () => {
     expect(() => assertModelApiConfig(withRoute, 'openai', { OPENAI_API_KEY: 'x' })).not.toThrow();
-    expect(() => assertModelApiConfig(withRoute, 'deepseek-official', { OPENAI_API_KEY: 'x' })).not.toThrow();
-    expect(() => assertModelApiConfig(withRoute, 'anthropic', { OPENAI_API_KEY: 'x' })).toThrow(/没有对应的模型路由配置/);
+    expect(() =>
+      assertModelApiConfig(withRoute, 'deepseek-official', { OPENAI_API_KEY: 'x' })
+    ).not.toThrow();
+    expect(() => assertModelApiConfig(withRoute, 'anthropic', { OPENAI_API_KEY: 'x' })).toThrow(
+      /没有对应的模型路由配置/
+    );
   });
 
   it('apiKeyEnv 引用的变量必须在环境中存在（dsh 子进程继承本进程环境）', () => {
     expect(() => assertModelApiConfig(withRoute, 'openai', {})).toThrow(/OPENAI_API_KEY/);
-    expect(() => assertModelApiConfig(withRoute, 'openai', { OPENAI_API_KEY: '  ' })).toThrow(/OPENAI_API_KEY/);
+    expect(() => assertModelApiConfig(withRoute, 'openai', { OPENAI_API_KEY: '  ' })).toThrow(
+      /OPENAI_API_KEY/
+    );
     // 未配 apiKeyEnv 的路由不检查（pi-ai 环境发现兜底）
     expect(() => assertModelApiConfig({ providers: { local: {} } }, 'local', {})).not.toThrow();
   });
@@ -260,7 +319,9 @@ describe('assertModelApiConfig', () => {
   it('deepseek 路由的 apiKeyEnv 同样检查', () => {
     const config: ModelApiConfig = { deepseek: { apiKeyEnv: 'MY_DS_KEY' }, providers: {} };
     expect(() => assertModelApiConfig(config, 'deepseek-official', {})).toThrow(/MY_DS_KEY/);
-    expect(() => assertModelApiConfig(config, 'deepseek-official', { MY_DS_KEY: 'x' })).not.toThrow();
+    expect(() =>
+      assertModelApiConfig(config, 'deepseek-official', { MY_DS_KEY: 'x' })
+    ).not.toThrow();
   });
 });
 
@@ -270,7 +331,11 @@ describe('resolveAuxRoute（判定调用的路由解析）', () => {
       apiKeyEnv: 'DEEPSEEK_API_KEY',
     });
     expect(
-      resolveAuxRoute({ deepseek: { apiKeyEnv: 'MY_DS_KEY' }, providers: {} }, 'deepseek-official', 'topic.provider'),
+      resolveAuxRoute(
+        { deepseek: { apiKeyEnv: 'MY_DS_KEY' }, providers: {} },
+        'deepseek-official',
+        'topic.provider'
+      )
     ).toEqual({ apiKeyEnv: 'MY_DS_KEY' });
   });
 
@@ -285,16 +350,22 @@ describe('resolveAuxRoute（判定调用的路由解析）', () => {
   });
 
   it('未声明的路由 / 协议不兼容 / 无凭证引用：解析期拒绝', () => {
-    expect(() => resolveAuxRoute({ providers: {} }, 'openai', 'topic.provider')).toThrow(/未在 models\.providers/);
+    expect(() => resolveAuxRoute({ providers: {} }, 'openai', 'topic.provider')).toThrow(
+      /未在 models\.providers/
+    );
     expect(() =>
       resolveAuxRoute(
         { providers: { claude: { apiKeyEnv: 'K', api: 'anthropic-messages' } } },
         'claude',
-        'topic.provider',
-      ),
+        'topic.provider'
+      )
     ).toThrow(/判定调用无法使用/);
     expect(() =>
-      resolveAuxRoute({ providers: { local: { baseURL: 'http://x/v1' } } }, 'local', 'topic.provider'),
+      resolveAuxRoute(
+        { providers: { local: { baseURL: 'http://x/v1' } } },
+        'local',
+        'topic.provider'
+      )
     ).toThrow(/没有 apiKeyEnv/);
   });
 });
@@ -318,7 +389,10 @@ describe('renderModelApiPatch', () => {
       },
     });
     expect(text).toBeDefined();
-    const entries = parseYaml(text as string) as Array<{ id: string; config: Record<string, unknown> }>;
+    const entries = parseYaml(text as string) as Array<{
+      id: string;
+      config: Record<string, unknown>;
+    }>;
     expect(entries.map((e) => e.id)).toEqual(['llm-deepseek', 'llm-pi-ai']);
     expect(entries[0]?.config).toMatchObject({ reasoningEffort: 'high', maxTokens: 256000 });
     const providers = (entries[1]?.config as { providers: Record<string, unknown> }).providers;
@@ -328,7 +402,10 @@ describe('renderModelApiPatch', () => {
   });
 
   it('undefined 字段不出现在生成物里', () => {
-    const text = renderModelApiPatch({ deepseek: { thinking: 'enabled' }, providers: {} }) as string;
+    const text = renderModelApiPatch({
+      deepseek: { thinking: 'enabled' },
+      providers: {},
+    }) as string;
     const entries = parseYaml(text) as Array<{ config: Record<string, unknown> }>;
     expect(entries[0]?.config).toEqual({ thinking: 'enabled' });
   });
@@ -345,7 +422,10 @@ describe('writeModelApiPatch', () => {
     dir = mkdtempSync(join(tmpdir(), 'qqbot-modelapi-'));
     expect(writeModelApiPatch({ providers: {} }, dir)).toBeUndefined();
 
-    const path = writeModelApiPatch({ providers: { openai: { apiKeyEnv: 'OPENAI_API_KEY' } } }, dir);
+    const path = writeModelApiPatch(
+      { providers: { openai: { apiKeyEnv: 'OPENAI_API_KEY' } } },
+      dir
+    );
     expect(path).toBe(join(dir, MODEL_API_PATCH_FILENAME));
     const entries = parseYaml(readFileSync(path as string, 'utf8')) as Array<{ id: string }>;
     expect(entries.map((e) => e.id)).toEqual(['llm-pi-ai']);
@@ -354,17 +434,15 @@ describe('writeModelApiPatch', () => {
 
 describe('DshRuntime.buildArgs', () => {
   it('追加的 patches 按顺序排在 profilePatch 之后', () => {
-    expect(DshRuntime.buildArgs({ profilePatch: '/a.yml' })).toEqual(['--profile', 'sdk', '--patch', '/a.yml']);
-    expect(DshRuntime.buildArgs({ profilePatch: '/a.yml', patches: ['/b.yml', '/c.yml'] })).toEqual([
+    expect(DshRuntime.buildArgs({ profilePatch: '/a.yml' })).toEqual([
       '--profile',
       'sdk',
       '--patch',
       '/a.yml',
-      '--patch',
-      '/b.yml',
-      '--patch',
-      '/c.yml',
     ]);
+    expect(DshRuntime.buildArgs({ profilePatch: '/a.yml', patches: ['/b.yml', '/c.yml'] })).toEqual(
+      ['--profile', 'sdk', '--patch', '/a.yml', '--patch', '/b.yml', '--patch', '/c.yml']
+    );
   });
 });
 
@@ -403,7 +481,9 @@ models:
       apiKeyEnv: OPENAI_API_KEY
 `);
     // 路由已声明但密钥变量不在环境里
-    expect(() => loadConfig({ ...baseEnv, DSH_PROVIDER: 'openai' }, file)).toThrow(/OPENAI_API_KEY/);
+    expect(() => loadConfig({ ...baseEnv, DSH_PROVIDER: 'openai' }, file)).toThrow(
+      /OPENAI_API_KEY/
+    );
     const ok = loadConfig({ ...baseEnv, DSH_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-o' }, file);
     expect(ok.dsh.provider).toBe('openai');
   });
@@ -426,7 +506,10 @@ topic:
     expect(config.topic.apiKeyEnv).toBe('ACME_KEY');
     expect(config.topic.apiBase).toBe('https://gw.example/v1');
     // 显式 apiBase 优先于路由 baseURL
-    const override = loadConfig({ ...baseEnv, ACME_KEY: 'sk-acme', BOT_TOPIC_API_BASE: 'https://other.example/v1' }, file);
+    const override = loadConfig(
+      { ...baseEnv, ACME_KEY: 'sk-acme', BOT_TOPIC_API_BASE: 'https://other.example/v1' },
+      file
+    );
     expect(override.topic.apiBase).toBe('https://other.example/v1');
   });
 
@@ -463,9 +546,13 @@ topic:
 
   it('主路由仍是 deepseek-official 时，即使关掉判定也仍需要其凭证变量', () => {
     const file = parseConfigFileText('topic:\n  enabled: false\n');
-    expect(() => loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's' }, file)).toThrow(/DEEPSEEK_API_KEY/);
+    expect(() => loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's' }, file)).toThrow(
+      /DEEPSEEK_API_KEY/
+    );
     // models.deepseek.apiKeyEnv 改名后按改名的要求
-    const renamed = parseConfigFileText('topic:\n  enabled: false\nmodels:\n  deepseek:\n    apiKeyEnv: MY_DS_KEY\n');
+    const renamed = parseConfigFileText(
+      'topic:\n  enabled: false\nmodels:\n  deepseek:\n    apiKeyEnv: MY_DS_KEY\n'
+    );
     expect(() => loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's' }, renamed)).toThrow(/MY_DS_KEY/);
     const ok = loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's', MY_DS_KEY: 'k' }, renamed);
     expect(ok.topic.enabled).toBe(false);
@@ -500,7 +587,9 @@ models:
       apiKeyEnv: OPENAI_API_KEY
 `);
     const config = loadConfig({ ...baseEnv, OPENAI_API_KEY: 'sk-o' }, file);
-    const summary = describeConfig(config) as unknown as { modelApi: { deepseek: string; providers: string[] } };
+    const summary = describeConfig(config) as unknown as {
+      modelApi: { deepseek: string; providers: string[] };
+    };
     expect(summary.modelApi.deepseek).toBe('customized');
     expect(summary.modelApi.providers).toEqual(['openai']);
     expect(JSON.stringify(summary)).not.toContain('sk-o');

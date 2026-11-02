@@ -60,7 +60,10 @@ export interface HealthServer {
 export function createHealthServer(options: HealthServerOptions): HealthServer {
   let server: Server | undefined;
 
-  const handler = (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
+  const handler = (
+    req: import('node:http').IncomingMessage,
+    res: import('node:http').ServerResponse
+  ) => {
     const url = req.url ?? '/';
     if (url === '/healthz' || url === '/health') {
       const snapshot = options.snapshot();
@@ -86,8 +89,8 @@ export function createHealthServer(options: HealthServerOptions): HealthServer {
             warnings: snapshot.warnings,
           },
           null,
-          2,
-        )}\n`,
+          2
+        )}\n`
       );
       return;
     }
@@ -288,12 +291,14 @@ export function buildHealthSnapshot(input: {
       if (connector.connected && staleMs > EVENT_STALE_THRESHOLD_MS) {
         warnings.push(
           `连接器 ${name} 超过 ${Math.round(EVENT_STALE_THRESHOLD_MS / 1000)} 秒未收到事件` +
-            `（${Math.round(staleMs / 1000)}s），通道可能已僵死`,
+            `（${Math.round(staleMs / 1000)}s），通道可能已僵死`
         );
       }
     }
     if ((connector.reconnectAttempts ?? 0) > 5) {
-      warnings.push(`连接器 ${name} 重连次数偏多（${connector.reconnectAttempts}），请检查凭据与订阅配置`);
+      warnings.push(
+        `连接器 ${name} 重连次数偏多（${connector.reconnectAttempts}），请检查凭据与订阅配置`
+      );
     }
     for (const warning of connector.warnings ?? []) {
       warnings.push(`${name}: ${warning}`);

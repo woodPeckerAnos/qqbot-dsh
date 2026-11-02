@@ -32,7 +32,9 @@ function makeManager(fetchImpl: typeof fetch, nowImpl?: () => number) {
 
 describe('TokenManager', () => {
   it('成功时解析字符串形式的 expires_in 并缓存 token', async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse({ access_token: 'tok-A', expires_in: '7200' }));
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ access_token: 'tok-A', expires_in: '7200' })
+    );
     const manager = makeManager(fetchImpl as unknown as typeof fetch);
 
     expect(await manager.get()).toBe('tok-A');

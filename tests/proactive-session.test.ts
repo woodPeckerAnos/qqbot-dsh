@@ -43,7 +43,10 @@ import type {
   SessionDirective,
 } from '../src/pipeline/proactive/contract.js';
 import { ProactiveSpeaker } from '../src/pipeline/proactive/deliver/speaker.js';
-import type { ProactiveJudge, ProactiveJudgeInput } from '../src/pipeline/proactive/judge/client.js';
+import type {
+  ProactiveJudge,
+  ProactiveJudgeInput,
+} from '../src/pipeline/proactive/judge/client.js';
 import {
   DEFAULT_WATCHER_CONFIG,
   ProactiveWatcher,
@@ -98,10 +101,7 @@ interface Harness {
   warnings: string[];
 }
 
-function setup(
-  overrides: Partial<ProactiveWatcherConfig> = {},
-  logger?: Logger,
-): Harness {
+function setup(overrides: Partial<ProactiveWatcherConfig> = {}, logger?: Logger): Harness {
   let clock = START;
   const timers: Array<{ at: number; fn: () => void; cancelled: boolean }> = [];
   const judgeCalls: ProactiveJudgeInput[] = [];
@@ -652,9 +652,8 @@ describe('账目与残留（验收11、验收12）', () => {
   });
 
   it('验收12b：判定输出契约与解析器都带上了 session 字段', async () => {
-    const { JUDGE_OUTPUT_CONTRACT, parseSceneVerdicts } = await import(
-      '../src/pipeline/proactive/judge/judge.js'
-    );
+    const { JUDGE_OUTPUT_CONTRACT, parseSceneVerdicts } =
+      await import('../src/pipeline/proactive/judge/judge.js');
     expect(JUDGE_OUTPUT_CONTRACT).toContain('session');
     const candidates: SceneCandidate[] = [
       { scene: 'scene-4', localConfidence: 0.5, expectedRate: 0.4 },
@@ -665,7 +664,7 @@ describe('账目与残留（验收11、验收12）', () => {
           { scene: 'scene-4', satisfied: true, confidence: 0.9, reason: 'x', session: 'close' },
         ],
       }),
-      candidates,
+      candidates
     );
     expect(parsed?.[0]?.session).toBe('close');
     // 非法值一律丢弃（不是整条降级）
@@ -675,7 +674,7 @@ describe('账目与残留（验收11、验收12）', () => {
           { scene: 'scene-4', satisfied: true, confidence: 0.9, reason: 'x', session: 'nope' },
         ],
       }),
-      candidates,
+      candidates
     );
     expect(bogus?.[0]?.session).toBeUndefined();
     expect(bogus?.[0]?.satisfied).toBe(true);

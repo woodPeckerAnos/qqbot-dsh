@@ -57,20 +57,26 @@ describe('兴趣池：解析与校验', () => {
   });
 
   it('验收3：缺必填字段 / 关键词为空 → 报错并指出是哪一条', () => {
-    expect(() => parseInterestPool('interests:\n  - topic: x\n    keywords: [ab]', 'i.yml'))
-      .toThrowError(/缺少必填字段 id（第 1 条）/);
-    expect(() => parseInterestPool('interests:\n  - id: a\n    topic: x', 'i.yml'))
-      .toThrowError(/缺少 keywords/);
-    expect(() => parseInterestPool('interests:\n  - id: a\n    topic: x\n    keywords: []', 'i.yml'))
-      .toThrowError(/缺少 keywords/);
+    expect(() =>
+      parseInterestPool('interests:\n  - topic: x\n    keywords: [ab]', 'i.yml')
+    ).toThrowError(/缺少必填字段 id（第 1 条）/);
+    expect(() => parseInterestPool('interests:\n  - id: a\n    topic: x', 'i.yml')).toThrowError(
+      /缺少 keywords/
+    );
+    expect(() =>
+      parseInterestPool('interests:\n  - id: a\n    topic: x\n    keywords: []', 'i.yml')
+    ).toThrowError(/缺少 keywords/);
   });
 
   it('验收4：id 重复 / 关键词太短 / 超上限 → 启动期拦掉（fail-closed）', () => {
     expect(() =>
-      parseInterestPool('interests:\n  - {id: a, topic: x, keywords: [ab]}\n  - {id: a, topic: y, keywords: [cd]}', 'i.yml'),
+      parseInterestPool(
+        'interests:\n  - {id: a, topic: x, keywords: [ab]}\n  - {id: a, topic: y, keywords: [cd]}',
+        'i.yml'
+      )
     ).toThrowError(/id 重复：a/);
     expect(() =>
-      parseInterestPool('interests:\n  - {id: a, topic: x, keywords: [图]}', 'i.yml'),
+      parseInterestPool('interests:\n  - {id: a, topic: x, keywords: [图]}', 'i.yml')
     ).toThrowError(/太短/);
 
     const many = ['interests:'];
@@ -104,9 +110,7 @@ describe('兴趣池：匹配', () => {
   it('验收8b：replaceEntries / setEnabled 是 role-play 动态设定兴趣池的接缝', () => {
     const live = parseInterestPool(GOOD, 'test.yml');
     const holder = live; // 调用方持有引用（health 快照、buildSceneEvidence 的组装处）
-    live.replaceEntries([
-      { id: 'roleplay', topic: '角色扮演主题', keywords: ['剧本', '设定'] },
-    ]);
+    live.replaceEntries([{ id: 'roleplay', topic: '角色扮演主题', keywords: ['剧本', '设定'] }]);
     // 原地替换：老引用立刻看到新内容，不需要重新装配
     expect(holder.size).toBe(1);
     expect(holder.matchIds('这个剧本怎么写')).toEqual(['roleplay']);
@@ -135,7 +139,7 @@ describe('兴趣池：文件读取', () => {
     const missing = join(dir, 'nope.yml');
     expect(loadInterestPool({ path: missing }).size).toBe(0);
     expect(() => loadInterestPool({ path: missing, explicit: true })).toThrowError(
-      /兴趣池文件不存在/,
+      /兴趣池文件不存在/
     );
   });
 

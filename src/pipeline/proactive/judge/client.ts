@@ -107,7 +107,7 @@ export function createProactiveJudge(options: CreateProactiveJudgeOptions): Proa
 
 /** 便捷构造：直接用 `renderJudgeCriteria` 作为判据渲染。 */
 export function createDefaultProactiveJudge(
-  options: Omit<CreateProactiveJudgeOptions, 'renderCriteria'>,
+  options: Omit<CreateProactiveJudgeOptions, 'renderCriteria'>
 ): ProactiveJudge {
   return createProactiveJudge({ ...options, renderCriteria: renderJudgeCriteria });
 }

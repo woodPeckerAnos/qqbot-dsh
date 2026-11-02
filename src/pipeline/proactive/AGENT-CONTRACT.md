@@ -12,14 +12,14 @@
 
 ## 状态所有权
 
-| 状态 | 唯一所有者 |
-| --- | --- |
-| 原始观察窗口 | `ObservationWindowStore`，由 main 注入；不受 proactive.enabled 控制 |
-| 挂起问题、wait 票据、话题 session、无人回应计数 | `ConversationState` / `ProactiveWatcher` |
-| Task、两个 lane 与取消状态 | `TaskLifeCycleManager` |
-| 业务预算预留/提交/释放 | `TaskBudget`；session.budgetLeft 仅为触发时范围的剩余额度投影 |
-| 产物去重与一次性提醒 | `SessionOutputCoordinator` |
-| 消息投递与 QQ 序号/条数 | `MessageQueue` |
+| 状态                                            | 唯一所有者                                                          |
+| ----------------------------------------------- | ------------------------------------------------------------------- |
+| 原始观察窗口                                    | `ObservationWindowStore`，由 main 注入；不受 proactive.enabled 控制 |
+| 挂起问题、wait 票据、话题 session、无人回应计数 | `ConversationState` / `ProactiveWatcher`                            |
+| Task、两个 lane 与取消状态                      | `TaskLifeCycleManager`                                              |
+| 业务预算预留/提交/释放                          | `TaskBudget`；session.budgetLeft 仅为触发时范围的剩余额度投影       |
+| 产物去重与一次性提醒                            | `SessionOutputCoordinator`                                          |
+| 消息投递与 QQ 序号/条数                         | `MessageQueue`                                                      |
 
 每个主动 Task 预留一个单位。第一次任意产物成功送达只提交一次；正文、附件、提醒、错误与发送失败通知不重复扣费。全静默、取消后无可交付产物、全部消息终结且均未成功时释放。取消后仍有入队产物则等待队列结算。旧 Task 的结果只能结算触发时 scope，不能引用当前新话题的预算。
 

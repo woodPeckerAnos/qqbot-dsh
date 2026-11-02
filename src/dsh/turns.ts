@@ -101,8 +101,10 @@ export class TurnAccumulator {
   }
 
   observeStatus(status: 'idle' | 'running'): void {
-    if (status === 'running') { this.sawRunning = true; this.sawIdle = false; }
-    else this.sawIdle = true;
+    if (status === 'running') {
+      this.sawRunning = true;
+      this.sawIdle = false;
+    } else this.sawIdle = true;
   }
 
   observe(event: SessionEventEnvelope): void {

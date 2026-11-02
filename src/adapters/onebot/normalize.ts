@@ -153,7 +153,7 @@ export function parseCqCodes(raw: string): OneBotSegment[] {
  */
 export function extractMessageContent(
   message: OneBotSegment[] | string | undefined,
-  selfId: number,
+  selfId: number
 ): ExtractedContent {
   const segments: OneBotSegment[] = Array.isArray(message)
     ? message
@@ -195,7 +195,9 @@ export function extractMessageContent(
         // 且 MIME 未知，不值得内联；其余形态留给 fetchMedia 回查。
         const rawFile = asString(data['file']);
         const fileId =
-          rawFile !== undefined && !rawFile.startsWith('base64://') && httpUrl(rawFile) === undefined
+          rawFile !== undefined &&
+          !rawFile.startsWith('base64://') &&
+          httpUrl(rawFile) === undefined
             ? rawFile
             : undefined;
         if (url === undefined && fileId === undefined) {
@@ -319,7 +321,7 @@ export function extractMessageContent(
  */
 export function extractGroupContent(
   message: OneBotSegment[] | string | undefined,
-  selfId: number,
+  selfId: number
 ): { content: string; atSelf: boolean } {
   const extracted = extractMessageContent(message, selfId);
   return { content: extracted.content, atSelf: extracted.atSelf };
@@ -390,7 +392,7 @@ function parseJsonContainer(text: string): unknown {
 function forwardRef(
   index: number,
   id: string | undefined,
-  nodes: ForwardNode[] | undefined,
+  nodes: ForwardNode[] | undefined
 ): ForwardRef | undefined {
   const inline = nodes !== undefined && nodes.length > 0 ? nodes : undefined;
   if (id === undefined && inline === undefined) return undefined;
@@ -422,7 +424,7 @@ function forwardPlaceholder(id: string | undefined): MessagePart {
  */
 function inlineForwardNodes(
   data: Record<string, unknown>,
-  selfId: number,
+  selfId: number
 ): ForwardNode[] | undefined {
   for (const key of ['content', 'message', 'nodes']) {
     const value = data[key];
@@ -495,10 +497,7 @@ function forwardNodeOf(item: unknown, selfId: number, depth = 0): ForwardNode | 
   // 内容可能在 message（消息段数组）或 content（NapCat node 的字段）里；
   // extractMessageContent 同时接受数组与 CQ 码字符串。
   const payload = data['message'] ?? data['content'];
-  const extracted = extractMessageContent(
-    payload as OneBotSegment[] | string | undefined,
-    selfId,
-  );
+  const extracted = extractMessageContent(payload as OneBotSegment[] | string | undefined, selfId);
 
   if (extracted.parts.length === 0) {
     if (author === undefined) return undefined;
@@ -507,7 +506,7 @@ function forwardNodeOf(item: unknown, selfId: number, depth = 0): ForwardNode | 
   }
   return withForwardRefs(
     { ...(author !== undefined ? { author } : {}), parts: extracted.parts },
-    extracted.forwardRefs,
+    extracted.forwardRefs
   );
 }
 
@@ -535,7 +534,10 @@ export function parseForwardNodes(data: unknown, selfId: number): ForwardNode[] 
  * 归一化一条 OneBot 事件。
  * 返回值描述"该做什么"，副作用（审批、记录 self_id）由连接器执行。
  */
-export function normalizeOneBotEvent(raw: OneBotEvent, now: () => number = Date.now): NormalizeResult {
+export function normalizeOneBotEvent(
+  raw: OneBotEvent,
+  now: () => number = Date.now
+): NormalizeResult {
   switch (raw.post_type) {
     case 'message':
       return normalizeMessage(raw, now);
@@ -549,7 +551,10 @@ export function normalizeOneBotEvent(raw: OneBotEvent, now: () => number = Date.
       return { type: 'heartbeat', selfId };
     }
     default:
-      return { type: 'ignored', reason: `未知 post_type: ${String((raw as OneBotEvent).post_type)}` };
+      return {
+        type: 'ignored',
+        reason: `未知 post_type: ${String((raw as OneBotEvent).post_type)}`,
+      };
   }
 }
 
@@ -647,7 +652,11 @@ function normalizeNotice(raw: OneBotEvent, now: () => number): NormalizeResult {
   const ts = typeof raw.time === 'number' ? raw.time * 1000 : now();
 
   // 机器人被拉进群（群成员增加事件里 user_id 是自己）
-  if (raw.notice_type === 'group_increase' && raw.user_id === selfId && raw.group_id !== undefined) {
+  if (
+    raw.notice_type === 'group_increase' &&
+    raw.user_id === selfId &&
+    raw.group_id !== undefined
+  ) {
     return {
       type: 'event',
       event: {
@@ -688,5 +697,8 @@ function normalizeRequest(raw: OneBotEvent): NormalizeResult {
   ) {
     return { type: 'group-invite', flag: raw.flag, groupId: raw.group_id, userId: raw.user_id };
   }
-  return { type: 'ignored', reason: `request 不处理: ${String(raw.request_type)}/${String(raw.sub_type)}` };
+  return {
+    type: 'ignored',
+    reason: `request 不处理: ${String(raw.request_type)}/${String(raw.sub_type)}`,
+  };
 }

@@ -257,7 +257,7 @@ export class ProactiveSpeaker {
         trigger,
         result.detail,
         result.retryable,
-        metrics,
+        metrics
       );
     }
 
@@ -277,7 +277,7 @@ export class ProactiveSpeaker {
     trigger: ProactiveTrigger,
     detail: string | undefined,
     retryable: boolean,
-    metrics: ProactiveMetrics,
+    metrics: ProactiveMetrics
   ): ProactiveOutcome {
     metrics.degraded(reason, trigger);
     this.options.logger.debug('主动发言降级（不发送）', {

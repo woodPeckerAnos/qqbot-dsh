@@ -14,14 +14,14 @@
 
 **非目标（本 MVP 明确不做）**：
 
-| 不做 | 原因 |
-|---|---|
-| QQ 频道 / 频道私信 | 接口与事件都不同（guild 体系）；群聊 + 单聊已覆盖核心价值 |
-| Webhook 接入方式 | 需要公网 HTTPS + 固定端口（仅 80/443/8080/8443）+ ed25519 验签；WS 长连接只需出网 |
-| 主动推送 / 互动召回 | 权限门槛高（需认证），且与"被动回复"语义冲突；单聊只回应用户提问，不主动找人 |
-| 图片/文件富媒体回传 | 需要分片上传链路，工作量独立 |
-| 单聊流式输出（`stream_messages`） | DSH 的结果在 turn 结束后整体取回，没有增量文本可推；类型定义已留好 |
-| 管理命令与配额系统 | 需要先有稳定运行数据再定策略 |
+| 不做                              | 原因                                                                              |
+| --------------------------------- | --------------------------------------------------------------------------------- |
+| QQ 频道 / 频道私信                | 接口与事件都不同（guild 体系）；群聊 + 单聊已覆盖核心价值                         |
+| Webhook 接入方式                  | 需要公网 HTTPS + 固定端口（仅 80/443/8080/8443）+ ed25519 验签；WS 长连接只需出网 |
+| 主动推送 / 互动召回               | 权限门槛高（需认证），且与"被动回复"语义冲突；单聊只回应用户提问，不主动找人      |
+| 图片/文件富媒体回传               | 需要分片上传链路，工作量独立                                                      |
+| 单聊流式输出（`stream_messages`） | DSH 的结果在 turn 结束后整体取回，没有增量文本可推；类型定义已留好                |
+| 管理命令与配额系统                | 需要先有稳定运行数据再定策略                                                      |
 
 > 单聊（C2C）最初也在非目标里。接入后只新增了两件事：`C2C_MESSAGE_CREATE` 的归一化，
 > 以及"每会话"而不是"每群"的键。之所以能这么小，是因为群聊与单聊的**被动回复语义、
@@ -41,15 +41,15 @@
 
 整个协议只有 **3 个方法 + 4 个通知**：
 
-| 方向 | 方法 | 载荷 |
-|---|---|---|
-| client→server | `initialize` | `{cwd, provider, model, reasoningEffort?, maxTokens?}` → `{serverInfo:{name,version}}` |
-| client→server | `session/prompt` | `{sessionId, contentBlocks}` → `{messageId}`（**仅入队回执**） |
-| client→server | `shutdown` | 无 → `{}` |
-| server→client | `session.event` | `{sessionId, event}`（每个会话事件） |
-| server→client | `session.status` | `{sessionId, status: 'idle'\|'running'}` |
-| server→client | `subagent.started` | `{parentSessionId, childSessionId}` |
-| server→client | `subagent.finished` | `{...}` 仅进程内子代理 |
+| 方向          | 方法                | 载荷                                                                                   |
+| ------------- | ------------------- | -------------------------------------------------------------------------------------- |
+| client→server | `initialize`        | `{cwd, provider, model, reasoningEffort?, maxTokens?}` → `{serverInfo:{name,version}}` |
+| client→server | `session/prompt`    | `{sessionId, contentBlocks}` → `{messageId}`（**仅入队回执**）                         |
+| client→server | `shutdown`          | 无 → `{}`                                                                              |
+| server→client | `session.event`     | `{sessionId, event}`（每个会话事件）                                                   |
+| server→client | `session.status`    | `{sessionId, status: 'idle'\|'running'}`                                               |
+| server→client | `subagent.started`  | `{parentSessionId, childSessionId}`                                                    |
+| server→client | `subagent.finished` | `{...}` 仅进程内子代理                                                                 |
 
 **决策**：自己实现协议客户端，不依赖任何 `@deepseek-ai/*` 内部包。协议面这么小，
 自研成本低于被版本 skew 咬的成本；同时把 wire 类型定义抄一份在 `src/dsh/protocol.ts`
@@ -60,10 +60,10 @@
 
 实况文档数字：
 
-| 场景 | 被动回复有效期 | 每条消息最多回复次数 |
-|---|---|---|
-| **QQ 群聊** | **5 分钟** | **5 次** |
-| QQ 单聊 | 60 分钟 | 4 次 |
+| 场景        | 被动回复有效期 | 每条消息最多回复次数 |
+| ----------- | -------------- | -------------------- |
+| **QQ 群聊** | **5 分钟**     | **5 次**             |
+| QQ 单聊     | 60 分钟        | 4 次                 |
 
 这是全系统最硬的约束。它意味着：
 
@@ -142,10 +142,10 @@ LRU + 空闲回收控制（第 5.4 节）。
 
 会话键的构造（官方平台见 `src/adapters/qq-official/gateway.ts`；跨平台规则见第 10 节）：
 
-| 会话 | 调用 OpenAPI 用的 id | 编排层会话键 `key` |
-|---|---|---|
-| 群聊 | `group_openid` | `group_openid`（保持既有部署目录不迁移） |
-| 单聊 | `user_openid` | `c2c:<user_openid>` |
+| 会话 | 调用 OpenAPI 用的 id | 编排层会话键 `key`                       |
+| ---- | -------------------- | ---------------------------------------- |
+| 群聊 | `group_openid`       | `group_openid`（保持既有部署目录不迁移） |
+| 单聊 | `user_openid`        | `c2c:<user_openid>`                      |
 
 单聊加前缀是**必须的**：群 openid 与用户 openid 是两套命名空间，"字面相同"完全
 可能，不加前缀就会把两个无关的人/群混进同一个工作区与同一份记忆。QQ openid 的
@@ -165,12 +165,12 @@ LRU + 空闲回收控制（第 5.4 节）。
 
 拆分后的层次：
 
-| 层 | 位置 | 放什么 | 谁读 |
-|---|---|---|---|
-| 值 | `.env` | 主放 5 个凭证 / 个人标识（4 个密钥 + 管理员白名单）；行为参数也可在此临时覆盖 | compose 的 `env_file` **整份注入**容器 |
-| 行为参数（共享默认值） | `qqbot.yml` + `config/*.yml` | 端口/配额/超时/谷时段/日志级别…（**不含**密钥；管理员/群白名单等个人标识仍只认 env） | `QQ_CONFIG_FILE`（默认 `./qqbot.yml`）入口，include 展开后合并 |
-| 本机配置（不提交） | `config/local/*.yml` | 模型路由/模型选择、个人别名、本机资源上限等 | 入口以 `optional: true` include；缺失时走内置默认 |
-| 容器参数 | `docker-compose.yml` 的 `environment` | 路径、`TZ`、代理这类与宿主机绑定的项 | 容器环境 |
+| 层                     | 位置                                  | 放什么                                                                               | 谁读                                                           |
+| ---------------------- | ------------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| 值                     | `.env`                                | 主放 5 个凭证 / 个人标识（4 个密钥 + 管理员白名单）；行为参数也可在此临时覆盖        | compose 的 `env_file` **整份注入**容器                         |
+| 行为参数（共享默认值） | `qqbot.yml` + `config/*.yml`          | 端口/配额/超时/谷时段/日志级别…（**不含**密钥；管理员/群白名单等个人标识仍只认 env） | `QQ_CONFIG_FILE`（默认 `./qqbot.yml`）入口，include 展开后合并 |
+| 本机配置（不提交）     | `config/local/*.yml`                  | 模型路由/模型选择、个人别名、本机资源上限等                                          | 入口以 `optional: true` include；缺失时走内置默认              |
+| 容器参数               | `docker-compose.yml` 的 `environment` | 路径、`TZ`、代理这类与宿主机绑定的项                                                 | 容器环境                                                       |
 
 `qqbot.yml` 是**随仓库提交**的配置入口：它只声明要加载哪些模块，真正的参数在
 `config/*.yml`。这样单文件不会继续膨胀，详细注释也能跟着领域走。入口和共享模块
@@ -240,19 +240,19 @@ dsh --profile sdk --patch /app/dsh-profile/cordis.patch.yml
 
 patch 做的五件事：
 
-| # | 目标 | 内容 |
-|---|---|---|
-| 1 | 人设 | 覆盖 `sdk-app` 的 persona，改成 QQ 群助手 + 输出纪律（中文、结论先行、篇幅精炼、不编造执行结果） |
-| 2 | 审批 | 显式钉死 `approval.policy = ask`，挂自动应答桩 |
-| 3 | 沙箱 | 显式钉死 `sandbox-policy.mode = workspace-write` |
-| 4 | 收窄 | 只 `disabled: true` 掉 `tool-jobs`（纯叶子） |
-| 5 | 插件 | 插入本地插件 `./plugins/auto-approve.js` |
+| #   | 目标 | 内容                                                                                             |
+| --- | ---- | ------------------------------------------------------------------------------------------------ |
+| 1   | 人设 | 覆盖 `sdk-app` 的 persona，改成 QQ 群助手 + 输出纪律（中文、结论先行、篇幅精炼、不编造执行结果） |
+| 2   | 审批 | 显式钉死 `approval.policy = ask`，挂自动应答桩                                                   |
+| 3   | 沙箱 | 显式钉死 `sandbox-policy.mode = workspace-write`                                                 |
+| 4   | 收窄 | 只 `disabled: true` 掉 `tool-jobs`（纯叶子）                                                     |
+| 5   | 插件 | 插入本地插件 `./plugins/auto-approve.js`                                                         |
 
 ### 4.2 两个实测踩到的坑（已写进 patch 注释，防止后人改回去）
 
 **坑 1：`!!js` 的值是被 `eval` 执行的。**
 
-- ❌ `!!js \`模板字面量\`` → `cannot resolve a node with !<tag:yaml.org,2002:js>`
+- ❌ `!!js \`模板字面量\``→`cannot resolve a node with !<tag:yaml.org,2002:js>`
 - ❌ `!!js` 独占一行 + 缩进块标量 → `unknown tag`
 - ❌ 双引号标量里出现**字面换行** → YAML 折行把真实换行喂给 eval →
   `SyntaxError: Invalid or unexpected token`（表现为 `initialize` 报
@@ -326,13 +326,13 @@ Error: dsh: 6 entries did not activate
 
 `turn/end.reason.kind` 的处理：
 
-| kind | 处理 |
-|---|---|
-| `completed` | 正常回复 |
-| `error` | 回"执行出错"+ 结构化错误摘要（不回原文堆栈） |
-| `max-tokens` | 回内容 + 提示"回答被长度限制截断" |
-| `aborted` | 回"任务已中断"（含超时取消场景） |
-| `blocked` | 回"该操作被策略阻止" |
+| kind         | 处理                                         |
+| ------------ | -------------------------------------------- |
+| `completed`  | 正常回复                                     |
+| `error`      | 回"执行出错"+ 结构化错误摘要（不回原文堆栈） |
+| `max-tokens` | 回内容 + 提示"回答被长度限制截断"            |
+| `aborted`    | 回"任务已中断"（含超时取消场景）             |
+| `blocked`    | 回"该操作被策略阻止"                         |
 
 注意：一个 turn 里可能有**多条** `assistant/message`（每步模型调用一条），
 中间那些通常只有 tool-call 没有文本。所以必须"取最后一条非空"，而不是"取第一条"。
@@ -372,12 +372,12 @@ QQ 平台对重复组合直接返回 `40054005` 去重错误。配额账本统�
 
 ### 5.4 runtime 池
 
-| 维度 | 默认 | 说明 |
-|---|---|---|
-| 最大并发 runtime | 8 | 超出按 LRU 回收最久未用的（按会话计） |
-| 空闲回收 | 30 分钟 | 回收时先发 `shutdown` 等退出，超时才 SIGTERM/SIGKILL |
-| 全局并发 turn | 4 | 信号量；满员**立即礼貌拒绝**（不排队——排到时被动窗口可能已过） |
-| 单轮超时 | 4 分钟（上限 295000ms） | 到点取消该 turn；群聊与单聊共用 |
+| 维度             | 默认                    | 说明                                                           |
+| ---------------- | ----------------------- | -------------------------------------------------------------- |
+| 最大并发 runtime | 8                       | 超出按 LRU 回收最久未用的（按会话计）                          |
+| 空闲回收         | 30 分钟                 | 回收时先发 `shutdown` 等退出，超时才 SIGTERM/SIGKILL           |
+| 全局并发 turn    | 4                       | 信号量；满员**立即礼貌拒绝**（不排队——排到时被动窗口可能已过） |
+| 单轮超时         | 4 分钟（上限 295000ms） | 到点取消该 turn；群聊与单聊共用                                |
 
 一个 runtime 的完整生命周期：
 
@@ -491,11 +491,11 @@ DeepSeek 有错峰优惠时段，正价时段跑 agent 的成本可能高一个�
 
 ### 6.1 A 方案的构成
 
-| 组件 | 配置 | 作用 |
-|---|---|---|
-| 沙箱模式 | `workspace-write` | 文件读写与命令执行以会话 cwd（该群工作区）为界 |
-| 审批策略 | `ask` | 需要审批的操作走应答链 |
-| 应答者 | `auto-approve` 插件 | 终端应答者，返回 `allowed-once` |
+| 组件     | 配置                | 作用                                           |
+| -------- | ------------------- | ---------------------------------------------- |
+| 沙箱模式 | `workspace-write`   | 文件读写与命令执行以会话 cwd（该群工作区）为界 |
+| 审批策略 | `ask`               | 需要审批的操作走应答链                         |
+| 应答者   | `auto-approve` 插件 | 终端应答者，返回 `allowed-once`                |
 
 **为什么不是 `policy: never`**：`never` 会在任何交互式应答者之前就确定性拒绝
 （`decide()` 里 `if (effectivePolicy === 'never') return 'rejected'`），
@@ -534,16 +534,16 @@ DeepSeek 有错峰优惠时段，正价时段跑 agent 的成本可能高一个�
 
 因为 6.2 的降级可能发生，安全不能只靠 DSH 的沙箱。容器加固项：
 
-| 项 | 配置 | 防的是什么 |
-|---|---|---|
-| 只读根文件系统 | `read_only: true` | agent 篡改镜像内二进制/配置 |
-| 可写面收敛 | 仅三个具名卷 + `tmpfs /tmp` | 限制持久化污染范围 |
-| 能力收敛 | `cap_drop: ALL` | 提权、改网络、挂载等 |
-| 禁止提权 | `no-new-privileges` | setuid 类逃逸 |
-| 非 root | uid/gid 10001 | 容器内横向 |
-| 进程数上限 | `pids_limit: 512` | fork 炸弹（agent 可以跑任意命令） |
-| 内存/CPU 上限 | `mem_limit 2g` / `cpus 2` | 资源耗尽影响宿主 |
-| 日志轮转 | `max-size 20m` × 5 | 磁盘打满 |
+| 项             | 配置                        | 防的是什么                        |
+| -------------- | --------------------------- | --------------------------------- |
+| 只读根文件系统 | `read_only: true`           | agent 篡改镜像内二进制/配置       |
+| 可写面收敛     | 仅三个具名卷 + `tmpfs /tmp` | 限制持久化污染范围                |
+| 能力收敛       | `cap_drop: ALL`             | 提权、改网络、挂载等              |
+| 禁止提权       | `no-new-privileges`         | setuid 类逃逸                     |
+| 非 root        | uid/gid 10001               | 容器内横向                        |
+| 进程数上限     | `pids_limit: 512`           | fork 炸弹（agent 可以跑任意命令） |
+| 内存/CPU 上限  | `mem_limit 2g` / `cpus 2`   | 资源耗尽影响宿主                  |
+| 日志轮转       | `max-size 20m` × 5          | 磁盘打满                          |
 
 ### 6.4 残余风险（诚实列出）
 
@@ -655,21 +655,21 @@ qqbot-dsh/
 
 以下事实**无法从文档确认**，必须在真机联调时验证，已列入 RUNBOOK：
 
-| # | 待验证 | 当前假设 |
-|---|---|---|
-| 1 | 单条消息字符数上限 | 官方只给错误码 `40054007`；社区传 4000；默认用 1500 + 自动折半 |
-| 2 | `op 7` / `op 9` 报文结构 | 官方文档只列名字，无 payload 示例 |
-| 3 | `op 12` 的 ack 体 | 仅 webhook 模式相关（本 MVP 不用） |
-| 4 | 沙箱后端在容器内是否真的有效 | Dockerfile 装了 bubblewrap，待 `verify-sandbox.mjs` 在容器内验证 |
-| 5 | 主动推送是否真的恢复 | 2025-04-21 有停用公告，但 2026 实况文档又给了频控表；本 MVP 不依赖它 |
-| 6 | `1<<24 (GROUP_MEMBER_EVENT)` 是否真的可订阅 | 官方 intents 表里没有它，但官方事件页和各家 SDK 都在用；做成可配置 |
-| 7 | 群聊 `msg_type=2`(markdown) 的实际渲染效果 | 官方说已对所有机器人开放，默认仍用纯文本 |
-| 8 | 单聊被动回复有效期与次数（文档写 60 分钟 / 4 次） | 按文档取上限 4 并独立配置；单轮超时仍沿用群聊的保守上限，所以即使文档有出入也不会发出窗口外的消息 |
-| 9 | 单聊事件里用户 openid 的字段路径 | 按 `author.user_openid` 解析，并对 `d.user_openid`/`author.id`/`author.union_openid` 做回退，字段名猜错时不会整条丢弃 |
-| 10 | `FRIEND_ADD` 事件的 payload 与 `event_id` 回复是否被接受 | 按 `d.openid` + 信封 id 回复欢迎语；失败只记 warn，不影响正常问答 |
-| 11 | `/files` 上传的 `file_type=4`（文件）是否对机器人开放、各类型大小上限、`file_info` 时效 | 按文档字段实现；上限配置化（media.maxFileMB）不写死；file_info 拿到立刻用不缓存 |
-| 12 | `msg_type=7` 媒体消息能否同时携带 `content` 文本 | 按"不允许"设计（附件与文本分条发送）；若实测允许可升级为图文合并 |
-| 13 | webp/bmp 走 `file_type=1` 的平台接受度 | 图片白名单默认只含 png/jpg/jpeg/gif，其余按文件发 |
+| #   | 待验证                                                                                  | 当前假设                                                                                                              |
+| --- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 1   | 单条消息字符数上限                                                                      | 官方只给错误码 `40054007`；社区传 4000；默认用 1500 + 自动折半                                                        |
+| 2   | `op 7` / `op 9` 报文结构                                                                | 官方文档只列名字，无 payload 示例                                                                                     |
+| 3   | `op 12` 的 ack 体                                                                       | 仅 webhook 模式相关（本 MVP 不用）                                                                                    |
+| 4   | 沙箱后端在容器内是否真的有效                                                            | Dockerfile 装了 bubblewrap，待 `verify-sandbox.mjs` 在容器内验证                                                      |
+| 5   | 主动推送是否真的恢复                                                                    | 2025-04-21 有停用公告，但 2026 实况文档又给了频控表；本 MVP 不依赖它                                                  |
+| 6   | `1<<24 (GROUP_MEMBER_EVENT)` 是否真的可订阅                                             | 官方 intents 表里没有它，但官方事件页和各家 SDK 都在用；做成可配置                                                    |
+| 7   | 群聊 `msg_type=2`(markdown) 的实际渲染效果                                              | 官方说已对所有机器人开放，默认仍用纯文本                                                                              |
+| 8   | 单聊被动回复有效期与次数（文档写 60 分钟 / 4 次）                                       | 按文档取上限 4 并独立配置；单轮超时仍沿用群聊的保守上限，所以即使文档有出入也不会发出窗口外的消息                     |
+| 9   | 单聊事件里用户 openid 的字段路径                                                        | 按 `author.user_openid` 解析，并对 `d.user_openid`/`author.id`/`author.union_openid` 做回退，字段名猜错时不会整条丢弃 |
+| 10  | `FRIEND_ADD` 事件的 payload 与 `event_id` 回复是否被接受                                | 按 `d.openid` + 信封 id 回复欢迎语；失败只记 warn，不影响正常问答                                                     |
+| 11  | `/files` 上传的 `file_type=4`（文件）是否对机器人开放、各类型大小上限、`file_info` 时效 | 按文档字段实现；上限配置化（media.maxFileMB）不写死；file_info 拿到立刻用不缓存                                       |
+| 12  | `msg_type=7` 媒体消息能否同时携带 `content` 文本                                        | 按"不允许"设计（附件与文本分条发送）；若实测允许可升级为图文合并                                                      |
+| 13  | webp/bmp 走 `file_type=1` 的平台接受度                                                  | 图片白名单默认只含 png/jpg/jpeg/gif，其余按文件发                                                                     |
 
 ---
 
@@ -754,13 +754,13 @@ qqbot-dsh/
 
 ### 10.3 自由度差异落在 ReplyPolicy
 
-| 维度 | 官方 QQ | OneBot |
-|---|---|---|
-| 被动回复窗口 | 群 5 分钟 / 单聊 60 分钟 | 无（随时可发，含主动消息） |
-| 每条消息回复上限 | 群 5 / 单聊 4（平台硬约束） | 无（`ONEBOT_MAX_REPLIES_PER_MSG` 只是防失控安全阀，默认 10） |
-| 单轮超时 | 必须 < 295s（否则超时提示发不出去） | 默认 600s，可到 1 小时 |
-| 回复去重 | (msg_id, msg_seq) 组合，seq 由账本分配 | 无 seq 概念 |
-| 触发方式 | 群 @ / 单聊 | 群 @（识别 at 消息段或 CQ 码）/ 单聊 |
+| 维度             | 官方 QQ                                | OneBot                                                       |
+| ---------------- | -------------------------------------- | ------------------------------------------------------------ |
+| 被动回复窗口     | 群 5 分钟 / 单聊 60 分钟               | 无（随时可发，含主动消息）                                   |
+| 每条消息回复上限 | 群 5 / 单聊 4（平台硬约束）            | 无（`ONEBOT_MAX_REPLIES_PER_MSG` 只是防失控安全阀，默认 10） |
+| 单轮超时         | 必须 < 295s（否则超时提示发不出去）    | 默认 600s，可到 1 小时                                       |
+| 回复去重         | (msg_id, msg_seq) 组合，seq 由账本分配 | 无 seq 概念                                                  |
+| 触发方式         | 群 @ / 单聊                            | 群 @（识别 at 消息段或 CQ 码）/ 单聊                         |
 
 配额账本（ReplyLedger）、进度调度、分段逻辑全部平台无关地留在编排层，
 只是取值来源从写死的 `config.qq.*` 变成 `connector.policy(kind)`。
@@ -818,16 +818,16 @@ qqbot-dsh/
 依据 [群消息（全量模式）](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/group_message_create.html)
 与 [消息类型](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/overview.html)：
 
-| 内容 | 官方字段 | 说明 |
-|---|---|---|
-| 文本 | `content` | `message_type=0` |
-| 图片/视频/语音/文件 | `attachments[]` | 用 `content_type` 区分（`image/*`、`video/mp4`、`voice`、`file`），图片另带 `width/height` |
-| 语音识别 | `attachments[].asr_refer_text` | 官方自带 ASR 参考结果 |
-| 引用消息 | `msg_elements[]` | `message_type=103` 时携带被引用内容，且**可递归嵌套** |
-| 结构化卡片 | `ark_data` | `message_type=3`，卡片正文模型读不到，只能给标题等 |
-| @ 列表 | `mentions[]` | `content` 里已去掉 @ 前缀 |
+| 内容                | 官方字段                       | 说明                                                                                       |
+| ------------------- | ------------------------------ | ------------------------------------------------------------------------------------------ |
+| 文本                | `content`                      | `message_type=0`                                                                           |
+| 图片/视频/语音/文件 | `attachments[]`                | 用 `content_type` 区分（`image/*`、`video/mp4`、`voice`、`file`），图片另带 `width/height` |
+| 语音识别            | `attachments[].asr_refer_text` | 官方自带 ASR 参考结果                                                                      |
+| 引用消息            | `msg_elements[]`               | `message_type=103` 时携带被引用内容，且**可递归嵌套**                                      |
+| 结构化卡片          | `ark_data`                     | `message_type=3`，卡片正文模型读不到，只能给标题等                                         |
+| @ 列表              | `mentions[]`                   | `content` 里已去掉 @ 前缀                                                                  |
 
-### 11.2 接缝：平台无关的 *内容片段*
+### 11.2 接缝：平台无关的 _内容片段_
 
 适配器的产出从"一个字符串"升级为 **`MessagePart[]`**（`src/core/connector.ts`）：
 
@@ -897,7 +897,7 @@ DshRuntime  session/prompt（text 块 + image 块）
   `fetchMedia`：先带 `Authorization: QQBot <access_token>`，仅在 401/403 时
   裸请求一次兜底（公开 CDN 与需鉴权两种形态都能过）——**文件直链走的也是这条路**。
 - **OneBot**（`adapters/onebot/normalize.ts`）：`image/record/video/file/face/
-  json` 段各自映射；`file` 段带 `file_id` 与体积（NapCat 的普通文件链接受下载
+json` 段各自映射；`file` 段带 `file_id` 与体积（NapCat 的普通文件链接受下载
   次数限制，需要靠 id 重申请直链，见 11.7）；`forward` 段**优先用上报里已经
   内联的逐条内容**（NapCat 的 `forward.data.content` 在官方 schema 里标注为
   `[收]`），只有拿到 id 时才由连接器调 `get_forward_msg` 回查——注意 `message_id`
@@ -1001,6 +1001,7 @@ attachments/file 段 → media 片段（带 url + fileId + 会话上下文）
 Office 三件套一期只落盘，交给 agent。
 
 **安全**：
+
 - 文件名来自用户 → `store/inbox.ts` 做 sanitize（去分隔符/控制字符/前导点、限长、
   保留扩展名），`<时间戳>-` 前缀 + `wx` 标志保证绝不覆盖；目录解析统一走
   `resolveInboxDir`，要求目标**不是符号链接**且 realpath 严格落在工作区之内
@@ -1302,6 +1303,7 @@ cordis.patch.yml` 的 personaPrefix 增加"后台任务纪律"：耗时工作必
 - 主动推送是尽力而为：发送失败会回落暂存，不会丢结果，但可能延迟到下一条消息。
 
 ---
+
 ## 14. 预设风格前台（/persona）与长任务提示注入
 
 ### 14.1 诉求与拆解

@@ -64,8 +64,15 @@ export interface RuntimePoolEvents {
   'session.event': (conversationKey: string, notification: SessionEventNotification) => void;
   'session.status': (conversationKey: string, notification: SessionStatusNotification) => void;
   'subagent.started': (conversationKey: string, notification: SubagentStartedNotification) => void;
-  'subagent.finished': (conversationKey: string, notification: SubagentFinishedNotification) => void;
-  'runtime.exit': (conversationKey: string, code: number | null, signal: NodeJS.Signals | null) => void;
+  'subagent.finished': (
+    conversationKey: string,
+    notification: SubagentFinishedNotification
+  ) => void;
+  'runtime.exit': (
+    conversationKey: string,
+    code: number | null,
+    signal: NodeJS.Signals | null
+  ) => void;
 }
 
 /**
@@ -90,7 +97,8 @@ export class RuntimePool extends EventEmitter {
 
   constructor(private readonly options: RuntimePoolOptions) {
     super();
-    if (!Number.isInteger(options.maxRuntimes) || options.maxRuntimes < 1) throw new Error('runtime 池硬上限必须 >= 1');
+    if (!Number.isInteger(options.maxRuntimes) || options.maxRuntimes < 1)
+      throw new Error('runtime 池硬上限必须 >= 1');
   }
 
   get size(): number {
@@ -110,20 +118,43 @@ export class RuntimePool extends EventEmitter {
   }
 
   /** 取该会话的条目，不存在则创建运行时并完成 initialize。 */
-  async acquire(conversationKey: string, workspacePath: string, overrides: Partial<DshRuntimeOptions> = {}, exclusive = false, signal?: AbortSignal): Promise<RuntimeEntry> {
+  async acquire(
+    conversationKey: string,
+    workspacePath: string,
+    overrides: Partial<DshRuntimeOptions> = {},
+    exclusive = false,
+    signal?: AbortSignal
+  ): Promise<RuntimeEntry> {
     const before = this.acquisition;
     let unlock!: () => void;
-    this.acquisition = new Promise<void>(resolve => { unlock = resolve; });
+    this.acquisition = new Promise<void>((resolve) => {
+      unlock = resolve;
+    });
     await before;
-    try { signal?.throwIfAborted(); return await this.acquireSerial(conversationKey, workspacePath, overrides, exclusive, signal); }
-    finally { unlock(); }
+    try {
+      signal?.throwIfAborted();
+      return await this.acquireSerial(conversationKey, workspacePath, overrides, exclusive, signal);
+    } finally {
+      unlock();
+    }
   }
 
-  acquireLease(conversationKey: string, workspacePath: string, overrides: Partial<DshRuntimeOptions> = {}, signal?: AbortSignal): Promise<RuntimeEntry> {
+  acquireLease(
+    conversationKey: string,
+    workspacePath: string,
+    overrides: Partial<DshRuntimeOptions> = {},
+    signal?: AbortSignal
+  ): Promise<RuntimeEntry> {
     return this.acquire(conversationKey, workspacePath, overrides, true, signal);
   }
 
-  private async acquireSerial(conversationKey: string, workspacePath: string, overrides: Partial<DshRuntimeOptions>, exclusive: boolean, signal?: AbortSignal): Promise<RuntimeEntry> {
+  private async acquireSerial(
+    conversationKey: string,
+    workspacePath: string,
+    overrides: Partial<DshRuntimeOptions>,
+    exclusive: boolean,
+    signal?: AbortSignal
+  ): Promise<RuntimeEntry> {
     if (this.disposed) throw new Error('runtime 池已关闭');
 
     const existing = this.entries.get(conversationKey);
@@ -143,16 +174,24 @@ export class RuntimePool extends EventEmitter {
     }
 
     while (!(await this.evictIfNeeded())) {
-      await new Promise<void>(resolve => {
-        const wake = () => { signal?.removeEventListener('abort', wake); this.waiters.delete(wake); resolve(); };
-        this.waiters.add(wake); signal?.addEventListener('abort', wake, { once: true });
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          signal?.removeEventListener('abort', wake);
+          this.waiters.delete(wake);
+          resolve();
+        };
+        this.waiters.add(wake);
+        signal?.addEventListener('abort', wake, { once: true });
         if (signal?.aborted) wake();
       });
       signal?.throwIfAborted();
       if (this.disposed) throw new Error('runtime 池已关闭');
     }
     const entry = await this.create(conversationKey, workspacePath, overrides);
-    if (this.disposed || signal?.aborted) { await entry.runtime.dispose(); throw new Error('runtime 池已关闭或租约已取消'); }
+    if (this.disposed || signal?.aborted) {
+      await entry.runtime.dispose();
+      throw new Error('runtime 池已关闭或租约已取消');
+    }
     if (exclusive) entry.busy = true;
     this.entries.set(conversationKey, entry);
     this.scheduleReclaim();
@@ -214,7 +253,11 @@ export class RuntimePool extends EventEmitter {
     return this.options.now?.() ?? Date.now();
   }
 
-  private async create(conversationKey: string, workspacePath: string, overrides: Partial<DshRuntimeOptions>): Promise<RuntimeEntry> {
+  private async create(
+    conversationKey: string,
+    workspacePath: string,
+    overrides: Partial<DshRuntimeOptions>
+  ): Promise<RuntimeEntry> {
     const { base, logger } = this.options;
     const runtimeOptions: DshRuntimeOptions = {
       ...base,
@@ -222,7 +265,8 @@ export class RuntimePool extends EventEmitter {
       cwd: workspacePath,
       logger: logger.child({ conversation: conversationKey }),
     };
-    const factory = this.options.runtimeFactory ?? ((opts: DshRuntimeOptions) => new DshRuntime(opts));
+    const factory =
+      this.options.runtimeFactory ?? ((opts: DshRuntimeOptions) => new DshRuntime(opts));
     const runtime = factory(runtimeOptions);
 
     // 先建 entry 再接线：subagent 计数要写进 entry.activeChildren，
@@ -269,8 +313,12 @@ export class RuntimePool extends EventEmitter {
       this.emit('runtime.exit', conversationKey, code, signal);
     });
 
-    try { await runtime.start(); }
-    catch (error) { await runtime.dispose().catch(() => {}); throw error; }
+    try {
+      await runtime.start();
+    } catch (error) {
+      await runtime.dispose().catch(() => {});
+      throw error;
+    }
     return entry;
   }
 
@@ -290,13 +338,20 @@ export class RuntimePool extends EventEmitter {
         });
         return false;
       }
-      logger.info('按 LRU 回收 runtime', { conversation: victim.conversationKey, size: this.entries.size });
+      logger.info('按 LRU 回收 runtime', {
+        conversation: victim.conversationKey,
+        size: this.entries.size,
+      });
       await this.drop(victim.conversationKey);
     }
     return true;
   }
 
-  private wakeWaiters(): void { const waiters = [...this.waiters]; this.waiters.clear(); waiters.forEach(fn => fn()); }
+  private wakeWaiters(): void {
+    const waiters = [...this.waiters];
+    this.waiters.clear();
+    waiters.forEach((fn) => fn());
+  }
 
   private scheduleReclaim(): void {
     if (this.reclaimTimer !== undefined) return;

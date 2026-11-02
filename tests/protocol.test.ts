@@ -25,7 +25,11 @@ function makeClient() {
   fromClient.on('data', (chunk: Buffer) => written.push(chunk.toString('utf8')));
 
   const violations: ProtocolViolationError[] = [];
-  const client = new HarnessSdkClient({ input: toClient, output: fromClient, requestTimeoutMs: 1_000 });
+  const client = new HarnessSdkClient({
+    input: toClient,
+    output: fromClient,
+    requestTimeoutMs: 1_000,
+  });
   client.on('violation', (error) => violations.push(error));
 
   const reply = (frame: unknown) => toClient.write(`${JSON.stringify(frame)}\n`);
@@ -76,7 +80,7 @@ describe('HarnessSdkClient', () => {
 
     toClient.write(
       `${JSON.stringify({ jsonrpc: '2.0', method: 'session.status', params: { sessionId: 's', status: 'running' } })}\n` +
-        `${JSON.stringify({ jsonrpc: '2.0', id: 1, result: { serverInfo: { name: 'n', version: 'v' } } })}\n`,
+        `${JSON.stringify({ jsonrpc: '2.0', id: 1, result: { serverInfo: { name: 'n', version: 'v' } } })}\n`
     );
 
     await expect(pending).resolves.toEqual({ serverInfo: { name: 'n', version: 'v' } });
@@ -88,7 +92,11 @@ describe('HarnessSdkClient', () => {
     const pending = client.initialize({ cwd: '/w', provider: 'p', model: 'm' });
     await settle();
 
-    const frame = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { serverInfo: { name: 'n', version: 'v' } } });
+    const frame = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { serverInfo: { name: 'n', version: 'v' } },
+    });
     toClient.write(frame.slice(0, 10));
     toClient.write(frame.slice(10));
     toClient.write('\n');
@@ -105,14 +113,14 @@ describe('HarnessSdkClient', () => {
     client.on('session.event', eventHandler);
 
     toClient.write(
-      `${JSON.stringify({ jsonrpc: '2.0', method: 'session.status', params: { sessionId: 's', status: 'idle' } })}\n`,
+      `${JSON.stringify({ jsonrpc: '2.0', method: 'session.status', params: { sessionId: 's', status: 'idle' } })}\n`
     );
     toClient.write(
       `${JSON.stringify({
         jsonrpc: '2.0',
         method: 'session.event',
         params: { sessionId: 's', event: { type: 'turn/start', seq: 1, data: { turn: 1 } } },
-      })}\n`,
+      })}\n`
     );
 
     expect(statusHandler).toHaveBeenCalledWith({ sessionId: 's', status: 'idle' });
@@ -135,7 +143,7 @@ describe('HarnessSdkClient', () => {
         jsonrpc: '2.0',
         method: 'subagent.started',
         params: { parentSessionId: 'p1', childSessionId: 'c1' },
-      })}\n`,
+      })}\n`
     );
     toClient.write(
       `${JSON.stringify({
@@ -150,7 +158,7 @@ describe('HarnessSdkClient', () => {
           stopReason: 'completed',
           lastAssistantMessage: [{ type: 'text', text: '结果' }, null, 'garbage'],
         },
-      })}\n`,
+      })}\n`
     );
     await settle();
 
@@ -176,9 +184,11 @@ describe('HarnessSdkClient', () => {
     client.on('unknown', unknown);
 
     toClient.write(
-      `${JSON.stringify({ jsonrpc: '2.0', method: 'subagent.started', params: { parentSessionId: 'p1' } })}\n`,
+      `${JSON.stringify({ jsonrpc: '2.0', method: 'subagent.started', params: { parentSessionId: 'p1' } })}\n`
     );
-    toClient.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'subagent.finished', params: null })}\n`);
+    toClient.write(
+      `${JSON.stringify({ jsonrpc: '2.0', method: 'subagent.finished', params: null })}\n`
+    );
     await settle();
 
     expect(started).not.toHaveBeenCalled();
@@ -200,7 +210,7 @@ describe('HarnessSdkClient', () => {
   it('请求超时会 reject 并清理在途请求', async () => {
     const { client } = makeClient();
     await expect(
-      client.initialize({ cwd: '/w', provider: 'p', model: 'm' }, { timeoutMs: 30 }),
+      client.initialize({ cwd: '/w', provider: 'p', model: 'm' }, { timeoutMs: 30 })
     ).rejects.toThrow(/超时/);
     expect(client.pendingCount).toBe(0);
     client.close();
@@ -208,7 +218,9 @@ describe('HarnessSdkClient', () => {
 
   it('服务端若发来请求，回 -32601 而不是挂等', async () => {
     const { client, toClient, written } = makeClient();
-    toClient.write(`${JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'some/request', params: {} })}\n`);
+    toClient.write(
+      `${JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'some/request', params: {} })}\n`
+    );
     await settle();
 
     const reply = written.map((line) => JSON.parse(line)).find((f) => f.id === 99);
@@ -227,7 +239,9 @@ describe('HarnessSdkClient', () => {
   it('close 后拒绝新请求', async () => {
     const { client } = makeClient();
     client.close();
-    await expect(client.prompt({ sessionId: 's', contentBlocks: [] })).rejects.toThrow(/传输已关闭/);
+    await expect(client.prompt({ sessionId: 's', contentBlocks: [] })).rejects.toThrow(
+      /传输已关闭/
+    );
   });
 });
 
@@ -251,7 +265,13 @@ describe('extractAssistantText', () => {
 
   it('结构不认识时返回空串而不抛错', () => {
     expect(extractAssistantText({ type: 'assistant/message', seq: 1, data: {} })).toBe('');
-    expect(extractAssistantText({ type: 'assistant/message', seq: 1, data: { message: { content: 'x' } } })).toBe('');
+    expect(
+      extractAssistantText({
+        type: 'assistant/message',
+        seq: 1,
+        data: { message: { content: 'x' } },
+      })
+    ).toBe('');
     expect(extractAssistantText({ type: 'turn/start', seq: 1, data: {} })).toBe('');
   });
 });
@@ -262,7 +282,11 @@ describe('TurnAccumulator', () => {
     seq: 1,
     data: { message: { content: [{ type: 'text', text }] } },
   });
-  const turnEnd = (kind: string) => ({ type: 'turn/end', seq: 2, data: { turn: 1, reason: { kind } } });
+  const turnEnd = (kind: string) => ({
+    type: 'turn/end',
+    seq: 2,
+    data: { turn: 1, reason: { kind } },
+  });
 
   it('中间空 assistant 消息不影响最终答案', () => {
     const acc = new TurnAccumulator('s');
@@ -305,7 +329,11 @@ describe('TurnAccumulator', () => {
   it('error 结果带上错误信息', () => {
     const acc = new TurnAccumulator('s');
     acc.observeStatus('running');
-    acc.observe({ type: 'turn/end', seq: 2, data: { turn: 1, reason: { kind: 'error', error: { message: '模型超时' } } } });
+    acc.observe({
+      type: 'turn/end',
+      seq: 2,
+      data: { turn: 1, reason: { kind: 'error', error: { message: '模型超时' } } },
+    });
     acc.observeStatus('idle');
     expect(acc.result()).toMatchObject({ kind: 'error', errorMessage: '模型超时' });
   });

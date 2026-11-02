@@ -46,18 +46,18 @@ services:
     environment:
       # 置空 = 直连。必须同时清掉大写形式：DSH 的代理解析会先读小写、
       # 再回退大写，任一处非空都会安装全局 dispatcher。
-      HTTPS_PROXY: ""
-      HTTP_PROXY: ""
+      HTTPS_PROXY: ''
+      HTTP_PROXY: ''
 
       # 4GB 内存主机的保守并发上限：每个 DSH 子进程空闲约 175MB，
       # 8 个 runtime 理论上限约 1.4GB，和 NapCat 同机会挤压 bot 的 2GB 限额。
       # 4C4G 可同步上调总上限和两个 lane 容量，
       # 2C4G 建议保持默认。
-      QQ_MAX_RUNTIMES: "${QQ_MAX_RUNTIMES:-4}"
-      BOT_FAST_RUNTIMES: "${BOT_FAST_RUNTIMES:-2}"
-      BOT_SLOW_RUNTIMES: "${BOT_SLOW_RUNTIMES:-2}"
+      QQ_MAX_RUNTIMES: '${QQ_MAX_RUNTIMES:-4}'
+      BOT_FAST_RUNTIMES: '${BOT_FAST_RUNTIMES:-2}'
+      BOT_SLOW_RUNTIMES: '${BOT_SLOW_RUNTIMES:-2}'
 
     ports:
       # 仅回环：宿主上的监控进程可以 curl 127.0.0.1:8080/healthz，
       # 公网和同 VPC 的其他机器都连不上。
-      - "127.0.0.1:8080:8080"
+      - '127.0.0.1:8080:8080'

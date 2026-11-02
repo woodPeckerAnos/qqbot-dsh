@@ -224,11 +224,7 @@ export class ConversationState {
    */
   private readonly sessionClosedListeners = new Set<(event: SessionClosedEvent) => void>();
 
-  constructor(
-    convKey: string,
-    window: ObservationWindow,
-    options: ConversationStateOptions = {},
-  ) {
+  constructor(convKey: string, window: ObservationWindow, options: ConversationStateOptions = {}) {
     this.convKey = convKey;
     this.window = window;
     this.options = { ...DEFAULT_STATE_OPTIONS, ...options };
@@ -359,9 +355,16 @@ export class ConversationState {
     return {
       id: `${this.convKey}:${this.topicBudgetId}`,
       limit,
-      reserve: () => { session.budgetLeft = Math.max(0, session.budgetLeft - 1); },
-      release: () => { session.budgetLeft = Math.min(limit, session.budgetLeft + 1); },
-      commit: (ts: number) => { session.lastSpokeAt = ts; this.committedTasks.set(session, (this.committedTasks.get(session) ?? 0) + 1); },
+      reserve: () => {
+        session.budgetLeft = Math.max(0, session.budgetLeft - 1);
+      },
+      release: () => {
+        session.budgetLeft = Math.min(limit, session.budgetLeft + 1);
+      },
+      commit: (ts: number) => {
+        session.lastSpokeAt = ts;
+        this.committedTasks.set(session, (this.committedTasks.get(session) ?? 0) + 1);
+      },
       isCurrent: () => this.topicSession === session,
     };
   }
@@ -373,7 +376,9 @@ export class ConversationState {
    * 只带一个原因——验收 11 的账目等式（`closed === Σ closedBy{reason}`）
    * 就建立在"只有这一个出口"上。
    */
-  committedTaskCount(session: TopicSession): number { return this.committedTasks.get(session) ?? 0; }
+  committedTaskCount(session: TopicSession): number {
+    return this.committedTasks.get(session) ?? 0;
+  }
 
   closeSession(cause: SessionCloseCause): boolean {
     const session = this.topicSession;
@@ -736,9 +741,7 @@ export class ConversationStateStore {
    * 订阅**任意会话**的问题关闭事件（返回取消订阅函数）。
    * 只能拿到此后新建的会话——调用方应在组装期就订阅好（见 watcher 构造器）。
    */
-  onQuestionClosed(
-    listener: (convKey: string, event: QuestionClosedEvent) => void,
-  ): () => void {
+  onQuestionClosed(listener: (convKey: string, event: QuestionClosedEvent) => void): () => void {
     this.closers.add(listener);
     return () => {
       this.closers.delete(listener);
@@ -746,9 +749,7 @@ export class ConversationStateStore {
   }
 
   /** 订阅**任意会话**的 session 关闭事件（返回取消订阅函数）。 */
-  onSessionClosed(
-    listener: (convKey: string, event: SessionClosedEvent) => void,
-  ): () => void {
+  onSessionClosed(listener: (convKey: string, event: SessionClosedEvent) => void): () => void {
     this.sessionClosers.add(listener);
     return () => {
       this.sessionClosers.delete(listener);

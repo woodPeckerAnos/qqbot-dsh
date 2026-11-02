@@ -34,7 +34,7 @@ export interface RenderTranscriptOptions {
  */
 export function renderTranscript(
   entries: readonly ObservationEntry[],
-  options: RenderTranscriptOptions = {},
+  options: RenderTranscriptOptions = {}
 ): string {
   const limit = options.limit ?? 30;
   const maxChars = options.maxChars ?? TRANSCRIPT_MAX_CHARS;
@@ -68,12 +68,15 @@ export function renderTranscript(
  * 与 `judge.ts` 的 `renderFacts` 同源，这里是**进 user 消息**的那一份
  * （判据在 system 段，事实在 user 段）。
  */
-export function renderFacts(evidence: SceneEvidence, pendingQuestions: readonly string[] = []): string {
+export function renderFacts(
+  evidence: SceneEvidence,
+  pendingQuestions: readonly string[] = []
+): string {
   const lines = [`触发来源：${evidence.trigger}`];
   if (evidence.topic !== undefined) {
     lines.push(
       `当前话题：${evidence.topic.id}（参与 ${evidence.topic.humanParticipants} 人，` +
-        `bot 在该话题发过 ${evidence.topic.botSpeaks} 次）`,
+        `bot 在该话题发过 ${evidence.topic.botSpeaks} 次）`
     );
   }
   if (evidence.lastBotSpeakAt !== undefined) {

@@ -168,8 +168,9 @@ export function createTopicJudge(options: TopicJudgeOptions): TopicJudge | undef
           messages: [
             {
               role: 'system',
-              content:
-                askAboutChatRecord ? `${SYSTEM_PROMPT}\n${CHAT_RECORD_QUESTION}` : SYSTEM_PROMPT,
+              content: askAboutChatRecord
+                ? `${SYSTEM_PROMPT}\n${CHAT_RECORD_QUESTION}`
+                : SYSTEM_PROMPT,
             },
             { role: 'user', content: renderJudgePrompt(input, options.perTurnMaxChars) },
           ],

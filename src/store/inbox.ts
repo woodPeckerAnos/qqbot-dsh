@@ -109,7 +109,7 @@ export interface SavedInboxFile {
 async function resolveInboxDir(
   workspacePath: string,
   inboxDir: string,
-  logger: Logger,
+  logger: Logger
 ): Promise<string | undefined> {
   const dir = join(workspacePath, inboxDir);
   try {
@@ -143,7 +143,7 @@ async function resolveInboxDir(
  * 不会误删用户或 agent 自己放进来的文件（见 cleanupInbox）。
  */
 export async function saveInboxFile(
-  options: SaveInboxFileOptions,
+  options: SaveInboxFileOptions
 ): Promise<SavedInboxFile | undefined> {
   const { workspacePath, inboxDir, data, maxBytes, logger } = options;
   const now = options.now ?? Date.now;

@@ -4,14 +4,13 @@
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  DEFAULT_LONG_TASK_PATTERNS,
-  matchLongTaskHint,
-} from '../src/pipeline/hints.js';
+import { DEFAULT_LONG_TASK_PATTERNS, matchLongTaskHint } from '../src/pipeline/hints.js';
 
 describe('matchLongTaskHint', () => {
   it('命中默认关键词', () => {
-    expect(matchLongTaskHint('帮我核查一下这个新闻是不是真的', DEFAULT_LONG_TASK_PATTERNS)).toBe(true);
+    expect(matchLongTaskHint('帮我核查一下这个新闻是不是真的', DEFAULT_LONG_TASK_PATTERNS)).toBe(
+      true
+    );
     expect(matchLongTaskHint('批量把这些文件转成 pdf', DEFAULT_LONG_TASK_PATTERNS)).toBe(true);
   });
 

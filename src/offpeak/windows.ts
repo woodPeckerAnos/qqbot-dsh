@@ -111,13 +111,15 @@ export function parseWindowRange(text: string): OffpeakWindow {
   const match = WINDOW_RANGE_RE.exec(text.trim());
   if (match === null) {
     throw new OffpeakConfigError(
-      `窗口格式必须是 HH:MM-HH:MM（如 00:00-09:00），收到 ${JSON.stringify(text)}`,
+      `窗口格式必须是 HH:MM-HH:MM（如 00:00-09:00），收到 ${JSON.stringify(text)}`
     );
   }
   const startMin = parseMinute(match[1] as string, false);
   const endMin = parseMinute(match[2] as string, true);
   if (startMin === endMin) {
-    throw new OffpeakConfigError(`窗口起止时间不能相同（那会是一个空窗口）：${JSON.stringify(text)}`);
+    throw new OffpeakConfigError(
+      `窗口起止时间不能相同（那会是一个空窗口）：${JSON.stringify(text)}`
+    );
   }
   return { startMin, endMin };
 }
@@ -155,7 +157,7 @@ export function assertNoOverlap(windows: readonly OffpeakWindow[]): void {
   const duplicated = cover.findIndex((count) => count > 1);
   if (duplicated !== -1) {
     throw new OffpeakConfigError(
-      `谷时段窗口有重叠，${formatMinutes(duplicated)} 被多个窗口覆盖：${formatWindows(windows)}`,
+      `谷时段窗口有重叠，${formatMinutes(duplicated)} 被多个窗口覆盖：${formatWindows(windows)}`
     );
   }
 }

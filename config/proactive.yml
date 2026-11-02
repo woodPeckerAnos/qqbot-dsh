@@ -17,7 +17,7 @@
 # 当前生效的场景清单与判据见 src/pipeline/proactive/interests/SCENES.md
 # （那份文件是场景的自然语言真相源；新增场景请先改它再改代码）。
 proactive:
-  enabled: true          # 生产环境显式打开（代码默认关，fail-closed）
+  enabled: true # 生产环境显式打开（代码默认关，fail-closed）
   # 灰度观察：判定照跑、记录"本应发言"，但永不真的发。生产已关闭灰度。
   dryRun: false
   # 兴趣池（场景 5）：整份内容会进判定 prompt，因此单独成文件、有独立 schema。

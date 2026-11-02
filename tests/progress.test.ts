@@ -16,7 +16,7 @@ import {
 describe('ReplyLedger', () => {
   it('构造时拒绝 progressQuota >= totalQuota（否则最终答案没配额）', () => {
     expect(() => new ReplyLedger({ msgId: 'm', totalQuota: 3, progressQuota: 3 })).toThrow(
-      /progressQuota 必须小于 totalQuota/,
+      /progressQuota 必须小于 totalQuota/
     );
   });
 

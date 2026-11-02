@@ -48,7 +48,7 @@ export function apply(ctx, config = {}) {
   const log = (level, message, extra) => {
     // DSH 的 stdout 是 JSON-RPC 专用通道，任何日志只能走 stderr。
     process.stderr.write(
-      `${JSON.stringify({ level, time: Date.now(), plugin: name, message, ...extra })}\n`,
+      `${JSON.stringify({ level, time: Date.now(), plugin: name, message, ...extra })}\n`
     );
   };
 
@@ -65,12 +65,16 @@ export function apply(ctx, config = {}) {
       return REJECT;
     }
 
-    log(isEscalation ? 'warn' : 'info', isEscalation ? 'sandbox escalation auto-approved' : 'auto-approved', {
-      toolName,
-      callId: request?.callId,
-      reason,
-      sessionId: request?.agent?.session?.id,
-    });
+    log(
+      isEscalation ? 'warn' : 'info',
+      isEscalation ? 'sandbox escalation auto-approved' : 'auto-approved',
+      {
+        toolName,
+        callId: request?.callId,
+        reason,
+        sessionId: request?.agent?.session?.id,
+      }
+    );
     return GRANT;
   });
 

@@ -51,8 +51,7 @@ export type PromptImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp' | 'i
  * 图片块给出像素本身。
  */
 export type PromptContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'image'; data: string; mimeType: PromptImageMimeType };
+  { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: PromptImageMimeType };
 
 export interface SessionPromptParams {
   sessionId: string;
@@ -131,7 +130,13 @@ function parseSubagentStarted(params: unknown): SubagentStartedNotification | un
 function parseSubagentFinished(params: unknown): SubagentFinishedNotification | undefined {
   if (params === null || typeof params !== 'object') return undefined;
   const record = params as Record<string, unknown>;
-  const strings = ['provider', 'agentId', 'parentSessionId', 'childSessionId', 'stopReason'] as const;
+  const strings = [
+    'provider',
+    'agentId',
+    'parentSessionId',
+    'childSessionId',
+    'stopReason',
+  ] as const;
   for (const key of strings) {
     if (typeof record[key] !== 'string') return undefined;
   }
@@ -144,7 +149,11 @@ function parseSubagentFinished(params: unknown): SubagentFinishedNotification | 
     status: record['status'] === 'error' ? 'error' : 'ok',
     stopReason: record['stopReason'] as string,
     ...(Array.isArray(rawLast)
-      ? { lastAssistantMessage: rawLast.filter((b): b is Record<string, unknown> => b !== null && typeof b === 'object') }
+      ? {
+          lastAssistantMessage: rawLast.filter(
+            (b): b is Record<string, unknown> => b !== null && typeof b === 'object'
+          ),
+        }
       : {}),
   };
 }
@@ -168,7 +177,7 @@ export class JsonRpcResponseError extends Error {
   constructor(
     readonly code: number,
     message: string,
-    readonly data?: unknown,
+    readonly data?: unknown
   ) {
     super(`JSON-RPC ${code}: ${message}`);
     this.name = 'JsonRpcResponseError';
@@ -179,7 +188,7 @@ export class JsonRpcResponseError extends Error {
 export class ProtocolViolationError extends Error {
   constructor(
     message: string,
-    readonly rawLine: string,
+    readonly rawLine: string
   ) {
     super(message);
     this.name = 'ProtocolViolationError';
@@ -259,7 +268,7 @@ export class HarnessSdkClient {
   request<M extends HarnessSdkMethod>(
     method: M,
     params: HarnessSdkRequestMap[M]['params'],
-    options: { timeoutMs?: number } = {},
+    options: { timeoutMs?: number } = {}
   ): Promise<HarnessSdkRequestMap[M]['result']> {
     if (this.closed) {
       return Promise.reject(new Error(`传输已关闭，无法发送 ${method}`));
@@ -283,11 +292,17 @@ export class HarnessSdkClient {
     });
   }
 
-  initialize(params: InitializeParams, options?: { timeoutMs?: number }): Promise<InitializeResult> {
+  initialize(
+    params: InitializeParams,
+    options?: { timeoutMs?: number }
+  ): Promise<InitializeResult> {
     return this.request('initialize', params, options);
   }
 
-  prompt(params: SessionPromptParams, options?: { timeoutMs?: number }): Promise<SessionPromptResult> {
+  prompt(
+    params: SessionPromptParams,
+    options?: { timeoutMs?: number }
+  ): Promise<SessionPromptResult> {
     return this.request('session/prompt', params, options);
   }
 
@@ -357,8 +372,8 @@ export class HarnessSdkClient {
         new ProtocolViolationError(
           'DSH runtime 的 stdout 出现了非 JSON 内容（协议通道被污染）。' +
             '排查方向：profile 里是否插入了往 stdout 打日志的插件。',
-          line,
-        ),
+          line
+        )
       );
       return;
     }
@@ -380,7 +395,7 @@ export class HarnessSdkClient {
           jsonrpc: '2.0',
           id,
           error: { code: -32601, message: `Method not found: ${method}` },
-        })}\n`,
+        })}\n`
       );
       return;
     }

@@ -111,7 +111,9 @@ async function pixelAt(data: Uint8Array, x: number, y: number): Promise<number[]
   return [raw[index] ?? -1, raw[index + 1] ?? -1, raw[index + 2] ?? -1];
 }
 
-function expectPrepared(result: ImagePrepareResult): Extract<ImagePrepareResult, { kind: 'prepared' }> {
+function expectPrepared(
+  result: ImagePrepareResult
+): Extract<ImagePrepareResult, { kind: 'prepared' }> {
   if (result.kind !== 'prepared') throw new Error(`期望 prepared，实际 ${JSON.stringify(result)}`);
   return result;
 }
@@ -126,7 +128,7 @@ describe('prepareImageForPrompt 快路径', () => {
   it('尺寸与体积都合规时原样返回：字节不动、无说明', async () => {
     const png = await rampPng(200, 200);
     const result = expectPrepared(
-      await prepareImageForPrompt(png, { maxBytes: CONFIG_MAX_BYTES, maxTiles: 3, logger }),
+      await prepareImageForPrompt(png, { maxBytes: CONFIG_MAX_BYTES, maxTiles: 3, logger })
     );
 
     expect(result.changed).toBe(false);
@@ -147,7 +149,7 @@ describe('prepareImageForPrompt 快路径', () => {
       .jpeg()
       .toBuffer();
     const result = expectPrepared(
-      await prepareImageForPrompt(jpeg, { maxBytes: CONFIG_MAX_BYTES, maxTiles: 3, logger }),
+      await prepareImageForPrompt(jpeg, { maxBytes: CONFIG_MAX_BYTES, maxTiles: 3, logger })
     );
 
     expect(result.changed).toBe(false);
@@ -159,7 +161,7 @@ describe('prepareImageForPrompt 长图切片', () => {
   it('1080×20000 的竖长图按配额切片，每块都不超准入与模型预算，且逐块连续', async () => {
     const png = await rampPng(1080, 20_000);
     const result = expectPrepared(
-      await prepareImageForPrompt(png, { maxBytes: CONFIG_MAX_BYTES, maxTiles: 3, logger }),
+      await prepareImageForPrompt(png, { maxBytes: CONFIG_MAX_BYTES, maxTiles: 3, logger })
     );
 
     // 单块长边 = min(8192, floor(640000 / 1080)) = 592；共需 ceil(20000 / 592) = 34 块
@@ -174,7 +176,9 @@ describe('prepareImageForPrompt 长图切片', () => {
       expect(tile.width).toBeLessThanOrEqual(ADMIT_MAX_DIMENSION);
       expect(tile.height).toBeLessThanOrEqual(ADMIT_MAX_DIMENSION);
       expect(tile.width * tile.height).toBeLessThanOrEqual(MODEL_IMAGE_PIXEL_BUDGET);
-      expect(tile.data.byteLength).toBeLessThanOrEqual(Math.min(CONFIG_MAX_BYTES, TILE_TARGET_BYTES));
+      expect(tile.data.byteLength).toBeLessThanOrEqual(
+        Math.min(CONFIG_MAX_BYTES, TILE_TARGET_BYTES)
+      );
       expect(['image/png', 'image/jpeg', 'image/webp']).toContain(tile.mimeType);
     });
 
@@ -184,7 +188,7 @@ describe('prepareImageForPrompt 长图切片', () => {
       await expect(pixelAt(tile.data, 0, 0)).resolves.toEqual(expected);
       // 块末行也要对得上：只对首行断言的话，"块内被缩放/裁短"这类错误会漏
       await expect(pixelAt(tile.data, 0, tile.height - 1)).resolves.toEqual(
-        rampColor(0, index * perTileLong + perTileLong - 1),
+        rampColor(0, index * perTileLong + perTileLong - 1)
       );
     }
 
@@ -205,7 +209,7 @@ describe('prepareImageForPrompt 长图切片', () => {
         // 4000 高没超真实的单边上限，只有把像素上限压低才能逼出切片路径
         maxPixels: 1_000_000,
         logger,
-      }),
+      })
     );
 
     // floor(640000 / 400) = 1600 → 共需 ceil(4000 / 1600) = 3 块，配额 8 够用
@@ -223,7 +227,7 @@ describe('prepareImageForPrompt 长图切片', () => {
   it('20000×600 的横长图从左到右切', async () => {
     const png = await rampPng(20_000, 600);
     const result = expectPrepared(
-      await prepareImageForPrompt(png, { maxBytes: CONFIG_MAX_BYTES, maxTiles: 3, logger }),
+      await prepareImageForPrompt(png, { maxBytes: CONFIG_MAX_BYTES, maxTiles: 3, logger })
     );
 
     // floor(640000 / 600) = 1066
@@ -237,7 +241,7 @@ describe('prepareImageForPrompt 长图切片', () => {
     });
     for (let index = 0; index < result.tiles.length; index += 1) {
       await expect(pixelAt(result.tiles[index]!.data, 0, 0)).resolves.toEqual(
-        rampColor(index * perTileLong, 0),
+        rampColor(index * perTileLong, 0)
       );
     }
 
@@ -253,7 +257,7 @@ describe('prepareImageForPrompt 长图切片', () => {
         maxTiles: 8,
         maxPixels: 1_000_000,
         logger,
-      }),
+      })
     );
 
     // floor(640000 / 600) = 1066 → 共需 ceil(4000 / 1066) = 4 块
@@ -262,7 +266,7 @@ describe('prepareImageForPrompt 长图切片', () => {
     const covered = result.tiles.reduce((sum, tile) => sum + tile.width, 0);
     expect(covered).toBe(4000);
     await expect(pixelAt(result.tiles[3]!.data, 0, 0)).resolves.toEqual(
-      rampColor(3 * perTileLong, 0),
+      rampColor(3 * perTileLong, 0)
     );
 
     expect(result.notes).toHaveLength(1);
@@ -284,7 +288,7 @@ describe('prepareImageForPrompt 长图切片', () => {
         // 转正后 500×4000 没超真实上限，压低像素上限才能逼出切片路径
         maxPixels: 1_000_000,
         logger,
-      }),
+      })
     );
     // 转正后短边 500 → 单块长边 min(8192, floor(640000/500)) = 1280，共需 4 块
     const perTileLong = Math.floor(MODEL_IMAGE_PIXEL_BUDGET / 500);
@@ -311,7 +315,7 @@ describe('prepareImageForPrompt 长图切片', () => {
   it('配额只有 1 块时绝不切片', async () => {
     const png = await rampPng(1080, 20_000);
     const result = expectPrepared(
-      await prepareImageForPrompt(png, { maxBytes: CONFIG_MAX_BYTES, maxTiles: 1, logger }),
+      await prepareImageForPrompt(png, { maxBytes: CONFIG_MAX_BYTES, maxTiles: 1, logger })
     );
 
     expect(result.tiles).toHaveLength(1);
@@ -342,7 +346,7 @@ describe('prepareImageForPrompt 等比缩放', () => {
         maxBytes: 2 * 1024 * 1024,
         maxTiles: 2,
         logger,
-      }),
+      })
     );
 
     expect(result.changed).toBe(true);
@@ -369,7 +373,7 @@ describe('prepareImageForPrompt 等比缩放', () => {
         maxTiles: 4,
         maxPixels: 100_000,
         logger,
-      }),
+      })
     );
 
     expect(result.tiles).toHaveLength(1);
@@ -388,7 +392,7 @@ describe('prepareImageForPrompt 等比缩放', () => {
         tilePixels: 100,
         maxPixels: 200_000,
         logger,
-      }),
+      })
     );
 
     expect(result.tiles).toHaveLength(1);
@@ -401,7 +405,7 @@ describe('prepareImageForPrompt 等比缩放', () => {
     expect(png.byteLength).toBeGreaterThan(5_000_000);
 
     const result = expectPrepared(
-      await prepareImageForPrompt(png, { maxBytes: 300_000, maxTiles: 2, logger }),
+      await prepareImageForPrompt(png, { maxBytes: 300_000, maxTiles: 2, logger })
     );
 
     expect(result.changed).toBe(true);

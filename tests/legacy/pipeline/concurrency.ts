@@ -116,7 +116,11 @@ export class TimeoutError extends Error {
 }
 
 /** 给一个 promise 加超时。超时后原 promise 仍在跑，调用方需自行处理副作用。 */
-export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout?: () => void): Promise<T> {
+export function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout?: () => void
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       onTimeout?.();
@@ -131,7 +135,7 @@ export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout
       (error: unknown) => {
         clearTimeout(timer);
         reject(error instanceof Error ? error : new Error(String(error)));
-      },
+      }
     );
   });
 }
@@ -144,7 +148,7 @@ export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout
 export async function waitUntil(
   predicate: () => boolean,
   timeoutMs: number,
-  pollMs = 100,
+  pollMs = 100
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {

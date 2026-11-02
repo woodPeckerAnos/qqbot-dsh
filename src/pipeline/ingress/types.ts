@@ -42,7 +42,7 @@ export type IngressStage = (ctx: MessageContext, next: () => Promise<void>) => P
 export function runStages(
   stages: readonly IngressStage[],
   ctx: MessageContext,
-  terminal: () => Promise<void>,
+  terminal: () => Promise<void>
 ): Promise<void> {
   const dispatch = (index: number): Promise<void> => {
     if (index === stages.length) return terminal();

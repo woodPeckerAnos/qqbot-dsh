@@ -6,12 +6,13 @@
 > 假设设计（实测后可升级为图文合并）；实施顺序 **消息模型 + OneBot 先行，官方紧随**。
 >
 > 实现期对本文档的两处偏差（均已落实到 DESIGN.md §12）：
->   1. OneBot 侧**没有**做"text+image 合并成一条消息"：编排层的账本语义是
->      "一次 reply() = 一条消息"，而附件需要逐个隔离失败；OneBot 配额足够宽
->      （默认 10 条），分条发送没有实际代价；
->   2. §6.3 的 ReplyPolicy 媒体字段未下沉——两个平台的出站限制当前一致，
->      全局 `media` 配置已够（与入站 `attachments` 配置的既有先例一致）；
->      哪天官方与 OneBot 的限制真分化了再下沉。
+>
+> 1. OneBot 侧**没有**做"text+image 合并成一条消息"：编排层的账本语义是
+>    "一次 reply() = 一条消息"，而附件需要逐个隔离失败；OneBot 配额足够宽
+>    （默认 10 条），分条发送没有实际代价；
+> 2. §6.3 的 ReplyPolicy 媒体字段未下沉——两个平台的出站限制当前一致，
+>    全局 `media` 配置已够（与入站 `attachments` 配置的既有先例一致）；
+>    哪天官方与 OneBot 的限制真分化了再下沉。
 
 ## 1. 目标与非目标
 
@@ -93,14 +94,14 @@ turn 结束后由 Responder 扫描该目录，逐个发送，发完归档。
 
 ```ts
 interface OutgoingAttachment {
-  kind: 'image' | 'file';        // audio/video 预留
-  absPath: string;               // 已通过包含性校验的绝对路径
-  fileName: string;              // 发送时展示的文件名（不含目录）
+  kind: 'image' | 'file'; // audio/video 预留
+  absPath: string; // 已通过包含性校验的绝对路径
+  fileName: string; // 发送时展示的文件名（不含目录）
   sizeBytes: number;
 }
 
 interface OutgoingMessage {
-  text: string;                  // 可为 ''（纯附件消息）
+  text: string; // 可为 ''（纯附件消息）
   attachments?: OutgoingAttachment[];
 }
 ```
@@ -193,8 +194,8 @@ file_type=4 是否对机器人开放都未实测——上限写进配置不写�
 ```ts
 interface ReplyPolicy {
   // ...现有字段
-  mediaEnabled: boolean;        // 该平台是否允许发附件
-  maxAttachmentMB: number;      // 单附件体积上限
+  mediaEnabled: boolean; // 该平台是否允许发附件
+  maxAttachmentMB: number; // 单附件体积上限
   maxAttachmentsPerMsg: number; // 单次回复附件数上限
 }
 ```
@@ -205,12 +206,12 @@ interface ReplyPolicy {
 # 顶层：富媒体总开关与全局约束
 media:
   enabled: true
-  maxFileMB: 20          # 超出的附件降级为文本说明
-  imageExtensions: [png, jpg, jpeg, gif]  # 图片白名单，其余按文件发
-  outboxDir: outbox      # 工作区内的约定目录名
+  maxFileMB: 20 # 超出的附件降级为文本说明
+  imageExtensions: [png, jpg, jpeg, gif] # 图片白名单，其余按文件发
+  outboxDir: outbox # 工作区内的约定目录名
 
 onebot:
-  fileTransport: base64  # 同机部署可改 path
+  fileTransport: base64 # 同机部署可改 path
 ```
 
 密钥体系不动；本节的改动只是行为参数。
@@ -265,11 +266,11 @@ onebot:
 
 ## 12. 风险
 
-| 风险 | 缓解 |
-|---|---|
-| agent 不把产物放进 outbox | persona 指令写清；无残留降级；用户追问一句即可补救 |
-| 官方 file_info 时效与上限未实测 | 列入待实测清单；上限配置化不写死 |
-| base64 大文件撑爆 OneBot WS 帧 | maxFileMB 上限；ws maxPayload 联动调大（注释写明） |
-| 附件发送拖长占用被动窗口 | 上传与发送都在 turnTimeoutMs 预算内；超时回收路径已存在 |
-| 越界路径 / 符号链接逃逸 | realpath 包含性校验，见 §3 |
-| prompt injection 诱导发文件 | 可达范围仅本会话工作区，论证见 §3 |
+| 风险                            | 缓解                                                    |
+| ------------------------------- | ------------------------------------------------------- |
+| agent 不把产物放进 outbox       | persona 指令写清；无残留降级；用户追问一句即可补救      |
+| 官方 file_info 时效与上限未实测 | 列入待实测清单；上限配置化不写死                        |
+| base64 大文件撑爆 OneBot WS 帧  | maxFileMB 上限；ws maxPayload 联动调大（注释写明）      |
+| 附件发送拖长占用被动窗口        | 上传与发送都在 turnTimeoutMs 预算内；超时回收路径已存在 |
+| 越界路径 / 符号链接逃逸         | realpath 包含性校验，见 §3                              |
+| prompt injection 诱导发文件     | 可达范围仅本会话工作区，论证见 §3                       |

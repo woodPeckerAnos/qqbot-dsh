@@ -19,7 +19,9 @@ const ZERO_WIDTH_JOINER = '\u200d';
 /** 去掉控制字符与零宽字符，保留 \n 与 \t。 */
 export function stripControlChars(text: string): string {
   // eslint-disable-next-line no-control-regex
-  return text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').replace(/[\u200b-\u200f\ufeff]/g, '');
+  return text
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/[\u200b-\u200f\ufeff]/g, '');
 }
 
 /** 折叠过多空行，并 trim 行尾空白。 */

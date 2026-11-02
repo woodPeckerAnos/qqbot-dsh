@@ -14,18 +14,18 @@
 
 ## 2. 文件地图
 
-| 文件 | 内容 | 提交到 git |
-|---|---|---|
-| `qqbot.yml` | 入口：include 清单、加载/合并规则、模块开关说明 | ✅ |
-| `config/connectors.yml` | `connectors` / `qq-official`（含 `c2c`）/ `onebot` | ✅ |
-| `config/runtime.yml` | `dsh` / `pool` 硬上限 / `tasks` 双 lane / `paths` / `health` / `logLevel` | ✅ |
-| `config/media.yml` | `attachments`（含 `forward`、`files`）/ `media` | ✅ |
-| `config/interaction.yml` | `personas` / `topic` / `observation` | ✅ |
-| `config/proactive.yml` | `proactive` 主动发言全部参数 | ✅ |
-| `config/offpeak.yml` | `offpeak` 谷时段闸 | ✅ |
-| `config/local/models.yml` | 本机模型路由与 `dsh.provider`/`dsh.model` | ❌ |
-| `config/local/overrides.yml` | 其他本机覆盖 | ❌ |
-| `config/local/README.md` | 本机配置说明 | ✅ |
+| 文件                         | 内容                                                                      | 提交到 git |
+| ---------------------------- | ------------------------------------------------------------------------- | ---------- |
+| `qqbot.yml`                  | 入口：include 清单、加载/合并规则、模块开关说明                           | ✅         |
+| `config/connectors.yml`      | `connectors` / `qq-official`（含 `c2c`）/ `onebot`                        | ✅         |
+| `config/runtime.yml`         | `dsh` / `pool` 硬上限 / `tasks` 双 lane / `paths` / `health` / `logLevel` | ✅         |
+| `config/media.yml`           | `attachments`（含 `forward`、`files`）/ `media`                           | ✅         |
+| `config/interaction.yml`     | `personas` / `topic` / `observation`                                      | ✅         |
+| `config/proactive.yml`       | `proactive` 主动发言全部参数                                              | ✅         |
+| `config/offpeak.yml`         | `offpeak` 谷时段闸                                                        | ✅         |
+| `config/local/models.yml`    | 本机模型路由与 `dsh.provider`/`dsh.model`                                 | ❌         |
+| `config/local/overrides.yml` | 其他本机覆盖                                                              | ❌         |
+| `config/local/README.md`     | 本机配置说明                                                              | ✅         |
 
 > 仓库当前**不随附** `models.yml` / `overrides.yml` 或 `*.example.yml` 模板。
 > 两个文件都不存在时使用代码内置默认；需要本机差异时按本文键名自行创建。
@@ -113,14 +113,14 @@ include:
 
 ## 8. 常见错误
 
-| 报错 | 含义 | 处理 |
-|---|---|---|
-| `配置模块不存在：...` | 非 optional 的 include 指向了不存在的文件，或升级后 `./config` 挂载没生效 | 改路径、注释该行，或加 `optional: true`；先 `docker compose up -d` 让挂载生效 |
-| `配置模块是一个目录，不是文件` | 宿主上文件不存在，Docker bind mount 自动建了同名目录 | 删掉该目录，`git checkout -- config` |
-| `配置模块循环引用：a → b → a` | include 互相指回上级 | 去掉环 |
-| `... 含 include 的入口文件必须用 loadConfigFile 解析` | 用单文件解析器读了入口 | 正常启动路径不会出现；测试请用 `loadConfigFile` |
-| `... 不是可识别的配置项` | 模块里键名拼错 | 按报错列出的可用项改 |
-| `没有权限读取配置模块` | 宿主机文件对容器 uid 10001 不可读 | `chmod 644 <文件>` |
+| 报错                                                  | 含义                                                                      | 处理                                                                          |
+| ----------------------------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `配置模块不存在：...`                                 | 非 optional 的 include 指向了不存在的文件，或升级后 `./config` 挂载没生效 | 改路径、注释该行，或加 `optional: true`；先 `docker compose up -d` 让挂载生效 |
+| `配置模块是一个目录，不是文件`                        | 宿主上文件不存在，Docker bind mount 自动建了同名目录                      | 删掉该目录，`git checkout -- config`                                          |
+| `配置模块循环引用：a → b → a`                         | include 互相指回上级                                                      | 去掉环                                                                        |
+| `... 含 include 的入口文件必须用 loadConfigFile 解析` | 用单文件解析器读了入口                                                    | 正常启动路径不会出现；测试请用 `loadConfigFile`                               |
+| `... 不是可识别的配置项`                              | 模块里键名拼错                                                            | 按报错列出的可用项改                                                          |
+| `没有权限读取配置模块`                                | 宿主机文件对容器 uid 10001 不可读                                         | `chmod 644 <文件>`                                                            |
 
 ## 9. 升级与生效
 
@@ -133,16 +133,16 @@ include:
 
 ## 10. Task 与双 lane 配置迁移
 
-| 配置键 | 默认 | 环境变量 |
-| --- | --- | --- |
-| `tasks.fastTimeoutMs` / `slowTimeoutMs` | 30000 / 1800000 | `BOT_FAST_TIMEOUT_MS` / `BOT_SLOW_TIMEOUT_MS` |
-| `tasks.fastProvider` / `slowProvider` | 继承 `dsh.provider` | `BOT_FAST_PROVIDER` / `BOT_SLOW_PROVIDER` |
-| `tasks.fastModel` / `slowModel` | 继承 `dsh.model` | `BOT_FAST_MODEL` / `BOT_SLOW_MODEL` |
-| `tasks.fastRuntimes` / `slowRuntimes` | 各 4 | `BOT_FAST_RUNTIMES` / `BOT_SLOW_RUNTIMES` |
-| `tasks.maxPerSession` / `maxGlobal` | 32 / 128 | `BOT_TASKS_PER_SESSION` / `BOT_TASKS_GLOBAL` |
-| `tasks.retentionMs` | 604800000（7 天） | `BOT_TASK_RETENTION_MS` |
-| `tasks.reminderMs` | 300000（最小 5 分钟） | `BOT_TASK_REMINDER_MS` |
-| `pool.maxRuntimes` | 8（至少 2） | `QQ_MAX_RUNTIMES` |
+| 配置键                                  | 默认                  | 环境变量                                      |
+| --------------------------------------- | --------------------- | --------------------------------------------- |
+| `tasks.fastTimeoutMs` / `slowTimeoutMs` | 30000 / 1800000       | `BOT_FAST_TIMEOUT_MS` / `BOT_SLOW_TIMEOUT_MS` |
+| `tasks.fastProvider` / `slowProvider`   | 继承 `dsh.provider`   | `BOT_FAST_PROVIDER` / `BOT_SLOW_PROVIDER`     |
+| `tasks.fastModel` / `slowModel`         | 继承 `dsh.model`      | `BOT_FAST_MODEL` / `BOT_SLOW_MODEL`           |
+| `tasks.fastRuntimes` / `slowRuntimes`   | 各 4                  | `BOT_FAST_RUNTIMES` / `BOT_SLOW_RUNTIMES`     |
+| `tasks.maxPerSession` / `maxGlobal`     | 32 / 128              | `BOT_TASKS_PER_SESSION` / `BOT_TASKS_GLOBAL`  |
+| `tasks.retentionMs`                     | 604800000（7 天）     | `BOT_TASK_RETENTION_MS`                       |
+| `tasks.reminderMs`                      | 300000（最小 5 分钟） | `BOT_TASK_REMINDER_MS`                        |
+| `pool.maxRuntimes`                      | 8（至少 2）           | `QQ_MAX_RUNTIMES`                             |
 
 两个 lane 容量均至少 1，之和不得超过总硬上限；降低总上限时同步调整各 lane。排队、摄取与 runtime 初始化不计执行超时。快 lane 固定 `reasoningEffort=off`，只开放 Task 查询和取消；慢 lane 前台等待所有子代理。两 lane 模型路由与 dsh.provider 使用相同声明和凭证校验。自定义 `dsh.profilePatch` 后仍自动追加内置 `dsh-profile/lanes.patch.yml`，部署必须包含该文件和插件。
 

@@ -24,8 +24,7 @@ import { extensionOf } from './files.js';
 import type { DocumentExtraction, DocumentExtractor } from './files.js';
 
 /** 抽取器缺失时给模型/用户看的说明（也是降级路径的出口） */
-export const PDF_HELPER_MISSING_REASON =
-  '本服务未安装 PDF 解析工具（poppler-utils），未能提取正文';
+export const PDF_HELPER_MISSING_REASON = '本服务未安装 PDF 解析工具（poppler-utils），未能提取正文';
 
 /** 纯文本类扩展名：直接解码，不经过任何解析器 */
 const PLAIN_TEXT_EXTENSIONS = new Set([
@@ -66,7 +65,7 @@ const MAX_BYTES_PER_CHAR = 4;
  * 一切失败都变成 `{ reason }`，由调用方降级成一行说明。
  */
 export function createDocumentExtractor(
-  options: DocumentExtractorFactoryOptions,
+  options: DocumentExtractorFactoryOptions
 ): DocumentExtractor {
   const bin = options.pdftotextBin ?? 'pdftotext';
   const logger = options.logger;
@@ -169,20 +168,10 @@ export function runPdftotext(
     maxPdfPages: number;
     timeoutMs: number;
   },
-  run: { bin: string; spawnImpl?: typeof spawn },
+  run: { bin: string; spawnImpl?: typeof spawn }
 ): Promise<PdftotextOutcome> {
   const spawnImpl = run.spawnImpl ?? spawn;
-  const args = [
-    '-f',
-    '1',
-    '-l',
-    String(input.maxPdfPages),
-    '-layout',
-    '-enc',
-    'UTF-8',
-    '-',
-    '-',
-  ];
+  const args = ['-f', '1', '-l', String(input.maxPdfPages), '-layout', '-enc', 'UTF-8', '-', '-'];
   const maxBytes = input.maxChars * MAX_BYTES_PER_CHAR;
 
   return new Promise<PdftotextOutcome>((resolve) => {
@@ -191,7 +180,9 @@ export function runPdftotext(
       child = spawnImpl(run.bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (error) {
       resolve({
-        extraction: { reason: `启动 PDF 解析失败：${error instanceof Error ? error.message : String(error)}` },
+        extraction: {
+          reason: `启动 PDF 解析失败：${error instanceof Error ? error.message : String(error)}`,
+        },
       });
       return;
     }
@@ -261,7 +252,7 @@ export function runPdftotext(
         finish(
           clipped.trim() === ''
             ? { extraction: { reason: '没有从该 PDF 提取到文本' } }
-            : { extraction: { text: clipped, truncated: true } },
+            : { extraction: { text: clipped, truncated: true } }
         );
         return;
       }

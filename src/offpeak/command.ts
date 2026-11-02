@@ -57,7 +57,8 @@ export function parseOffpeakCommand(content: string): OffpeakCommand | undefined
       }
       return {
         action: 'invalid',
-        detail: 'holiday 需要形如 "holiday add 2027-01-01" / "holiday del 2027-01-01" / "holiday list" 的参数',
+        detail:
+          'holiday 需要形如 "holiday add 2027-01-01" / "holiday del 2027-01-01" / "holiday list" 的参数',
       };
     }
     case 'window': {
@@ -68,7 +69,8 @@ export function parseOffpeakCommand(content: string): OffpeakCommand | undefined
       if (spec === '') {
         return {
           action: 'invalid',
-          detail: 'window 需要形如 "00:00-09:00,12:00-14:00,18:00-24:00" 的参数（多个窗口用逗号分隔）',
+          detail:
+            'window 需要形如 "00:00-09:00,12:00-14:00,18:00-24:00" 的参数（多个窗口用逗号分隔）',
         };
       }
       return { action: 'set-windows', spec };

@@ -53,9 +53,12 @@ function renderPart(part: MessagePart): string {
       return text === '' ? '[语音]' : `[语音] ${text}`;
     }
     case 'media': {
-      const label = part.mediaKind === 'video' ? '视频' : part.mediaKind === 'file' ? '文件' : '附件';
+      const label =
+        part.mediaKind === 'video' ? '视频' : part.mediaKind === 'file' ? '文件' : '附件';
       const name =
-        part.filename !== undefined && part.filename !== '' ? `: ${displayFileName(part.filename)}` : '';
+        part.filename !== undefined && part.filename !== ''
+          ? `: ${displayFileName(part.filename)}`
+          : '';
       return `[${label}${name}]`;
     }
     case 'quote':
@@ -124,7 +127,11 @@ function renderForward(part: MessageForwardPart): string {
   const nodes: string[] = [];
   part.parts.forEach((node, index) => {
     // 单条发言压成一行：多行会把"第几条"的边界冲掉，与 renderQuote 同理
-    const line = guardUntrustedText(flattenParts([node]).replace(/\s*\n\s*/g, ' ').trim());
+    const line = guardUntrustedText(
+      flattenParts([node])
+        .replace(/\s*\n\s*/g, ' ')
+        .trim()
+    );
     if (line !== '') nodes.push(`${index + 1}. ${line}`);
   });
   if (nodes.length === 0) return `${head}（内容未读入）`;
@@ -139,8 +146,11 @@ function renderForward(part: MessageForwardPart): string {
  * （引用在前、用户正文在后），模型容易把被引用的旧内容当成新指令。
  */
 function renderQuote(part: MessageQuotePart): string {
-  const head = part.author !== undefined && part.author !== '' ? `[引用 ${part.author}]` : '[引用消息]';
-  const inner = flattenParts(part.parts).replace(/\s*\n\s*/g, ' ').trim();
+  const head =
+    part.author !== undefined && part.author !== '' ? `[引用 ${part.author}]` : '[引用消息]';
+  const inner = flattenParts(part.parts)
+    .replace(/\s*\n\s*/g, ' ')
+    .trim();
   return inner === '' ? head : `${head} ${inner}`;
 }
 
@@ -169,7 +179,7 @@ export function collectMediaParts(parts: readonly MessagePart[]): MessageMediaPa
 
 function collectByType<T extends MessagePart>(
   parts: readonly MessagePart[],
-  match: (part: MessagePart) => boolean,
+  match: (part: MessagePart) => boolean
 ): T[] {
   const found: T[] = [];
   const walk = (list: readonly MessagePart[]): void => {

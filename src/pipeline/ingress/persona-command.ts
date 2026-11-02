@@ -39,7 +39,7 @@ export class PersonaCommandRouter {
     private readonly deps: {
       personas: PersonaStore;
       stats: PipelineStats;
-    },
+    }
   ) {}
 
   stage(): IngressStage {
@@ -97,7 +97,7 @@ export class PersonaCommandRouter {
       await ctx.responder
         .error(
           `切换失败：${result.detail}` +
-            (presets.length > 0 ? `\n可用预设：${presets.join('、')}` : ''),
+            (presets.length > 0 ? `\n可用预设：${presets.join('、')}` : '')
         )
         .catch(() => {});
     };

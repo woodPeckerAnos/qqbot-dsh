@@ -1,9 +1,9 @@
 # 决策索引与路线
 
-| 决策 | 状态 | 生效文档 |
-| --- | --- | --- |
-| Task、双 lane、独立出口 | 已实施并通过验收 | [ADR-001](adr/001-session-task-lanes.md) |
-| 主动场景 collect / judge / veto | 保留 | [主动契约](../src/pipeline/proactive/AGENT-CONTRACT.md) |
-| 旧整轮锁、后台派发、周期进度 | 被 ADR-001 取代 | 历史 DESIGN |
+| 决策                            | 状态             | 生效文档                                                |
+| ------------------------------- | ---------------- | ------------------------------------------------------- |
+| Task、双 lane、独立出口         | 已实施并通过验收 | [ADR-001](adr/001-session-task-lanes.md)                |
+| 主动场景 collect / judge / veto | 保留             | [主动契约](../src/pipeline/proactive/AGENT-CONTRACT.md) |
+| 旧整轮锁、后台派发、周期进度    | 被 ADR-001 取代  | 历史 DESIGN                                             |
 
 已完成路线：文档及公共接口 → 生命周期与调度 → DSH 与控制桥 → 输出与预算 → 入口迁移 → mock、类型检查、构建 → 契约回查。结果与升级边界见 [任务状态](TASK-STATUS.md)。

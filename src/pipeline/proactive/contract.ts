@@ -76,11 +76,7 @@ export function sortSceneIds(ids: readonly SceneId[]): SceneId[] {
  * - `speak-followup` bot 刚发过言，接续对它的回应（可选的收紧通道）
  */
 export type SceneTrigger =
-  | 'message'
-  | 'question-probe'
-  | 'topic-roll'
-  | 'wait-wakeup'
-  | 'speak-followup';
+  'message' | 'question-probe' | 'topic-roll' | 'wait-wakeup' | 'speak-followup';
 
 // ---------------------------------------------------------------------------
 // 话题 session：主动发言的**唯一放行闸门**（见 docs/TOPIC-SESSION-REQUIREMENT.md）
@@ -167,11 +163,7 @@ export interface SessionClosedEvent {
  */
 export type SessionDirective = 'keep-open' | 'close' | 'new-topic';
 
-export const SESSION_DIRECTIVES: readonly SessionDirective[] = [
-  'keep-open',
-  'close',
-  'new-topic',
-];
+export const SESSION_DIRECTIVES: readonly SessionDirective[] = ['keep-open', 'close', 'new-topic'];
 
 /** 是否是一个合法的 session 指令（解析模型输出时用它挡掉幻觉值）。 */
 export function isSessionDirective(value: unknown): value is SessionDirective {
@@ -234,10 +226,7 @@ export function effectiveSessionIdleMs(configured: number): number {
 /** 把任意配置值收敛成**生效的**最小发言间隔（毫秒）。 */
 export function effectiveSessionMinGapMs(configured: number): number {
   if (!Number.isFinite(configured)) return DEFAULT_SESSION_MIN_GAP_MS;
-  return Math.min(
-    Math.max(SESSION_MIN_GAP_MS_MIN, Math.trunc(configured)),
-    SESSION_MIN_GAP_MS_MAX,
-  );
+  return Math.min(Math.max(SESSION_MIN_GAP_MS_MIN, Math.trunc(configured)), SESSION_MIN_GAP_MS_MAX);
 }
 
 // ---------------------------------------------------------------------------

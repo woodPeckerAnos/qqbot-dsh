@@ -37,10 +37,14 @@ function makeFakeApi(): { fetchImpl: typeof fetch; requests: RecordedRequest[] }
   const requests: RecordedRequest[] = [];
   const fetchImpl = (async (input: unknown, init?: { body?: unknown }) => {
     const url = String(input);
-    const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+    const body =
+      typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
     requests.push({ url, body });
     const json = (payload: unknown) =>
-      new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
     if (url.endsWith('/app/getAppAccessToken')) {
       return json({ access_token: 'TOKEN', expires_in: '7200' });
     }
@@ -83,8 +87,13 @@ describe('官方适配器富媒体出站', () => {
     await writeFile(absPath, 'fake-png-bytes');
 
     await connector.reply(
-      { target: { platform: 'qq-official', kind: 'group', id: 'GROUP1', key: 'GROUP1' }, seq: 2, kind: 'final', msgId: 'MSG1' },
-      { text: '', attachments: [{ kind: 'image', absPath, fileName: 'pic.png', sizeBytes: 14 }] },
+      {
+        target: { platform: 'qq-official', kind: 'group', id: 'GROUP1', key: 'GROUP1' },
+        seq: 2,
+        kind: 'final',
+        msgId: 'MSG1',
+      },
+      { text: '', attachments: [{ kind: 'image', absPath, fileName: 'pic.png', sizeBytes: 14 }] }
     );
 
     const upload = requests.find((r) => r.url.includes('/files'));
@@ -112,8 +121,13 @@ describe('官方适配器富媒体出站', () => {
     await writeFile(absPath, '#!/bin/sh');
 
     await connector.reply(
-      { target: { platform: 'qq-official', kind: 'c2c', id: 'USER1', key: 'c2c:USER1' }, seq: 1, kind: 'final', msgId: 'MSG2' },
-      { text: '', attachments: [{ kind: 'file', absPath, fileName: 'run.sh', sizeBytes: 9 }] },
+      {
+        target: { platform: 'qq-official', kind: 'c2c', id: 'USER1', key: 'c2c:USER1' },
+        seq: 1,
+        kind: 'final',
+        msgId: 'MSG2',
+      },
+      { text: '', attachments: [{ kind: 'file', absPath, fileName: 'run.sh', sizeBytes: 9 }] }
     );
 
     const upload = requests.find((r) => r.url.includes('/files'));
@@ -130,8 +144,12 @@ describe('官方适配器富媒体出站', () => {
     const broken: typeof fetch = (async (input: unknown, init?: { body?: unknown }) => {
       const url = String(input);
       const json = (payload: unknown) =>
-        new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
-      if (url.endsWith('/app/getAppAccessToken')) return json({ access_token: 'TOKEN', expires_in: '7200' });
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      if (url.endsWith('/app/getAppAccessToken'))
+        return json({ access_token: 'TOKEN', expires_in: '7200' });
       if (url.includes('/files')) return json({ ttl: 300 }); // 没有 file_info
       return json({});
       void init;
@@ -146,9 +164,14 @@ describe('官方适配器富媒体出站', () => {
 
     await expect(
       connector.reply(
-        { target: { platform: 'qq-official', kind: 'group', id: 'G', key: 'G' }, seq: 1, kind: 'final', msgId: 'M' },
-        { text: '', attachments: [{ kind: 'image', absPath, fileName: 'a.png', sizeBytes: 1 }] },
-      ),
+        {
+          target: { platform: 'qq-official', kind: 'group', id: 'G', key: 'G' },
+          seq: 1,
+          kind: 'final',
+          msgId: 'M',
+        },
+        { text: '', attachments: [{ kind: 'image', absPath, fileName: 'a.png', sizeBytes: 1 }] }
+      )
     ).rejects.toThrow(/file_info/);
   });
 });

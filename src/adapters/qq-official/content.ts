@@ -82,7 +82,10 @@ export function imageMimeTypeOf(contentType: string | undefined): string | undef
   return undefined;
 }
 
-function isVoiceContentType(contentType: string | undefined, filename: string | undefined): boolean {
+function isVoiceContentType(
+  contentType: string | undefined,
+  filename: string | undefined
+): boolean {
   const value = contentType?.trim().toLowerCase() ?? '';
   if (value === 'voice' || value.startsWith('audio/')) return true;
   const name = filename?.trim().toLowerCase() ?? '';
@@ -95,7 +98,9 @@ function isVoiceContentType(contentType: string | undefined, filename: string | 
  * 语音优先用官方给的 `asr_refer_text`（腾讯自己的识别结果，免费且省一次调用）；
  * 没有识别结果时只留 `[语音]` 标记——本项目不做本地语音识别（DS 模型不吃音频）。
  */
-export function partsFromAttachments(attachments: readonly MessageAttachment[] | undefined): MessagePart[] {
+export function partsFromAttachments(
+  attachments: readonly MessageAttachment[] | undefined
+): MessagePart[] {
   if (attachments === undefined || attachments.length === 0) return [];
   const parts: MessagePart[] = [];
   for (const attachment of attachments) {
@@ -151,12 +156,15 @@ export function partFromArk(ark: ArkData | undefined): MessagePart | undefined {
   const suffix = [title, source !== undefined ? `来源: ${source}` : undefined]
     .filter((value): value is string => value !== undefined)
     .join(' · ');
-  return { type: 'text', text: suffix === '' ? `[卡片消息 ${name}]` : `[卡片消息 ${name}] ${suffix}` };
+  return {
+    type: 'text',
+    text: suffix === '' ? `[卡片消息 ${name}]` : `[卡片消息 ${name}] ${suffix}`,
+  };
 }
 
 /** 消息里 @ 了谁（官方已在 content 里去掉 @ 前缀，这里补回可读信息）。 */
 function partFromMentions(
-  mentions: readonly { username?: string; id?: string; bot?: boolean }[] | undefined,
+  mentions: readonly { username?: string; id?: string; bot?: boolean }[] | undefined
 ): MessagePart | undefined {
   if (mentions === undefined || mentions.length === 0) return undefined;
   const names = mentions
@@ -173,7 +181,10 @@ function partFromMentions(
  * 递归处理：元素自己也可能带附件与嵌套元素。最多下钻 3 层，
  * 防止异常数据造成无限递归。
  */
-export function partsFromElements(elements: readonly MsgElement[] | undefined, depth = 0): MessagePart[] {
+export function partsFromElements(
+  elements: readonly MsgElement[] | undefined,
+  depth = 0
+): MessagePart[] {
   if (elements === undefined || elements.length === 0 || depth > 3) return [];
   const parts: MessagePart[] = [];
   for (const element of elements) {
@@ -221,7 +232,7 @@ const DEFAULT_FORWARD: ForwardConfig = {
  */
 export function forwardPartFromElements(
   elements: readonly MsgElement[],
-  options: MessagePartsOptions = {},
+  options: MessagePartsOptions = {}
 ): MessageForwardPart | undefined {
   const limits = options.forward ?? DEFAULT_FORWARD;
   if (!limits.enabled || elements.length === 0) return undefined;
@@ -232,9 +243,10 @@ export function forwardPartFromElements(
 
   for (const element of elements.slice(0, limits.maxNodes)) {
     const nodeParts = partsFromElements([element]);
-    const author =
-      asString(element.author?.username) ?? asString(element.author?.id) ?? undefined;
-    let text = flattenParts(nodeParts).replace(/\s*\n\s*/g, ' ').trim();
+    const author = asString(element.author?.username) ?? asString(element.author?.id) ?? undefined;
+    let text = flattenParts(nodeParts)
+      .replace(/\s*\n\s*/g, ' ')
+      .trim();
     if (text === '') continue;
     if (text.length > limits.maxNodeChars) text = `${text.slice(0, limits.maxNodeChars)}…`;
     if (chars + text.length > limits.maxChars) {
@@ -262,7 +274,7 @@ export function forwardPartFromElements(
  */
 export function buildMessageParts(
   body: MessageBodyLike,
-  options: MessagePartsOptions = {},
+  options: MessagePartsOptions = {}
 ): MessagePart[] {
   const parts: MessagePart[] = [];
 

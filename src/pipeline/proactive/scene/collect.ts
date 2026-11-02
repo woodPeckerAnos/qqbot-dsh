@@ -39,8 +39,19 @@ const GENERIC_BOT_WORDS = ['机器人', 'bot', 'Bot', 'BOT', '助手'];
  * 误放行，LLM 层还有一道"是对话还是议论"的方向复核。
  */
 const ADDRESS_CUES = [
-  '帮我', '帮忙', '能不能', '可以帮', '试一下', '试试',
-  '看下', '看一下', '问一下', '请问', '在吗', '在不在', '有没有',
+  '帮我',
+  '帮忙',
+  '能不能',
+  '可以帮',
+  '试一下',
+  '试试',
+  '看下',
+  '看一下',
+  '问一下',
+  '请问',
+  '在吗',
+  '在不在',
+  '有没有',
 ];
 
 export interface BotReferenceHit {
@@ -159,7 +170,7 @@ export const SCENE_DEFINITIONS: readonly SceneDefinition[] = [
 
 /** 按全局顺序排列的场景定义（顺序唯一来源见 contract.ts 的 SCENE_ORDER）。 */
 export const SCENE_REGISTRY: readonly SceneDefinition[] = [...SCENE_DEFINITIONS].sort(
-  (left, right) => sceneOrder(left.id) - sceneOrder(right.id),
+  (left, right) => sceneOrder(left.id) - sceneOrder(right.id)
 );
 
 export function getScene(id: SceneId): SceneDefinition | undefined {
@@ -281,7 +292,7 @@ const PRIOR_CONFIDENCE: Record<SceneId, number> = {
  */
 export function collectCandidates(
   evidence: SceneEvidence,
-  options: { maxUnansweredStreak?: number } = {},
+  options: { maxUnansweredStreak?: number } = {}
 ): readonly SceneCandidate[] {
   if (evidence.unansweredStreak >= (options.maxUnansweredStreak ?? 2)) return [];
 
@@ -299,7 +310,7 @@ export function collectCandidates(
             localConfidence: hit.confidence,
             evidence: hit.evidence,
             expectedRate: rate,
-          },
+          }
     );
   }
   return candidates.sort((left, right) => sceneOrder(left.scene) - sceneOrder(right.scene));

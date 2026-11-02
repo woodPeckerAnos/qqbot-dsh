@@ -46,13 +46,16 @@ const POLICY: ReplyPolicy = {
 
 interface Recorded {
   calls: Array<{ target: ConversationTarget; out: OutgoingMessage }>;
-  metrics: { sent: ProactiveTrigger[]; degraded: Array<[ProactiveDegradeReason, ProactiveTrigger]> };
+  metrics: {
+    sent: ProactiveTrigger[];
+    degraded: Array<[ProactiveDegradeReason, ProactiveTrigger]>;
+  };
 }
 
 /** 假适配器：`impl` 决定"平台能力"，undefined 表示缺省（未实现 proactive）。 */
 function makeConnector(
   recorded: Recorded,
-  impl?: (target: ConversationTarget, out: OutgoingMessage) => Promise<ProactiveResult>,
+  impl?: (target: ConversationTarget, out: OutgoingMessage) => Promise<ProactiveResult>
 ): BotConnector {
   const connector: BotConnector = {
     platform: 'onebot',
@@ -73,10 +76,7 @@ function makeConnector(
   return connector;
 }
 
-type ProactiveImpl = (
-  target: ConversationTarget,
-  out: OutgoingMessage,
-) => Promise<ProactiveResult>;
+type ProactiveImpl = (target: ConversationTarget, out: OutgoingMessage) => Promise<ProactiveResult>;
 
 /**
  * 统一的测试装配：一个 recorder 同时记"适配器被调用"与"记账"，避免两套记录各记一半。
@@ -85,7 +85,7 @@ type ProactiveImpl = (
  */
 function setup(
   impl: ProactiveImpl | undefined,
-  { enabled = true, noConnector = false }: { enabled?: boolean; noConnector?: boolean } = {},
+  { enabled = true, noConnector = false }: { enabled?: boolean; noConnector?: boolean } = {}
 ): { speaker: ProactiveSpeaker; recorded: Recorded } {
   const recorded: Recorded = { calls: [], metrics: { sent: [], degraded: [] } };
   const metrics: ProactiveMetrics = {

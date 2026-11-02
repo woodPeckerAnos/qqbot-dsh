@@ -15,17 +15,18 @@ import { afterEach, describe, expect, it } from 'vitest';
 const socketDescribe = process.env.BOT_TEST_INTEGRATION === '1' ? describe : describe.skip;
 import WebSocket from 'ws';
 
-import {
-  OnebotConnector,
-  type OnebotConnectorOptions,
-} from '../src/adapters/onebot/connector.js';
+import { OnebotConnector, type OnebotConnectorOptions } from '../src/adapters/onebot/connector.js';
 import { buildMessageParts } from '../src/adapters/qq-official/content.js';
 import {
   extractMessageContent,
   normalizeOneBotEvent,
   parseForwardNodes,
 } from '../src/adapters/onebot/normalize.js';
-import { flattenParts, FORWARD_UNTRUSTED_CLOSE, FORWARD_UNTRUSTED_OPEN } from '../src/core/content.js';
+import {
+  flattenParts,
+  FORWARD_UNTRUSTED_CLOSE,
+  FORWARD_UNTRUSTED_OPEN,
+} from '../src/core/content.js';
 import type { ForwardConfig } from '../src/config.js';
 import type { NormalizedEvent, NormalizedMessage } from '../src/core/connector.js';
 import { createNullLogger } from '../src/logger.js';
@@ -50,7 +51,7 @@ describe('转发段归一化', () => {
         { type: 'text', data: { text: '看看这个' } },
         { type: 'forward', data: { id: 'fwd-1' } },
       ],
-      10000,
+      10000
     );
     // 占位片段带上 `refId`：旁听消息里的聊天记录不进 content，被 @ 且这次的问题
     // 明确提到它时才凭这个 id 去回查（见 store/window.ts 与 BotConnector.fetchForward）
@@ -72,7 +73,7 @@ describe('转发段归一化', () => {
   it('只兜 message_id 命名的实现', () => {
     const extracted = extractMessageContent(
       [{ type: 'forward', data: { message_id: 'fwd-2' } }],
-      10000,
+      10000
     );
     expect(extracted.forwardRefs).toEqual([{ index: 0, id: 'fwd-2' }]);
   });
@@ -85,13 +86,19 @@ describe('转发段归一化', () => {
           data: {
             id: 'fwd-inline',
             content: [
-              { type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '在吗' } }] } },
-              { type: 'node', data: { nickname: '李四', content: [{ type: 'text', data: { text: '在' } }] } },
+              {
+                type: 'node',
+                data: { nickname: '张三', content: [{ type: 'text', data: { text: '在吗' } }] },
+              },
+              {
+                type: 'node',
+                data: { nickname: '李四', content: [{ type: 'text', data: { text: '在' } }] },
+              },
             ],
           },
         },
       ],
-      10000,
+      10000
     );
     expect(extracted.forwardRefs).toEqual([
       {
@@ -113,12 +120,15 @@ describe('转发段归一化', () => {
           type: 'forward',
           data: {
             content: [
-              { type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '没有 id' } }] } },
+              {
+                type: 'node',
+                data: { nickname: '张三', content: [{ type: 'text', data: { text: '没有 id' } }] },
+              },
             ],
           },
         },
       ],
-      10000,
+      10000
     );
     expect(extracted.forwardRefs).toEqual([
       { index: 0, nodes: [{ author: '张三', parts: [{ type: 'text', text: '没有 id' }] }] },
@@ -128,15 +138,20 @@ describe('转发段归一化', () => {
   it('内联 content 解析不出东西时仍退回按 id 回查', () => {
     const extracted = extractMessageContent(
       [{ type: 'forward', data: { id: 'fwd-x', content: [null, 42, {}] } }],
-      10000,
+      10000
     );
     expect(extracted.forwardRefs).toEqual([{ index: 0, id: 'fwd-x' }]);
   });
 
   it('顶层 node 段（单条消息转发）按一个条目的转发块处理', () => {
     const extracted = extractMessageContent(
-      [{ type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '单条转发' } }] } }],
-      10000,
+      [
+        {
+          type: 'node',
+          data: { nickname: '张三', content: [{ type: 'text', data: { text: '单条转发' } }] },
+        },
+      ],
+      10000
     );
     expect(extracted.forwardRefs?.[0]?.nodes).toEqual([
       { author: '张三', parts: [{ type: 'text', text: '单条转发' }] },
@@ -187,11 +202,25 @@ describe('get_forward_msg 响应解析（多形状容忍）', () => {
     const nodes = parseForwardNodes(
       {
         messages: [
-          { type: 'node', data: { user_id: 111, nickname: '张三', content: [{ type: 'text', data: { text: '你好' } }] } },
-          { type: 'node', data: { user_id: 222, nickname: '李四', content: [{ type: 'image', data: { url: 'https://x/1.png' } }] } },
+          {
+            type: 'node',
+            data: {
+              user_id: 111,
+              nickname: '张三',
+              content: [{ type: 'text', data: { text: '你好' } }],
+            },
+          },
+          {
+            type: 'node',
+            data: {
+              user_id: 222,
+              nickname: '李四',
+              content: [{ type: 'image', data: { url: 'https://x/1.png' } }],
+            },
+          },
         ],
       },
-      SELF,
+      SELF
     );
     expect(nodes).toEqual([
       { author: '张三', parts: [{ type: 'text', text: '你好' }] },
@@ -200,9 +229,17 @@ describe('get_forward_msg 响应解析（多形状容忍）', () => {
   });
 
   it('go-cqhttp：messages 是 CQ 码字符串数组', () => {
-    const nodes = parseForwardNodes({ data: { messages: ['[CQ:face,id=178] 早', '纯文本'] } }, SELF);
+    const nodes = parseForwardNodes(
+      { data: { messages: ['[CQ:face,id=178] 早', '纯文本'] } },
+      SELF
+    );
     expect(nodes).toEqual([
-      { parts: [{ type: 'text', text: '[表情]' }, { type: 'text', text: ' 早' }] },
+      {
+        parts: [
+          { type: 'text', text: '[表情]' },
+          { type: 'text', text: ' 早' },
+        ],
+      },
       { parts: [{ type: 'text', text: '纯文本' }] },
     ]);
   });
@@ -211,9 +248,9 @@ describe('get_forward_msg 响应解析（多形状容忍）', () => {
     expect(parseForwardNodes([{ message: 'hi' }], SELF)).toEqual([
       { parts: [{ type: 'text', text: 'hi' }] },
     ]);
-    expect(
-      parseForwardNodes([{ message: 'hi', sender: { card: '小明' } }], SELF),
-    ).toEqual([{ author: '小明', parts: [{ type: 'text', text: 'hi' }] }]);
+    expect(parseForwardNodes([{ message: 'hi', sender: { card: '小明' } }], SELF)).toEqual([
+      { author: '小明', parts: [{ type: 'text', text: 'hi' }] },
+    ]);
   });
 
   it('认不出的条目跳过而不是抛错；整体为空时返回空数组', () => {
@@ -233,7 +270,7 @@ describe('get_forward_msg 响应解析（多形状容忍）', () => {
           },
         },
       ],
-      SELF,
+      SELF
     );
     expect(nodes).toHaveLength(1);
     expect(nodes[0]!.forwardRefs).toEqual([{ index: 0, id: 'inner' }]);
@@ -285,15 +322,14 @@ async function connectClient(port: number): Promise<WebSocket> {
       sub_type: 'connect',
       self_id: 10000,
       time: 0,
-    }),
+    })
   );
   return ws;
 }
 
 function portOf(connector: OnebotConnector): number {
-  return (
-    connector as unknown as { server: { address: () => { port: number } } }
-  ).server.address().port;
+  return (connector as unknown as { server: { address: () => { port: number } } }).server.address()
+    .port;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -310,7 +346,7 @@ function groupForwardMessage(
   messageId: number,
   forwardId: string,
   extra: unknown[] = [],
-  options: { groupId?: number; selfId?: number } = {},
+  options: { groupId?: number; selfId?: number } = {}
 ) {
   return JSON.stringify({
     post_type: 'message',
@@ -352,9 +388,7 @@ socketDescribe('转发块回查全回路', () => {
     const ws = await connectClient(portOf(c));
     clients.push(ws);
 
-    ws.send(
-      groupForwardMessage(42, 'fwd-1', [{ type: 'text', data: { text: '帮我总结' } }]),
-    );
+    ws.send(groupForwardMessage(42, 'fwd-1', [{ type: 'text', data: { text: '帮我总结' } }]));
 
     const action = await new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
@@ -370,11 +404,17 @@ socketDescribe('转发块回查全回路', () => {
         echo: action['echo'],
         data: {
           messages: [
-            { type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '报错了' } }] } },
-            { type: 'node', data: { nickname: '李四', content: [{ type: 'text', data: { text: '升级依赖' } }] } },
+            {
+              type: 'node',
+              data: { nickname: '张三', content: [{ type: 'text', data: { text: '报错了' } }] },
+            },
+            {
+              type: 'node',
+              data: { nickname: '李四', content: [{ type: 'text', data: { text: '升级依赖' } }] },
+            },
           ],
         },
-      }),
+      })
     );
     await sleep(120);
 
@@ -387,7 +427,7 @@ socketDescribe('转发块回查全回路', () => {
         '1. 张三: 报错了',
         '2. 李四: 升级依赖',
         FORWARD_UNTRUSTED_CLOSE,
-      ].join('\n'),
+      ].join('\n')
     );
   });
 
@@ -402,9 +442,7 @@ socketDescribe('转发块回查全回路', () => {
     const action = await new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
     });
-    ws.send(
-      JSON.stringify({ status: 'failed', retcode: 1404, echo: action['echo'], data: null }),
-    );
+    ws.send(JSON.stringify({ status: 'failed', retcode: 1404, echo: action['echo'], data: null }));
     await sleep(120);
 
     expect(events.filter((e) => e.kind === 'group-at-message')).toHaveLength(1);
@@ -429,7 +467,7 @@ socketDescribe('转发块回查全回路', () => {
         retcode: 0,
         echo: first!['echo'],
         data: { messages: ['[CQ:face,id=178] 早'] },
-      }),
+      })
     );
     await sleep(120);
     expect(events.filter((e) => e.kind === 'group-at-message')).toHaveLength(1);
@@ -462,7 +500,7 @@ socketDescribe('转发块回查全回路', () => {
         retcode: 0,
         echo: action['echo'],
         data: { messages: ['一', '二', '三', '四'] },
-      }),
+      })
     );
     await sleep(120);
 
@@ -492,7 +530,7 @@ socketDescribe('转发块回查全回路', () => {
         retcode: 0,
         echo: action['echo'],
         data: { messages: ['一二三四五六七八九十十一十二十三'] },
-      }),
+      })
     );
     await sleep(120);
 
@@ -531,7 +569,12 @@ socketDescribe('转发块回查全回路', () => {
       ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
     });
     ws.send(
-      JSON.stringify({ status: 'ok', retcode: 0, echo: first['echo'], data: { messages: ['一', '二'] } }),
+      JSON.stringify({
+        status: 'ok',
+        retcode: 0,
+        echo: first['echo'],
+        data: { messages: ['一', '二'] },
+      })
     );
     await sleep(120);
 
@@ -579,7 +622,7 @@ describe('官方聊天记录（尽力而为）', () => {
         '1. 张三: 这个报错怎么解决',
         '2. member-2: 试试升级依赖',
         FORWARD_UNTRUSTED_CLOSE,
-      ].join('\n'),
+      ].join('\n')
     );
   });
 
@@ -602,7 +645,7 @@ describe('官方聊天记录（尽力而为）', () => {
           maxDepth: 2,
           timeoutMs: 10_000,
         },
-      },
+      }
     );
     expect(parts[0]).toMatchObject({ type: 'forward', nodeCount: 5, truncated: true });
     const content = flattenParts(parts);
@@ -625,7 +668,7 @@ describe('官方聊天记录（尽力而为）', () => {
     };
     const parts = buildMessageParts(
       { message_type: 102, content: '看看这个', msg_elements: elements },
-      disabled,
+      disabled
     );
     expect(parts).toEqual([
       { type: 'text', text: '看看这个' },
@@ -644,7 +687,14 @@ describe('官方聊天记录（尽力而为）', () => {
     const parts = buildMessageParts({
       message_type: 0,
       content: '看下这个',
-      attachments: [{ content_type: 'file', url: 'https://cdn.example.com/a.pdf', filename: 'a.pdf', size: 2048 }],
+      attachments: [
+        {
+          content_type: 'file',
+          url: 'https://cdn.example.com/a.pdf',
+          filename: 'a.pdf',
+          size: 2048,
+        },
+      ],
     });
     expect(parts).toContainEqual({
       type: 'media',
@@ -671,8 +721,9 @@ socketDescribe('转发块嵌套深度', () => {
     });
     connector = c;
     await connector.start();
-    const address = (c as unknown as { server: { address: () => { port: number } } })
-      .server.address();
+    const address = (
+      c as unknown as { server: { address: () => { port: number } } }
+    ).server.address();
     const ws = await connectClient(address.port);
     clients.push(ws);
 
@@ -701,7 +752,7 @@ socketDescribe('转发块嵌套深度', () => {
             },
           ],
         },
-      }),
+      })
     );
     await sleep(150);
     const content = contentOf(events);
@@ -764,7 +815,7 @@ socketDescribe('转发读取的资源上限', () => {
             },
           ],
         },
-      }),
+      })
     );
     // 等嵌套回查全部超时收尾
     await sleep(1_200);
@@ -799,7 +850,7 @@ socketDescribe('转发读取的资源上限', () => {
         sub_type: 'connect',
         self_id: 20000,
         time: 0,
-      }),
+      })
     );
     const framesA = collectFrames(wsA);
     const framesB = collectFrames(wsB);
@@ -821,7 +872,7 @@ socketDescribe('转发读取的资源上限', () => {
         retcode: 0,
         echo: actionA!['echo'],
         data: { messages: ['A 号的聊天记录'] },
-      }),
+      })
     );
     wsB.send(
       JSON.stringify({
@@ -829,7 +880,7 @@ socketDescribe('转发读取的资源上限', () => {
         retcode: 0,
         echo: actionB!['echo'],
         data: { messages: ['B 号的聊天记录'] },
-      }),
+      })
     );
     await sleep(150);
 
@@ -895,7 +946,7 @@ socketDescribe('引用与转发的合并顺序', () => {
         retcode: 0,
         echo: forwardAction!['echo'],
         data: { messages: ['[CQ:face,id=178] 转发的发言'] },
-      }),
+      })
     );
     await sleep(80);
 
@@ -906,8 +957,11 @@ socketDescribe('引用与转发的合并顺序', () => {
         status: 'ok',
         retcode: 0,
         echo: quoteAction!['echo'],
-        data: { message: [{ type: 'text', data: { text: '被引用的原话' } }], sender: { nickname: '张三' } },
-      }),
+        data: {
+          message: [{ type: 'text', data: { text: '被引用的原话' } }],
+          sender: { nickname: '张三' },
+        },
+      })
     );
     await sleep(120);
 
@@ -919,7 +973,7 @@ socketDescribe('引用与转发的合并顺序', () => {
         FORWARD_UNTRUSTED_OPEN,
         '1. [表情] 转发的发言',
         FORWARD_UNTRUSTED_CLOSE,
-      ].join('\n'),
+      ].join('\n')
     );
   });
 
@@ -948,7 +1002,7 @@ socketDescribe('引用与转发的合并顺序', () => {
           { type: 'text', data: { text: '这段聊天记录怎么说' } },
         ],
         sender: { user_id: 12345, nickname: '小明' },
-      }),
+      })
     );
     await sleep(80);
 
@@ -964,7 +1018,7 @@ socketDescribe('引用与转发的合并顺序', () => {
           message: [{ type: 'forward', data: { id: 'quoted-fwd' } }],
           sender: { nickname: '张三' },
         },
-      }),
+      })
     );
     await sleep(80);
 
@@ -977,7 +1031,7 @@ socketDescribe('引用与转发的合并顺序', () => {
         retcode: 0,
         echo: forwardAction!['echo'],
         data: { messages: ['被引用的转发内容'] },
-      }),
+      })
     );
     await sleep(120);
 
@@ -1034,8 +1088,18 @@ socketDescribe('转发块的 id 精度与内联内容', () => {
         status: 'ok',
         retcode: 0,
         echo: action['echo'],
-        data: { messages: [{ type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '这是聊天记录里的内容' } }] } }] },
-      }),
+        data: {
+          messages: [
+            {
+              type: 'node',
+              data: {
+                nickname: '张三',
+                content: [{ type: 'text', data: { text: '这是聊天记录里的内容' } }],
+              },
+            },
+          ],
+        },
+      })
     );
     await sleep(120);
 
@@ -1083,14 +1147,28 @@ socketDescribe('转发块的 id 精度与内联内容', () => {
             data: {
               id: BIG_MSG_ID,
               content: [
-                { type: 'node', data: { user_id: 111, nickname: '张三', content: [{ type: 'text', data: { text: '今晚吃什么' } }] } },
-                { type: 'node', data: { user_id: 222, nickname: '李四', content: [{ type: 'text', data: { text: '随便' } }] } },
+                {
+                  type: 'node',
+                  data: {
+                    user_id: 111,
+                    nickname: '张三',
+                    content: [{ type: 'text', data: { text: '今晚吃什么' } }],
+                  },
+                },
+                {
+                  type: 'node',
+                  data: {
+                    user_id: 222,
+                    nickname: '李四',
+                    content: [{ type: 'text', data: { text: '随便' } }],
+                  },
+                },
               ],
             },
           },
         ],
         sender: { user_id: 12345, nickname: '小明' },
-      }),
+      })
     );
     await sleep(150);
 
@@ -1102,7 +1180,7 @@ socketDescribe('转发块的 id 精度与内联内容', () => {
         '1. 张三: 今晚吃什么',
         '2. 李四: 随便',
         FORWARD_UNTRUSTED_CLOSE,
-      ].join('\n'),
+      ].join('\n')
     );
   });
 
@@ -1128,13 +1206,19 @@ socketDescribe('转发块的 id 精度与内联内容', () => {
             type: 'forward',
             data: {
               content: [
-                { type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '没有 id 的聊天记录' } }] } },
+                {
+                  type: 'node',
+                  data: {
+                    nickname: '张三',
+                    content: [{ type: 'text', data: { text: '没有 id 的聊天记录' } }],
+                  },
+                },
               ],
             },
           },
         ],
         sender: { user_id: 12345, nickname: '小明' },
-      }),
+      })
     );
     await sleep(150);
 
@@ -1166,7 +1250,7 @@ socketDescribe('转发块的 id 精度与内联内容', () => {
           { type: 'text', data: { text: '这条怎么说' } },
         ],
         sender: { user_id: 12345, nickname: '小明' },
-      }),
+      })
     );
 
     const action = await new Promise<Record<string, unknown>>((resolve) => {
@@ -1204,7 +1288,7 @@ socketDescribe('按需展开聊天记录（BotConnector.fetchForward）', () => 
 
     const pending = c.fetchForward(
       { platform: 'onebot', kind: 'group', id: '8888', key: 'ob11:g8888' },
-      'fwd-late',
+      'fwd-late'
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
@@ -1217,11 +1301,17 @@ socketDescribe('按需展开聊天记录（BotConnector.fetchForward）', () => 
         echo: action['echo'],
         data: {
           messages: [
-            { type: 'node', data: { nickname: '张三', content: [{ type: 'text', data: { text: '在吗' } }] } },
-            { type: 'node', data: { nickname: '李四', content: [{ type: 'text', data: { text: '在' } }] } },
+            {
+              type: 'node',
+              data: { nickname: '张三', content: [{ type: 'text', data: { text: '在吗' } }] },
+            },
+            {
+              type: 'node',
+              data: { nickname: '李四', content: [{ type: 'text', data: { text: '在' } }] },
+            },
           ],
         },
-      }),
+      })
     );
 
     const part = await pending;
@@ -1235,7 +1325,7 @@ socketDescribe('按需展开聊天记录（BotConnector.fetchForward）', () => 
         '1. 张三: 在吗',
         '2. 李四: 在',
         FORWARD_UNTRUSTED_CLOSE,
-      ].join('\n'),
+      ].join('\n')
     );
   });
 
@@ -1248,7 +1338,7 @@ socketDescribe('按需展开聊天记录（BotConnector.fetchForward）', () => 
 
     const pending = c.fetchForward(
       { platform: 'onebot', kind: 'group', id: '8888', key: 'ob11:g8888' },
-      'fwd-missing',
+      'fwd-missing'
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
       ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
@@ -1259,7 +1349,7 @@ socketDescribe('按需展开聊天记录（BotConnector.fetchForward）', () => 
         retcode: 1200,
         echo: action['echo'],
         message: '消息已过期或者为内层消息',
-      }),
+      })
     );
     await expect(pending).resolves.toBeUndefined();
   });
@@ -1273,7 +1363,7 @@ socketDescribe('按需展开聊天记录（BotConnector.fetchForward）', () => 
     const frames = collectFrames(ws);
 
     await expect(
-      c.fetchForward({ platform: 'onebot', kind: 'group', id: '8888', key: 'ob11:g8888' }, 'fwd-1'),
+      c.fetchForward({ platform: 'onebot', kind: 'group', id: '8888', key: 'ob11:g8888' }, 'fwd-1')
     ).resolves.toBeUndefined();
     await sleep(80);
     expect(frames).toEqual([]);

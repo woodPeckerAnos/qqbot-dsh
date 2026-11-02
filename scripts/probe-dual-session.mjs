@@ -170,7 +170,10 @@ try {
     provider: 'deepseek-official',
     model: 'deepseek-flash',
   });
-  check('initialize 返回 wire-stable 身份', init?.serverInfo?.name === 'deepseek-harness-sdk-runtime');
+  check(
+    'initialize 返回 wire-stable 身份',
+    init?.serverInfo?.name === 'deepseek-harness-sdk-runtime'
+  );
 
   await request('session/prompt', {
     sessionId: SESSION_A,
@@ -198,7 +201,7 @@ try {
   await waitFor(
     () => lanes.get(SESSION_A).turnEndedAt > 0 && lanes.get(SESSION_B).turnEndedAt > 0,
     SLEEP_SECONDS * 1000 + 180_000,
-    '两个会话都完成',
+    '两个会话都完成'
   );
 
   const a = lanes.get(SESSION_A);
@@ -217,7 +220,7 @@ try {
   }
   console.log(
     `时序：B 完成于 ${((b.turnEndedAt - t0) / 1000).toFixed(1)}s，` +
-      `A 完成于 ${((a.turnEndedAt - t0) / 1000).toFixed(1)}s（sleep=${SLEEP_SECONDS}s）`,
+      `A 完成于 ${((a.turnEndedAt - t0) / 1000).toFixed(1)}s（sleep=${SLEEP_SECONDS}s）`
   );
   const failed = results.filter((r) => !r.ok);
   if (failed.length > 0) {

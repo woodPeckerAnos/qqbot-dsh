@@ -12,30 +12,30 @@
 
 ## 1. 运行盘点
 
-| 项 | 现状 |
-|---|---|
-| 运行时 | Node.js 24（镜像 `node:24-bookworm-slim`），`package.json` 要求 ≥22.4 |
-| 进程 | 1 个主进程 `node dist/main.js` + 每个活跃会话一个 `dsh` 子进程（LRU，默认上限 8） |
-| 依赖 | `@deepseek-ai/dsh`（精确版 0.1.5-rc.2）、`sharp`、`ws`、`yaml`；构建期另需 typescript |
-| 监听端口 | `8080` 健康检查（容器内）；`6700` OneBot 反向 WS（仅回环） |
-| 出网 | `api.bot.qq.com`（官方 WebSocket 网关）、`api.deepseek.com`（默认模型/搜索）、可选 `ark.cn-beijing.volces.com`（模型路由或联网搜索走方舟时）、可选 HTTP 代理 |
-| 数据 | `dsh-home`（DSH 会话日志与 profile）、`workspaces`（每会话工作区）、`bot-state`（对话记录/去重/会话映射/人设/谷时段覆盖/后台待投递） |
-| 配置 | 仓库内 `qqbot.yml` + `config/*.yml` + `dsh-profile/`（profile 补丁、人设、审批桩）只读 bind mount；`interests.yml` 同理；`config/local/*.yml` **不进 git** |
-| 密钥 | 只从 `.env` 注入：`QQ_APP_ID` / `QQ_APP_SECRET` / `DEEPSEEK_API_KEY` / `ONEBOT_ACCESS_TOKEN`（按启用的接入与模型路由判断是否必需），另有 `BOT_ADMINS`、`BOT_LISTEN_GROUPS` 等个人标识 |
-| 启动 | `scripts/entrypoint.sh`：目录与权限 → 幂等初始化 DSH profile → 沙箱后端自检 → 必需 env 检查 → `exec node dist/main.js` |
-| 停止 | SIGTERM → 先停连接器 → 等未完成 Task（最多 30s）→ 取消剩余执行并逐级关闭 DSH runtime（15s） |
-| 健康 | `/healthz`：**至少一个接入连接器已建立事件通道**才 200；`/metrics`：JSON 计数。容器 HEALTHCHECK 用 `node dist/health-probe.js` |
-| 加固 | 只读根文件系统、`/tmp` tmpfs、`cap_drop: ALL`、`no-new-privileges`、非 root uid 10001、2 CPU / 2GB / 512 pids |
-| CI | GitHub Actions：类型检查 + 默认离线测试 + 构建镜像 + 入口快速失败 + 沙箱能力检查；当前验收见 [任务状态](TASK-STATUS.md) |
+| 项       | 现状                                                                                                                                                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 运行时   | Node.js 24（镜像 `node:24-bookworm-slim`），`package.json` 要求 ≥22.4                                                                                                                 |
+| 进程     | 1 个主进程 `node dist/main.js` + 每个活跃会话一个 `dsh` 子进程（LRU，默认上限 8）                                                                                                     |
+| 依赖     | `@deepseek-ai/dsh`（精确版 0.1.5-rc.2）、`sharp`、`ws`、`yaml`；构建期另需 typescript                                                                                                 |
+| 监听端口 | `8080` 健康检查（容器内）；`6700` OneBot 反向 WS（仅回环）                                                                                                                            |
+| 出网     | `api.bot.qq.com`（官方 WebSocket 网关）、`api.deepseek.com`（默认模型/搜索）、可选 `ark.cn-beijing.volces.com`（模型路由或联网搜索走方舟时）、可选 HTTP 代理                          |
+| 数据     | `dsh-home`（DSH 会话日志与 profile）、`workspaces`（每会话工作区）、`bot-state`（对话记录/去重/会话映射/人设/谷时段覆盖/后台待投递）                                                  |
+| 配置     | 仓库内 `qqbot.yml` + `config/*.yml` + `dsh-profile/`（profile 补丁、人设、审批桩）只读 bind mount；`interests.yml` 同理；`config/local/*.yml` **不进 git**                            |
+| 密钥     | 只从 `.env` 注入：`QQ_APP_ID` / `QQ_APP_SECRET` / `DEEPSEEK_API_KEY` / `ONEBOT_ACCESS_TOKEN`（按启用的接入与模型路由判断是否必需），另有 `BOT_ADMINS`、`BOT_LISTEN_GROUPS` 等个人标识 |
+| 启动     | `scripts/entrypoint.sh`：目录与权限 → 幂等初始化 DSH profile → 沙箱后端自检 → 必需 env 检查 → `exec node dist/main.js`                                                                |
+| 停止     | SIGTERM → 先停连接器 → 等未完成 Task（最多 30s）→ 取消剩余执行并逐级关闭 DSH runtime（15s）                                                                                           |
+| 健康     | `/healthz`：**至少一个接入连接器已建立事件通道**才 200；`/metrics`：JSON 计数。容器 HEALTHCHECK 用 `node dist/health-probe.js`                                                        |
+| 加固     | 只读根文件系统、`/tmp` tmpfs、`cap_drop: ALL`、`no-new-privileges`、非 root uid 10001、2 CPU / 2GB / 512 pids                                                                         |
+| CI       | GitHub Actions：类型检查 + 默认离线测试 + 构建镜像 + 入口快速失败 + 沙箱能力检查；当前验收见 [任务状态](TASK-STATUS.md)                                                               |
 
 叠加 `docker-compose.napcat.yml` 后多一个独立 sidecar：
 
-| 项 | NapCat sidecar |
-|---|---|
-| 镜像 | `mlikiowa/napcat-docker`（Linux QQ + Xvfb，amd64/arm64） |
-| 作用 | QQ 登录与 OneBot 协议端，作为 WS 客户端连 `qqbot:6700` |
-| 数据 | `napcat-qq`（登录态/设备信息）、`napcat-config`（账号与网络配置）、`napcat-plugins` |
-| 端口 | 仅 `127.0.0.1:6099` WebUI；无公网入站 |
+| 项   | NapCat sidecar                                                                                                      |
+| ---- | ------------------------------------------------------------------------------------------------------------------- |
+| 镜像 | `mlikiowa/napcat-docker`（Linux QQ + Xvfb，amd64/arm64）                                                            |
+| 作用 | QQ 登录与 OneBot 协议端，作为 WS 客户端连 `qqbot:6700`                                                              |
+| 数据 | `napcat-qq`（登录态/设备信息）、`napcat-config`（账号与网络配置）、`napcat-plugins`                                 |
+| 端口 | 仅 `127.0.0.1:6099` WebUI；无公网入站                                                                               |
 | 资源 | 镜像约 2.1GB 磁盘；常驻内存按 Electron QQ + Xvfb 估算约 0.5–1GB（官方未给最低值，上线后用 `docker stats` 实测为准） |
 
 ### 本地已验证
@@ -49,7 +49,7 @@
 - compose 覆盖层合并：`docker compose -f docker-compose.yml -f docker-compose.cloud.yml config`
   输出中代理为空、8080 仅绑 `127.0.0.1`
 - NapCat 覆盖层合并：`docker compose -f docker-compose.yml -f docker-compose.cloud.yml
-  -f docker-compose.napcat.yml config` 退出码 0；`stop_grace_period` 为 1m30s，
+-f docker-compose.napcat.yml config` 退出码 0；`stop_grace_period` 为 1m30s，
   6700 / 8080 / 6099 全部只绑 `127.0.0.1`
 - 合并环境核对：`WEBUI_TOKEN` 只出现在 NapCat（来自 `napcat.env`），
   qqbot 的 environment 中没有该键
@@ -144,12 +144,12 @@ Dockerfile 现在同时拷贝 `package.json` 与 `package-lock.json`，
 
 ### 3.2 资源占用
 
-| 规格 | 结论 |
-|---|---|
+| 规格                   | 结论                                                                  |
+| ---------------------- | --------------------------------------------------------------------- |
 | 4 vCPU / 4GB（腾讯云） | **推荐**。qqbot 2GB + NapCat 1GB + 系统约 1GB = 4GB，配 2GB swap 更稳 |
 | 2 vCPU / 4GB（阿里云） | **可运行下限**。CPU 更紧，构建镜像时必须先停服务；并发按默认 4/2 限制 |
-| 2 vCPU / 2GB | **不够**。bot 的 2GB 上限就吃满主机，NapCat 起不来 |
-| 磁盘 | ≥20GB。两个镜像约 1.5GB + 2.1GB，另加 QQ 缓存、工作区、会话日志 |
+| 2 vCPU / 2GB           | **不够**。bot 的 2GB 上限就吃满主机，NapCat 起不来                    |
+| 磁盘                   | ≥20GB。两个镜像约 1.5GB + 2.1GB，另加 QQ 缓存、工作区、会话日志       |
 
 建议：
 
@@ -397,14 +397,14 @@ docker cp qqbot-napcat:/app/napcat/cache/qrcode.png /tmp/qrcode.png
 
 迁移的是六组卷：
 
-| 卷 | 内容 | 是否必需 |
-|---|---|---|
-| `dsh-home` | DSH 会话日志、profile、凭证 | 是 |
-| `workspaces` | 每会话工作区、`AGENTS.md` | 是 |
-| `bot-state` | 对话记录、去重、会话映射、人设、后台待投递 | 是 |
-| `napcat-qq` | QQ 登录态、设备信息 | 用 NapCat 时必需 |
-| `napcat-config` | NapCat 账号与 OneBot 配置（含 token） | 用 NapCat 时必需 |
-| `napcat-plugins` | 插件 | 可选 |
+| 卷               | 内容                                       | 是否必需         |
+| ---------------- | ------------------------------------------ | ---------------- |
+| `dsh-home`       | DSH 会话日志、profile、凭证                | 是               |
+| `workspaces`     | 每会话工作区、`AGENTS.md`                  | 是               |
+| `bot-state`      | 对话记录、去重、会话映射、人设、后台待投递 | 是               |
+| `napcat-qq`      | QQ 登录态、设备信息                        | 用 NapCat 时必需 |
+| `napcat-config`  | NapCat 账号与 OneBot 配置（含 token）      | 用 NapCat 时必需 |
+| `napcat-plugins` | 插件                                       | 可选             |
 
 ### 5.1 停机备份（一次完整批次）
 
@@ -590,19 +590,19 @@ COMPOSE_OLD up -d
 
 ## 7. 已知风险与待确认项
 
-| 风险 | 影响 | 处理 |
-|---|---|---|
+| 风险                                            | 影响                                               | 处理                                                                                                        |
+| ----------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | 内核不支持 Landlock / 禁止非特权 user namespace | `workspace-write` 退化为完全访问，安全边界只剩容器 | 选内核 ≥5.13 的镜像；Ubuntu 24.04 注意 `kernel.apparmor_restrict_unprivileged_userns=1`；启动日志看沙箱结论 |
-| NapCat 登录态/设备指纹变化 | 掉线、要求重新验证，严重时封号 | 持久化 `napcat-qq`，固定镜像/MAC/hostname，稳定出口 IP，单实例，减少重启 |
-| 跨云换 IP | 迁移即一次环境跳变 | 先定平台再迁，迁一次到位；首登在最终主机完成 |
-| 4GB 内存 | QQ + DSH 子进程峰值可能 OOM | 2GB swap；`QQ_MAX_RUNTIMES=4`、`BOT_FAST_RUNTIMES=2`、`BOT_SLOW_RUNTIMES=2`（覆盖层默认）；监控内存 |
-| 2 vCPU 构建 | `npm ci + tsc` 与运行抢 CPU/内存 | 先 build 再 up；2C4G 建议 CI 构建后 pull |
-| 第三方 NapCat 镜像供应链 | 镜像被替换/带后门 | 固定版本或 digest；升级前看 Release；不挂 docker.sock |
-| 数据迁移窗口 | 迁移期间消息漏回 | 低峰期停机；先停旧、备份、恢复、再起新；禁止双跑 |
-| 磁盘增长 | 工作区、inbox、DSH 日志、QQ 缓存持续增长 | 配 `BOT_ATTACHMENT_INBOX_RETENTION_DAYS` / `MAX_MB`，定期看卷占用 |
-| 镜像无仓库历史 | 回滚只能靠重建 | 用 `QQBOT_IMAGE_TAG` / `NAPCAT_IMAGE_TAG`，或推 OCI 仓库 |
-| 密钥落盘 | `.env` 与 NapCat 卷含敏感信息 | `chmod 600`、加密备份、不进镜像、不进 git |
-| 目标平台未定 | 网络策略/地域未知 | 官方 WSS 与 NapCat 反向 WS 都不需要公网入站；选定后用 preflight 实测 |
+| NapCat 登录态/设备指纹变化                      | 掉线、要求重新验证，严重时封号                     | 持久化 `napcat-qq`，固定镜像/MAC/hostname，稳定出口 IP，单实例，减少重启                                    |
+| 跨云换 IP                                       | 迁移即一次环境跳变                                 | 先定平台再迁，迁一次到位；首登在最终主机完成                                                                |
+| 4GB 内存                                        | QQ + DSH 子进程峰值可能 OOM                        | 2GB swap；`QQ_MAX_RUNTIMES=4`、`BOT_FAST_RUNTIMES=2`、`BOT_SLOW_RUNTIMES=2`（覆盖层默认）；监控内存         |
+| 2 vCPU 构建                                     | `npm ci + tsc` 与运行抢 CPU/内存                   | 先 build 再 up；2C4G 建议 CI 构建后 pull                                                                    |
+| 第三方 NapCat 镜像供应链                        | 镜像被替换/带后门                                  | 固定版本或 digest；升级前看 Release；不挂 docker.sock                                                       |
+| 数据迁移窗口                                    | 迁移期间消息漏回                                   | 低峰期停机；先停旧、备份、恢复、再起新；禁止双跑                                                            |
+| 磁盘增长                                        | 工作区、inbox、DSH 日志、QQ 缓存持续增长           | 配 `BOT_ATTACHMENT_INBOX_RETENTION_DAYS` / `MAX_MB`，定期看卷占用                                           |
+| 镜像无仓库历史                                  | 回滚只能靠重建                                     | 用 `QQBOT_IMAGE_TAG` / `NAPCAT_IMAGE_TAG`，或推 OCI 仓库                                                    |
+| 密钥落盘                                        | `.env` 与 NapCat 卷含敏感信息                      | `chmod 600`、加密备份、不进镜像、不进 git                                                                   |
+| 目标平台未定                                    | 网络策略/地域未知                                  | 官方 WSS 与 NapCat 反向 WS 都不需要公网入站；选定后用 preflight 实测                                        |
 
 待用户确认：最终云厂商与地域（影响出口 IP 与迁移次数）、是否保留官方接入
 作为 NapCat 的降级通道、QQ 小号的设备验证要求、数据量/维护窗口、备份保留与

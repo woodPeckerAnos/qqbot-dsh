@@ -186,8 +186,7 @@ export class QqOfficialConnector implements BotConnector {
     return {
       ok: false,
       reason: 'unsupported',
-      detail:
-        '官方通道不提供主动推送（2025-04-21 起停用；群聊主动消息每月 4 条且用户可关闭接收）',
+      detail: '官方通道不提供主动推送（2025-04-21 起停用；群聊主动消息每月 4 条且用户可关闭接收）',
       retryable: false,
     };
   }
@@ -237,7 +236,10 @@ export class QqOfficialConnector implements BotConnector {
    * 401/403 时才裸请求一次兜底。这样"需要鉴权"的形态能过，"公开 CDN"的形态
    * 也不会因为多带一个头而被拒。网络错误不重试，避免把一次超时变成两次。
    */
-  async fetchMedia(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined> {
+  async fetchMedia(
+    media: RemoteMedia,
+    options: MediaFetchOptions
+  ): Promise<MediaBytes | undefined> {
     // 官方适配器只产出带 url 的媒体（content.ts 保证），没有 url 说明数据异常
     if (media.url === undefined) return undefined;
     const fetchImpl = this.options.fetchImpl ?? fetch;
@@ -252,7 +254,7 @@ export class QqOfficialConnector implements BotConnector {
     fetchImpl: typeof fetch,
     url: string,
     options: MediaFetchOptions,
-    withAuth: boolean,
+    withAuth: boolean
   ): Promise<{ bytes?: MediaBytes; unauthorized: boolean }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeoutMs);

@@ -20,13 +20,13 @@ docker compose logs --tail=80 qqbot
 
 `/metrics` 里最该看的三个字段：
 
-| 字段 | 正常 | 异常含义 |
-|---|---|---|
-| `connectors["qq-official"].connected` | `true` | `false` = 没连上 QQ，官方通道收不到任何消息 |
-| `connectors["qq-official"].state` | `ready` | `reconnecting`/`connecting` 反复出现 = 鉴权或网络问题 |
-| `connectors["onebot"].state` | `connected` | `listening` = 服务在监听但 NapCat 没连上：查框架侧反向 WS 配置与 token |
-| `lastEventAgeMs` | 通常很小 | 持续很大（>150s）= 连接僵死（心跳机制应已触发重连） |
-| `warnings` | `[]` | 非空时逐条看，都是可操作的提示 |
+| 字段                                  | 正常        | 异常含义                                                               |
+| ------------------------------------- | ----------- | ---------------------------------------------------------------------- |
+| `connectors["qq-official"].connected` | `true`      | `false` = 没连上 QQ，官方通道收不到任何消息                            |
+| `connectors["qq-official"].state`     | `ready`     | `reconnecting`/`connecting` 反复出现 = 鉴权或网络问题                  |
+| `connectors["onebot"].state`          | `connected` | `listening` = 服务在监听但 NapCat 没连上：查框架侧反向 WS 配置与 token |
+| `lastEventAgeMs`                      | 通常很小    | 持续很大（>150s）= 连接僵死（心跳机制应已触发重连）                    |
+| `warnings`                            | `[]`        | 非空时逐条看，都是可操作的提示                                         |
 
 ---
 
@@ -62,21 +62,21 @@ cat .env | grep -c '='                           # 确认文件有内容
 > 或 compose 里还有个同名变量压着。启动日志会打印入口与实际加载的模块
 > （搜 `configFile` / `configModules`）。
 
-| 报错 | 原因 | 修复 |
-|---|---|---|
+| 报错                                                     | 原因                                                                                                                                                                                                                               | 修复                                                                                                                                                  |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `invalid environment variable: =====...`（创建容器时报） | `.env` 里有一行**全是 `=`**——最常见来源是从 Markdown 预览里复制配置：`# =====` 被渲染成标题、`#` 被吃掉。Compose 按第一个 `=` 切开得到**变量名为空**的条目，daemon 拒绝创建容器（`docker compose config` 里会看到 `"": =====...`） | `grep -n '^=' .env` 找出那一行删掉（或行首补 `#`）。注：仓库里的 `.env.example` 分隔线已改用短横线——裸的 `----` 行会被 Compose 忽略，不会再造成这个错 |
-| `配置文件不存在：...` | `QQ_CONFIG_FILE` 显式指定了却没有这个文件 | 建好文件，或删掉该变量（默认 `./qqbot.yml`，不存在就只用 env/默认） |
-| `配置模块不存在：...` | 非 optional 的 include 指向了不存在的文件（或升级后新挂载没生效） | 改路径、注释 include 行，或加 `optional: true`；升级后先 `docker compose up -d` 让 `./config` 挂载生效，缺目录可 `git checkout -- config` |
-| `配置模块是一个目录，不是文件` | bind mount 的宿主文件不存在时，Docker 自动建了同名目录 | 删掉那个同名目录，再 `git checkout -- config`（或 `git checkout -- qqbot.yml`） |
-| `配置模块循环引用：a → b → a` | 模块 include 互相指回上级 | 去掉环；模块只应向下引用，不应引用入口 |
-| `含 include 的入口文件必须用 loadConfigFile 解析` | 用单文件解析器读了入口（通常只在测试/脚本里） | 正常启动不会出现；测试请用 `loadConfigFile` |
-| `没有权限读取配置模块` | 宿主机文件对容器 uid 10001 不可读 | `chmod 644 <文件>` |
-| `未知配置项 "xxx"` / `不是可识别的配置项` | `qqbot.yml` 或 `config/*.yml` 里键名拼错 | 照报错里列的可用项改（报错会指出具体文件；拼错不会静默用默认值） |
-| `不是合法 YAML` | 缩进用了 Tab，或冒号后缺空格 | 用空格缩进；写 `port: 6700` 而不是 `port:6700` |
-| `必须是整数，收到 "6700"` | YAML 里给数字加了引号 | 去掉引号：`port: 6700` |
-| `QQ_INTENTS=... 未包含 GROUP_AND_C2C_EVENT` | intents 配错 | 用默认值 `50331648`（群聊与单聊都靠它） |
-| `QQ_C2C_MAX_REPLIES_PER_MSG 必须在 [1, 4] 之间` | 单聊官方上限就是 4（群聊才是 5） | 设 `4` 或更小 |
-| `QQ_C2C_ENABLED 只能是 true/false` | 布尔值写法不对 | 用 `true`/`false`（也接受 `1`/`0`） |
+| `配置文件不存在：...`                                    | `QQ_CONFIG_FILE` 显式指定了却没有这个文件                                                                                                                                                                                          | 建好文件，或删掉该变量（默认 `./qqbot.yml`，不存在就只用 env/默认）                                                                                   |
+| `配置模块不存在：...`                                    | 非 optional 的 include 指向了不存在的文件（或升级后新挂载没生效）                                                                                                                                                                  | 改路径、注释 include 行，或加 `optional: true`；升级后先 `docker compose up -d` 让 `./config` 挂载生效，缺目录可 `git checkout -- config`             |
+| `配置模块是一个目录，不是文件`                           | bind mount 的宿主文件不存在时，Docker 自动建了同名目录                                                                                                                                                                             | 删掉那个同名目录，再 `git checkout -- config`（或 `git checkout -- qqbot.yml`）                                                                       |
+| `配置模块循环引用：a → b → a`                            | 模块 include 互相指回上级                                                                                                                                                                                                          | 去掉环；模块只应向下引用，不应引用入口                                                                                                                |
+| `含 include 的入口文件必须用 loadConfigFile 解析`        | 用单文件解析器读了入口（通常只在测试/脚本里）                                                                                                                                                                                      | 正常启动不会出现；测试请用 `loadConfigFile`                                                                                                           |
+| `没有权限读取配置模块`                                   | 宿主机文件对容器 uid 10001 不可读                                                                                                                                                                                                  | `chmod 644 <文件>`                                                                                                                                    |
+| `未知配置项 "xxx"` / `不是可识别的配置项`                | `qqbot.yml` 或 `config/*.yml` 里键名拼错                                                                                                                                                                                           | 照报错里列的可用项改（报错会指出具体文件；拼错不会静默用默认值）                                                                                      |
+| `不是合法 YAML`                                          | 缩进用了 Tab，或冒号后缺空格                                                                                                                                                                                                       | 用空格缩进；写 `port: 6700` 而不是 `port:6700`                                                                                                        |
+| `必须是整数，收到 "6700"`                                | YAML 里给数字加了引号                                                                                                                                                                                                              | 去掉引号：`port: 6700`                                                                                                                                |
+| `QQ_INTENTS=... 未包含 GROUP_AND_C2C_EVENT`              | intents 配错                                                                                                                                                                                                                       | 用默认值 `50331648`（群聊与单聊都靠它）                                                                                                               |
+| `QQ_C2C_MAX_REPLIES_PER_MSG 必须在 [1, 4] 之间`          | 单聊官方上限就是 4（群聊才是 5）                                                                                                                                                                                                   | 设 `4` 或更小                                                                                                                                         |
+| `QQ_C2C_ENABLED 只能是 true/false`                       | 布尔值写法不对                                                                                                                                                                                                                     | 用 `true`/`false`（也接受 `1`/`0`）                                                                                                                   |
 
 ### 1.3 报"目录不可写"
 
@@ -117,12 +117,12 @@ docker compose run --rm --entrypoint dsh qqbot --profile sdk \
 
 日志里会有 `鉴权失败，无法启动` 加一条可读原因：
 
-| 日志信息 | 原因 | 修复 |
-|---|---|---|
-| `AppID 无效，或该机器人已被封禁/删除`（code 100007） | AppID 错、机器人被删/封 | 核对控制台 AppID |
-| `AppID 或 AppSecret 不正确`（code 100016） | Secret 错，或复制时带了空格 | 重新复制，注意首尾空格 |
-| `请求过于频繁`（code 100001） | 频繁重启导致 | 等 1 分钟；程序内部已有并发去重 |
-| `机器人不存在`（code 10004） | AppID 对应机器人不存在 | 核对控制台 |
+| 日志信息                                             | 原因                        | 修复                            |
+| ---------------------------------------------------- | --------------------------- | ------------------------------- |
+| `AppID 无效，或该机器人已被封禁/删除`（code 100007） | AppID 错、机器人被删/封     | 核对控制台 AppID                |
+| `AppID 或 AppSecret 不正确`（code 100016）           | Secret 错，或复制时带了空格 | 重新复制，注意首尾空格          |
+| `请求过于频繁`（code 100001）                        | 频繁重启导致                | 等 1 分钟；程序内部已有并发去重 |
+| `机器人不存在`（code 10004）                         | AppID 对应机器人不存在      | 核对控制台                      |
 
 手工验证一次（把 `<ID>`/`<SECRET>` 换掉）：
 
@@ -172,12 +172,12 @@ curl -s -X POST https://api.bot.qq.com/app/getAppAccessToken \
 2.1–2.4 说的是官方网关。社区通道频繁掉线通常不是本服务的问题，而是**框架侧
 形态**问题：
 
-| 排查 | 说明 |
-|---|---|
-| 框架是不是纯协议（无头）形态 | LLBot 在 macOS 上只有无头可用（LagrangeV2 纯协议内核），协议特征可被识别，掉线/风控频繁是常态 |
-| macOS 换 NapCat 有头注入 | 官方 Mac 安装器注入真实 QQ 客户端，协议流量出自客户端本体，显著更稳，步骤见 [DEPLOY.md 第 3.1 节](DEPLOY.md) |
-| 有头后仍频繁掉线 | 多为账号侧风控（新号、主动消息高频、被举报）：用小号、压低发送频率、让号静养几天；并确认同一个 QQ 号没有同时登在第二台设备/第二个框架上 |
-| QQ 客户端升级过（NapCat） | 注入补丁可能失效：用安装器再跑一次更新/修复 |
+| 排查                         | 说明                                                                                                                                    |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| 框架是不是纯协议（无头）形态 | LLBot 在 macOS 上只有无头可用（LagrangeV2 纯协议内核），协议特征可被识别，掉线/风控频繁是常态                                           |
+| macOS 换 NapCat 有头注入     | 官方 Mac 安装器注入真实 QQ 客户端，协议流量出自客户端本体，显著更稳，步骤见 [DEPLOY.md 第 3.1 节](DEPLOY.md)                            |
+| 有头后仍频繁掉线             | 多为账号侧风控（新号、主动消息高频、被举报）：用小号、压低发送频率、让号静养几天；并确认同一个 QQ 号没有同时登在第二台设备/第二个框架上 |
+| QQ 客户端升级过（NapCat）    | 注入补丁可能失效：用安装器再跑一次更新/修复                                                                                             |
 
 框架断开后 `connectors.onebot.state` 会回到 `listening`（本服务仍在监听、不需要
 重启容器），框架恢复后会自动重连；不重连就在框架 WebUI 里把那条反向 WS 关掉
@@ -212,13 +212,13 @@ docker compose logs -f qqbot | grep "未处理的事件类型"
 
 ### 3.2 事件没到：检查这几个点
 
-| 检查项 | 怎么看 |
-|---|---|
-| 控制台事件接收方式是不是 **WebSocket** | QQ 开放平台 → 开发设置。如果是 Webhook，本程序收不到任何事件 |
-| 机器人是否真的在群里 | 用一个新号 @它；未认证的机器人只能被管理员加进自己的群 |
-| 是不是 @ 了机器人 | 默认只订阅 `GROUP_AT_MESSAGE_CREATE`（@消息）。不 @ 的普通消息需要"接收所有消息"权限和 `GROUP_MESSAGE_CREATE` |
-| 单聊事件没到 | 确认对方是**添加了机器人好友**后再私聊；控制台需开通单聊（C2C）权限；`QQ_C2C_ENABLED` 必须不是 `false` |
-| 群是否被平台限制 | 控制台看机器人状态与风控提示 |
+| 检查项                                 | 怎么看                                                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 控制台事件接收方式是不是 **WebSocket** | QQ 开放平台 → 开发设置。如果是 Webhook，本程序收不到任何事件                                                  |
+| 机器人是否真的在群里                   | 用一个新号 @它；未认证的机器人只能被管理员加进自己的群                                                        |
+| 是不是 @ 了机器人                      | 默认只订阅 `GROUP_AT_MESSAGE_CREATE`（@消息）。不 @ 的普通消息需要"接收所有消息"权限和 `GROUP_MESSAGE_CREATE` |
+| 单聊事件没到                           | 确认对方是**添加了机器人好友**后再私聊；控制台需开通单聊（C2C）权限；`QQ_C2C_ENABLED` 必须不是 `false`        |
+| 群是否被平台限制                       | 控制台看机器人状态与风控提示                                                                                  |
 
 ### 3.3 事件到了但被判为重复
 
@@ -247,12 +247,12 @@ docker compose exec qqbot node -e "
 fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.dispatcher.skippedC2C))"
 ```
 
-| 现象 | 原因 | 处置 |
-|---|---|---|
-| 日志有 `单聊已禁用` / `skippedC2C` 增长 | 配置里关了单聊 | `.env` 设 `QQ_C2C_ENABLED=true`，`docker compose up -d`（不用重建镜像） |
-| 日志连 `c2c-message` 都没有 | 事件没到 | 回到 3.2 的单聊那一行；确认控制台开通了单聊权限、对方已加好友 |
-| 有 `c2c-message` 但 `发送回复失败` 报 `40034105` | 回复被当成主动消息（漏传 `msg_id`） | 这是 bug，请保留日志反馈；主动消息本 MVP 不发送 |
-| 回复条数不够用/被截断 | 单聊官方上限 4 条，比群聊少 1 | 调小 `QQ_C2C_PROGRESS_MAX`；或检查 `QQ_C2C_MAX_REPLIES_PER_MSG`（最大 4） |
+| 现象                                             | 原因                                | 处置                                                                      |
+| ------------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------- |
+| 日志有 `单聊已禁用` / `skippedC2C` 增长          | 配置里关了单聊                      | `.env` 设 `QQ_C2C_ENABLED=true`，`docker compose up -d`（不用重建镜像）   |
+| 日志连 `c2c-message` 都没有                      | 事件没到                            | 回到 3.2 的单聊那一行；确认控制台开通了单聊权限、对方已加好友             |
+| 有 `c2c-message` 但 `发送回复失败` 报 `40034105` | 回复被当成主动消息（漏传 `msg_id`） | 这是 bug，请保留日志反馈；主动消息本 MVP 不发送                           |
+| 回复条数不够用/被截断                            | 单聊官方上限 4 条，比群聊少 1       | 调小 `QQ_C2C_PROGRESS_MAX`；或检查 `QQ_C2C_MAX_REPLIES_PER_MSG`（最大 4） |
 
 单聊与群聊是**两个独立会话**：同一个人的群聊上下文与私聊上下文互不相通，
 工作区也各是各的（单聊目录名带 `c2c:` 前缀的哈希）。想让 agent 在单聊里知道
@@ -266,23 +266,23 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 `/metrics` 的 `tasks.fast` / `tasks.slow` 分别显示 running、queued，unfinished 是未完成 Task 数。`messages` 的 pending、sending、sent、failed 描述投递，Task 完成不要求消息已经送达。
 
-| 现象 | 检查 | 处置 |
-| --- | --- | --- |
-| 回“未完成任务已达上限” | `tasks.unfinished`、Session 待完成数 | 调整 `tasks.maxPerSession` / `maxGlobal`；不是 runtime 硬上限 |
-| 慢 Task 未结束，但新快回复送不出 | 两 lane 容量、`messages.sending`、连接器健康 | 检查快 runtime 是否就绪；附件上传不应占正文通道 |
-| 回“任务执行超时” | 持久 Task 的 lane.result.error | 调整 `tasks.fastTimeoutMs` / `slowTimeoutMs`；排队不计执行时限 |
-| Task 已 completed 但没收到结果 | `messages.pending`、QQ 当前出口 | 没尝试的结果可等待合法锚点，继续保留原引用 |
+| 现象                             | 检查                                         | 处置                                                           |
+| -------------------------------- | -------------------------------------------- | -------------------------------------------------------------- |
+| 回“未完成任务已达上限”           | `tasks.unfinished`、Session 待完成数         | 调整 `tasks.maxPerSession` / `maxGlobal`；不是 runtime 硬上限  |
+| 慢 Task 未结束，但新快回复送不出 | 两 lane 容量、`messages.sending`、连接器健康 | 检查快 runtime 是否就绪；附件上传不应占正文通道                |
+| 回“任务执行超时”                 | 持久 Task 的 lane.result.error               | 调整 `tasks.fastTimeoutMs` / `slowTimeoutMs`；排队不计执行时限 |
+| Task 已 completed 但没收到结果   | `messages.pending`、QQ 当前出口              | 没尝试的结果可等待合法锚点，继续保留原引用                     |
 
 ### 4.2 发送失败
 
 日志关键字 `消息发送失败，不重试`。原消息失败或超时后不重发，每条“发送 XX 消息失败”通知只尝试一次，通知失败不再递归。
 
-| 错误 | 含义与处置 |
-| --- | --- |
+| 错误                            | 含义与处置                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------- |
 | 40054005（重复 msg_id/msg_seq） | 队列外重复发送；保存 Task ID、消息 ID 和日志，QQ 序号应由 MessageQueue 唯一分配 |
-| 40054007（长度超限） | 调小 `qq-official.maxChars`，只影响后续新消息；旧失败消息不缩短重发 |
-| 40034105（主动消息无权限） | 检查是否有合法发送锚点；原引用与发送锚点不能混用 |
-| 401 | 凭证刷新服务后续新消息，当前消息终态失败，不鉴权重发 |
+| 40054007（长度超限）            | 调小 `qq-official.maxChars`，只影响后续新消息；旧失败消息不缩短重发             |
+| 40034105（主动消息无权限）      | 检查是否有合法发送锚点；原引用与发送锚点不能混用                                |
+| 401                             | 凭证刷新服务后续新消息，当前消息终态失败，不鉴权重发                            |
 
 QQ 群聊被动窗口 5 分钟、单聊 60 分钟，条数及序号跨 Task、lane、命令共享。无可用窗口或条数时尚未尝试的消息保持 pending；一次实际尝试失败后进入 failed，新输入也不会带出重发。
 
@@ -306,11 +306,11 @@ docker compose run --rm --entrypoint dsh qqbot --profile sdk \
 
 日志里 `turn/end` 的 reason 是 `error` 时，用户会看到错误摘要。常见：
 
-| 情况 | 表现 |
-|---|---|
-| `DEEPSEEK_API_KEY` 无效/欠费 | turn 立刻 error |
-| 模型名不存在 | `initialize` 阶段就失败（`DSH_MODEL` 拼错） |
-| 网络不通 | 容器内 `curl https://api.deepseek.com` 测试 |
+| 情况                         | 表现                                        |
+| ---------------------------- | ------------------------------------------- |
+| `DEEPSEEK_API_KEY` 无效/欠费 | turn 立刻 error                             |
+| 模型名不存在                 | `initialize` 阶段就失败（`DSH_MODEL` 拼错） |
+| 网络不通                     | 容器内 `curl https://api.deepseek.com` 测试 |
 
 手工验证网络：
 
@@ -332,23 +332,23 @@ docker compose exec qqbot node -e "
 fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.dispatcher))"
 ```
 
-| 现象 | 字段 | 原因 | 处置 |
-|---|---|---|---|
-| 图片完全没进 prompt | `imagesSkipped` 增长、日志有"部分图片未能读入" | 下载失败 / 格式不支持 / 字节超限且压不下来 / 解不开 | 见下表逐项排除 |
-| `imagesInlined` 一直是 0 | — | `attachments.enabled=false`，或模型侧不支持图片 | 打开 `BOT_ATTACHMENT_ENABLED`；prompt 里会明说"已关闭图片读取" |
-| 长图只读进来一部分 | prompt 注记里有"共需 R 块，本次只送入前 N 块" | 切片块数受 `attachments.maxImageTiles`（默认 12）与 runtime 单条 prompt 20 张上限约束 | 调大 `BOT_ATTACHMENT_MAX_IMAGE_TILES`（token 代价随之上升），或让用户分段发送 |
-| 引用内容为空 | 日志 `回查引用消息失败` | OneBot 侧 `get_msg` 失败（框架不支持/超时） | 该条按未引用继续处理；检查框架是否支持 `get_msg` |
-| **"群里先发图、再 @ bot"**，bot 说"只收到占位符/看不到图" | `windowImagesInlined` 为 0 | 上下文（滚窗）里的媒体配额为 0，或该图超配额/下载失败 | 见下一小节 |
+| 现象                                                      | 字段                                           | 原因                                                                                  | 处置                                                                          |
+| --------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 图片完全没进 prompt                                       | `imagesSkipped` 增长、日志有"部分图片未能读入" | 下载失败 / 格式不支持 / 字节超限且压不下来 / 解不开                                   | 见下表逐项排除                                                                |
+| `imagesInlined` 一直是 0                                  | —                                              | `attachments.enabled=false`，或模型侧不支持图片                                       | 打开 `BOT_ATTACHMENT_ENABLED`；prompt 里会明说"已关闭图片读取"                |
+| 长图只读进来一部分                                        | prompt 注记里有"共需 R 块，本次只送入前 N 块"  | 切片块数受 `attachments.maxImageTiles`（默认 12）与 runtime 单条 prompt 20 张上限约束 | 调大 `BOT_ATTACHMENT_MAX_IMAGE_TILES`（token 代价随之上升），或让用户分段发送 |
+| 引用内容为空                                              | 日志 `回查引用消息失败`                        | OneBot 侧 `get_msg` 失败（框架不支持/超时）                                           | 该条按未引用继续处理；检查框架是否支持 `get_msg`                              |
+| **"群里先发图、再 @ bot"**，bot 说"只收到占位符/看不到图" | `windowImagesInlined` 为 0                     | 上下文（滚窗）里的媒体配额为 0，或该图超配额/下载失败                                 | 见下一小节                                                                    |
 
 **上下文（滚窗）里的图片/文件**走的是与当前消息**同一条**通路，但配额独立，且
 只在被 @ 时才取字节（旁听期间不下载任何东西）。排障按这三个字段定位：
 
-| 现象 | 字段 | 处置 |
-|---|---|---|
-| 上下文里的图一张都没进 | `windowImagesInlined` = 0 且 `windowImagesSkipped` = 0 | 说明**根本没选中**：`BOT_OBSERVATION_INJECT_IMAGES`/`injectFiles` 被配成 0，或该会话不在 `BOT_LISTEN_GROUPS` 里（没进滚窗） |
-| 只进来一部分 | `windowImagesSkipped` > 0 + 日志"上下文里的部分图片未能读入" | 超配额（只取**最近**的 N 张，调大 `BOT_OBSERVATION_INJECT_IMAGES`）或单张下载失败（按下面的平台表排除） |
-| 上下文里的文件没进 | `windowFilesFetched` = 0 + `filesSkipped` 增长 | `BOT_OBSERVATION_INJECT_FILES=0`，或类型不在 `attachments.files.extractExtensions` 白名单里 |
-| 整轮图片都进不去（连刚发的那张也没了） | `windowImagesSkipped` 与 `imagesSkipped` 同时增长，日志有"带图片的 prompt 被 runtime 拒绝" | 撞上了单条 prompt 20 张的硬上限：当前消息先取、上下文只能用剩下的——调小两侧配额或 `BOT_ATTACHMENT_MAX_IMAGE_TILES` |
+| 现象                                   | 字段                                                                                       | 处置                                                                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| 上下文里的图一张都没进                 | `windowImagesInlined` = 0 且 `windowImagesSkipped` = 0                                     | 说明**根本没选中**：`BOT_OBSERVATION_INJECT_IMAGES`/`injectFiles` 被配成 0，或该会话不在 `BOT_LISTEN_GROUPS` 里（没进滚窗） |
+| 只进来一部分                           | `windowImagesSkipped` > 0 + 日志"上下文里的部分图片未能读入"                               | 超配额（只取**最近**的 N 张，调大 `BOT_OBSERVATION_INJECT_IMAGES`）或单张下载失败（按下面的平台表排除）                     |
+| 上下文里的文件没进                     | `windowFilesFetched` = 0 + `filesSkipped` 增长                                             | `BOT_OBSERVATION_INJECT_FILES=0`，或类型不在 `attachments.files.extractExtensions` 白名单里                                 |
+| 整轮图片都进不去（连刚发的那张也没了） | `windowImagesSkipped` 与 `imagesSkipped` 同时增长，日志有"带图片的 prompt 被 runtime 拒绝" | 撞上了单条 prompt 20 张的硬上限：当前消息先取、上下文只能用剩下的——调小两侧配额或 `BOT_ATTACHMENT_MAX_IMAGE_TILES`          |
 
 文件被读进来的原文落在会话工作区的 `inbox/`，prompt 里会给出路径（`inbox/xxx.pdf`），
 模型可以继续用工具深挖；上下文里的文件在说明里带 `[谁] 那条消息里的 ` 前缀——
@@ -358,32 +358,32 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 既烧 token 又跑题）：只有在被 @ 且这次的问题明确提到它时，才由话题判定那一次调用
 顺带判出来并回查。排障看这两个计数：
 
-| 现象 | 字段 | 处置 |
-|---|---|---|
-| "看看刚才那个聊天记录"但 bot 说看不到 | `windowForwardsExpanded` = 0 | 先看那轮日志里有没有"按需展开上下文里的聊天记录"：没有就是**判定没判成**（判据刻意窄，拿不准一律不展开；`topic.enabled=false` 或没配 `DEEPSEEK_API_KEY` 时整条通路关闭） |
-| 判成了但没读到 | `windowForwardsFailed` 增长 + 日志"上下文里的聊天记录未能展开" | 回查失败（消息过期 / 框架不支持 `get_forward_msg`）或转发展开被关（`BOT_ATTACHMENT_FORWARD_ENABLED=false`）。prompt 里已如实告诉模型"这条记录没读出来"，不会让它猜 |
-| @ 消息**自带**的记录没展开 | `forwardsExpanded` 不变 + 日志"回查转发消息失败" | 那是另一条路径（@ 消息里的转发在归一化后立刻展开），见上面几张表与 DESIGN §11.6 |
+| 现象                                  | 字段                                                           | 处置                                                                                                                                                                     |
+| ------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| "看看刚才那个聊天记录"但 bot 说看不到 | `windowForwardsExpanded` = 0                                   | 先看那轮日志里有没有"按需展开上下文里的聊天记录"：没有就是**判定没判成**（判据刻意窄，拿不准一律不展开；`topic.enabled=false` 或没配 `DEEPSEEK_API_KEY` 时整条通路关闭） |
+| 判成了但没读到                        | `windowForwardsFailed` 增长 + 日志"上下文里的聊天记录未能展开" | 回查失败（消息过期 / 框架不支持 `get_forward_msg`）或转发展开被关（`BOT_ATTACHMENT_FORWARD_ENABLED=false`）。prompt 里已如实告诉模型"这条记录没读出来"，不会让它猜       |
+| @ 消息**自带**的记录没展开            | `forwardsExpanded` 不变 + 日志"回查转发消息失败"               | 那是另一条路径（@ 消息里的转发在归一化后立刻展开），见上面几张表与 DESIGN §11.6                                                                                          |
 
 按平台排除：
 
-| 平台 | 常见原因 | 验证方式 |
-|---|---|---|
-| 官方 | 附件 CDN 需要鉴权，但 token 取不到 | 日志 `取 access_token 失败`；先修 2.1 |
-| 官方 | 图片格式不在 png/jpeg/webp/gif 内（如 bmp/heic） | 日志"格式不支持内联"，属预期降级 |
-| 官方 | 图片太大 | 无需再调配置：超限图会自动降采样/切片；仍想放宽就调 `BOT_ATTACHMENT_MAX_BYTES`（内联上限） |
-| OneBot | 图片只有本地路径 / 文件标识（NapCat 有头形态常见） | **已自动回查**：连接器会用 `get_file` / `get_image` 动作经 WS 取字节（base64 或刷新后的 URL），无需配置；仍失败看 debug 日志里 `get_file 回查失败` 的原因 |
-| OneBot | 图片 URL 过期（NapCat 的 URL 约 2 小时过期，报 `url expired`） | **已自动刷新**：GET 失败后同样回退 `get_file`/`get_image` 拿新 URL/base64 |
-| OneBot | 框架上报的图片 URL 指向宿主 `127.0.0.1:<port>`，容器访问不到 | GET 失败后会回退动作回查；若仍失败，确认 NapCat 版本支持 `get_file`（v4.8+） |
-| 两者 | 就想要纯文本 | 设 `BOT_ATTACHMENT_ENABLED=false`，行为回到只有 `[图片]` 占位 |
+| 平台   | 常见原因                                                       | 验证方式                                                                                                                                                  |
+| ------ | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 官方   | 附件 CDN 需要鉴权，但 token 取不到                             | 日志 `取 access_token 失败`；先修 2.1                                                                                                                     |
+| 官方   | 图片格式不在 png/jpeg/webp/gif 内（如 bmp/heic）               | 日志"格式不支持内联"，属预期降级                                                                                                                          |
+| 官方   | 图片太大                                                       | 无需再调配置：超限图会自动降采样/切片；仍想放宽就调 `BOT_ATTACHMENT_MAX_BYTES`（内联上限）                                                                |
+| OneBot | 图片只有本地路径 / 文件标识（NapCat 有头形态常见）             | **已自动回查**：连接器会用 `get_file` / `get_image` 动作经 WS 取字节（base64 或刷新后的 URL），无需配置；仍失败看 debug 日志里 `get_file 回查失败` 的原因 |
+| OneBot | 图片 URL 过期（NapCat 的 URL 约 2 小时过期，报 `url expired`） | **已自动刷新**：GET 失败后同样回退 `get_file`/`get_image` 拿新 URL/base64                                                                                 |
+| OneBot | 框架上报的图片 URL 指向宿主 `127.0.0.1:<port>`，容器访问不到   | GET 失败后会回退动作回查；若仍失败，确认 NapCat 版本支持 `get_file`（v4.8+）                                                                              |
+| 两者   | 就想要纯文本                                                   | 设 `BOT_ATTACHMENT_ENABLED=false`，行为回到只有 `[图片]` 占位                                                                                             |
 
 **图片链路的准入限值**（排障时对照，全部来自 runtime，不由本项目配置）：
 
-| 闸 | 阈值 | 越界表现 |
-|---|---|---|
-| 源图字节 | 20MiB（本项目另有 8MiB 内联上限，超限先降采样） | `IMAGE_TOO_LARGE` |
-| 源图总像素 | 6400 万（先判） | `IMAGE_TOO_MANY_PIXELS`「图片总像素超过模型上限」 |
-| 源图单边 | 8192（后判） | `IMAGE_DIMENSION_TOO_LARGE`「图片单边像素超过模型上限」 |
-| 单条 prompt 张数 | 20 | `TOO_MANY_IMAGES` |
+| 闸                   | 阈值                                                       | 越界表现                                                     |
+| -------------------- | ---------------------------------------------------------- | ------------------------------------------------------------ |
+| 源图字节             | 20MiB（本项目另有 8MiB 内联上限，超限先降采样）            | `IMAGE_TOO_LARGE`                                            |
+| 源图总像素           | 6400 万（先判）                                            | `IMAGE_TOO_MANY_PIXELS`「图片总像素超过模型上限」            |
+| 源图单边             | 8192（后判）                                               | `IMAGE_DIMENSION_TOO_LARGE`「图片单边像素超过模型上限」      |
+| 单条 prompt 张数     | 20                                                         | `TOO_MANY_IMAGES`                                            |
 | 模型侧**每张图**预算 | 64 万像素 / 1MiB（`deepseek-flash` 的 `imagePixelBudget`） | 不报错——静默降采样，长图会因此糊掉（这正是切片要解决的问题） |
 
 这些错误原文本是英文，`dsh/media.ts` 的 `describeImageRejection` 会把它们翻成
@@ -394,14 +394,14 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 慢 lane 在所属执行及前台子代理结束后才结算，快 lane 独立推进。默认快 30 秒、慢 30 分钟；普通慢问答 NO_REPLY 是正常成功，实际执行后空结果或 NO_REPLY 属于契约失败。
 
-| 现象 | 检查与处理 |
-| --- | --- |
-| 要停止当前工作 | 管理员 `/stop` 取消正在执行的 Task，其他排队 Task 保留；自然语言请求通过输入身份绑定的 cancel_task |
-| 要清空未完成工作并开新话题 | 管理员 `/new`；已完成 Task 的待发消息仍保留 |
-| 旧 Task 在新话题仍发出结果 | 正常；新输入及自动话题切换不取消旧 Task，旧结果引用原消息 |
-| 没有周期进度 | 正常；快回复成功且慢 lane 开始后至少 5 分钟，仍在执行时最多一次存活提醒；无即时出口放弃 |
-| 重启后旧任务没有继续跑 | 正常；未完成 Task 中断失败，形成一次失败结果，不重跑模型 |
-| 重启后消息没有重发 | 发送中且结果不明的消息标 failed；未尝试消息保留 pending |
+| 现象                       | 检查与处理                                                                                         |
+| -------------------------- | -------------------------------------------------------------------------------------------------- |
+| 要停止当前工作             | 管理员 `/stop` 取消正在执行的 Task，其他排队 Task 保留；自然语言请求通过输入身份绑定的 cancel_task |
+| 要清空未完成工作并开新话题 | 管理员 `/new`；已完成 Task 的待发消息仍保留                                                        |
+| 旧 Task 在新话题仍发出结果 | 正常；新输入及自动话题切换不取消旧 Task，旧结果引用原消息                                          |
+| 没有周期进度               | 正常；快回复成功且慢 lane 开始后至少 5 分钟，仍在执行时最多一次存活提醒；无即时出口放弃            |
+| 重启后旧任务没有继续跑     | 正常；未完成 Task 中断失败，形成一次失败结果，不重跑模型                                           |
+| 重启后消息没有重发         | 发送中且结果不明的消息标 failed；未尝试消息保留 pending                                            |
 
 持久文件：`tasks.json`、`task-sessions.json`、`messages.json`、`task-budgets.json` 位于 stateDir，稳定待发附件在 `message-files/<Task ID>/`。不要按 Task 完成状态清理队列附件。Task 终态默认保留 7 天，到期删除其工作区；待发送消息及必要文件独立保存。旧版 `background-pending.json` 不自动导入，升级前应检查其中待发内容。
 
@@ -409,20 +409,20 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 两个能力各自有独立开关与计数，先看数字分在哪一步：
 
-| 现象 | 字段 | 原因 | 处置 |
-|---|---|---|---|
-| 转发块只显示 `[聊天记录]` | `forwardsFailed` 增长 | 回查失败/超时/响应解析不出条目 | 看 debug 日志 `get_forward_msg 失败`；确认框架支持该动作（见第 8 节 #14）。注意**关掉 `BOT_ATTACHMENT_FORWARD_ENABLED` 不计入**这个数（主动关闭不是失败） |
-| 转发块只显示 `[聊天记录]`，但 `forwardsFailed` **不涨** | — | 上报里既没有内联内容也没有 id（`forward` 段只有 type） | 框架问题：让它按 OneBot 规范上报 `forward.data.id`（NapCat 会同时给 `content`） |
-| 转发块"共 N 条"但只列出前几条 | `forwardNodesInlined` 小于 N | 命中上限（正常降级，不是故障） | 提高 `BOT_ATTACHMENT_FORWARD_MAX_NODES` / `_MAX_CHARS` |
-| 完全不想展开转发 | — | — | `BOT_ATTACHMENT_FORWARD_ENABLED=false`（关掉后**不发任何回查请求**，内联内容也不展开） |
-| 文件"不解析该类型" | `filesSkipped` 增长 | 扩展名不在白名单 | 加进 `BOT_ATTACHMENT_FILE_EXTENSIONS`；Office 三件套本期刻意不解析 |
-| 文件"读取失败" | `filesSkipped` 增长 | 取字节失败（URL 过期 / 直链申请失败 / 框架动作不支持） | 看 debug 日志 `申请直链失败`；确认框架支持 `get_group_file_url`（见 #17） |
-| 文件"没有可提取的文本层" | `filesSavedOnly` 增长 | 扫描版 PDF（无文本层） | 属预期：原文已在 `inbox/`，可以请 agent 用工具处理；OCR 不在范围内 |
-| PDF"未安装解析工具" | 日志 `pdftotext 不在 PATH 中` | 容器外的本地开发环境 | 容器镜像已装 `poppler-utils`；本地 `brew install poppler`。降级不影响主流程 |
-| 文件"未读入"但 `filesFetched` 有值 | `filesSavedOnly` | 取到字节了但没抽出正文（格式不在解析范围 / 没有文本层） | 原文已在工作区，agent 可直接读。注意 `filesFetched` 与 `filesSkipped` **互斥**（体积复核在计数之前），所以 `fetched - extracted - savedOnly - skipped` 不会为负 |
-| 用户发来的文件被机器人又发回去 | — | `inboxDir` 与 `outboxDir` 配成了同一个名字 | 不可能：配置层直接拒绝同名（启动期报错）。若真出现，检查是否手工往 `outbox/` 里放了文件 |
-| `inbox/` 目录越来越大 | — | 保留策略被关掉或上限过大 | 检查 `BOT_ATTACHMENT_INBOX_RETENTION_DAYS`（默认 7 天）与 `BOT_ATTACHMENT_INBOX_MAX_MB`（默认 200MB）。清理只在 `files.enabled && files.saveToInbox` 时每轮 turn 开始做，且只删 `<13 位时间戳>-` 命名的文件——agent 自己放进去的东西不会被删 |
-| 日志出现 `inbox 路径不是目录（符号链接…）` / `inbox 目录不在会话工作区内` | — | agent（可能被注入）把 `<workspace>/inbox` 换成了指向工作区外的符号链接 | 这是**预期拦截**：落盘与清理都会拒绝执行，工作区外的文件不会被误删。排查该会话的 agent 行为即可 |
+| 现象                                                                      | 字段                          | 原因                                                                   | 处置                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 转发块只显示 `[聊天记录]`                                                 | `forwardsFailed` 增长         | 回查失败/超时/响应解析不出条目                                         | 看 debug 日志 `get_forward_msg 失败`；确认框架支持该动作（见第 8 节 #14）。注意**关掉 `BOT_ATTACHMENT_FORWARD_ENABLED` 不计入**这个数（主动关闭不是失败）                                                                                   |
+| 转发块只显示 `[聊天记录]`，但 `forwardsFailed` **不涨**                   | —                             | 上报里既没有内联内容也没有 id（`forward` 段只有 type）                 | 框架问题：让它按 OneBot 规范上报 `forward.data.id`（NapCat 会同时给 `content`）                                                                                                                                                             |
+| 转发块"共 N 条"但只列出前几条                                             | `forwardNodesInlined` 小于 N  | 命中上限（正常降级，不是故障）                                         | 提高 `BOT_ATTACHMENT_FORWARD_MAX_NODES` / `_MAX_CHARS`                                                                                                                                                                                      |
+| 完全不想展开转发                                                          | —                             | —                                                                      | `BOT_ATTACHMENT_FORWARD_ENABLED=false`（关掉后**不发任何回查请求**，内联内容也不展开）                                                                                                                                                      |
+| 文件"不解析该类型"                                                        | `filesSkipped` 增长           | 扩展名不在白名单                                                       | 加进 `BOT_ATTACHMENT_FILE_EXTENSIONS`；Office 三件套本期刻意不解析                                                                                                                                                                          |
+| 文件"读取失败"                                                            | `filesSkipped` 增长           | 取字节失败（URL 过期 / 直链申请失败 / 框架动作不支持）                 | 看 debug 日志 `申请直链失败`；确认框架支持 `get_group_file_url`（见 #17）                                                                                                                                                                   |
+| 文件"没有可提取的文本层"                                                  | `filesSavedOnly` 增长         | 扫描版 PDF（无文本层）                                                 | 属预期：原文已在 `inbox/`，可以请 agent 用工具处理；OCR 不在范围内                                                                                                                                                                          |
+| PDF"未安装解析工具"                                                       | 日志 `pdftotext 不在 PATH 中` | 容器外的本地开发环境                                                   | 容器镜像已装 `poppler-utils`；本地 `brew install poppler`。降级不影响主流程                                                                                                                                                                 |
+| 文件"未读入"但 `filesFetched` 有值                                        | `filesSavedOnly`              | 取到字节了但没抽出正文（格式不在解析范围 / 没有文本层）                | 原文已在工作区，agent 可直接读。注意 `filesFetched` 与 `filesSkipped` **互斥**（体积复核在计数之前），所以 `fetched - extracted - savedOnly - skipped` 不会为负                                                                             |
+| 用户发来的文件被机器人又发回去                                            | —                             | `inboxDir` 与 `outboxDir` 配成了同一个名字                             | 不可能：配置层直接拒绝同名（启动期报错）。若真出现，检查是否手工往 `outbox/` 里放了文件                                                                                                                                                     |
+| `inbox/` 目录越来越大                                                     | —                             | 保留策略被关掉或上限过大                                               | 检查 `BOT_ATTACHMENT_INBOX_RETENTION_DAYS`（默认 7 天）与 `BOT_ATTACHMENT_INBOX_MAX_MB`（默认 200MB）。清理只在 `files.enabled && files.saveToInbox` 时每轮 turn 开始做，且只删 `<13 位时间戳>-` 命名的文件——agent 自己放进去的东西不会被删 |
+| 日志出现 `inbox 路径不是目录（符号链接…）` / `inbox 目录不在会话工作区内` | —                             | agent（可能被注入）把 `<workspace>/inbox` 换成了指向工作区外的符号链接 | 这是**预期拦截**：落盘与清理都会拒绝执行，工作区外的文件不会被误删。排查该会话的 agent 行为即可                                                                                                                                             |
 
 落地位置：`/data/workspaces/<hash>/inbox/`（文件名形如 `1767225600000-report.pdf`）。
 用户的文件**永远只落在本会话工作区**，另一个群的文件不会出现在这里。
@@ -443,26 +443,26 @@ curl -s localhost:8080/health | jq .proactive
 **整段缺失** = 介入层没装配（`proactive.enabled=false`，默认值）。
 "bot 只在被 @ 时回复"与"它旁听了但决定不说"是两件事，这里必须先分清。
 
-| 现象 | 常见原因 | 怎么确认 |
-|---|---|---|
-| 段缺失 | `BOT_PROACTIVE_ENABLED` / `proactive.enabled` 没打开 | 启动日志里的 `主动介入已装配` 一行不会出现 |
-| `enabled: true` 但 `conversations: 0` | 白名单没配或写错（`BOT_LISTEN_GROUPS` 为空 = 不接任何群） | 条目必须带平台前缀：`onebot:123456`、`ob11:g123456` |
-| `interests.enabled: true` 但 `interests.loaded: false` | 兴趣池文件路径配错（默认 `interests.yml`，容器里要有这个文件） | 场景 5 永远不会触发，但其余场景正常 |
-| `dryRun: true` | **这是默认值**：判定照跑、只记 `wouldSend`，不会真的发言 | 确认判据准了再显式设 `false` |
-| `wouldSend > 0` 而 `spoke == 0` | 就是上面这条（灰度模式在工作） | 观察 `vetoed` / `satisfiedByScene` 判断判据质量 |
-| `spoke == 0` 且 `vetoed` 全是 `no-candidate` | 本地预筛没命中：消息不是指代/续聊/问句，也没命中兴趣池 | 看 `SCENES.md` 的成立条件；兴趣池加条目 |
-| `spoke == 0` 且 `judgeFailures > 0` | 判定调用失败（超时/网络/密钥/解析） | 日志里搜「主动介入判定失败」；连续失败会 `suspended` |
-| `suspended > 0` | 判定连续失败达上限，该会话暂停评估 | 修好上游后重启进程（暂停状态不持久化） |
-| `vetoed` 里 `rate-limit` / `min-gap` | 触发了硬限流，或同一话题会话内两次发言间隔没到 | 这是设计行为；额度见 `config/proactive.yml` |
-| `sessions.opened` 涨、`spoke` 不涨 | 判定判"值得"但发言被后面几道闸门挡下 | 看 `vetoed` 是哪一类；`min-gap` / `rate-limit` / `budget-exhausted` 都不消耗预算 |
-| `sessions.closedBy['idle']` 占绝大多数 | 话题会话几乎都是"没人接话"被静默关闭的 | 正常兜底；若 `llm-closed` 长期为 0，说明判据里"什么时候该关"那一段没起作用 |
-| `sessions.budgetExhausted` 高 | 同一个话题里"还想说、但额度没了"被挡了很多次 | 高 = 预算偏紧（模型还想接着聊）；低 = 2 句够用。**注意它不等于"它不说话了"**：会话还开着，只是闭嘴 |
-| `sessions.spent > 0` | 有话题的额度已用尽、正在闭嘴（会话没关） | 这是正常状态；`idle` 到点或模型说换话题后它会消失 |
-| `sessions.spokeInSession` 集中在 `"1"` | 每个话题仅一个 Task 成功送达，预算 2 用不满 | 可把 `proactive.sessionBudget` 降为 1（一个成功 Task），或说明模型偏保守 |
-| `sessions.noSession` 很高 | 大量唤醒因为"没有会话"被挡 = 覆盖率低 | **这是本设计的预期**（以覆盖率换精度）；要提覆盖只能改判据或调 session 参数 |
-| `deliveryDegraded: {"unsupported": N}` | **官方通道不支持主动发言**（主动推送已停用） | 预期行为，不是故障；OneBot 才有这个能力 |
-| `deliveryDegraded: {"compose-failed": N}` | 措辞轮次没产出发言：会话正忙（有用户轮次在跑，主动发言主动让路）/ 生成超时 / runtime 起不来 / 模型看完完整上下文后选择不说 | 偶发 = 正常；持续增长看 debug 日志「主动发言：」「主动介入：发言生成未果」，超时占多就调大 `proactive.speakTimeoutMs` |
-| 发出去的话是"直接回答 xx 的要点（依据：…）"这种元文本 | 措辞轮次没接上（`compose` 未注入时退回发判定要点原文） | 启动日志搜 `未注入发言生成`——正常装配不会出现；确认部署的是含措辞轮次的版本 |
+| 现象                                                   | 常见原因                                                                                                                   | 怎么确认                                                                                                              |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 段缺失                                                 | `BOT_PROACTIVE_ENABLED` / `proactive.enabled` 没打开                                                                       | 启动日志里的 `主动介入已装配` 一行不会出现                                                                            |
+| `enabled: true` 但 `conversations: 0`                  | 白名单没配或写错（`BOT_LISTEN_GROUPS` 为空 = 不接任何群）                                                                  | 条目必须带平台前缀：`onebot:123456`、`ob11:g123456`                                                                   |
+| `interests.enabled: true` 但 `interests.loaded: false` | 兴趣池文件路径配错（默认 `interests.yml`，容器里要有这个文件）                                                             | 场景 5 永远不会触发，但其余场景正常                                                                                   |
+| `dryRun: true`                                         | **这是默认值**：判定照跑、只记 `wouldSend`，不会真的发言                                                                   | 确认判据准了再显式设 `false`                                                                                          |
+| `wouldSend > 0` 而 `spoke == 0`                        | 就是上面这条（灰度模式在工作）                                                                                             | 观察 `vetoed` / `satisfiedByScene` 判断判据质量                                                                       |
+| `spoke == 0` 且 `vetoed` 全是 `no-candidate`           | 本地预筛没命中：消息不是指代/续聊/问句，也没命中兴趣池                                                                     | 看 `SCENES.md` 的成立条件；兴趣池加条目                                                                               |
+| `spoke == 0` 且 `judgeFailures > 0`                    | 判定调用失败（超时/网络/密钥/解析）                                                                                        | 日志里搜「主动介入判定失败」；连续失败会 `suspended`                                                                  |
+| `suspended > 0`                                        | 判定连续失败达上限，该会话暂停评估                                                                                         | 修好上游后重启进程（暂停状态不持久化）                                                                                |
+| `vetoed` 里 `rate-limit` / `min-gap`                   | 触发了硬限流，或同一话题会话内两次发言间隔没到                                                                             | 这是设计行为；额度见 `config/proactive.yml`                                                                           |
+| `sessions.opened` 涨、`spoke` 不涨                     | 判定判"值得"但发言被后面几道闸门挡下                                                                                       | 看 `vetoed` 是哪一类；`min-gap` / `rate-limit` / `budget-exhausted` 都不消耗预算                                      |
+| `sessions.closedBy['idle']` 占绝大多数                 | 话题会话几乎都是"没人接话"被静默关闭的                                                                                     | 正常兜底；若 `llm-closed` 长期为 0，说明判据里"什么时候该关"那一段没起作用                                            |
+| `sessions.budgetExhausted` 高                          | 同一个话题里"还想说、但额度没了"被挡了很多次                                                                               | 高 = 预算偏紧（模型还想接着聊）；低 = 2 句够用。**注意它不等于"它不说话了"**：会话还开着，只是闭嘴                    |
+| `sessions.spent > 0`                                   | 有话题的额度已用尽、正在闭嘴（会话没关）                                                                                   | 这是正常状态；`idle` 到点或模型说换话题后它会消失                                                                     |
+| `sessions.spokeInSession` 集中在 `"1"`                 | 每个话题仅一个 Task 成功送达，预算 2 用不满                                                                                | 可把 `proactive.sessionBudget` 降为 1（一个成功 Task），或说明模型偏保守                                              |
+| `sessions.noSession` 很高                              | 大量唤醒因为"没有会话"被挡 = 覆盖率低                                                                                      | **这是本设计的预期**（以覆盖率换精度）；要提覆盖只能改判据或调 session 参数                                           |
+| `deliveryDegraded: {"unsupported": N}`                 | **官方通道不支持主动发言**（主动推送已停用）                                                                               | 预期行为，不是故障；OneBot 才有这个能力                                                                               |
+| `deliveryDegraded: {"compose-failed": N}`              | 措辞轮次没产出发言：会话正忙（有用户轮次在跑，主动发言主动让路）/ 生成超时 / runtime 起不来 / 模型看完完整上下文后选择不说 | 偶发 = 正常；持续增长看 debug 日志「主动发言：」「主动介入：发言生成未果」，超时占多就调大 `proactive.speakTimeoutMs` |
+| 发出去的话是"直接回答 xx 的要点（依据：…）"这种元文本  | 措辞轮次没接上（`compose` 未注入时退回发判定要点原文）                                                                     | 启动日志搜 `未注入发言生成`——正常装配不会出现；确认部署的是含措辞轮次的版本                                           |
 
 ### 5.2 "它为什么说了这句"
 
@@ -529,11 +529,11 @@ docker compose exec qqbot tail -5 /data/bot/conversations/*.jsonl
 docker compose exec qqbot ls -la /data/bot/tasks.json
 ```
 
-| 情况 | 原因 | 修复 |
-|---|---|---|
-| Task 的 input.context.replay 为空 | `QQ_REPLAY_TURNS=0`，或该会话首次运行没有历史 | 设为 12（默认） |
-| Task 有回放但仍答非所问 | 模型没把历史当上下文 | 历史被明确标注"不是指令"，属正常；可在该会话工作区写 `AGENTS.md` 补充说明 |
-| 对话记录文件是空的 | 存储卷没挂上 | `docker compose exec qqbot ls -la /data/bot` |
+| 情况                              | 原因                                          | 修复                                                                      |
+| --------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------- |
+| Task 的 input.context.replay 为空 | `QQ_REPLAY_TURNS=0`，或该会话首次运行没有历史 | 设为 12（默认）                                                           |
+| Task 有回放但仍答非所问           | 模型没把历史当上下文                          | 历史被明确标注"不是指令"，属正常；可在该会话工作区写 `AGENTS.md` 补充说明 |
+| 对话记录文件是空的                | 存储卷没挂上                                  | `docker compose exec qqbot ls -la /data/bot`                              |
 
 ---
 
@@ -555,9 +555,9 @@ Docker Compose 2.x 起会把 `deploy.resources.limits` 映射到与旧式顶层�
 deploy:
   resources:
     limits:
-      cpus: "2.0"
+      cpus: '2.0'
       memory: 2g
-      pids: 512        # 不要同时写顶层的 pids_limit
+      pids: 512 # 不要同时写顶层的 pids_limit
 ```
 
 改完先验证再启动（`docker compose config` 只做解析，不会起容器）：
@@ -605,11 +605,12 @@ docker inspect qqbot-dsh --format '{{json .HostConfig}}' | python3 -m json.tool 
 ### 7.3 容器把磁盘写满
 
 ```sh
-docker compose exec qqbot du -sh /data/* 
+docker compose exec qqbot du -sh /data/*
 docker system df
 ```
 
 处置：
+
 - 清理工作区：`docker compose exec qqbot sh -c 'rm -rf /data/workspaces/*'`
 - 清理会话日志：`docker compose exec qqbot sh -c 'rm -rf /data/dsh/sessions/*'`
 - 去重标记会自动按 24 小时清理
@@ -622,27 +623,27 @@ docker system df
 以下事实**无法从官方文档确认**，属于需要在真机联调时验证的项。如果遇到相关
 现象，先怀疑这里：
 
-| # | 未确认项 | 当前假设与影响 |
-|---|---|---|
-| 1 | 单条消息字符数上限 | 官方只给错误码 `40054007`，无数值。默认 1500 保守取值；超限会报错但不自动重试（分段已在源头控制） |
-| 2 | `op 7` / `op 9` 报文结构 | 官方只列名字无示例。程序对这两个 op 做了容错处理（读到就重连），不依赖其 payload 内容 |
-| 3 | 主动推送是否真的恢复 | 2025-04-21 有停用公告，但 2026 实况文档又给了频控表。本 MVP **不依赖**主动推送 |
-| 4 | 当前沙箱域名 | 实况文档已不再提 `sandbox.api.sgroup.qq.com`。程序只用生产域名 |
-| 5 | `1<<24 GROUP_MEMBER_EVENT` 可订阅性 | 官方 intents 表里没有，但官方事件页在用。做成可配置，被 4014 拒绝就退回 |
-| 6 | 群聊 `msg_type=2` 渲染效果 | 官方称已开放，但各客户端版本表现不一。默认用纯文本 |
-| 7 | 单聊被动回复有效期与次数 | 文档写 60 分钟 / 4 次。程序按 4 次做上限（独立配置），超时仍沿用群聊的保守上限，所以即使窗口数字有出入也不会发出窗口外的消息 |
-| 8 | 单聊用户 openid 的字段路径 | 代码按 `author.user_openid` 解析，并对 `d.user_openid` / `author.id` / `author.union_openid` 回退；字段名与实况不符时表现为"私聊没反应"，用 debug 日志确认原始 payload |
-| 9 | `FRIEND_ADD` 的 payload 与 `event_id` 回复 | 按 `d.openid` 取用户，用信封 id 回欢迎语；失败只记 warn，不影响正常问答。可观测证据：日志 `用户添加机器人为好友` 与 `发送欢迎语失败` |
-| 10 | 单聊 `msg_type=2`(markdown) 渲染效果 | 与群聊共用 `QQ_MSG_TYPE`；同样默认纯文本 |
-| 11 | 官方多媒体 CDN 是否强制 `Authorization: QQBot <token>` | 实况文档未写死。程序先带 token，仅在 401/403 时裸请求一次兜底，两种形态都能过 |
-| 12 | DS 模型对 image block 的真实支持面 | SDK 协议支持内联图片（`SdkEncodedImageBlock`），但具体模型是否都吃图未逐一实测。看不到图先看 `/metrics` 的 `imagesInlined`/`imagesSkipped`；不支持就设 `BOT_ATTACHMENT_ENABLED=false` |
-| 14 | 话题判定对"这次的问题有没有明确提到一条聊天记录"的判准 | 判据刻意窄（拿不准一律不展开），因此**会漏**：漏了的表现是 bot 说"那条记录我没读到"，用户可以重发那条记录或把要点贴出来。误判成 true 的代价只是一次回查 + 几十条发言的 token。`windowForwardsExpanded`/`windowForwardsFailed` 给出实际命中率，见 4.5 |
-| 13 | OneBot 上报的图片 URL 容器可达性 | 框架在宿主时可能上报 `http://127.0.0.1:<port>/...`，容器内不可达。**已缓解**：URL 缺失或 GET 失败时会自动用 `get_file`/`get_image` 动作回查（base64 或刷新 URL）；仍失败才退化为 `[图片]` 占位，见 4.5 |
-| 14 | `get_forward_msg` 的入参与响应形状 | 参数名在各实现间不一致（NapCat 用 `id`、go-cqhttp 用 `message_id`），响应可能是 node 段数组、裸消息段数组、CQ 码字符串数组、被序列化成 JSON 的字符串、或包着 `data` 的形态。程序**一次请求带两个参数**（`message_id` 的类型按能否无损往返决定：19 位消息 id 一旦过 `Number()` 就会丢精度，而 NapCat 恰好优先取 `message_id`）、解析器容忍上述形状，认不出的条目跳过。**已修**：上报自带 `forward.data.content` 时优先内联展开，零回查。真机上若转发块仍只显示 `[聊天记录]`，看 debug 日志 `get_forward_msg 失败` 与 `/metrics` 的 `forwardsFailed` |
-| 15 | 官方是否存在聊天记录类 `message_type` | 现行官方文档的接收侧只有 0/3/103，早期代码注释里的 101/102 查无实据。程序对它们做**防御性兼容**（见到就把 `msg_elements` 当转发块渲染）。若官方后续开放转发能力，接缝已留好；在此之前官方侧不作为承诺 |
-| 16 | `pdftotext` 对中文 PDF 的实际抽取质量与 `-layout` 取舍 | `-layout` 保留版式（表格更可读），代价是中文行内会多出对齐空格。若实测发现空格干扰严重，去掉 `-layout` 即可（`src/dsh/document.ts` 的参数数组） |
-| 17 | OneBot 群文件直链申请的**返回字段** | 入参已与[官方文档](https://doc.napneko.icu/develop/file)核对一致（`get_group_file_url{file_id, group}`、`get_private_file_url{file_id}`）；**返回体里直链的字段名**未见示例，程序读 `url`，取不到就退回 `get_file`。真机上若文件始终"读取失败"，看 debug 日志 `申请直链失败` 与返回体字段名 |
-| 18 | 转发读取预算的取值是否够用 | 除四重配额外还有两道内部闸：单条消息的回查**次数**（`maxNodes + 2`）与回查**总墙钟**（`forward.timeoutMs × 2`）。它们是为"一条 node 里塞几十个转发段"这类扇出准备的。真机上若正常转发被截断成 `[转发消息（超出本次读取上限，未展开）]`，调大 `BOT_ATTACHMENT_FORWARD_TIMEOUT_MS` 或 `_MAX_NODES` |
+| #   | 未确认项                                               | 当前假设与影响                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 单条消息字符数上限                                     | 官方只给错误码 `40054007`，无数值。默认 1500 保守取值；超限会报错但不自动重试（分段已在源头控制）                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 2   | `op 7` / `op 9` 报文结构                               | 官方只列名字无示例。程序对这两个 op 做了容错处理（读到就重连），不依赖其 payload 内容                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 3   | 主动推送是否真的恢复                                   | 2025-04-21 有停用公告，但 2026 实况文档又给了频控表。本 MVP **不依赖**主动推送                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 4   | 当前沙箱域名                                           | 实况文档已不再提 `sandbox.api.sgroup.qq.com`。程序只用生产域名                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 5   | `1<<24 GROUP_MEMBER_EVENT` 可订阅性                    | 官方 intents 表里没有，但官方事件页在用。做成可配置，被 4014 拒绝就退回                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 6   | 群聊 `msg_type=2` 渲染效果                             | 官方称已开放，但各客户端版本表现不一。默认用纯文本                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 7   | 单聊被动回复有效期与次数                               | 文档写 60 分钟 / 4 次。程序按 4 次做上限（独立配置），超时仍沿用群聊的保守上限，所以即使窗口数字有出入也不会发出窗口外的消息                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 8   | 单聊用户 openid 的字段路径                             | 代码按 `author.user_openid` 解析，并对 `d.user_openid` / `author.id` / `author.union_openid` 回退；字段名与实况不符时表现为"私聊没反应"，用 debug 日志确认原始 payload                                                                                                                                                                                                                                                                                                                                                                             |
+| 9   | `FRIEND_ADD` 的 payload 与 `event_id` 回复             | 按 `d.openid` 取用户，用信封 id 回欢迎语；失败只记 warn，不影响正常问答。可观测证据：日志 `用户添加机器人为好友` 与 `发送欢迎语失败`                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 10  | 单聊 `msg_type=2`(markdown) 渲染效果                   | 与群聊共用 `QQ_MSG_TYPE`；同样默认纯文本                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 11  | 官方多媒体 CDN 是否强制 `Authorization: QQBot <token>` | 实况文档未写死。程序先带 token，仅在 401/403 时裸请求一次兜底，两种形态都能过                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 12  | DS 模型对 image block 的真实支持面                     | SDK 协议支持内联图片（`SdkEncodedImageBlock`），但具体模型是否都吃图未逐一实测。看不到图先看 `/metrics` 的 `imagesInlined`/`imagesSkipped`；不支持就设 `BOT_ATTACHMENT_ENABLED=false`                                                                                                                                                                                                                                                                                                                                                              |
+| 14  | 话题判定对"这次的问题有没有明确提到一条聊天记录"的判准 | 判据刻意窄（拿不准一律不展开），因此**会漏**：漏了的表现是 bot 说"那条记录我没读到"，用户可以重发那条记录或把要点贴出来。误判成 true 的代价只是一次回查 + 几十条发言的 token。`windowForwardsExpanded`/`windowForwardsFailed` 给出实际命中率，见 4.5                                                                                                                                                                                                                                                                                               |
+| 13  | OneBot 上报的图片 URL 容器可达性                       | 框架在宿主时可能上报 `http://127.0.0.1:<port>/...`，容器内不可达。**已缓解**：URL 缺失或 GET 失败时会自动用 `get_file`/`get_image` 动作回查（base64 或刷新 URL）；仍失败才退化为 `[图片]` 占位，见 4.5                                                                                                                                                                                                                                                                                                                                             |
+| 14  | `get_forward_msg` 的入参与响应形状                     | 参数名在各实现间不一致（NapCat 用 `id`、go-cqhttp 用 `message_id`），响应可能是 node 段数组、裸消息段数组、CQ 码字符串数组、被序列化成 JSON 的字符串、或包着 `data` 的形态。程序**一次请求带两个参数**（`message_id` 的类型按能否无损往返决定：19 位消息 id 一旦过 `Number()` 就会丢精度，而 NapCat 恰好优先取 `message_id`）、解析器容忍上述形状，认不出的条目跳过。**已修**：上报自带 `forward.data.content` 时优先内联展开，零回查。真机上若转发块仍只显示 `[聊天记录]`，看 debug 日志 `get_forward_msg 失败` 与 `/metrics` 的 `forwardsFailed` |
+| 15  | 官方是否存在聊天记录类 `message_type`                  | 现行官方文档的接收侧只有 0/3/103，早期代码注释里的 101/102 查无实据。程序对它们做**防御性兼容**（见到就把 `msg_elements` 当转发块渲染）。若官方后续开放转发能力，接缝已留好；在此之前官方侧不作为承诺                                                                                                                                                                                                                                                                                                                                              |
+| 16  | `pdftotext` 对中文 PDF 的实际抽取质量与 `-layout` 取舍 | `-layout` 保留版式（表格更可读），代价是中文行内会多出对齐空格。若实测发现空格干扰严重，去掉 `-layout` 即可（`src/dsh/document.ts` 的参数数组）                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 17  | OneBot 群文件直链申请的**返回字段**                    | 入参已与[官方文档](https://doc.napneko.icu/develop/file)核对一致（`get_group_file_url{file_id, group}`、`get_private_file_url{file_id}`）；**返回体里直链的字段名**未见示例，程序读 `url`，取不到就退回 `get_file`。真机上若文件始终"读取失败"，看 debug 日志 `申请直链失败` 与返回体字段名                                                                                                                                                                                                                                                        |
+| 18  | 转发读取预算的取值是否够用                             | 除四重配额外还有两道内部闸：单条消息的回查**次数**（`maxNodes + 2`）与回查**总墙钟**（`forward.timeoutMs × 2`）。它们是为"一条 node 里塞几十个转发段"这类扇出准备的。真机上若正常转发被截断成 `[转发消息（超出本次读取上限，未展开）]`，调大 `BOT_ATTACHMENT_FORWARD_TIMEOUT_MS` 或 `_MAX_NODES`                                                                                                                                                                                                                                                   |
 
 ---
 

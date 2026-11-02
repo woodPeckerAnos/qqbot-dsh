@@ -137,7 +137,7 @@ describe('runPdftotext', () => {
     const fake = makeFakeSpawn({ stdout: '正文内容' });
     const outcome = await runPdftotext(
       { data: utf8('%PDF-1.4'), maxChars: 100, maxPdfPages: 7, timeoutMs: 1_000 },
-      { ...runOptions, spawnImpl: fake.impl },
+      { ...runOptions, spawnImpl: fake.impl }
     );
     expect(outcome.extraction).toEqual({ text: '正文内容' });
     expect(fake.calls[0]!.bin).toBe('pdftotext');
@@ -159,7 +159,7 @@ describe('runPdftotext', () => {
     const fake = makeFakeSpawn({ stdout: '   \n' });
     const outcome = await runPdftotext(
       { data: utf8('x'), maxChars: 100, maxPdfPages: 5, timeoutMs: 1_000 },
-      { ...runOptions, spawnImpl: fake.impl },
+      { ...runOptions, spawnImpl: fake.impl }
     );
     expect(outcome.extraction.reason).toContain('扫描件');
   });
@@ -168,7 +168,7 @@ describe('runPdftotext', () => {
     const fake = makeFakeSpawn({ code: 1 });
     const outcome = await runPdftotext(
       { data: utf8('x'), maxChars: 100, maxPdfPages: 5, timeoutMs: 1_000 },
-      { ...runOptions, spawnImpl: fake.impl },
+      { ...runOptions, spawnImpl: fake.impl }
     );
     expect(outcome.extraction.reason).toContain('退出码 1');
   });
@@ -178,7 +178,7 @@ describe('runPdftotext', () => {
     const fake = makeFakeSpawn({ error });
     const outcome = await runPdftotext(
       { data: utf8('x'), maxChars: 100, maxPdfPages: 5, timeoutMs: 1_000 },
-      { ...runOptions, spawnImpl: fake.impl },
+      { ...runOptions, spawnImpl: fake.impl }
     );
     expect(outcome.missing).toBe(true);
     expect(outcome.extraction.reason).toBe(PDF_HELPER_MISSING_REASON);
@@ -188,7 +188,7 @@ describe('runPdftotext', () => {
     const fake = makeFakeSpawn({ hang: true });
     const outcome = await runPdftotext(
       { data: utf8('x'), maxChars: 100, maxPdfPages: 5, timeoutMs: 30 },
-      { ...runOptions, spawnImpl: fake.impl },
+      { ...runOptions, spawnImpl: fake.impl }
     );
     expect(outcome.extraction.reason).toContain('解析超时');
     expect(fake.calls[0]!.killed).toBe(true);
@@ -198,7 +198,7 @@ describe('runPdftotext', () => {
     const fake = makeFakeSpawn({ stdout: 'x'.repeat(10_000) });
     const outcome = await runPdftotext(
       { data: utf8('x'), maxChars: 10, maxPdfPages: 5, timeoutMs: 1_000 },
-      { ...runOptions, spawnImpl: fake.impl },
+      { ...runOptions, spawnImpl: fake.impl }
     );
     expect(outcome.extraction.truncated).toBe(true);
     expect(outcome.extraction.text!.length).toBeLessThanOrEqual(10);
@@ -300,7 +300,8 @@ describe('runPdftotext 真子进程', () => {
   it.skipIf(process.platform === 'win32')(
     '把 PDF 字节经 stdin 交给子进程，并把 stdout 作为正文',
     async () => {
-      const { mkdtempSync, writeFileSync, chmodSync, readFileSync, rmSync } = await import('node:fs');
+      const { mkdtempSync, writeFileSync, chmodSync, readFileSync, rmSync } =
+        await import('node:fs');
       const { tmpdir } = await import('node:os');
       const { join } = await import('node:path');
 
@@ -316,14 +317,14 @@ describe('runPdftotext 真子进程', () => {
           `cat > ${JSON.stringify(stdinFile)}`,
           "printf '抽取结果：第一行\\n第二行\\n'",
           '',
-        ].join('\n'),
+        ].join('\n')
       );
       chmodSync(bin, 0o755);
 
       try {
         const outcome = await runPdftotext(
           { data: utf8('%PDF-1.4 payload'), maxChars: 1_000, maxPdfPages: 3, timeoutMs: 5_000 },
-          { bin },
+          { bin }
         );
         expect(outcome.extraction).toEqual({ text: '抽取结果：第一行\n第二行' });
         // 参数顺序即契约：固定数组、`- -` 表示 stdin→stdout
@@ -342,6 +343,6 @@ describe('runPdftotext 真子进程', () => {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
-    },
+    }
   );
 });

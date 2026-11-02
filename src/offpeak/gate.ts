@@ -44,13 +44,7 @@ export interface OffpeakGateConfig {
 }
 
 export type GateReason =
-  | 'admin'
-  | 'disabled'
-  | 'model-mismatch'
-  | 'weekend'
-  | 'holiday'
-  | 'in-window'
-  | 'peak-hours';
+  'admin' | 'disabled' | 'model-mismatch' | 'weekend' | 'holiday' | 'in-window' | 'peak-hours';
 
 export interface GateDecision {
   gated: boolean;
@@ -139,7 +133,7 @@ export class OffpeakGate {
       filePath: string;
       logger: Logger;
       now?: () => number;
-    },
+    }
   ) {
     this.override = this.load();
   }
@@ -179,7 +173,9 @@ export class OffpeakGate {
       holidaysCount: sorted.length,
       ...(sorted.length > 0 ? { holidaysCoverageUntil: sorted[sorted.length - 1] } : {}),
       overridden: override !== undefined,
-      ...(override !== undefined ? { updatedBy: override.updatedBy, updatedAt: override.updatedAt } : {}),
+      ...(override !== undefined
+        ? { updatedBy: override.updatedBy, updatedAt: override.updatedAt }
+        : {}),
     };
   }
 
@@ -277,7 +273,7 @@ export class OffpeakGate {
       if (typeof parsed.enabled === 'boolean') override.enabled = parsed.enabled;
       // windows 是当前格式；window 是旧的单窗口格式，读到就当成单元素列表
       const rawWindows: Array<{ start: string; end: string }> | undefined = Array.isArray(
-        parsed.windows,
+        parsed.windows
       )
         ? parsed.windows
         : parsed.window !== undefined
@@ -288,12 +284,12 @@ export class OffpeakGate {
       }
       if (Array.isArray(parsed.holidaysAdd)) {
         override.holidaysAdd = parsed.holidaysAdd.filter(
-          (item): item is string => typeof item === 'string' && isValidDateString(item),
+          (item): item is string => typeof item === 'string' && isValidDateString(item)
         );
       }
       if (Array.isArray(parsed.holidaysDel)) {
         override.holidaysDel = parsed.holidaysDel.filter(
-          (item): item is string => typeof item === 'string' && isValidDateString(item),
+          (item): item is string => typeof item === 'string' && isValidDateString(item)
         );
       }
       this.options.logger.info('已加载谷时段闸的运行期覆盖', {
@@ -328,8 +324,12 @@ export class OffpeakGate {
                   })),
                 }
               : {}),
-            ...((override.holidaysAdd?.length ?? 0) > 0 ? { holidaysAdd: override.holidaysAdd } : {}),
-            ...((override.holidaysDel?.length ?? 0) > 0 ? { holidaysDel: override.holidaysDel } : {}),
+            ...((override.holidaysAdd?.length ?? 0) > 0
+              ? { holidaysAdd: override.holidaysAdd }
+              : {}),
+            ...((override.holidaysDel?.length ?? 0) > 0
+              ? { holidaysDel: override.holidaysDel }
+              : {}),
           };
     try {
       mkdirSync(dirname(this.options.filePath), { recursive: true });

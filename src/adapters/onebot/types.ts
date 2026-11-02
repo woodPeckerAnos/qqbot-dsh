@@ -75,7 +75,8 @@ export interface OneBotMetaEvent extends OneBotEventBase {
   interval?: number;
 }
 
-export type OneBotEvent = OneBotMessageEvent | OneBotNoticeEvent | OneBotRequestEvent | OneBotMetaEvent;
+export type OneBotEvent =
+  OneBotMessageEvent | OneBotNoticeEvent | OneBotRequestEvent | OneBotMetaEvent;
 
 /** 本服务 → 框架的动作请求 */
 export interface OneBotActionRequest {

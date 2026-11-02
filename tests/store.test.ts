@@ -279,7 +279,8 @@ describe('SessionStore', () => {
     const store = new SessionStore({
       paths,
       logger,
-      sessionIdFactory: (conversationKey, gen) => `fixed-${conversationHash(conversationKey)}-${gen}`,
+      sessionIdFactory: (conversationKey, gen) =>
+        `fixed-${conversationHash(conversationKey)}-${gen}`,
     });
     const record = store.ensure('g1');
     expect(record.currentSessionId).toBe(`fixed-${conversationHash('g1')}-1`);
@@ -300,7 +301,7 @@ describe('SessionStore', () => {
             updatedAt: 2,
           },
         },
-      }),
+      })
     );
     const store = new SessionStore({ paths, logger });
     const record = store.peek('g1');

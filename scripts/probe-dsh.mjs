@@ -23,7 +23,9 @@ const value = (name) => {
 
 const REPO = resolve(new URL('..', import.meta.url).pathname);
 const noPatch = flag('--no-patch');
-const patchPath = noPatch ? undefined : resolve(value('--patch') ?? join(REPO, 'dsh-profile', 'cordis.patch.yml'));
+const patchPath = noPatch
+  ? undefined
+  : resolve(value('--patch') ?? join(REPO, 'dsh-profile', 'cordis.patch.yml'));
 const verbose = flag('--verbose');
 const workspace = resolve(value('--workspace') ?? mkdtempSync(join(tmpdir(), 'probe-ws-')));
 const dshHome = resolve(value('--dsh-home') ?? mkdtempSync(join(tmpdir(), 'probe-home-')));
@@ -80,25 +82,28 @@ setTimeout(() => {
       id: 1,
       method: 'initialize',
       params: { cwd: workspace, provider: 'deepseek-official', model: 'deepseek-flash' },
-    })}\n`,
+    })}\n`
   );
 }, 4_000);
 
-setTimeout(() => {
-  const line = stdoutFrames.find((l) => l.includes('"id":1'));
-  if (childFailed) {
-    console.log('VERDICT SPAWN-FAILED');
-  } else if (line === undefined) {
-    console.log('VERDICT NO-RESPONSE');
-  } else {
-    const frame = JSON.parse(line);
-    console.log(frame.error ? `VERDICT ERROR ${frame.error.message}` : 'VERDICT OK');
-  }
-  if (line === undefined || JSON.parse(line).error) {
-    const lines = stderr.split('\n').filter((l) => l.trim() !== '');
-    console.log('--- stderr（末 30 行）---');
-    console.log(lines.slice(-30).join('\n'));
-  }
-  child.kill('SIGKILL');
-  process.exit(0);
-}, deadline - Date.now() + 2_000);
+setTimeout(
+  () => {
+    const line = stdoutFrames.find((l) => l.includes('"id":1'));
+    if (childFailed) {
+      console.log('VERDICT SPAWN-FAILED');
+    } else if (line === undefined) {
+      console.log('VERDICT NO-RESPONSE');
+    } else {
+      const frame = JSON.parse(line);
+      console.log(frame.error ? `VERDICT ERROR ${frame.error.message}` : 'VERDICT OK');
+    }
+    if (line === undefined || JSON.parse(line).error) {
+      const lines = stderr.split('\n').filter((l) => l.trim() !== '');
+      console.log('--- stderr（末 30 行）---');
+      console.log(lines.slice(-30).join('\n'));
+    }
+    child.kill('SIGKILL');
+    process.exit(0);
+  },
+  deadline - Date.now() + 2_000
+);

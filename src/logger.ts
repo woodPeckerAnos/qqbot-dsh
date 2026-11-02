@@ -19,7 +19,10 @@ const REDACTIONS: Array<[RegExp, string]> = [
   // DeepSeek / OpenAI 风格密钥
   [/\bsk-[A-Za-z0-9]{8,}/g, 'sk-<redacted>'],
   // JSON 字段形式
-  [/"(access_token|clientSecret|client_secret|appSecret|apiKey|api_key|DEEPSEEK_API_KEY)"\s*:\s*"[^"]*"/gi, '"$1":"<redacted>"'],
+  [
+    /"(access_token|clientSecret|client_secret|appSecret|apiKey|api_key|DEEPSEEK_API_KEY)"\s*:\s*"[^"]*"/gi,
+    '"$1":"<redacted>"',
+  ],
   // env 形式
   [/\b(QQ_APP_SECRET|DEEPSEEK_API_KEY)=[^\s"']+/g, '$1=<redacted>'],
 ];
@@ -72,7 +75,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       ...fields,
     };
     let line = JSON.stringify(record, (_key, value) =>
-      typeof value === 'bigint' ? value.toString() : value,
+      typeof value === 'bigint' ? value.toString() : value
     );
     if (options.extraRedactor) line = options.extraRedactor(line);
     sink(redact(line));
@@ -83,8 +86,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     info: (msg, fields) => emit('info', msg, fields),
     warn: (msg, fields) => emit('warn', msg, fields),
     error: (msg, fields) => emit('error', msg, fields),
-    child: (fields) =>
-      createLogger({ ...options, level, fields: { ...baseFields, ...fields } }),
+    child: (fields) => createLogger({ ...options, level, fields: { ...baseFields, ...fields } }),
   };
   return logger;
 }
