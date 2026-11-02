@@ -8,6 +8,8 @@
 | -------------------------- | ---------------------------------------------------------------- |
 | `npm run typecheck`        | 通过                                                             |
 | `npm run build`            | 通过                                                             |
+| `npm run lint`             | 通过（存量债务基线见 [LINTING.md](LINTING.md)，新增违规仍报错）  |
+| `npm run format:check`     | 通过（Prettier 已统一全仓格式）                                  |
 | `npm test`                 | 42 个测试文件通过；804 项通过，40 项真实端口用例默认跳过         |
 | `npm run test:integration` | 3 个测试文件、104 项通过；统一 OneBot mock 的真实 WebSocket 回路 |
 | `git diff --check`         | 通过                                                             |

@@ -23,6 +23,13 @@ jobs:
       - name: 类型检查
         run: npx tsc -p tsconfig.json --noEmit
 
+      - name: 代码风格检查
+        run: npx prettier --check .
+
+      - name: ESLint 静态检查
+        # 存量债务记录在 eslint-suppressions.json；这里只拦新增违规。
+        run: npx eslint .
+
       # 单测必须全离线可跑：不触网、不启动 DSH 子进程。
       # 这是刻意的约束，保证 CI 不需要任何密钥。
       - name: 单元测试

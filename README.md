@@ -116,6 +116,7 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 | [决策与路线](docs/DECISIONS.md) / [验收状态](docs/TASK-STATUS.md)                   | ADR、迁移和验证证据                                                               |
 | [docs/DESIGN.md](docs/DESIGN.md)                                                    | 历史设计；整轮锁、后台派发和周期进度已被 ADR-001 取代                             |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md)                                                  | 排障手册：按症状组织的排查流程（主动发言见 §5）                                   |
+| [docs/LINTING.md](docs/LINTING.md)                                                  | 代码格式、ESLint 规则边界与存量基线、提交前检查                                   |
 | [SCENES.md](src/pipeline/proactive/interests/SCENES.md)                             | 主动介入场景的自然语言真相源：什么情况下会说、典型对话、红线                      |
 | docs/ 其余                                                                          | 需求与架构过程文档（主动介入、话题会话、富媒体等）                                |
 
@@ -124,10 +125,17 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 ```sh
 npm install
 npm run typecheck
+npm run lint             # ESLint（类型感知；存量债务基线见 docs/LINTING.md）
+npm run format:check     # Prettier 只读校验
 npm test                 # 离线 mock；含本地文件/子进程桩，不请求真实模型
 npm run test:integration # 独立 localhost WebSocket 回路，无已部署客户端
 npm run build
+npm run check            # 上面的 typecheck + lint + format:check + test 串跑
 ```
+
+格式由 Prettier 统一（`npm run format` 写入）；提交时 husky 会跑 `lint-staged`。
+ESLint 的存量违规记录在 `eslint-suppressions.json`，`npm run lint` 只拦新增违规，
+基线的审阅与收紧方式见 [docs/LINTING.md](docs/LINTING.md)。
 
 **改了东西要怎么生效**（没有热更新，但只有改后端代码才需要重建镜像）：
 
