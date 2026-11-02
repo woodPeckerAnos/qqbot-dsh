@@ -29,7 +29,7 @@ import type { ForwardConfig } from '../../config.js';
 import { flattenParts } from '../../core/content.js';
 import type { Logger } from '../../logger.js';
 import type { QqApi } from './api.js';
-import { buildMessageParts, type MessageBodyLike } from './content.js';
+import { buildMessageParts } from './content.js';
 import { TokenManager } from './token.js';
 import {
   OpCode,
@@ -261,12 +261,10 @@ export class QqGateway implements QqEventSource {
   }
 
   private handleRawMessage(data: unknown): void {
-    const text =
-      typeof data === 'string'
-        ? data
-        : data instanceof Uint8Array
-          ? new TextDecoder().decode(data)
-          : String(data);
+    let text: string;
+    if (typeof data === 'string') text = data;
+    else if (data instanceof Uint8Array) text = new TextDecoder().decode(data);
+    else text = String(data);
     let payload: GatewayPayload;
     try {
       payload = JSON.parse(text) as GatewayPayload;
@@ -388,7 +386,7 @@ export class QqGateway implements QqEventSource {
    */
   private buildParts(d: Record<string, unknown>): MessagePart[] {
     const forward = this.options.forward;
-    const parts = buildMessageParts(d as MessageBodyLike, {
+    const parts = buildMessageParts(d, {
       ...(forward !== undefined ? { forward } : {}),
     });
     const block = parts.find((part) => part.type === 'forward');
@@ -526,7 +524,9 @@ export class QqGateway implements QqEventSource {
     const delay = Math.max(1_000, Math.round(intervalMs * (1 - jitterRatio * random())));
     this.heartbeatTimer = setTimeout(() => {
       this.sendHeartbeat();
-      this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), intervalMs);
+      this.heartbeatTimer = setInterval(() => {
+        this.sendHeartbeat();
+      }, intervalMs);
       this.heartbeatTimer.unref?.();
     }, delay);
     this.heartbeatTimer.unref?.();

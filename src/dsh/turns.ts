@@ -120,7 +120,7 @@ export class TurnAccumulator {
         return;
       }
       case 'turn/end': {
-        this.turnEnd = event.data as TurnEndData;
+        this.turnEnd = event.data;
         return;
       }
       default:

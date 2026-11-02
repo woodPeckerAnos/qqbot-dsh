@@ -128,14 +128,14 @@ export function partsFromAttachments(
       continue;
     }
 
+    let mediaKind: 'video' | 'file' | 'unknown' = 'unknown';
+    const normalizedType = contentType?.toLowerCase();
+    if (normalizedType?.startsWith('video/') === true) mediaKind = 'video';
+    else if (normalizedType === 'file') mediaKind = 'file';
+
     const media: MessageMediaPart = {
       type: 'media',
-      mediaKind:
-        contentType?.toLowerCase().startsWith('video/') === true
-          ? 'video'
-          : contentType?.toLowerCase() === 'file'
-            ? 'file'
-            : 'unknown',
+      mediaKind,
     };
     if (url !== undefined) media.url = url;
     if (filename !== undefined) media.filename = filename;

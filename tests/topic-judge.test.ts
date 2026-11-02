@@ -25,14 +25,14 @@ const HISTORY: ConversationTurn[] = [
 ];
 
 function makeFetch(output: string | (() => never), status = 200): typeof fetch {
-  return (async () => {
+  return async () => {
     if (typeof output === 'function') output();
     return {
       ok: status >= 200 && status < 300,
       status,
       json: async () => ({ choices: [{ message: { content: output } }] }),
     } as Response;
-  }) as unknown as typeof fetch;
+  };
 }
 
 function makeJudge(fetchImpl: typeof fetch) {
@@ -143,7 +143,7 @@ describe('createTopicJudge', () => {
 
   it('没有历史时：没问聊天记录就不调 API；问了则照调（问题与历史无关）', async () => {
     let called = 0;
-    const judge = makeJudge((async () => {
+    const judge = makeJudge(async () => {
       called += 1;
       return {
         ok: true,
@@ -151,7 +151,7 @@ describe('createTopicJudge', () => {
           choices: [{ message: { content: '{"related": true, "mentions_chat_record": true}' } }],
         }),
       } as Response;
-    }) as unknown as typeof fetch);
+    });
 
     await expect(judge({ history: [], newMessage: '你好' })).resolves.toEqual({
       related: true,

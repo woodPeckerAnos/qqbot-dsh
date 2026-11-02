@@ -74,7 +74,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       ...baseFields,
       ...fields,
     };
-    let line = JSON.stringify(record, (_key, value) =>
+    let line = JSON.stringify(record, (_key: string, value: unknown): unknown =>
       typeof value === 'bigint' ? value.toString() : value
     );
     if (options.extraRedactor) line = options.extraRedactor(line);
@@ -82,10 +82,18 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   };
 
   const logger: Logger = {
-    debug: (msg, fields) => emit('debug', msg, fields),
-    info: (msg, fields) => emit('info', msg, fields),
-    warn: (msg, fields) => emit('warn', msg, fields),
-    error: (msg, fields) => emit('error', msg, fields),
+    debug: (msg, fields) => {
+      emit('debug', msg, fields);
+    },
+    info: (msg, fields) => {
+      emit('info', msg, fields);
+    },
+    warn: (msg, fields) => {
+      emit('warn', msg, fields);
+    },
+    error: (msg, fields) => {
+      emit('error', msg, fields);
+    },
     child: (fields) => createLogger({ ...options, level, fields: { ...baseFields, ...fields } }),
   };
   return logger;

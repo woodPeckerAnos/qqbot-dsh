@@ -23,7 +23,6 @@ import {
   assertNoOverlap,
   formatMinutes,
   formatWindow,
-  formatWindows,
   isInOffpeakWindows,
   OffpeakConfigError,
   parseWindowRange,
@@ -272,13 +271,9 @@ export class OffpeakGate {
       };
       if (typeof parsed.enabled === 'boolean') override.enabled = parsed.enabled;
       // windows 是当前格式；window 是旧的单窗口格式，读到就当成单元素列表
-      const rawWindows: Array<{ start: string; end: string }> | undefined = Array.isArray(
-        parsed.windows
-      )
-        ? parsed.windows
-        : parsed.window !== undefined
-          ? [parsed.window]
-          : undefined;
+      let rawWindows: Array<{ start: string; end: string }> | undefined;
+      if (Array.isArray(parsed.windows)) rawWindows = parsed.windows;
+      else if (parsed.window !== undefined) rawWindows = [parsed.window];
       if (rawWindows !== undefined && rawWindows.length > 0) {
         override.windows = rawWindows.map((item) => parseWindowRange(`${item.start}-${item.end}`));
       }

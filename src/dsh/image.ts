@@ -225,7 +225,7 @@ export async function prepareImageForPrompt(
   const transposed = orientation >= 5;
   const viewWidth = transposed ? rawHeight : rawWidth;
   const viewHeight = transposed ? rawWidth : rawHeight;
-  const hasAlpha = meta.hasAlpha === true;
+  const hasAlpha = meta.hasAlpha;
   const sourceIsPng = meta.format === 'png';
 
   // ---- 2. 快路径：原样直通 ----

@@ -312,7 +312,9 @@ async function connectClient(port: number): Promise<WebSocket> {
     headers: { Authorization: 'Bearer test-token' },
   });
   await new Promise<void>((resolve, reject) => {
-    ws.once('open', () => resolve());
+    ws.once('open', () => {
+      resolve();
+    });
     ws.once('error', reject);
   });
   ws.send(
@@ -391,7 +393,9 @@ socketDescribe('转发块回查全回路', () => {
     ws.send(groupForwardMessage(42, 'fwd-1', [{ type: 'text', data: { text: '帮我总结' } }]));
 
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(action['action']).toBe('get_forward_msg');
     // 参数名在实现之间不一致，一次请求同时带上两个
@@ -440,7 +444,9 @@ socketDescribe('转发块回查全回路', () => {
 
     ws.send(groupForwardMessage(43, 'fwd-missing'));
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     ws.send(JSON.stringify({ status: 'failed', retcode: 1404, echo: action['echo'], data: null }));
     await sleep(120);
@@ -492,7 +498,9 @@ socketDescribe('转发块回查全回路', () => {
 
     ws.send(groupForwardMessage(46, 'fwd-big'));
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     ws.send(
       JSON.stringify({
@@ -522,7 +530,9 @@ socketDescribe('转发块回查全回路', () => {
 
     ws.send(groupForwardMessage(47, 'fwd-long'));
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     ws.send(
       JSON.stringify({
@@ -566,7 +576,9 @@ socketDescribe('转发块回查全回路', () => {
 
     ws.send(groupForwardMessage(49, 'fwd-ok'));
     const first = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     ws.send(
       JSON.stringify({
@@ -580,7 +592,9 @@ socketDescribe('转发块回查全回路', () => {
 
     ws.send(groupForwardMessage(50, 'fwd-bad'));
     const second = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     ws.send(JSON.stringify({ status: 'failed', retcode: 1400, echo: second['echo'], data: null }));
     await sleep(120);
@@ -730,7 +744,9 @@ socketDescribe('转发块嵌套深度', () => {
     // 外层转发：一条发言里再嵌一个转发
     ws.send(groupForwardMessage(60, 'outer'));
     const outer = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(outer['action']).toBe('get_forward_msg');
     ws.send(
@@ -839,7 +855,9 @@ socketDescribe('转发读取的资源上限', () => {
       headers: { Authorization: 'Bearer test-token' },
     });
     await new Promise<void>((resolve, reject) => {
-      wsB.once('open', () => resolve());
+      wsB.once('open', () => {
+        resolve();
+      });
       wsB.once('error', reject);
     });
     clients.push(wsB);
@@ -1076,7 +1094,9 @@ socketDescribe('转发块的 id 精度与内联内容', () => {
 
     ws.send(groupForwardMessage(201, BIG_MSG_ID));
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(action['action']).toBe('get_forward_msg');
     // 关键断言：不是 number，也不是被截断的数字
@@ -1116,7 +1136,9 @@ socketDescribe('转发块的 id 精度与内联内容', () => {
 
     ws.send(groupForwardMessage(202, '123456789'));
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(action['params']).toMatchObject({ id: '123456789', message_id: 123456789 });
     expect(typeof (action['params'] as { message_id: unknown }).message_id).toBe('number');
@@ -1254,7 +1276,9 @@ socketDescribe('转发块的 id 精度与内联内容', () => {
     );
 
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(action['action']).toBe('get_msg');
     expect((action['params'] as { message_id: unknown }).message_id).toBe(BIG_MSG_ID);
@@ -1291,7 +1315,9 @@ socketDescribe('按需展开聊天记录（BotConnector.fetchForward）', () => 
       'fwd-late'
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(action['action']).toBe('get_forward_msg');
     ws.send(
@@ -1341,7 +1367,9 @@ socketDescribe('按需展开聊天记录（BotConnector.fetchForward）', () => 
       'fwd-missing'
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     ws.send(
       JSON.stringify({

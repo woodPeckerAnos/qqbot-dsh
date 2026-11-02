@@ -437,7 +437,9 @@ async function connectClient(
 ): Promise<WebSocket> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/onebot/v11/ws`, { headers });
   await new Promise<void>((resolve, reject) => {
-    ws.once('open', () => resolve());
+    ws.once('open', () => {
+      resolve();
+    });
     ws.once('error', reject);
   });
   ws.send(
@@ -498,7 +500,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
 
     // 服务 → 框架：reply 变成 send_group_msg 动作
     const actionPromise = new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     const replyPromise = connector.reply(
       { target: onebotGroupTarget(8888), seq: 1, kind: 'final', msgId: '42' },
@@ -552,7 +556,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
 
     // 服务 → 框架：先回查被引用的消息
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(action['action']).toBe('get_msg');
     expect((action['params'] as { message_id: number }).message_id).toBe(9001);
@@ -588,7 +594,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     clients.push(ws);
 
     const actionPromise = new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     const replyPromise = connector.reply(
       { target: onebotC2cTarget(12345), seq: 1, kind: 'final' },
@@ -619,9 +627,15 @@ socketDescribe('OneBot 反向 WS 回路', () => {
         const ws = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/v11/ws`, {
           headers: { Authorization: 'Bearer wrong-token' },
         });
-        ws.once('open', () => resolve());
-        ws.once('error', (error) => reject(error));
-        ws.once('unexpected-response', () => reject(new Error('unexpected-response')));
+        ws.once('open', () => {
+          resolve();
+        });
+        ws.once('error', (error) => {
+          reject(error);
+        });
+        ws.once('unexpected-response', () => {
+          reject(new Error('unexpected-response'));
+        });
       })
     ).rejects.toThrow();
   });
@@ -637,7 +651,9 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     clients.push(ws);
 
     const actionPromise = new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     ws.send(
       JSON.stringify({
@@ -875,7 +891,9 @@ socketDescribe('OneBot fetchMedia', () => {
   /** 等框架侧收到一个 action 帧。 */
   function nextAction(ws: WebSocket): Promise<Record<string, unknown>> {
     return new Promise((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
   }
 

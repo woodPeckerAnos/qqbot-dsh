@@ -542,7 +542,7 @@ function coerceScalar(value: unknown, path: string, kind: Kind): unknown {
       // 既接受 "00:00-09:00,12:00-14:00" 也接受 YAML 数组，统一归一成逗号分隔串
       if (typeof value === 'string') return value;
       if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
-        return (value as string[]).join(',');
+        return value.join(',');
       }
       throw new ConfigError(`${path} 必须是窗口串或字符串数组，收到 ${describeValue(value)}`, [
         '两种写法都可以：',

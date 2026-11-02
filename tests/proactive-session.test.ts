@@ -642,7 +642,7 @@ describe('账目与残留（验收11、验收12）', () => {
         if (!name.endsWith('.ts')) continue;
         const text = readFileSync(full, 'utf8');
         // 拼接是为了让本文件自己也不含这两个字面量（否则它会把自己扫出来）
-        for (const needle of [`topic${'-'}spent`, `maxPer${'Topic'}`]) {
+        for (const needle of [`topic-spent`, `maxPerTopic`]) {
           if (text.includes(needle)) offenders.push(`${full}: ${needle}`);
         }
       }

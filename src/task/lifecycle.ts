@@ -148,14 +148,13 @@ export class TaskLifeCycleManager {
     const state = task.lanes[lane];
     state.result = structuredClone(result);
     state.endedAt = this.now();
-    state.status =
-      result.kind === 'failed' ? 'failed' : result.kind === 'cancelled' ? 'cancelled' : 'completed';
+    state.status = 'completed';
+    if (result.kind === 'failed') state.status = 'failed';
+    else if (result.kind === 'cancelled') state.status = 'cancelled';
     if (LANES.every((l) => isLaneTerminal(task.lanes[l]))) {
-      task.status = task.cancelAccepted
-        ? 'cancelled'
-        : LANES.some((l) => task.lanes[l].status === 'failed')
-          ? 'failed'
-          : 'completed';
+      if (task.cancelAccepted) task.status = 'cancelled';
+      else if (LANES.some((l) => task.lanes[l].status === 'failed')) task.status = 'failed';
+      else task.status = 'completed';
       task.endedAt = this.now();
     }
     this.commit(task);
@@ -185,7 +184,10 @@ export class TaskLifeCycleManager {
             error: 'restart-interrupted',
           });
         }
-    return interrupted.map((t) => this.get(t.taskId)!);
+    return interrupted.flatMap((t) => {
+      const current = this.get(t.taskId);
+      return current === undefined ? [] : [current];
+    });
   }
   destroy(taskId: string): boolean {
     const task = this.tasks.get(taskId);

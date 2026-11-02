@@ -12,7 +12,6 @@ import {
   mkdtempSync,
   readdirSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
   utimesSync,
@@ -172,7 +171,7 @@ describe('inbox 落盘', () => {
     });
     expect(scan.attachments).toEqual([]);
     // 反向对照：真往 outbox 放东西时扫描必须看得见（否则上面那条断言毫无意义）
-    await writeFileSync(join(outboxDir, 'result.png'), Buffer.from(PDF_BYTES));
+    writeFileSync(join(outboxDir, 'result.png'), Buffer.from(PDF_BYTES));
     const withFile = await scanOutbox(outboxDir, {
       maxFileBytes: 1024 * 1024,
       imageExtensions: ['png'],
@@ -605,7 +604,11 @@ socketDescribe('OneBot 文件取字节', () => {
     await connector?.stop();
     connector = undefined;
     for (const server of servers.splice(0)) {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) =>
+        server.close(() => {
+          resolve();
+        })
+      );
     }
   });
 
@@ -636,7 +639,9 @@ socketDescribe('OneBot 文件取字节', () => {
       headers: { Authorization: 'Bearer test-token' },
     });
     await new Promise<void>((resolve, reject) => {
-      ws.once('open', () => resolve());
+      ws.once('open', () => {
+        resolve();
+      });
       ws.once('error', reject);
     });
     ws.send(
@@ -662,7 +667,11 @@ socketDescribe('OneBot 文件取字节', () => {
       res.end(Buffer.from(data));
     });
     servers.push(server);
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', () => {
+        resolve();
+      })
+    );
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? address.port : 0;
     return `http://127.0.0.1:${port}/f.bin`;
@@ -682,7 +691,9 @@ socketDescribe('OneBot 文件取字节', () => {
       { maxBytes: 1024, timeoutMs: 3_000 }
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(action['action']).toBe('get_group_file_url');
     expect(action['params']).toEqual({ file_id: 'fid-1', group: '8888' });
@@ -705,7 +716,9 @@ socketDescribe('OneBot 文件取字节', () => {
       { maxBytes: 1024, timeoutMs: 3_000 }
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(action['action']).toBe('get_private_file_url');
     expect(action['params']).toEqual({ file_id: 'fid-2' });
@@ -726,13 +739,17 @@ socketDescribe('OneBot 文件取字节', () => {
       { maxBytes: 1024, timeoutMs: 3_000 }
     );
     const first = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(first['action']).toBe('get_group_file_url');
     ws.send(JSON.stringify({ status: 'failed', retcode: 1404, echo: first['echo'], data: null }));
 
     const second = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(second['action']).toBe('get_file');
     expect(second['params']).toEqual({ file: 'fid-3', file_id: 'fid-3' });
@@ -756,7 +773,11 @@ socketDescribe('OneBot 文件取字节', () => {
       res.end('<html>url expired</html>');
     });
     servers.push(stale);
-    await new Promise<void>((resolve) => stale.listen(0, '127.0.0.1', () => resolve()));
+    await new Promise<void>((resolve) =>
+      stale.listen(0, '127.0.0.1', () => {
+        resolve();
+      })
+    );
     const staleAddress = stale.address();
     const stalePort =
       typeof staleAddress === 'object' && staleAddress !== null ? staleAddress.port : 0;
@@ -778,7 +799,9 @@ socketDescribe('OneBot 文件取字节', () => {
       { maxBytes: 1024, timeoutMs: 3_000 }
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     // 第一个动作就是申请直链，而不是先去 GET 那个已过期的 url
     expect(action['action']).toBe('get_group_file_url');
@@ -801,7 +824,9 @@ socketDescribe('OneBot 文件取字节', () => {
       { maxBytes: 1024, timeoutMs: 500 }
     );
     const action = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (data) => resolve(JSON.parse(String(data)) as Record<string, unknown>));
+      ws.once('message', (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
     });
     expect(action['action']).toBe('get_file');
     ws.send(JSON.stringify({ status: 'ok', retcode: 0, echo: action['echo'], data: null }));

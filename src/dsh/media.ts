@@ -179,7 +179,6 @@ export async function buildImageBlocks(
   // 降采样能力（sharp）在容器里由 DSH 自带；拿不到就退回"只预筛、不处理"的旧行为，
   // 而不是把用户这条消息整条丢掉。
   const canPrepare = await probeImagePreparer();
-  let notedBlockCap = false;
 
   for (const [index, image] of images.slice(0, maxImages).entries()) {
     // 一条消息里有多张图时，注记必须指明"是哪一张"：长图切片的注记不带主语时，
@@ -187,10 +186,7 @@ export async function buildImageBlocks(
     const label = indexLabel(index, images.length);
     if (blocks.length >= maxBlocks) {
       // 只提示一次：长图切片最容易撞上它（块数是"多张图"），而剩下的源图可能还有好几张
-      if (!notedBlockCap) {
-        notedBlockCap = true;
-        notes.push(`（${source}图片过多，超出单条消息可送入的张数上限，其余未读入）`);
-      }
+      notes.push(`（${source}图片过多，超出单条消息可送入的张数上限，其余未读入）`);
       break;
     }
 
@@ -323,7 +319,9 @@ export async function defaultFetchMedia(
 ): Promise<MediaBytes | undefined> {
   if (media.url === undefined) return undefined;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, options.timeoutMs);
   timer.unref?.();
   try {
     const response = await fetch(media.url, { signal: controller.signal });

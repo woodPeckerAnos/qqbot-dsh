@@ -141,6 +141,9 @@ function setup(
         const hit = satisfied.includes(candidate.scene);
         // "让路"只作用在**没有成立**的场景上（成立与先别说不可能同时为真）
         const reason = hit ? undefined : pending.waitReason;
+        const evidence =
+          pending.waitEvidence ??
+          (pending.waitOn === undefined ? undefined : `q:${pending.waitOn}`);
         return {
           scene: candidate.scene,
           satisfied: hit,
@@ -150,11 +153,7 @@ function setup(
             ? {}
             : {
                 waitReason: reason,
-                ...(pending.waitEvidence !== undefined
-                  ? { evidence: pending.waitEvidence }
-                  : pending.waitOn !== undefined
-                    ? { evidence: `q:${pending.waitOn}` }
-                    : {}),
+                ...(evidence === undefined ? {} : { evidence }),
               }),
         };
       });

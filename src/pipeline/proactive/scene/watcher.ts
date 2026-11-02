@@ -563,7 +563,9 @@ export class ProactiveWatcher {
         const timer = setTimeout(fn, delayMs);
         // unref：定时器不该阻止进程退出
         if (typeof timer === 'object' && 'unref' in timer) timer.unref();
-        return () => clearTimeout(timer);
+        return () => {
+          clearTimeout(timer);
+        };
       });
     this.metrics = deps.metrics ?? NULL_WATCHER_METRICS;
     this.windows = deps.windows;

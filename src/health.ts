@@ -113,7 +113,9 @@ export function createHealthServer(options: HealthServerOptions): HealthServer {
       });
       await new Promise<void>((resolve, reject) => {
         server?.once('error', reject);
-        server?.listen(options.port, '0.0.0.0', () => resolve());
+        server?.listen(options.port, '0.0.0.0', () => {
+          resolve();
+        });
       });
       const address = server.address();
       const port = typeof address === 'object' && address !== null ? address.port : options.port;
@@ -124,7 +126,11 @@ export function createHealthServer(options: HealthServerOptions): HealthServer {
       const current = server;
       server = undefined;
       if (current === undefined) return;
-      await new Promise<void>((resolve) => current.close(() => resolve()));
+      await new Promise<void>((resolve) =>
+        current.close(() => {
+          resolve();
+        })
+      );
     },
     address() {
       const address = server?.address();

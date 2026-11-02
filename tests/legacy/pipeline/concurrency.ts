@@ -30,10 +30,14 @@ export class Semaphore {
   async acquire(): Promise<() => void> {
     if (this.available > 0) {
       this.available -= 1;
-      return () => this.release();
+      return () => {
+        this.release();
+      };
     }
     await new Promise<void>((resolve) => this.waiters.push(resolve));
-    return () => this.release();
+    return () => {
+      this.release();
+    };
   }
 
   private release(): void {

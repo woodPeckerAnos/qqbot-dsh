@@ -90,7 +90,9 @@ export class DshLaneRunner implements LaneRunner {
         signal
       );
       lease = await new Promise<RuntimeEntry>((resolveLease, reject) => {
-        const aborted = () => reject(new Error('runtime 租约等待已取消'));
+        const aborted = () => {
+          reject(new Error('runtime 租约等待已取消'));
+        };
         signal.addEventListener('abort', aborted, { once: true });
         void acquiring.then(
           async (entry) => {
@@ -101,9 +103,9 @@ export class DshLaneRunner implements LaneRunner {
               reject(new Error('runtime 租约已取消'));
             } else resolveLease(entry);
           },
-          (error) => {
+          (error: unknown) => {
             signal.removeEventListener('abort', aborted);
-            reject(error);
+            reject(error instanceof Error ? error : new Error(String(error)));
           }
         );
         if (signal.aborted) aborted();
@@ -206,9 +208,12 @@ export class DshLaneRunner implements LaneRunner {
           check();
         }
       };
-      const abort = () => finish({ kind: 'cancelled' });
-      const exit = () =>
+      const abort = () => {
+        finish({ kind: 'cancelled' });
+      };
+      const exit = () => {
         finish({ kind: 'failed', text: '任务运行进程退出，执行中断。', error: 'runtime-exit' });
+      };
       runtime.on('session.event', event);
       runtime.on('session.status', status);
       runtime.on('subagent.started', started);
@@ -224,10 +229,14 @@ export class DshLaneRunner implements LaneRunner {
         signal.removeEventListener('abort', abort);
       });
       const timer = this.clock.setTimeout(
-        () => finish({ kind: 'failed', text: '任务执行超时，已停止执行。', error: 'lane-timeout' }),
+        () => {
+          finish({ kind: 'failed', text: '任务执行超时，已停止执行。', error: 'lane-timeout' });
+        },
         lane === 'fast' ? config.tasks.fastTimeoutMs : config.tasks.slowTimeoutMs
       );
-      disposers.push(() => this.clock.clearTimeout(timer));
+      disposers.push(() => {
+        this.clock.clearTimeout(timer);
+      });
       const instruction =
         lane === 'fast'
           ? '你在快 lane。立即给出简短答复；需要长技能时说明任务会继续执行。仅可使用 query_tasks 和 cancel_task 查询或取消旧任务，不执行业务工具。'
@@ -240,14 +249,14 @@ export class DshLaneRunner implements LaneRunner {
         ...prepared.blocks,
       ];
       // 监听器、身份和计时器先于派发，连同步 mock 事件也不会漏收或串属。
-      void runtime
-        .prompt(sessionId, blocks)
-        .catch((error: unknown) =>
-          finish({ kind: 'failed', text: '任务派发失败，请稍后重新提交。', error: String(error) })
-        );
+      void runtime.prompt(sessionId, blocks).catch((error: unknown) => {
+        finish({ kind: 'failed', text: '任务派发失败，请稍后重新提交。', error: String(error) });
+      });
       result = await done;
       manager.endExecution(task.taskId, lane);
-      disposers.forEach((fn) => fn());
+      disposers.forEach((fn) => {
+        fn();
+      });
       disposers.length = 0;
       // 先停止具体进程再扫描交付物，避免收尾期间仍有工具或子代理写文件。
       await pool.drop(lease);
@@ -282,7 +291,9 @@ export class DshLaneRunner implements LaneRunner {
         ? { kind: 'cancelled' }
         : { kind: 'failed', text: '任务执行失败，请稍后重新提交。', error: String(error) };
     } finally {
-      disposers.forEach((fn) => fn());
+      disposers.forEach((fn) => {
+        fn();
+      });
       if (lease) await pool.drop(lease);
     }
   }

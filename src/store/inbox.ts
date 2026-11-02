@@ -46,6 +46,7 @@ export function sanitizeInboxFileName(raw: string): string {
   const base = raw.split(/[\\/]/).pop() ?? '';
   const cleaned = base
     // 控制字符与 NUL：不仅难看，还可能被当作字符串终止符
+    // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]/g, '_')
     .replace(/[^\p{L}\p{N}._\-() ]/gu, '_')
     // 前导点：隐藏文件、`.` 与 `..` 都在这一步被消掉

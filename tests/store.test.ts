@@ -113,7 +113,7 @@ describe('ConversationStore', () => {
     const store = new ConversationStore(paths, logger);
     store.append('g1', { role: 'user', speaker: 'a', text: '正常', ts: 1 });
     const file = conversationFileFor(paths, 'g1');
-    writeFileSync(file, `${'这不是 JSON'}\n`, { flag: 'a' });
+    writeFileSync(file, `这不是 JSON\n`, { flag: 'a' });
     store.append('g1', { role: 'assistant', speaker: 'bot', text: '也正常', ts: 2 });
 
     const turns = store.readAll('g1');

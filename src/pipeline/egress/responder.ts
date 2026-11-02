@@ -7,7 +7,7 @@ import type { MessageQueue } from '../../task/message-queue.js';
  */
 export class Responder {
   constructor(private readonly options: { message: NormalizedMessage; queue: MessageQueue }) {}
-  async error(text: string): Promise<void> {
+  error(text: string): Promise<void> {
     this.options.queue.enqueue({
       taskId: `ingress-${this.options.message.eventId}`,
       lane: 'fast',
@@ -15,5 +15,6 @@ export class Responder {
       text,
       kind: 'error',
     });
+    return Promise.resolve();
   }
 }

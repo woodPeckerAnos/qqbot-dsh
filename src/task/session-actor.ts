@@ -111,7 +111,8 @@ export class SessionActor {
         this.options.budget.settle(id, false, true);
         throw error;
       }
-      const task = this.options.manager.get(id)!;
+      const task = this.options.manager.get(id);
+      if (task === undefined) throw new Error('Task 创建后未登记');
       // 中间不 await；调度在微任务中开始，确保两个 lane 都入队后才执行。
       for (const lane of LANES)
         this.options.schedulers[lane].enqueue({
@@ -139,9 +140,13 @@ export class SessionActor {
             }
             return result;
           },
-          settle: (result) => this.options.manager.finish(id, lane, result),
+          settle: (result) => {
+            this.options.manager.finish(id, lane, result);
+          },
         });
-      void handle.done.then(() => this.options.preparer.release(id));
+      void handle.done.then(() => {
+        this.options.preparer.release(id);
+      });
       return handle;
     } finally {
       release();
@@ -196,7 +201,9 @@ export class SessionActor {
       .list()
       .filter((t) => !isTaskTerminal(t))
       .forEach((t) => this.cancel(t.taskId));
-    LANES.forEach((l) => this.options.schedulers[l].close());
+    LANES.forEach((l) => {
+      this.options.schedulers[l].close();
+    });
   }
   private persistSessions(): void {
     this.options.sessions?.save(

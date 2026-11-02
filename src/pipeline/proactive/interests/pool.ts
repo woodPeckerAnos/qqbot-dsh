@@ -224,10 +224,10 @@ export function parseInterestPool(raw: string, source = 'interests.yml'): Intere
       keywords,
       ...(optionalString(record, 'why') === undefined
         ? {}
-        : { why: optionalString(record, 'why') as string }),
+        : { why: optionalString(record, 'why') }),
       ...(optionalString(record, 'note') === undefined
         ? {}
-        : { note: optionalString(record, 'note') as string }),
+        : { note: optionalString(record, 'note') }),
     });
   }
   return new InterestPool(entries);

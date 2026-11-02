@@ -47,7 +47,9 @@ export class SessionOutputCoordinator {
         this.reconcile(task.taskId);
         this.scheduleReminder(task);
       }),
-      options.queue.onDelivery((result, candidate) => this.onDelivery(result, candidate)),
+      options.queue.onDelivery((result, candidate) => {
+        this.onDelivery(result, candidate);
+      }),
     ];
     for (const row of options.queue.messages()) {
       const texts = this.texts.get(row.candidate.taskId) ?? new Set<string>();
@@ -133,8 +135,12 @@ export class SessionOutputCoordinator {
     if (settled) this.options.onBudgetSettled?.(taskId, settled);
   }
   close(): void {
-    this.unsubscribe.forEach((fn) => fn());
-    this.timers.forEach((t) => this.clock.clearTimeout(t));
+    this.unsubscribe.forEach((fn) => {
+      fn();
+    });
+    this.timers.forEach((t) => {
+      this.clock.clearTimeout(t);
+    });
     this.timers.clear();
   }
   /** 只回收协调器缓存和提醒，保留队列拥有的消息及附件。 */
@@ -147,9 +153,10 @@ export class SessionOutputCoordinator {
     this.reminded.delete(taskId);
   }
   private onDelivery(result: DeliveryResult, candidate: Readonly<ReplyCandidate>): void {
-    if (result.status === 'sent') {
+    const deliveredAt = result.deliveredAt;
+    if (result.status === 'sent' && deliveredAt !== undefined) {
       // 先保存实际送达内容，再触发预算回调，主动 adapter 才能记录真实发言。
-      this.options.onDelivered?.(candidate, result.deliveredAt!);
+      this.options.onDelivered?.(candidate, deliveredAt);
       if (
         candidate.lane === 'fast' &&
         candidate.kind === 'final' &&
@@ -157,8 +164,7 @@ export class SessionOutputCoordinator {
         !candidate.attachment &&
         candidate.text
       ) {
-        if (!this.fastSent.has(candidate.taskId))
-          this.fastSent.set(candidate.taskId, result.deliveredAt!);
+        if (!this.fastSent.has(candidate.taskId)) this.fastSent.set(candidate.taskId, deliveredAt);
         const task = this.options.manager.get(candidate.taskId);
         if (task) this.scheduleReminder(task);
       }

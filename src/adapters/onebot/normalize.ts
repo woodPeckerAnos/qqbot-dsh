@@ -155,11 +155,10 @@ export function extractMessageContent(
   message: OneBotSegment[] | string | undefined,
   selfId: number
 ): ExtractedContent {
-  const segments: OneBotSegment[] = Array.isArray(message)
-    ? message
-    : typeof message === 'string'
-      ? parseCqCodes(message)
-      : [];
+  let segments: OneBotSegment[];
+  if (Array.isArray(message)) segments = message;
+  else if (typeof message === 'string') segments = parseCqCodes(message);
+  else segments = [];
 
   const parts: MessagePart[] = [];
   let atSelf = false;
@@ -553,7 +552,7 @@ export function normalizeOneBotEvent(
     default:
       return {
         type: 'ignored',
-        reason: `未知 post_type: ${String((raw as OneBotEvent).post_type)}`,
+        reason: `未知 post_type: ${(raw as OneBotEvent).post_type}`,
       };
   }
 }

@@ -572,15 +572,15 @@ function pickString(
  *
  * 注释里写清楚，是因为下一个人很容易把它当成"格式检查"而顺手放宽。
  */
+function workspaceSubdirReason(value: string): string | undefined {
+  if (value === '') return '不能为空（空串会让它退化成工作区根目录）';
+  if (value.includes('/') || value.includes('\\')) return '不能含路径分隔符';
+  if (value === '.' || value === '..') return '不能是 . 或 ..';
+  return undefined;
+}
+
 function assertWorkspaceSubdirName(value: string, label: string, hints: string[]): void {
-  const reason =
-    value === ''
-      ? '不能为空（空串会让它退化成工作区根目录）'
-      : value.includes('/') || value.includes('\\')
-        ? '不能含路径分隔符'
-        : value === '.' || value === '..'
-          ? '不能是 . 或 ..'
-          : undefined;
+  const reason = workspaceSubdirReason(value);
   if (reason === undefined) return;
   throw new ConfigError(
     `${label} 必须是工作区内的纯子目录名：${reason}，收到 ${JSON.stringify(value)}`,
@@ -1375,7 +1375,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       appSecret,
       apiBase: pickString(env, 'QQ_API_BASE', qqFile.apiBase, 'https://api.bot.qq.com'),
       intents,
-      msgType: msgTypeRaw as 0 | 2,
+      msgType: msgTypeRaw,
       maxChars: pickInt(
         env,
         'QQ_MAX_CHARS',

@@ -191,6 +191,8 @@ export function runPdftotext(
     let bytes = 0;
     let truncated = false;
     let settled = false;
+    // finish() 与超时回调互相引用，只能先声明再赋值。
+    // eslint-disable-next-line prefer-const
     let timer: NodeJS.Timeout | undefined;
 
     const finish = (outcome: PdftotextOutcome): void => {

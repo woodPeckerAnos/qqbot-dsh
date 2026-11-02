@@ -152,6 +152,14 @@ function estimateSize(data: unknown): number {
   }
 }
 
+/** ws 的 RawData 三种形态统一成 UTF-8 文本（服务端通常只发 Buffer）。 */
+function rawDataToText(data: WebSocket.RawData): string {
+  if (typeof data === 'string') return data;
+  if (Buffer.isBuffer(data)) return data.toString('utf8');
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
+  return Buffer.from(data).toString('utf8');
+}
+
 interface ForwardBudget {
   nodesLeft: number;
   charsLeft: number;
@@ -208,7 +216,9 @@ export class OnebotConnector implements BotConnector {
       if (this.transportStarted) return;
       this.stopping = false;
       this.startedAt = this.now();
-      await this.options.transport.start((socket) => this.onConnection(socket));
+      await this.options.transport.start((socket) => {
+        this.onConnection(socket);
+      });
       this.transportStarted = true;
       return;
     }
@@ -217,7 +227,9 @@ export class OnebotConnector implements BotConnector {
     this.startedAt = this.now();
 
     this.wss = new WebSocketServer({ noServer: true });
-    this.wss.on('connection', (socket: WebSocket) => this.onConnection(socket));
+    this.wss.on('connection', (socket: WebSocket) => {
+      this.onConnection(socket);
+    });
 
     this.server = createServer((req, res) => {
       // 本端口只服务 WS upgrade；普通 HTTP 请求给个明确答复，便于排障
@@ -225,7 +237,6 @@ export class OnebotConnector implements BotConnector {
       res.end(
         'OneBot reverse WebSocket endpoint. 请在框架侧配置 ws://<host>:<port>/ 并升级连接。\n'
       );
-      void req;
     });
 
     this.server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -245,7 +256,9 @@ export class OnebotConnector implements BotConnector {
 
     await new Promise<void>((resolve, reject) => {
       this.server?.once('error', reject);
-      this.server?.listen(this.options.port, this.options.host, () => resolve());
+      this.server?.listen(this.options.port, this.options.host, () => {
+        resolve();
+      });
     });
     this.options.logger.info('OneBot 反向 WS 已监听', {
       host: this.options.host,
@@ -277,12 +290,20 @@ export class OnebotConnector implements BotConnector {
     const wss = this.wss;
     this.wss = undefined;
     if (wss !== undefined) {
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => {
+        wss.close(() => {
+          resolve();
+        });
+      });
     }
     const server = this.server;
     this.server = undefined;
     if (server !== undefined) {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) =>
+        server.close(() => {
+          resolve();
+        })
+      );
     }
   }
 
@@ -303,9 +324,11 @@ export class OnebotConnector implements BotConnector {
     // 服务端连接器的"通道已建立"= 监听中。客户端连不连得上是框架侧的事，
     // 重启本服务帮不上忙（也不该因此触发容器重启循环），所以没有客户端只告警。
     const listening = this.server !== undefined || this.transportStarted;
+    let state: 'connected' | 'listening' | 'stopped' = 'stopped';
+    if (listening) state = anyClient ? 'connected' : 'listening';
     return {
       connected: listening,
-      state: listening ? (anyClient ? 'connected' : 'listening') : 'stopped',
+      state,
       ...(lastEventAt !== undefined ? { lastEventAt } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
       detail: {
@@ -482,7 +505,9 @@ export class OnebotConnector implements BotConnector {
     this.sessions.add(session);
     this.options.logger.info('OneBot 客户端已连入', { total: this.sessions.size });
 
-    socket.on('message', (data: WebSocket.RawData) => this.onFrame(session, data));
+    socket.on('message', (data: WebSocket.RawData) => {
+      this.onFrame(session, data);
+    });
     socket.on('close', () => {
       this.sessions.delete(session);
       for (const [key, value] of this.conversationSessions) {
@@ -508,7 +533,7 @@ export class OnebotConnector implements BotConnector {
   }
 
   private onFrame(session: Session, data: WebSocket.RawData): void {
-    const text = typeof data === 'string' ? data : data.toString('utf8');
+    const text = rawDataToText(data);
     let payload: Record<string, unknown>;
     try {
       payload = JSON.parse(text) as Record<string, unknown>;
@@ -519,7 +544,7 @@ export class OnebotConnector implements BotConnector {
 
     // 动作响应：带 echo 且没有 post_type
     if (typeof payload['echo'] === 'string' && payload['post_type'] === undefined) {
-      this.onActionResponse(payload as unknown as OneBotActionResponse);
+      this.onActionResponse(payload);
       return;
     }
 
@@ -907,7 +932,7 @@ export class OnebotConnector implements BotConnector {
    * 缓存的是**原始响应**而不是解析结果：解析很便宜，而且每次解析都会产出
    * 一份独立的嵌套引用下标，复用解析结果反而容易在下标上出岔子。
    */
-  private async getForwardData(session: Session, forwardId: string): Promise<unknown | undefined> {
+  private async getForwardData(session: Session, forwardId: string): Promise<unknown> {
     const now = this.now();
     // 缓存键必须带账号：forward id 多数实现里就是消息 id（数字），两个 QQ 账号
     // 撞号是常态；只按 id 缓存会让 B 号群里显示 A 号的转发内容。
@@ -1187,12 +1212,9 @@ export class OnebotConnector implements BotConnector {
   private pickSessionForMedia(media: RemoteMedia): Session | undefined {
     const groupId = media.context?.groupId;
     const userId = media.context?.userId;
-    const key =
-      groupId !== undefined
-        ? onebotGroupTarget(groupId).key
-        : userId !== undefined
-          ? onebotC2cTarget(userId).key
-          : undefined;
+    let key: string | undefined;
+    if (groupId !== undefined) key = onebotGroupTarget(groupId).key;
+    else if (userId !== undefined) key = onebotC2cTarget(userId).key;
     // 一个连接都没有时 pickSession/pickAnySession 会抛错；fetchMedia 的契约是
     // "失败返回 undefined，绝不抛错打断整轮"，所以在这里就把它收住。
     try {
@@ -1278,7 +1300,9 @@ export class OnebotConnector implements BotConnector {
   /** 普通 GET：带超时与体积上限（content-length 预判 + 实际校验双保险）。 */
   private async httpGet(url: string, options: MediaFetchOptions): Promise<MediaBytes | undefined> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, options.timeoutMs);
     timer.unref?.();
     try {
       const response = await fetch(url, { signal: controller.signal });

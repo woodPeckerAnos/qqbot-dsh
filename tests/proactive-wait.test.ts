@@ -140,12 +140,11 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}): Harness {
           return { scene: 'scene-3', satisfied: false, confidence: 0.2, reason: '判不成立' };
         }
         const reference = active.reference;
-        const evidence =
-          reference === 'none' || (reference === undefined && pendingId === undefined)
-            ? undefined
-            : reference === 'bogus'
-              ? 'q:msg-does-not-exist@0'
-              : `q:${reference ?? pendingId}`;
+        let evidence: string | undefined;
+        if (reference === 'none' || (reference === undefined && pendingId === undefined))
+          evidence = undefined;
+        else if (reference === 'bogus') evidence = 'q:msg-does-not-exist@0';
+        else evidence = `q:${reference ?? pendingId}`;
         return {
           scene: 'scene-3',
           satisfied: false,
@@ -353,7 +352,7 @@ describe('wait 的准入：只有 yielding 才排唤醒', () => {
   it('验收9：引用无效 / 未给引用 → silent，建 0 张票据、不猜对象、不退化回无限等待', async () => {
     for (const reference of ['bogus', 'none'] as const) {
       const h = setup({ questionProbeMs: 1_000 });
-      const id = h.armQuestion();
+      h.armQuestion();
       await h.settle();
       h.setPlan({ scene3: 'unsatisfied', waitReason: 'yielding', reference });
       h.advance(1_000);
@@ -368,13 +367,12 @@ describe('wait 的准入：只有 yielding 才排唤醒', () => {
       h.advance(10 * 60_000);
       await h.settle();
       expect(h.judgeCalls.length).toBe(calls);
-      void id;
     }
   });
 
   it('验收2：yielding + 对象仍挂起 → 判 wait，排一次 waitYieldMs 后的唤醒', async () => {
     const h = setup({ questionProbeMs: 1_000, waitYieldMs: 45_000 });
-    const id = await armYieldingTicket(h, { waitYieldMs: 1_000 });
+    await armYieldingTicket(h, { waitYieldMs: 1_000 });
 
     expect(h.delivered).toHaveLength(0);
     expect(h.snapshot().vetoed['wait']).toBe(1);
@@ -394,7 +392,6 @@ describe('wait 的准入：只有 yielding 才排唤醒', () => {
     expect(h.snapshot().waitTickets.pending).toBe(0);
     expect(h.snapshot().waitTickets.unchanged).toBe(1);
     expect(h.snapshot().waitTickets[`stale` as never] ?? 0).toBe(0);
-    void id;
   });
 });
 
@@ -436,7 +433,7 @@ describe('唤醒前的本地检查：不过就不花 LLM', () => {
     expect(h.snapshot().waitTickets.stale).toBe(1);
     expect(h.snapshot().waitTickets.pending).toBe(0);
     expect(ledgerClosed(h.snapshot())).toBe(true);
-    void id;
+    expect(id).toBeDefined();
   });
 
   it('验收6：问题在唤醒前被回答 → 唤醒被**取消**（不是到点才发现）', async () => {
@@ -632,7 +629,6 @@ describe('唤醒后的重判：任何结果都消耗票据', () => {
 
 describe('每会话只有一个唤醒点', () => {
   it('验收7：同一会话三张票据 → 只有一个定时器；唤醒时三张各自判断', async () => {
-    let scheduled = 0;
     let clock = START;
     const cancels: Array<() => void> = [];
     const timers: Array<{ at: number; fn: () => void; cancelled: boolean; delayMs: number }> = [];
@@ -691,7 +687,6 @@ describe('每会话只有一个唤醒点', () => {
       logger: createNullLogger(),
       now: () => clock,
       schedule: (fn, delayMs) => {
-        scheduled += 1;
         const timer = { at: clock + delayMs, fn, cancelled: false, delayMs };
         timers.push(timer);
         const cancel = (): void => {
@@ -746,9 +741,6 @@ describe('每会话只有一个唤醒点', () => {
       yieldTimers.length,
       `唤醒点不该每张票据各排一个（票据 ${created} 张，唤路线定时器 ${yieldTimers.length} 个）`
     ).toBe(1);
-    void scheduled;
-    void verdictsFor;
-    void cancels;
   });
 });
 
@@ -761,7 +753,7 @@ describe('指标：账目必须闭合', () => {
     const h = setup({ questionProbeMs: 1_000, waitYieldMs: 45_000 });
 
     // ① resolved：让路 → 群里有人说话 → 唤醒时判成立
-    const first = await armYieldingTicket(h, { waitYieldMs: 1_000 });
+    await armYieldingTicket(h, { waitYieldMs: 1_000 });
     h.advanceSilently(10_000);
     h.observe('u3', '我看看');
     await h.settle();
@@ -808,7 +800,6 @@ describe('指标：账目必须闭合', () => {
     expect(t.invalidTarget).toBe(1);
     // invalid_target 与 wait_declined **不产生票据**，因此不参与上面的等式
     expect(t.created).toBeLessThanOrEqual(3);
-    void first;
   });
 
   it('验收10：wait-wakeup 用独立触发标签，与 question-probe 分得开', async () => {

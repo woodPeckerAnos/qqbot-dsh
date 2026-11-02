@@ -24,7 +24,9 @@ export class LaneScheduler {
     queue.push(job);
     this.queues.set(key, queue);
     // 延后启动，让 Actor 能在同一同步事务中完整提交两个 lane。
-    queueMicrotask(() => this.pump());
+    queueMicrotask(() => {
+      this.pump();
+    });
   }
   /** 排队项直接结算取消；运行项发出信号，并等待 runner 释放具体 runtime。 */
   cancel(taskId: string): void {
@@ -34,7 +36,9 @@ export class LaneScheduler {
         key,
         queue.filter((j) => j.task.taskId !== taskId)
       );
-      removed.forEach((j) => j.settle({ kind: 'cancelled' }));
+      removed.forEach((j) => {
+        j.settle({ kind: 'cancelled' });
+      });
     }
     for (const active of this.running.values())
       if (active.taskId === taskId) active.controller.abort();
@@ -48,9 +52,14 @@ export class LaneScheduler {
   }
   close(): void {
     this.closed = true;
-    for (const queue of this.queues.values()) queue.forEach((j) => j.settle({ kind: 'cancelled' }));
+    for (const queue of this.queues.values())
+      queue.forEach((j) => {
+        j.settle({ kind: 'cancelled' });
+      });
     this.queues.clear();
-    this.running.forEach((r) => r.controller.abort());
+    this.running.forEach((r) => {
+      r.controller.abort();
+    });
   }
   private pump(): void {
     if (this.closed) return;
@@ -66,20 +75,19 @@ export class LaneScheduler {
       this.running.set(key, { taskId: job.task.taskId, controller });
       void Promise.resolve()
         .then(() => job.run(controller.signal))
-        .catch(
-          (error: unknown): LaneResult =>
-            ({
-              kind: controller.signal.aborted ? 'cancelled' : 'failed',
-              text: '任务执行失败。',
-              error: String(error),
-            }) as LaneResult
-        )
-        .then((result) => job.settle(result))
+        .catch((error: unknown): LaneResult => ({
+          kind: controller.signal.aborted ? 'cancelled' : 'failed',
+          text: '任务执行失败。',
+          error: String(error),
+        }))
+        .then((result) => {
+          job.settle(result);
+        })
         .finally(() => {
           this.running.delete(key);
           // 完成的 Session 轮转到末尾，保留其 FIFO 并让其他 Session 获得名额。
-          if (this.queues.has(key)) {
-            const remaining = this.queues.get(key)!;
+          const remaining = this.queues.get(key);
+          if (remaining !== undefined) {
             this.queues.delete(key);
             this.queues.set(key, remaining);
           }

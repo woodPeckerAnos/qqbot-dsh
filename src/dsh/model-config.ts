@@ -869,11 +869,7 @@ function readPiAiProvider(raw: unknown, path: string): PiAiProviderConfig {
     }
     modelOverrides = {};
     for (const [modelId, entry] of Object.entries(overridesRaw)) {
-      modelOverrides[modelId] = readPiAiModel(
-        entry,
-        `${path}.modelOverrides.${modelId}`,
-        true
-      ) as PiAiModelOverride;
+      modelOverrides[modelId] = readPiAiModel(entry, `${path}.modelOverrides.${modelId}`, true);
     }
   }
   // DSH 侧的同一条规则：models 已经整份替换目录，再配覆写必有一个被静默忽略

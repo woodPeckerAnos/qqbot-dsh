@@ -125,10 +125,11 @@ export class DshRuntime extends EventEmitter {
         ...options.env,
       },
       stdio: options.taskControl ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
-    }) as unknown as ChildProcessWithoutNullStreams;
+    });
 
     this.child = child;
     if (options.taskControl) {
+      const taskControl = options.taskControl;
       const control = child.stdio[3] as Duplex;
       let buffer = '';
       control.setEncoding('utf8');
@@ -149,16 +150,16 @@ export class DshRuntime extends EventEmitter {
               taskId?: string;
               sessionId?: string;
             };
-            const value = options.taskControl!(request);
+            const value = taskControl(request);
             control.write(JSON.stringify({ id: request.id, value }) + '\n');
           } catch (error) {
             options.logger.warn('Task 控制请求失败', { error: String(error) });
           }
         }
       });
-      control.on('error', (error) =>
-        options.logger.warn('Task 控制通道关闭', { error: error.message })
-      );
+      control.on('error', (error) => {
+        options.logger.warn('Task 控制通道关闭', { error: error.message });
+      });
     }
 
     this.exitPromise = new Promise<void>((resolve) => {

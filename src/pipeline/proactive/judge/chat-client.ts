@@ -35,7 +35,9 @@ export function createChatClient(options: ChatClientOptions): ChatClient {
   return {
     async complete(messages: ChatMessage[]): Promise<string> {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+      const timer = setTimeout(() => {
+        controller.abort();
+      }, options.timeoutMs);
       try {
         const response = await fetchImpl(`${options.apiBase}/chat/completions`, {
           method: 'POST',

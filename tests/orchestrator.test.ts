@@ -412,7 +412,9 @@ function setup(
     background,
     windows,
     observed,
-    cleanup: () => rmSync(root, { recursive: true, force: true }),
+    cleanup: () => {
+      rmSync(root, { recursive: true, force: true });
+    },
   };
 }
 
@@ -489,7 +491,9 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
 // ---------------------------------------------------------------------------
 
 let ctx: ReturnType<typeof setup>;
-afterEach(() => ctx?.cleanup());
+afterEach(() => {
+  ctx?.cleanup();
+});
 
 describe('编排 正常一轮', () => {
   beforeEach(() => {
@@ -1708,7 +1712,9 @@ describe('会话控制与排队反馈', () => {
 
 describe('编排：用户发来的文件', () => {
   let ctx: ReturnType<typeof setup>;
-  afterEach(() => ctx?.cleanup());
+  afterEach(() => {
+    ctx?.cleanup();
+  });
 
   it('PDF：抽取正文进 prompt、原文落在工作区 inbox、计数在派发成功后才落账', async () => {
     const extractDocument: DocumentExtractor = async () => ({ text: '报表正文：第一季度增长 3%' });
@@ -1953,7 +1959,9 @@ describe('编排 被 @ 时的群聊上下文（观察窗口）', () => {
  */
 describe('编排 被 @ 时上下文里的媒体（滚窗 → prompt）', () => {
   let ctx: ReturnType<typeof setup>;
-  afterEach(() => ctx?.cleanup());
+  afterEach(() => {
+    ctx?.cleanup();
+  });
 
   /** 群里发来一条带图的旁听消息（与适配器归一化后的形状一致）。 */
   const observedImage = (overrides: Partial<NormalizedMessage> = {}): NormalizedMessage =>
@@ -2265,7 +2273,9 @@ describe('编排 被 @ 时上下文里的媒体（滚窗 → prompt）', () => {
  */
 describe('编排 聊天记录按需展开', () => {
   let ctx: ReturnType<typeof setup>;
-  afterEach(() => ctx?.cleanup());
+  afterEach(() => {
+    ctx?.cleanup();
+  });
 
   /** 群友发来一条**聊天记录**（旁听，没 @ bot）。 */
   const observedRecord = (overrides: Partial<NormalizedMessage> = {}): NormalizedMessage =>

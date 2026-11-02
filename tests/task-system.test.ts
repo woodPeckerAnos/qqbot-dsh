@@ -157,11 +157,11 @@ async function harness(
     void orchestrator.handleEvent(e);
   });
   const runtime = async (lane: Lane, index = 0) => {
-    await vi.waitFor(() =>
+    await vi.waitFor(() => {
       expect(
         runtimes.filter((r) => r.options.env?.QQBOT_LANE === lane && r.prompts.length).length
-      ).toBeGreaterThan(index)
-    );
+      ).toBeGreaterThan(index);
+    });
     return runtimes.filter((r) => r.options.env?.QQBOT_LANE === lane && r.prompts.length)[index]!;
   };
   cleanups.push(async () => {
@@ -201,7 +201,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     const task = await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
     expect(task.status).toBe('completed');
     expect(task.lanes.slow.result?.kind).toBe('silent');
-    await vi.waitFor(() => expect(h.mock.sentTexts).toEqual(['你好']));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toEqual(['你好']);
+    });
   });
   it('旧慢任务未完，新输入快回复已送达；各 lane 同 Session 串行', async () => {
     const h = await harness();
@@ -212,13 +214,17 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     h.mock.input(2, '今天几号');
     const fast2 = await h.runtime('fast', 1);
     fast2.finish('今天 2 号');
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('今天 2 号'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('今天 2 号');
+    });
     expect(h.runtimes.filter((r) => r.options.env?.QQBOT_LANE === 'slow')).toHaveLength(1);
     expect(h.system.manager.list()[0]!.status).toBe('running');
     slow.finish('报告完成');
     const slow2 = await h.runtime('slow', 1);
     slow2.finish('NO_REPLY');
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('报告完成'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('报告完成');
+    });
     const action = h.mock.actions.find((a) => JSON.stringify(a.params).includes('报告完成'))!;
     expect(action.params.message).toEqual([
       { type: 'reply', data: { id: '1' } },
@@ -238,9 +244,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
       const task = await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
       expect(task.status).toBe('failed');
       expect(task.lanes.slow.result?.kind).toBe('failed');
-      await vi.waitFor(() =>
-        expect(h.mock.sentTexts.some((t) => t.includes('执行失败'))).toBe(true)
-      );
+      await vi.waitFor(() => {
+        expect(h.mock.sentTexts.some((t) => t.includes('执行失败'))).toBe(true);
+      });
     }
   );
   it.each(['', 'NO_REPLY'])('执行后返回 %j 属于契约错误', async (text) => {
@@ -297,7 +303,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     await h.runtime('fast');
     await h.runtime('slow');
     h.mock.input(2, 'B');
-    await vi.waitFor(() => expect(h.system.manager.list()).toHaveLength(2));
+    await vi.waitFor(() => {
+      expect(h.system.manager.list()).toHaveLength(2);
+    });
     h.system.actor.stop('ob11:g8888');
     const tasks = h.system.manager.list();
     expect((await h.system.manager.handle(tasks[0]!.taskId).done).status).toBe('cancelled');
@@ -306,7 +314,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     await h.system.manager.handle(tasks[1]!.taskId).done;
     expect(h.system.actor.snapshot().unfinished).toBe(0);
     h.mock.input(3, 'C');
-    await vi.waitFor(() => expect(h.system.manager.list()).toHaveLength(3));
+    await vi.waitFor(() => {
+      expect(h.system.manager.list()).toHaveLength(3);
+    });
     expect(h.system.manager.list()[2]!.input.generation).toBeGreaterThan(
       tasks[1]!.input.generation
     );
@@ -326,13 +336,15 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     const f = await h.runtime('fast');
     await h.runtime('slow');
     f.finish('已开始');
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('已开始'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('已开始');
+    });
     clock.advance(299_999);
     expect(h.mock.sentTexts.some((t) => t.includes('还在执行'))).toBe(false);
     clock.advance(1);
-    await vi.waitFor(() =>
-      expect(h.mock.sentTexts.filter((t) => t.includes('还在执行'))).toHaveLength(1)
-    );
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts.filter((t) => t.includes('还在执行'))).toHaveLength(1);
+    });
     clock.advance(300_000);
     expect(h.mock.sentTexts.filter((t) => t.includes('还在执行'))).toHaveLength(1);
   });
@@ -350,7 +362,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     h.mock.input(2, 'B');
     (await h.runtime('fast', 1)).finish('B');
     await h.runtime('slow', 1);
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('B'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('B');
+    });
     await h.mock.stop();
     clock.advance(300_000);
     expect(h.system.queue.messages().some((r) => r.candidate.kind === 'progress')).toBe(false);
@@ -368,7 +382,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     const s2 = await h.runtime('slow', 1);
     expect(h.system.manager.list()[1]!.lanes.slow.status).toBe('running');
     s2.finish('NO_REPLY');
-    await vi.waitFor(() => expect(h.mock.sentTexts.some((t) => t.includes('超时'))).toBe(true));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts.some((t) => t.includes('超时'))).toBe(true);
+    });
   });
   it('两个 lane 完全相同正文精确去重，不同正文分别发送', async () => {
     const h = await harness();
@@ -378,11 +394,15 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     f.finish('相同结论');
     s.finish('相同结论');
     await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
-    await vi.waitFor(() => expect(h.mock.sentTexts).toEqual(['相同结论']));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toEqual(['相同结论']);
+    });
     h.mock.input(2, 'B');
     (await h.runtime('fast', 1)).finish('快结论');
     (await h.runtime('slow', 1)).finish('慢结论');
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('慢结论'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('慢结论');
+    });
     expect(h.mock.sentTexts).toContain('快结论');
   });
   it('附件只属于自己的 Task；稳定文件独立保存，上传阻塞时快正文仍发', async () => {
@@ -396,16 +416,19 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     await import('node:fs/promises').then((fs) => fs.mkdir(outbox, { recursive: true }));
     await writeFile(join(outbox, 'A.txt'), 'Task A 内容');
     s.finish('A 完成');
-    await vi.waitFor(() =>
-      expect(h.mock.actions.some((a) => a.action === 'upload_group_file')).toBe(true)
-    );
-    const attachment = h.system.queue.messages().find((r) => r.candidate.attachment)
-      ?.candidate.attachment!;
+    await vi.waitFor(() => {
+      expect(h.mock.actions.some((a) => a.action === 'upload_group_file')).toBe(true);
+    });
+    const queued = h.system.queue.messages().find((r) => r.candidate.attachment);
+    expect(queued?.candidate.attachment).toBeDefined();
+    const attachment = queued!.candidate.attachment;
     expect(await readFile(attachment.absPath, 'utf8')).toBe('Task A 内容');
     h.mock.input(2, 'B');
     (await h.runtime('fast', 1)).finish('B 快回复');
     (await h.runtime('slow', 1)).finish('NO_REPLY');
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('B 快回复'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('B 快回复');
+    });
     expect(h.system.queue.messages().filter((r) => r.candidate.attachment)).toHaveLength(1);
     expect(h.conversations.readAll('ob11:g8888').some((t) => t.reference?.messageId === '1')).toBe(
       true
@@ -438,7 +461,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     (await h.runtime('fast', 1)).finish('新问题快回复');
     slow.finish('原调查结果');
     (await h.runtime('slow', 1)).finish('NO_REPLY');
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('原调查结果'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('原调查结果');
+    });
     const result = h.mock.actions.find((a) => JSON.stringify(a.params).includes('原调查结果'))!;
     expect(result.params.message).toContainEqual({ type: 'reply', data: { id: 'original' } });
     expect(reserve).toHaveBeenCalledTimes(1);
@@ -475,14 +500,18 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     await h.runtime('slow', 1);
     await h.connector.stop();
     fast.finish('已入队结果');
-    await vi.waitFor(() => expect(h.system.queue.snapshot().pending).toBe(1));
+    await vi.waitFor(() => {
+      expect(h.system.queue.snapshot().pending).toBe(1);
+    });
     const task = h.system.manager.list()[1]!;
     h.system.actor.cancel(task.taskId);
     await h.system.manager.handle(task.taskId).done;
     expect(h.system.budget.get(task.taskId)?.status).toBe('reserved');
     await h.connector.start();
     h.mock.input(51, '新话题', 123, false);
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('已入队结果'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('已入队结果');
+    });
     expect(h.system.budget.get(task.taskId)?.status).toBe('committed');
     expect(commit).toHaveBeenCalledTimes(1);
     expect(onSpoke).toHaveBeenCalledTimes(1);
@@ -501,7 +530,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     (await h.runtime('fast')).finish('正常结果');
     (await h.runtime('slow')).finish('NO_REPLY');
     const task = await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
-    await vi.waitFor(() => expect(h.system.queue.snapshot().failed).toBe(2));
+    await vi.waitFor(() => {
+      expect(h.system.queue.snapshot().failed).toBe(2);
+    });
     expect(h.system.manager.get(task.taskId)?.status).toBe('completed');
     expect(h.system.budget.get(task.taskId)?.status).toBe('released');
     expect(release).toHaveBeenCalledTimes(1);
@@ -511,7 +542,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     h.mock.input(1, '长任务');
     (await h.runtime('fast')).finish('已经开始');
     await h.runtime('slow');
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('已经开始'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('已经开始');
+    });
     const interrupted = h.system.manager.list()[0]!;
     h.system.actor.reset('ob11:g8888');
     await h.system.close();
@@ -533,9 +566,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     expect(task.status).toBe('failed');
     expect(task.lanes.fast.result).toEqual({ kind: 'reply', text: '已经开始' });
     expect(task.lanes.slow.result).toMatchObject({ kind: 'failed', error: 'restart-interrupted' });
-    await vi.waitFor(() =>
-      expect(h.mock.sentTexts.filter((t) => t.includes('重启而中断'))).toHaveLength(1)
-    );
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts.filter((t) => t.includes('重启而中断'))).toHaveLength(1);
+    });
     await recovered.close();
     const again = restart();
     cleanups.push(() => again.close());
@@ -568,9 +601,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     await writeFile(join(slow.options.cwd, 'outbox', '报告.txt'), '报告');
     slow.finish('制作完成');
     await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
-    await vi.waitFor(() =>
-      expect(h.system.queue.messages().filter((r) => r.status === 'sent')).toHaveLength(4)
-    );
+    await vi.waitFor(() => {
+      expect(h.system.queue.messages().filter((r) => r.status === 'sent')).toHaveLength(4);
+    });
     expect(reserve).toHaveBeenCalledTimes(1);
     expect(commit).toHaveBeenCalledTimes(1);
     expect(onSpoke).toHaveBeenCalledTimes(1);
@@ -597,9 +630,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     expect(await readFile(attachment.absPath, 'utf8')).toBe('可靠内容');
     await h.connector.start();
     h.system.queue.wake();
-    await vi.waitFor(() =>
-      expect(h.mock.actions.some((a) => a.action === 'upload_group_file')).toBe(true)
-    );
+    await vi.waitFor(() => {
+      expect(h.mock.actions.some((a) => a.action === 'upload_group_file')).toBe(true);
+    });
   });
   it('快消息未送达或慢 lane 仍排队时不提醒；慢执行结束后撤销提醒', async () => {
     const clock = new ManualClock();
@@ -609,14 +642,20 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
       slow = await h.runtime('slow');
     h.mock.hold = (action) => action === 'send_group_msg';
     fast.finish('A 开始');
-    await vi.waitFor(() => expect(h.system.queue.snapshot().sending).toBe(1));
+    await vi.waitFor(() => {
+      expect(h.system.queue.snapshot().sending).toBe(1);
+    });
     clock.advance(300_000);
     expect(h.system.queue.messages().some((r) => r.candidate.kind === 'progress')).toBe(false);
     h.mock.hold = () => false;
-    await vi.waitFor(() => expect(h.system.queue.snapshot().sending).toBe(0));
+    await vi.waitFor(() => {
+      expect(h.system.queue.snapshot().sending).toBe(0);
+    });
     h.mock.input(2, 'B');
     (await h.runtime('fast', 1)).finish('B 开始');
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('B 开始'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('B 开始');
+    });
     const second = h.system.manager.list()[1]!;
     expect(second.lanes.slow.status).toBe('queued');
     clock.advance(300_000);
@@ -639,10 +678,14 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     h.mock.input(1, '长任务');
     (await h.runtime('fast')).finish('开始');
     await h.runtime('slow');
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('开始'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('开始');
+    });
     h.mock.fail = () => true;
     clock.advance(300_000);
-    await vi.waitFor(() => expect(h.system.queue.snapshot().failed).toBe(2));
+    await vi.waitFor(() => {
+      expect(h.system.queue.snapshot().failed).toBe(2);
+    });
     clock.advance(300_000);
     h.system.queue.wake();
     await Promise.resolve();
@@ -706,7 +749,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     });
     h.windows.observeAddressed({ ...message('context'), content: '触发时资料' });
     const first = h.system.actor.submit(h.system.context(message('blocking')));
-    await vi.waitFor(() => expect(judged).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => {
+      expect(judged).toHaveBeenCalledTimes(1);
+    });
     const submitting = h.system.proactive.submit({
       input: { target: message().target, scene: 'scene-2', directive: '研究', reason: '讨论' },
       reference: message('trigger'),
@@ -764,7 +809,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     expect(recovered.budget.get('orphan')!.status).toBe('released');
     expect(recovered.budget.get('retained')!.status).toBe('reserved');
     recovered.queue.wake();
-    await vi.waitFor(() => expect(h.mock.sentTexts).toContain('旧消息仍可发送'));
+    await vi.waitFor(() => {
+      expect(h.mock.sentTexts).toContain('旧消息仍可发送');
+    });
     expect(recovered.budget.get('retained')!.status).toBe('committed');
     expect(recovered.manager.list()).toEqual([]);
   });
@@ -889,7 +936,9 @@ describe('独立消息投递', () => {
         if (hold) await new Promise<void>(() => {});
       },
     });
-    cleanups.push(async () => queue.close());
+    cleanups.push(async () => {
+      queue.close();
+    });
     const candidate: ReplyCandidate = {
       taskId: 'task-A',
       lane: 'slow',
@@ -915,7 +964,9 @@ describe('独立消息投递', () => {
     const h = queueHarness();
     h.fail(true);
     h.queue.enqueue(h.candidate);
-    await vi.waitFor(() => expect(h.sent).toHaveLength(2));
+    await vi.waitFor(() => {
+      expect(h.sent).toHaveLength(2);
+    });
     h.queue.observe(message('next'));
     h.queue.wake();
     await Promise.resolve();
@@ -933,7 +984,9 @@ describe('独立消息投递', () => {
     const next = message('new-anchor', '123', 'qq-official');
     next.ts = h.clock.now();
     h.queue.observe(next);
-    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    await vi.waitFor(() => {
+      expect(h.sent).toHaveLength(1);
+    });
     expect(h.sent[0]!.context).toMatchObject({ msgId: 'new-anchor', seq: 1 });
     expect(h.sent[0]!.candidate.reference?.messageId).toBe('original');
   });
@@ -956,7 +1009,9 @@ describe('独立消息投递', () => {
     ]);
     const fresh = queueHarness(false, file);
     fresh.queue.wake();
-    await vi.waitFor(() => expect(fresh.sent).toHaveLength(2));
+    await vi.waitFor(() => {
+      expect(fresh.sent).toHaveLength(2);
+    });
     expect(fresh.sent.map((s) => s.candidate.text)).toContain('结果');
     expect(fresh.sent.map((s) => s.candidate.text)).not.toContain('结果未知');
     expect(fresh.queue.messages().find((r) => r.id === 'sending')?.status).toBe('failed');
@@ -964,11 +1019,17 @@ describe('独立消息投递', () => {
   it('传输超时原消息不重试，通知也只尝试一次', async () => {
     const h = queueHarness(false, undefined, true);
     h.queue.enqueue(h.candidate);
-    await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+    await vi.waitFor(() => {
+      expect(h.sent).toHaveLength(1);
+    });
     h.clock.advance(100);
-    await vi.waitFor(() => expect(h.sent).toHaveLength(2));
+    await vi.waitFor(() => {
+      expect(h.sent).toHaveLength(2);
+    });
     h.clock.advance(100);
-    await vi.waitFor(() => expect(h.queue.snapshot().failed).toBe(2));
+    await vi.waitFor(() => {
+      expect(h.queue.snapshot().failed).toBe(2);
+    });
     h.queue.observe(message('next'));
     await Promise.resolve();
     expect(h.sent).toHaveLength(2);
@@ -992,13 +1053,17 @@ describe('独立消息投递', () => {
             }
           : {}),
       });
-    await vi.waitFor(() => expect(h.sent).toHaveLength(5));
+    await vi.waitFor(() => {
+      expect(h.sent).toHaveLength(5);
+    });
     expect(h.queue.snapshot().pending).toBe(2);
     expect(h.sent.map((s) => (s.context as { seq: number }).seq).sort()).toEqual([1, 2, 3, 4, 5]);
     const next = message('next-anchor', '123', 'qq-official');
     next.ts = h.clock.now();
     h.queue.observe(next);
-    await vi.waitFor(() => expect(h.sent).toHaveLength(7));
+    await vi.waitFor(() => {
+      expect(h.sent).toHaveLength(7);
+    });
     expect(h.sent.slice(5).map((s) => s.context)).toEqual([
       expect.objectContaining({ msgId: 'next-anchor', seq: 1 }),
       expect.objectContaining({ msgId: 'next-anchor', seq: 2 }),

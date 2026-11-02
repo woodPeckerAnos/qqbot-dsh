@@ -35,7 +35,7 @@ describe('TokenManager', () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ access_token: 'tok-A', expires_in: '7200' })
     );
-    const manager = makeManager(fetchImpl as unknown as typeof fetch);
+    const manager = makeManager(fetchImpl);
 
     expect(await manager.get()).toBe('tok-A');
     expect(await manager.get()).toBe('tok-A');
@@ -51,7 +51,7 @@ describe('TokenManager', () => {
 
   it('请求体使用 appId/clientSecret 字段名', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ access_token: 't', expires_in: '7200' }));
-    const manager = makeManager(fetchImpl as unknown as typeof fetch);
+    const manager = makeManager(fetchImpl);
     await manager.get();
 
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
@@ -62,7 +62,7 @@ describe('TokenManager', () => {
 
   it('HTTP 200 但带非零 code 时必须判为失败', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ code: 100007, message: 'appid invalid' }));
-    const manager = makeManager(fetchImpl as unknown as typeof fetch);
+    const manager = makeManager(fetchImpl);
 
     await expect(manager.get()).rejects.toBeInstanceOf(TokenError);
     await expect(manager.get()).rejects.toThrow(/AppID 无效/);
@@ -70,7 +70,7 @@ describe('TokenManager', () => {
 
   it('缺少 access_token 字段时判为失败', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ code: 0 }));
-    const manager = makeManager(fetchImpl as unknown as typeof fetch);
+    const manager = makeManager(fetchImpl);
     await expect(manager.get()).rejects.toThrow(/缺少 access_token/);
   });
 
@@ -81,7 +81,7 @@ describe('TokenManager', () => {
       counter += 1;
       return jsonResponse({ access_token: `tok-${counter}`, expires_in: '7200' });
     });
-    const manager = makeManager(fetchImpl as unknown as typeof fetch, () => nowMs);
+    const manager = makeManager(fetchImpl, () => nowMs);
 
     expect(await manager.get()).toBe('tok-1');
     nowMs += 1_000_000; // 仍远未到 7140s
@@ -97,7 +97,7 @@ describe('TokenManager', () => {
       resolveFetch = resolve;
     });
     const fetchImpl = vi.fn(() => gate);
-    const manager = makeManager(fetchImpl as unknown as typeof fetch);
+    const manager = makeManager(fetchImpl);
 
     const pending = Promise.all([manager.get(), manager.get(), manager.get()]);
     resolveFetch(jsonResponse({ access_token: 'tok', expires_in: '7200' }));
@@ -111,14 +111,14 @@ describe('TokenManager', () => {
       counter += 1;
       return jsonResponse({ access_token: `tok-${counter}`, expires_in: '7200' });
     });
-    const manager = makeManager(fetchImpl as unknown as typeof fetch);
+    const manager = makeManager(fetchImpl);
     expect(await manager.get()).toBe('tok-1');
     expect(await manager.forceRefresh()).toBe('tok-2');
   });
 
   it('expires_in 非法时回落到 7200 秒', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ access_token: 'tok', expires_in: 'abc' }));
-    const manager = makeManager(fetchImpl as unknown as typeof fetch);
+    const manager = makeManager(fetchImpl);
     await manager.get();
     expect(manager.snapshot().expiresInMs).toBeGreaterThan(7_000_000);
   });

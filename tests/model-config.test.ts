@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 
-import { ConfigError, describeConfig, loadConfig } from '../src/config.js';
+import { describeConfig, loadConfig } from '../src/config.js';
 import { parseConfigFileText } from '../src/config-file.js';
 import {
   assertModelApiConfig,
@@ -298,30 +298,38 @@ describe('assertModelApiConfig', () => {
   };
 
   it('选中的 provider 必须是已声明的路由（否则运行期才炸）', () => {
-    expect(() => assertModelApiConfig(withRoute, 'openai', { OPENAI_API_KEY: 'x' })).not.toThrow();
-    expect(() =>
-      assertModelApiConfig(withRoute, 'deepseek-official', { OPENAI_API_KEY: 'x' })
-    ).not.toThrow();
-    expect(() => assertModelApiConfig(withRoute, 'anthropic', { OPENAI_API_KEY: 'x' })).toThrow(
-      /没有对应的模型路由配置/
-    );
+    expect(() => {
+      assertModelApiConfig(withRoute, 'openai', { OPENAI_API_KEY: 'x' });
+    }).not.toThrow();
+    expect(() => {
+      assertModelApiConfig(withRoute, 'deepseek-official', { OPENAI_API_KEY: 'x' });
+    }).not.toThrow();
+    expect(() => {
+      assertModelApiConfig(withRoute, 'anthropic', { OPENAI_API_KEY: 'x' });
+    }).toThrow(/没有对应的模型路由配置/);
   });
 
   it('apiKeyEnv 引用的变量必须在环境中存在（dsh 子进程继承本进程环境）', () => {
-    expect(() => assertModelApiConfig(withRoute, 'openai', {})).toThrow(/OPENAI_API_KEY/);
-    expect(() => assertModelApiConfig(withRoute, 'openai', { OPENAI_API_KEY: '  ' })).toThrow(
-      /OPENAI_API_KEY/
-    );
+    expect(() => {
+      assertModelApiConfig(withRoute, 'openai', {});
+    }).toThrow(/OPENAI_API_KEY/);
+    expect(() => {
+      assertModelApiConfig(withRoute, 'openai', { OPENAI_API_KEY: '  ' });
+    }).toThrow(/OPENAI_API_KEY/);
     // 未配 apiKeyEnv 的路由不检查（pi-ai 环境发现兜底）
-    expect(() => assertModelApiConfig({ providers: { local: {} } }, 'local', {})).not.toThrow();
+    expect(() => {
+      assertModelApiConfig({ providers: { local: {} } }, 'local', {});
+    }).not.toThrow();
   });
 
   it('deepseek 路由的 apiKeyEnv 同样检查', () => {
     const config: ModelApiConfig = { deepseek: { apiKeyEnv: 'MY_DS_KEY' }, providers: {} };
-    expect(() => assertModelApiConfig(config, 'deepseek-official', {})).toThrow(/MY_DS_KEY/);
-    expect(() =>
-      assertModelApiConfig(config, 'deepseek-official', { MY_DS_KEY: 'x' })
-    ).not.toThrow();
+    expect(() => {
+      assertModelApiConfig(config, 'deepseek-official', {});
+    }).toThrow(/MY_DS_KEY/);
+    expect(() => {
+      assertModelApiConfig(config, 'deepseek-official', { MY_DS_KEY: 'x' });
+    }).not.toThrow();
   });
 });
 

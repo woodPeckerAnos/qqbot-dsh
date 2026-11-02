@@ -569,14 +569,16 @@ export function collectWindowMedia(
   };
 
   for (let i = entries.length - 1; i >= 0; i -= 1) {
-    const entry = entries[i]!;
+    const entry = entries[i];
+    if (entry === undefined) continue;
     const media = entry.media;
     if (media === undefined) continue;
     const sender = entry.senderName ?? entry.senderId;
     // 同一条消息内部**从后往前**挑，选完再整体 reverse：多张图是一组，
     // 时间顺序必须原样保留（倒序挑只是为了让"配额不够丢最老的"这条规则统一）。
     for (let j = media.images.length - 1; j >= 0; j -= 1) {
-      const part = media.images[j]!;
+      const part = media.images[j];
+      if (part === undefined) continue;
       if (!claim(part)) continue;
       if (images.length >= maxImages) {
         imagesSkipped += 1;
@@ -585,7 +587,8 @@ export function collectWindowMedia(
       images.push({ part, msgId: entry.msgId, sender, placeholder: flattenParts([part]) });
     }
     for (let j = media.files.length - 1; j >= 0; j -= 1) {
-      const part = media.files[j]!;
+      const part = media.files[j];
+      if (part === undefined) continue;
       if (!claim(part)) continue;
       if (files.length >= maxFiles) {
         filesSkipped += 1;
@@ -627,12 +630,15 @@ export function latestPendingRecord(
   entries: readonly ObservationEntry[]
 ): PendingRecordRef | undefined {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
-    const entry = entries[i]!;
+    const entry = entries[i];
+    if (entry === undefined) continue;
     const ids = entry.recordIds;
     if (ids === undefined || ids.length === 0) continue;
+    const refId = ids[ids.length - 1];
+    if (refId === undefined) continue;
     // 同一条消息里有多条记录时取最后一条（与"最近优先"同口径）
     return {
-      refId: ids[ids.length - 1]!,
+      refId,
       msgId: entry.msgId,
       sender: entry.senderName ?? entry.senderId,
     };

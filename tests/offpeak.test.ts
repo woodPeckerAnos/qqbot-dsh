@@ -326,7 +326,9 @@ describe('evaluateGate', () => {
 
 describe('OffpeakGate（覆盖与持久化）', () => {
   let dir: string;
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
 
   function makeGate() {
     dir = mkdtempSync(join(tmpdir(), 'qqbot-offpeak-'));
@@ -385,7 +387,7 @@ describe('OffpeakGate（覆盖与持久化）', () => {
   });
 
   it('读得懂旧格式的覆盖文件（单窗口 window 字段）', () => {
-    const gate = makeGate();
+    makeGate();
     writeFileSync(
       join(dir, 'offpeak-override.json'),
       JSON.stringify({ window: { start: '00:30', end: '08:30' }, updatedBy: 'ADMIN-9' }),
@@ -549,7 +551,9 @@ describe('日期工具', () => {
 
 describe('OffpeakGate 节假日增删', () => {
   let dir: string;
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
 
   function makeGate() {
     dir = mkdtempSync(join(tmpdir(), 'qqbot-offpeak-holiday-'));

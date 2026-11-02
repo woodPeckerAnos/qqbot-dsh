@@ -179,12 +179,15 @@ export class PromptPreparer {
     const blocks: PromptContentBlock[] = [];
 
     // 平台侧取字节：官方需要 access_token，OneBot 可能要动作回查。
-    // 绑定 this，避免把方法当自由函数传出去后丢上下文。
+    // 绑定 this，避免把方法当自由函数传出去后丢上下文；提取后立即 .call，
+    // unbound-method 在这是对委托写法本身的误报。
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const fetchMediaImpl = ctx.connector.fetchMedia;
     const fetchMedia =
-      ctx.connector.fetchMedia !== undefined
-        ? (media: RemoteMedia, options: MediaFetchOptions) =>
-            ctx.connector.fetchMedia!.call(ctx.connector, media, options)
-        : undefined;
+      fetchMediaImpl === undefined
+        ? undefined
+        : (media: RemoteMedia, options: MediaFetchOptions) =>
+            fetchMediaImpl.call(ctx.connector, media, options);
 
     // 会话上下文是平台侧取件凭据：OneBot 群文件直链申请必须带群号
     const mediaContext =
@@ -327,10 +330,12 @@ export class PromptPreparer {
         // 送达的那几张要**指认来源**：写法与 `<群聊上下文>` 里那一行逐字对齐
         // （发送者 + 原样占位文本），模型才能对号入座——多个群友都发过图时，
         // 没有这个对应关系就只能猜哪张是谁发的。
-        const arrived = result.inlinedIndexes.map((index) => {
-          const ref = windowMedia.images[index]!;
-          return `#${index + 1} = [${ref.sender}] 的「${ref.placeholder}」`;
-        });
+        const arrived: string[] = [];
+        for (const index of result.inlinedIndexes) {
+          const ref = windowMedia.images[index];
+          if (ref !== undefined)
+            arrived.push(`#${index + 1} = [${ref.sender}] 的「${ref.placeholder}」`);
+        }
         if (arrived.length > 0) {
           notes.push(
             `（群聊上下文里的图片已随本轮送入：${arrived.join('；')}。` +

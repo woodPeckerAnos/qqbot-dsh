@@ -96,7 +96,9 @@ export class QqApi {
     const url = `${this.options.apiBase.replace(/\/+$/, '')}${path}`;
     const controller = new AbortController();
     const timeout = setTimeout(
-      () => controller.abort(),
+      () => {
+        controller.abort();
+      },
       options.timeoutMs ?? this.options.timeoutMs ?? 15_000
     );
     timeout.unref?.();

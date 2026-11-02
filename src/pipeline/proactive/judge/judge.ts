@@ -16,7 +16,6 @@ import {
   SCENE_ORDER,
   sceneOrder,
   type SceneCandidate,
-  type SceneEvidence,
   type SceneId,
   type SceneVerdict,
   type SessionDirective,
@@ -159,73 +158,6 @@ export function extractWaitTargetId(evidence: string | undefined): string | unde
   return matched?.[1];
 }
 
-/** 结构化事实块：把状态计数交给模型，省掉"从转录里数数"的幻觉来源。 */
-function renderFacts(evidence: SceneEvidence, candidates: readonly SceneCandidate[]): string {
-  const lines = [`触发来源：${evidence.trigger}`];
-  if (evidence.pendingQuestions.length > 0) {
-    lines.push(`挂起问题（要给 yielding 就回抄它的 id）：`);
-    for (const question of evidence.pendingQuestions) {
-      lines.push(
-        `  id=${WAIT_TARGET_PREFIX}${question.id}｜${question.askerLabel}：${question.text}` +
-          `（已静默 ${question.silentSeconds} 秒，探针 ${question.probes} 次）`
-      );
-    }
-  }
-  if (evidence.session !== undefined) {
-    const openedSeconds = Math.max(
-      0,
-      Math.round((evidence.now - evidence.session.openedAt) / 1000)
-    );
-    const spoke =
-      evidence.session.lastSpokeAt === undefined
-        ? '还没在本会话里发过言'
-        : `上次发言 ${Math.max(0, Math.round((evidence.now - evidence.session.lastSpokeAt) / 1000))} 秒前`;
-    lines.push(
-      `本话题会话（session）：已开启 ${openedSeconds} 秒，${spoke}，` +
-        `本话题预算还剩 ${evidence.session.budgetLeft} 句`
-    );
-    if (evidence.session.budgetLeft <= 0) {
-      lines.push(
-        '⚠️ 本话题的预算已用尽：代码会挡住你在**这个话题**里继续发言。' +
-          '若你判断话题已经换了，给 session="new-topic"（会重新开始一个会话）；' +
-          '若还是同一个话题，给 "keep-open" 即可（代码不会放行）。'
-      );
-    }
-  } else {
-    lines.push('本话题会话（session）：当前没有开启中的会话');
-  }
-  if (evidence.topic !== undefined) {
-    lines.push(
-      `当前话题：${evidence.topic.id}（参与 ${evidence.topic.humanParticipants} 人，` +
-        `bot 在该话题发过 ${evidence.topic.botSpeaks} 次）`
-    );
-  }
-  if (evidence.lastBotSpeakAt !== undefined) {
-    const seconds = Math.max(0, Math.round((evidence.now - evidence.lastBotSpeakAt) / 1000));
-    lines.push(`bot 上次在本群发言：${seconds} 秒前`);
-  }
-  lines.push(`近窗群消息：${evidence.recentMessageCount} 条 / ${evidence.recentHumanCount} 人`);
-  lines.push(`挂起问题数（无人应答台账）：${evidence.pendingQuestionCount}`);
-  if (evidence.matchedInterestIds.length > 0) {
-    lines.push(`命中的兴趣池条目：${evidence.matchedInterestIds.join('、')}`);
-  }
-  lines.push(`连续未被回应的介入次数：${evidence.unansweredStreak}`);
-  if (evidence.waitWakeup !== undefined) {
-    lines.push(
-      `本次是**让路后的重查**：你上一轮说"有人在答"，现在已过 ` +
-        `${Math.round(evidence.waitWakeup.yieldedForMs / 1000)} 秒，对象是 ` +
-        `${WAIT_TARGET_PREFIX}${evidence.waitWakeup.targetId}。`
-    );
-  }
-  if (candidates.length > 0) {
-    const local = candidates
-      .map((item) => `${item.scene}(本地置信 ${item.localConfidence.toFixed(2)})`)
-      .join('、');
-    lines.push(`本地预筛认为可能成立的场景：${local}`);
-  }
-  return `<结构化事实>\n${lines.join('\n')}\n</结构化事实>`;
-}
-
 /**
  * 渲染 system 段的判据清单：**只列本次候选场景**（及其顺序），
  * 并要求逐场景给出判定。顺序由 `SCENE_ORDER` 决定，与 prompt 的措辞无关——
@@ -355,10 +287,10 @@ export function parseSceneVerdicts(
       reason: optionalString(record, 'reason') ?? '(无理由)',
       ...(optionalString(record, 'evidence') === undefined
         ? {}
-        : { evidence: optionalString(record, 'evidence') as string }),
+        : { evidence: optionalString(record, 'evidence') }),
       ...(optionalString(record, 'directive') === undefined
         ? {}
-        : { directive: optionalString(record, 'directive') as string }),
+        : { directive: optionalString(record, 'directive') }),
       ...(waitReason === undefined ? {} : { waitReason }),
       ...(session === undefined ? {} : { session }),
     };

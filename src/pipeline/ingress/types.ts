@@ -46,7 +46,9 @@ export function runStages(
 ): Promise<void> {
   const dispatch = (index: number): Promise<void> => {
     if (index === stages.length) return terminal();
-    return stages[index]!(ctx, () => dispatch(index + 1));
+    const stage = stages[index];
+    if (stage === undefined) return terminal();
+    return stage(ctx, () => dispatch(index + 1));
   };
   return dispatch(0);
 }

@@ -283,7 +283,7 @@ export class ConversationState {
     // 它借道 `observeEntry` 顺手登记进台账，于是每次被 @ 都会留一个挂起问题，
     // 直到 90 秒后的探针才发现"这个问题问的就是 bot"。写入路径分开之后，这条
     // 语义才第一次被显式表达出来（判定层的既有行为不变：@ 消息本来就不走探针）。
-    if (entry.addressed !== true && looksLikeQuestion(entry.text)) this.registerQuestion(entry);
+    if (!entry.addressed && looksLikeQuestion(entry.text)) this.registerQuestion(entry);
   }
 
   /**

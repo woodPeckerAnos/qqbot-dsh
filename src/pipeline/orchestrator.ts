@@ -10,7 +10,7 @@ import type {
   NormalizedMessage,
   ReplyPolicy,
 } from '../core/connector.js';
-import { isAddressedMessage, isObservedMessage, isUserMessage } from '../core/connector.js';
+import { isAddressedMessage, isObservedMessage } from '../core/connector.js';
 import type { Logger } from '../logger.js';
 import type { OffpeakSnapshot } from '../offpeak/index.js';
 import type { Responder } from './egress/responder.js';

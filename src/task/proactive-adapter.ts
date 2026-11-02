@@ -69,7 +69,12 @@ export class ProactiveTaskAdapter {
         request.scope.limit
       );
       request.scope.reserve();
-      this.callbacks.set(handle.taskId, { scope: request.scope, onSpoke: request.onSpoke });
+      this.callbacks.set(handle.taskId, {
+        scope: request.scope,
+        onSpoke: (text, ts) => {
+          request.onSpoke(text, ts);
+        },
+      });
       return true;
     } catch (error) {
       this.options.logger.warn('主动 Task 准入失败', { error: String(error) });
@@ -92,7 +97,8 @@ export class ProactiveTaskAdapter {
     this.callbacks.delete(taskId);
     if (result === 'released') callback.scope.release();
     else {
-      const delivered = callback.delivered!;
+      const delivered = callback.delivered;
+      if (delivered === undefined) return;
       callback.scope.commit(delivered.ts);
       callback.onSpoke(delivered.text, delivered.ts);
     }

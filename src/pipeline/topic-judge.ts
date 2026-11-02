@@ -154,7 +154,9 @@ export function createTopicJudge(options: TopicJudgeOptions): TopicJudge | undef
     if (input.history.length === 0 && input.askAboutChatRecord !== true) return VERDICT_FALLBACK;
     const askAboutChatRecord = input.askAboutChatRecord === true;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, options.timeoutMs);
     timer.unref?.();
     try {
       const response = await fetchImpl(`${options.apiBase}/chat/completions`, {

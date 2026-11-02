@@ -19,7 +19,6 @@
 
 import type { Config } from '../../../src/config.js';
 import type {
-  MediaBytes,
   MediaFetchOptions,
   MessageForwardPart,
   RemoteMedia,

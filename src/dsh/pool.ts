@@ -287,7 +287,7 @@ export class RuntimePool extends EventEmitter {
     runtime.on('session.event', (n) => this.emit('session.event', conversationKey, n, entry));
     runtime.on('session.status', (n) => this.emit('session.status', conversationKey, n, entry));
     // 子代理进出：维护 activeChildren（回收豁免的依据），并向上冒泡供统计/日志。
-    runtime.on('subagent.started', (n) => {
+    runtime.on('subagent.started', (n: SubagentStartedNotification) => {
       entry.activeChildren.add(n.childSessionId);
       this.options.logger.info('所属执行的子代理已启动', {
         conversation: conversationKey,
@@ -296,7 +296,7 @@ export class RuntimePool extends EventEmitter {
       });
       this.emit('subagent.started', conversationKey, n);
     });
-    runtime.on('subagent.finished', (n) => {
+    runtime.on('subagent.finished', (n: SubagentFinishedNotification) => {
       entry.activeChildren.delete(n.childSessionId);
       if (!entry.busy && !entry.activeChildren.size) this.wakeWaiters();
       this.options.logger.info('所属执行的子代理已结束', {
@@ -350,7 +350,9 @@ export class RuntimePool extends EventEmitter {
   private wakeWaiters(): void {
     const waiters = [...this.waiters];
     this.waiters.clear();
-    waiters.forEach((fn) => fn());
+    waiters.forEach((fn) => {
+      fn();
+    });
   }
 
   private scheduleReclaim(): void {

@@ -53,8 +53,9 @@ function renderPart(part: MessagePart): string {
       return text === '' ? '[语音]' : `[语音] ${text}`;
     }
     case 'media': {
-      const label =
-        part.mediaKind === 'video' ? '视频' : part.mediaKind === 'file' ? '文件' : '附件';
+      let label = '附件';
+      if (part.mediaKind === 'video') label = '视频';
+      else if (part.mediaKind === 'file') label = '文件';
       const name =
         part.filename !== undefined && part.filename !== ''
           ? `: ${displayFileName(part.filename)}`

@@ -60,9 +60,10 @@ export class TaskSystem {
     }
   ) {
     const { config, logger, paths } = options;
+    const clock = options.clock;
     this.manager = new TaskLifeCycleManager({
       store: new TaskStore<TaskSnapshot>(join(paths.stateDir, 'tasks.json')),
-      now: options.clock ? () => options.clock!.now() : undefined,
+      now: clock === undefined ? undefined : () => clock.now(),
       maxPerSession: config.tasks.maxPerSession,
       maxGlobal: config.tasks.maxGlobal,
       retentionMs: config.tasks.retentionMs,
@@ -105,8 +106,9 @@ export class TaskSystem {
           }),
         ])
       ) as Record<Lane, RuntimePool>);
-    let actor!: SessionActor;
-    const control = new TaskControlBridge(this.manager, (id) => actor.cancelExecution(id));
+    const control = new TaskControlBridge(this.manager, (id) => {
+      this.actor.cancelExecution(id);
+    });
     this.output = new SessionOutputCoordinator({
       manager: this.manager,
       budget: this.budget,
@@ -114,10 +116,11 @@ export class TaskSystem {
       clock: options.clock,
       reminderMs: config.tasks.reminderMs,
       filesDir: join(paths.stateDir, 'message-files'),
-      maxChars: (task) =>
-        options.connectors
-          .get(task.input.message.target.platform)!
-          .policy(task.input.message.target.kind).maxChars,
+      maxChars: (task) => {
+        const connector = options.connectors.get(task.input.message.target.platform);
+        if (connector === undefined) throw new Error('Task 所属平台没有连接器');
+        return connector.policy(task.input.message.target.kind).maxChars;
+      },
       onDelivered: (candidate, ts) => {
         const reference = candidate.reference;
         const text = candidate.text || `[附件：${candidate.attachment?.fileName ?? ''}]`;
@@ -141,7 +144,9 @@ export class TaskSystem {
         options.stats.repliesSent++;
         this.proactive?.delivered(candidate, ts);
       },
-      onBudgetSettled: (id, result) => this.proactive?.settled(id, result),
+      onBudgetSettled: (id, result) => {
+        this.proactive?.settled(id, result);
+      },
     });
     const runner =
       options.runner ??
@@ -154,7 +159,7 @@ export class TaskSystem {
         logger,
         clock: options.clock,
       });
-    actor = this.actor = new SessionActor({
+    const actor = new SessionActor({
       manager: this.manager,
       budget: this.budget,
       output: this.output,
@@ -167,6 +172,7 @@ export class TaskSystem {
       clock: options.clock,
       sessions: new TaskStore<SessionContextState>(join(paths.stateDir, 'task-sessions.json')),
     });
+    this.actor = actor;
     this.proactive = new ProactiveTaskAdapter({
       actor,
       connectors: options.connectors,
@@ -204,7 +210,9 @@ export class TaskSystem {
         this.budget.finish(record.taskId);
         this.output.reconcile(record.taskId);
       }
-    this.manager.list().forEach((t) => this.output.reconcile(t.taskId));
+    this.manager.list().forEach((t) => {
+      this.output.reconcile(t.taskId);
+    });
     void this.prune();
     this.maintenance = setInterval(() => {
       this.queue.wake();
@@ -227,7 +235,10 @@ export class TaskSystem {
     }
   }
   context(message: NormalizedMessage, isAdmin = false): MessageContext {
-    const connector = this.options.connectors.get(message.target.platform)!;
+    const connector = this.options.connectors.get(message.target.platform);
+    if (connector === undefined) {
+      throw new Error(`未找到平台连接器：${message.target.platform}`);
+    }
     return {
       message,
       connector,

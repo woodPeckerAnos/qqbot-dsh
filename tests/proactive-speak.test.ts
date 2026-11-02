@@ -201,7 +201,9 @@ function setup(envOverrides: Record<string, string> = {}) {
     stats,
     config,
     logger,
-    cleanup: () => rmSync(root, { recursive: true, force: true }),
+    cleanup: () => {
+      rmSync(root, { recursive: true, force: true });
+    },
   };
 }
 
@@ -234,7 +236,7 @@ function makeUserCtx(h: ReturnType<typeof setup>, text: string): MessageContext 
   };
   const responder = new Responder({
     message,
-    connector: connector as never,
+    connector: connector,
     policy: POLICY,
     conversations: h.conversations,
     stats: h.stats,
@@ -242,7 +244,7 @@ function makeUserCtx(h: ReturnType<typeof setup>, text: string): MessageContext 
   });
   return {
     message,
-    connector: connector as never,
+    connector: connector,
     policy: POLICY,
     isAdmin: false,
     logger: h.logger,
@@ -255,7 +257,9 @@ describe('runProactiveTurn：主动发言的措辞轮次', () => {
   beforeEach(() => {
     h = setup();
   });
-  afterEach(() => h.cleanup());
+  afterEach(() => {
+    h.cleanup();
+  });
 
   it('正常路径：返回模型最终文本；prompt 含判定要点与群聊上下文；entry 用完释放', async () => {
     h.windows.observe({
@@ -271,7 +275,9 @@ describe('runProactiveTurn：主动发言的措辞轮次', () => {
     });
 
     const promise = h.turns.runProactiveTurn(SPEAK_INPUT);
-    await waitFor(() => expect(h.runtime.prompts).toHaveLength(1));
+    await waitFor(() => {
+      expect(h.runtime.prompts).toHaveLength(1);
+    });
     const prompt = h.runtime.prompts[0]!;
     expect(prompt.text).toContain('回答 NAS 上跑 docker 的可行性');
     expect(prompt.text).toContain('NAS 上能跑吗？');
@@ -284,7 +290,9 @@ describe('runProactiveTurn：主动发言的措辞轮次', () => {
 
   it('会话有用户轮次在跑 → 直接放弃，不派发 prompt', async () => {
     const userTurn = h.turns.runTurn(makeUserCtx(h, '帮我看看')); // 不喂事件，保持占用
-    await waitFor(() => expect(h.runtime.prompts).toHaveLength(1));
+    await waitFor(() => {
+      expect(h.runtime.prompts).toHaveLength(1);
+    });
 
     await expect(h.turns.runProactiveTurn(SPEAK_INPUT)).resolves.toBeUndefined();
     expect(h.runtime.prompts).toHaveLength(1);
@@ -297,14 +305,18 @@ describe('runProactiveTurn：主动发言的措辞轮次', () => {
 
   it('逃生门：模型回「不说」→ 返回 undefined（本次不发言）', async () => {
     const promise = h.turns.runProactiveTurn(SPEAK_INPUT);
-    await waitFor(() => expect(h.runtime.prompts).toHaveLength(1));
+    await waitFor(() => {
+      expect(h.runtime.prompts).toHaveLength(1);
+    });
     h.runtime.completeTurn(h.runtime.prompts[0]!.sessionId, ['不说']);
     await expect(promise).resolves.toBeUndefined();
   });
 
   it('失控兜底：模型写长文时按硬上限截断', async () => {
     const promise = h.turns.runProactiveTurn(SPEAK_INPUT);
-    await waitFor(() => expect(h.runtime.prompts).toHaveLength(1));
+    await waitFor(() => {
+      expect(h.runtime.prompts).toHaveLength(1);
+    });
     h.runtime.completeTurn(h.runtime.prompts[0]!.sessionId, ['很长的回答'.repeat(100)]);
     const text = await promise;
     expect(text).toBeDefined();
@@ -331,7 +343,9 @@ describe('runProactiveTurn：主动发言的措辞轮次', () => {
 
   it('抢占：生成中来了用户消息 → 主动轮次作废、runtime 回收、用户轮次正常', async () => {
     const proactive = h.turns.runProactiveTurn(SPEAK_INPUT);
-    await waitFor(() => expect(h.runtime.prompts).toHaveLength(1));
+    await waitFor(() => {
+      expect(h.runtime.prompts).toHaveLength(1);
+    });
 
     const userTurn = h.turns.runTurn(makeUserCtx(h, '帮我看看这个'));
     // 主动轮次被抢占：abort 收尾 → undefined；runtime 被回收
@@ -339,7 +353,9 @@ describe('runProactiveTurn：主动发言的措辞轮次', () => {
     expect(h.pool.drop).toHaveBeenCalledWith(GROUP_TARGET.key);
 
     // 用户轮次在新一轮里正常完成
-    await waitFor(() => expect(h.runtime.prompts.length).toBeGreaterThan(1));
+    await waitFor(() => {
+      expect(h.runtime.prompts.length).toBeGreaterThan(1);
+    });
     const sessionId = h.sessions.peek(GROUP_TARGET.key)!.currentSessionId;
     h.runtime.completeTurn(sessionId, ['看了，没问题']);
     await userTurn;

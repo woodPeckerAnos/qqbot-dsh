@@ -74,7 +74,7 @@ describe('HarnessSdkClient', () => {
   });
 
   it('处理粘包：一次写入多个帧', async () => {
-    const { client, replyRaw, toClient } = makeClient();
+    const { client, toClient } = makeClient();
     const pending = client.initialize({ cwd: '/w', provider: 'p', model: 'm' });
     await settle();
 
@@ -106,7 +106,7 @@ describe('HarnessSdkClient', () => {
   });
 
   it('通知被分发到对应事件', async () => {
-    const { client, replyRaw, toClient } = makeClient();
+    const { client, toClient } = makeClient();
     const statusHandler = vi.fn();
     const eventHandler = vi.fn();
     client.on('session.status', statusHandler);
@@ -223,7 +223,9 @@ describe('HarnessSdkClient', () => {
     );
     await settle();
 
-    const reply = written.map((line) => JSON.parse(line)).find((f) => f.id === 99);
+    const reply = written
+      .map((line) => JSON.parse(line) as { id?: number; error?: { code?: number } })
+      .find((f) => f.id === 99);
     expect(reply?.error?.code).toBe(-32601);
     client.close();
   });

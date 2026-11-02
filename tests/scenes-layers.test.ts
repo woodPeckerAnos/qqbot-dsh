@@ -795,8 +795,15 @@ describe('SCENES.md 与代码的一致（契约测试强制）', () => {
       // 每个生效场景必须有一节标题 "## 场景 N · 名字"
       const ordinal = id.replace('scene-', '');
       expect(doc).toContain(`## 场景 ${ordinal} · ${scene?.name}`);
-      // 且给出它排第几（顺序也是文档的一部分）
-      expect(doc).toContain(`| ${index + 1} | **${ordinal} · ${scene?.name}** |`);
+      // 且给出它排第几（顺序也是文档的一部分）。
+      // 不锁定单元格两侧空格：Prettier 会按列宽对齐 Markdown 表格。
+      const row = doc
+        .split('\n')
+        .find(
+          (line) =>
+            line.startsWith(`| ${index + 1} `) && line.includes(`**${ordinal} · ${scene?.name}**`)
+        );
+      expect(row, `场景 ${ordinal} 在 SCENES.md 的顺序表里缺少一行`).toBeDefined();
     }
   });
 

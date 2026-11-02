@@ -19,7 +19,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -60,7 +60,6 @@ child.stderr.on('data', (chunk) => {
 const SESSION_ID = 'sandbox-check';
 const escalationReasons = [];
 const toolCalls = [];
-let sawAssistantText = '';
 let turnEnd = null;
 let status = null;
 
@@ -68,13 +67,7 @@ function handleFrame(frame) {
   if (frame.method === 'session.event') {
     const { sessionId, event } = frame.params;
     if (sessionId !== SESSION_ID) return;
-    if (event.type === 'assistant/message') {
-      const text = (event.data.message.content ?? [])
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
-      if (text.trim() !== '') sawAssistantText = text;
-    } else if (event.type === 'tool/call') {
+    if (event.type === 'tool/call') {
       toolCalls.push(event.data.name);
     } else if (event.type === 'turn/end') {
       turnEnd = event.data.reason;
@@ -111,7 +104,10 @@ function pumpStdout() {
     if (frame.id !== undefined && frame.method === undefined) {
       const p = pending.get(frame.id);
       pending.delete(frame.id);
-      if (p) frame.error ? p.rej(new Error(JSON.stringify(frame.error))) : p.res(frame.result);
+      if (p) {
+        if (frame.error) p.rej(new Error(JSON.stringify(frame.error)));
+        else p.res(frame.result);
+      }
     } else if (frame.method !== undefined) {
       handleFrame(frame);
     }

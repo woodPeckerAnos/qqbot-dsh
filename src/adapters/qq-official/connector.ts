@@ -182,13 +182,13 @@ export class QqOfficialConnector implements BotConnector {
    * 刻意不抛错、不 warn 刷日志：外层已经按 unsupported 记降级计数，
    * 这里再打日志只会让"官方通道每次介入都刷一条告警"。
    */
-  async proactive(target: ConversationTarget, _out: OutgoingMessage): Promise<ProactiveResult> {
-    return {
+  proactive(_target: ConversationTarget, _out: OutgoingMessage): Promise<ProactiveResult> {
+    return Promise.resolve({
       ok: false,
       reason: 'unsupported',
       detail: '官方通道不提供主动推送（2025-04-21 起停用；群聊主动消息每月 4 条且用户可关闭接收）',
       retryable: false,
-    };
+    });
   }
 
   /**
@@ -257,7 +257,9 @@ export class QqOfficialConnector implements BotConnector {
     withAuth: boolean
   ): Promise<{ bytes?: MediaBytes; unauthorized: boolean }> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, options.timeoutMs);
     timer.unref?.();
     try {
       const headers: Record<string, string> = {};

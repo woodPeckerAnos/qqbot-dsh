@@ -81,11 +81,8 @@ export class MessageQueue {
   }
   /** 新输入只提供更新的合法出口，不把已失败的消息重新变成待发送。 */
   observe(message: NormalizedMessage): void {
-    if (
-      message.msgId &&
-      (!this.anchors.get(message.target.key) ||
-        this.anchors.get(message.target.key)!.ts <= message.ts)
-    )
+    const anchor = this.anchors.get(message.target.key);
+    if (message.msgId && (anchor === undefined || anchor.ts <= message.ts))
       this.anchors.set(message.target.key, structuredClone(message));
     this.wake();
   }
@@ -141,7 +138,9 @@ export class MessageQueue {
     };
   }
   wake(): void {
-    queueMicrotask(() => this.pump());
+    queueMicrotask(() => {
+      this.pump();
+    });
   }
   close(): void {
     this.closed = true;
@@ -278,11 +277,10 @@ export class MessageQueue {
     record.failureNoticeId = id;
     if (this.records.has(id)) return;
     const c = record.candidate;
-    const name = c.attachment
-      ? `附件「${c.attachment.fileName}」`
-      : c.kind === 'progress'
-        ? '存活提醒'
-        : c.text.slice(0, 30);
+    let name: string;
+    if (c.attachment) name = `附件「${c.attachment.fileName}」`;
+    else if (c.kind === 'progress') name = '存活提醒';
+    else name = c.text.slice(0, 30);
     this.records.set(id, {
       id,
       candidate: {

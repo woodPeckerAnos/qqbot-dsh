@@ -71,7 +71,7 @@ function makeConnector(fetchImpl: typeof fetch): QqOfficialConnector {
   });
 }
 
-let dirs: string[] = [];
+const dirs: string[] = [];
 afterEach(async () => {
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
@@ -140,8 +140,7 @@ describe('官方适配器富媒体出站', () => {
   });
 
   it('上传响应缺 file_info 时报错（由 Responder 走单附件失败路径）', async () => {
-    const { fetchImpl } = makeFakeApi();
-    const broken: typeof fetch = (async (input: unknown, init?: { body?: unknown }) => {
+    const broken: typeof fetch = async (input: unknown, _init?: { body?: unknown }) => {
       const url = String(input);
       const json = (payload: unknown) =>
         new Response(JSON.stringify(payload), {
@@ -152,9 +151,7 @@ describe('官方适配器富媒体出站', () => {
         return json({ access_token: 'TOKEN', expires_in: '7200' });
       if (url.includes('/files')) return json({ ttl: 300 }); // 没有 file_info
       return json({});
-      void init;
-    }) as unknown as typeof fetch;
-    void fetchImpl;
+    };
     const connector = makeConnector(broken);
 
     const dir = await mkdtemp(join(tmpdir(), 'qqbot-qq-media-'));

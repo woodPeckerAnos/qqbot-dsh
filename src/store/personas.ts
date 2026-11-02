@@ -44,7 +44,6 @@ export const PRESET_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 /** 单个预设的体积上限（字节）。人设是每轮都要付 token 的，不该是一篇文章。 */
 export const MAX_PRESET_BYTES = 16 * 1024;
 
-const BLOCK_BEGIN = /<!-- qqbot-persona:begin[^>]*-->/;
 const BLOCK_END = '<!-- qqbot-persona:end -->';
 /** 整个区块（含前后至多一个换行），替换/清除用。 */
 const BLOCK_RE = /\n?<!-- qqbot-persona:begin[^>]*-->[\s\S]*?<!-- qqbot-persona:end -->\n?/;
@@ -216,11 +215,10 @@ export class PersonaStore {
       BLOCK_END,
     ].join('\n');
     const existing = existsSync(file) ? readFileSync(file, 'utf8') : '';
-    const next = BLOCK_RE.test(existing)
-      ? existing.replace(BLOCK_RE, `\n${block}\n`)
-      : existing.trimEnd() === ''
-        ? `${block}\n`
-        : `${existing.trimEnd()}\n\n${block}\n`;
+    let next: string;
+    if (BLOCK_RE.test(existing)) next = existing.replace(BLOCK_RE, `\n${block}\n`);
+    else if (existing.trimEnd() === '') next = `${block}\n`;
+    else next = `${existing.trimEnd()}\n\n${block}\n`;
     this.writeFileAtomic(file, next);
   }
 

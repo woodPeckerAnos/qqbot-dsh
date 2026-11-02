@@ -20,7 +20,7 @@ const SCAN_OPTIONS = {
   logger: createNullLogger(),
 };
 
-let dirs: string[] = [];
+const dirs: string[] = [];
 afterEach(async () => {
   const { rm } = await import('node:fs/promises');
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });

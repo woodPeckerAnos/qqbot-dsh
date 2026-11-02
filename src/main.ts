@@ -26,7 +26,7 @@ import { loadConfigFile } from './config-file.js';
 import { QqOfficialConnector } from './adapters/qq-official/connector.js';
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { TokenError } from './adapters/qq-official/token.js';
-import { OnebotConnector, ONEBOT_PLATFORM } from './adapters/onebot/connector.js';
+import { OnebotConnector } from './adapters/onebot/connector.js';
 import type { BotConnector } from './core/connector.js';
 import { createLogger } from './logger.js';
 import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
@@ -54,7 +54,7 @@ import { ConversationStore } from './store/conversations.js';
 import { ObservationWindowStore } from './store/window.js';
 import { SeenStore } from './store/seen.js';
 import { PersonaStore } from './store/personas.js';
-import { ensureStoreDirs, resolveStorePaths, workspacePathFor } from './store/paths.js';
+import { ensureStoreDirs, resolveStorePaths } from './store/paths.js';
 import { buildHealthSnapshot, createHealthServer, type HealthServer } from './health.js';
 
 /** 处理中的 turn 结束前最多等多久（毫秒） */
@@ -148,6 +148,8 @@ function buildConnector(
 async function main(): Promise<void> {
   let config: Config;
   let configFile: string | undefined;
+  // 初始值用于 TS 的确定赋值检查；正常路径会立刻被 loadConfigFile 的结果覆盖。
+  // eslint-disable-next-line no-useless-assignment
   let configFiles: string[] = [];
   try {
     // 配置文件（qqbot.yml 入口 + config/*.yml 模块）先读：缺文件、YAML 语法错、
@@ -561,7 +563,13 @@ async function main(): Promise<void> {
     createResponder: (message) => new Responder({ message, queue: taskSystem.queue }),
     // 旁听消息的去向：唯一入口是 watcher（未启用时留 undefined →
     // orchestrator 只计 skipped 计数）
-    ...(proactive === undefined ? {} : { observe: (message) => proactive?.observe(message) }),
+    ...(proactive === undefined
+      ? {}
+      : {
+          observe: (message) => {
+            proactive?.observe(message);
+          },
+        }),
     status: () => ({
       inFlight: taskSystem.actor.snapshot().unfinished,
       queued: taskSystem.actor.snapshot().fast.queued + taskSystem.actor.snapshot().slow.queued,
