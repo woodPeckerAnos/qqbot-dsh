@@ -1,5 +1,7 @@
 # SessionActor 与双 lane
 
+交互式架构图：[SessionActor 与双 lane 任务编排](diagrams/session-actor-lanes.html)（源：[candidate](diagrams/session-actor-lanes.architecture.json)）。
+
 核心 Logger 已以显式只读 TraceContext 贯通输入、Task、双 lane、DSH 父子执行、产物和独立投递队列；日志只含元数据。状态写入权与调度不变，设计见 [ADR-002](adr/002-logging-tracing.md)。
 
 每次启动生成 instanceId，每个输入或主动评估生成 traceId。Task、lane、执行、子代理、产物和消息分别有 span；队列独立持久化 trace，Task 结束或清理后仍能关联投递，新的发送锚点不改写原输入。执行终态与投递终态分别记录。wait 票据保留触发 span，取消事件关联发起命令和目标 Task。

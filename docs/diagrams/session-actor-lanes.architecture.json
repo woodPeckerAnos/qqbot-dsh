@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "SessionActor 与双 lane 任务编排",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "output": ".archify/architecture-session-actor-20261103-125400/session-actor-lanes.html",
+    "repository": {
+      "url": "git@github.com:woodPeckerAnos/qqbot-dsh.git",
+      "revision": "5c0fa5179946b350c60116a3c836967ed64f34c2",
+      "link_mode": "local-only"
+    }
+  },
+  "components": [
+    {
+      "id": "ingress",
+      "type": "backend",
+      "label": "Ingress 管线",
+      "sublabel": "去重 → 命令 → 闸 → 记录 → 末端",
+      "pos": [30, 330],
+      "size": [160, 70],
+      "sources": [
+        { "path": "src/main.ts", "line": 536, "end_line": 575, "label": "stage 链与末端提交" },
+        { "path": "src/pipeline/orchestrator.ts", "line": 138, "end_line": 179, "label": "事件分流" }
+      ]
+    },
+    {
+      "id": "actor",
+      "type": "backend",
+      "label": "SessionActor",
+      "sublabel": "输入门闩 + 上下文 generation",
+      "tag": "短事务",
+      "pos": [260, 300],
+      "size": [190, 100],
+      "sources": [
+        { "path": "src/task/session-actor.ts", "line": 46, "end_line": 155, "label": "submit 短事务" },
+        { "path": "src/task/session-actor.ts", "line": 156, "end_line": 190, "label": "cancel / stop / reset" }
+      ]
+    },
+    {
+      "id": "control",
+      "type": "security",
+      "label": "控制面",
+      "sublabel": "/stop /new /cancel（身份校验）",
+      "pos": [30, 100],
+      "size": [170, 72],
+      "sources": [
+        { "path": "src/pipeline/ingress/session-command.ts", "line": 18, "end_line": 40 },
+        { "path": "src/task/control-bridge.ts", "line": 8, "end_line": 50, "label": "工具取消绑定输入身份" }
+      ]
+    },
+    {
+      "id": "manager",
+      "type": "backend",
+      "label": "TaskLifeCycleManager",
+      "sublabel": "Task 状态唯一写入者",
+      "pos": [260, 100],
+      "size": [180, 80],
+      "sources": [
+        { "path": "src/task/lifecycle.ts", "line": 57, "end_line": 91, "label": "准入与创建" },
+        { "path": "src/task/lifecycle.ts", "line": 144, "end_line": 174, "label": "lane 终结与取消" }
+      ]
+    },
+    {
+      "id": "preparer",
+      "type": "backend",
+      "label": "PromptPreparer",
+      "sublabel": "judge 判定 / capture 固定窗口",
+      "pos": [470, 100],
+      "size": [180, 76],
+      "sources": [
+        { "path": "src/task/prompt-preparer.ts", "line": 69, "end_line": 99 }
+      ]
+    },
+    {
+      "id": "fast",
+      "type": "messagebus",
+      "label": "LaneScheduler · fast",
+      "sublabel": "Session FIFO + 额度",
+      "pos": [560, 245],
+      "size": [160, 70],
+      "sources": [
+        { "path": "src/task/lane-scheduler.ts", "line": 20, "end_line": 46 },
+        { "path": "src/task/system.ts", "line": 168, "end_line": 171 }
+      ]
+    },
+    {
+      "id": "slow",
+      "type": "messagebus",
+      "label": "LaneScheduler · slow",
+      "sublabel": "Session FIFO + 额度",
+      "pos": [560, 445],
+      "size": [160, 70],
+      "sources": [
+        { "path": "src/task/lane-scheduler.ts", "line": 20, "end_line": 46 },
+        { "path": "src/task/system.ts", "line": 168, "end_line": 171 }
+      ]
+    },
+    {
+      "id": "runner",
+      "type": "backend",
+      "label": "DshLaneRunner",
+      "sublabel": "按 lane 取池 / 注册执行 / 超时",
+      "pos": [820, 310],
+      "size": [175, 80],
+      "sources": [
+        { "path": "src/task/dsh-lane-runner.ts", "line": 52, "end_line": 120, "label": "run：pools[lane]" }
+      ]
+    },
+    {
+      "id": "poolFast",
+      "type": "cloud",
+      "label": "RuntimePool · fast",
+      "sublabel": "每 Task 独占 dsh 子进程",
+      "pos": [780, 455],
+      "size": [155, 64],
+      "sources": [
+        { "path": "src/task/system.ts", "line": 82, "end_line": 108, "label": "fast 池：模型与上限" },
+        { "path": "src/dsh/pool.ts", "line": 1, "end_line": 15, "label": "进程级 cwd 隔离" }
+      ]
+    },
+    {
+      "id": "poolSlow",
+      "type": "cloud",
+      "label": "RuntimePool · slow",
+      "sublabel": "每 Task 独占 dsh 子进程",
+      "pos": [965, 455],
+      "size": [155, 64],
+      "sources": [
+        { "path": "src/task/system.ts", "line": 82, "end_line": 108, "label": "slow 池：模型与上限" },
+        { "path": "src/dsh/process.ts", "line": 4, "end_line": 14, "label": "一个 runtime = 一个子进程" }
+      ]
+    },
+    {
+      "id": "output",
+      "type": "backend",
+      "label": "SessionOutputCoordinator",
+      "sublabel": "去重、分片、引用、提醒",
+      "pos": [1185, 310],
+      "size": [175, 80],
+      "sources": [
+        { "path": "src/task/output-coordinator.ts", "line": 62, "end_line": 136, "label": "accept / reconcile" }
+      ]
+    },
+    {
+      "id": "queue",
+      "type": "messagebus",
+      "label": "MessageQueue",
+      "sublabel": "投递状态唯一写入者",
+      "pos": [1415, 310],
+      "size": [160, 80],
+      "sources": [
+        { "path": "src/task/message-queue.ts", "line": 90, "end_line": 146, "label": "enqueue / 出口" },
+        { "path": "src/task/message-queue.ts", "line": 231, "end_line": 273, "label": "单次发送" }
+      ]
+    },
+    {
+      "id": "platform",
+      "type": "external",
+      "label": "平台连接器",
+      "sublabel": "connector.reply() 单次调用",
+      "pos": [1415, 450],
+      "size": [160, 72],
+      "sources": [
+        { "path": "src/core/connector.ts", "line": 323, "end_line": 342, "label": "BotConnector 接口" },
+        { "path": "src/task/message-queue.ts", "line": 236, "end_line": 246, "label": "调用平台出口" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "双 lane 执行面（独立池与进程）",
+      "wraps": ["fast", "slow", "runner", "poolFast", "poolSlow"],
+      "pad": 22
+    }
+  ],
+  "connections": [
+    { "id": "ingress-submit", "from": "ingress", "to": "actor" },
+    { "id": "control-cancel", "from": "control", "to": "manager", "label": "取消", "variant": "security" },
+    { "id": "control-session", "from": "control", "to": "actor", "label": "stop / new" },
+    { "id": "actor-create", "from": "actor", "to": "manager", "label": "create / 准入" },
+    { "id": "actor-judge", "from": "actor", "to": "preparer", "label": "judge / capture" },
+    { "id": "actor-fast", "from": "actor", "to": "fast" },
+    { "id": "actor-slow", "from": "actor", "to": "slow" },
+    { "id": "fast-run", "from": "fast", "to": "runner" },
+    { "id": "slow-run", "from": "slow", "to": "runner" },
+    { "id": "runner-lease-fast", "from": "runner", "to": "poolFast", "label": "租约" },
+    { "id": "runner-lease-slow", "from": "runner", "to": "poolSlow", "label": "租约" },
+    { "id": "runner-result", "from": "runner", "to": "output", "label": "LaneResult" },
+    { "id": "output-enqueue", "from": "output", "to": "queue" },
+    { "id": "queue-reply", "from": "queue", "to": "platform", "label": "reply()" }
+  ],
+  "cards": [
+    {
+      "dot": "violet",
+      "title": "lane 进程隔离",
+      "items": [
+        "每个 (Session, lane, Task) 取独占 runtime 租约：一个 dsh 子进程，不是线程",
+        "fast / slow 各一个 RuntimePool，上限 fastRuntimes / slowRuntimes 独立计算",
+        "模型与 provider 按 lane 绑定，fast 额外 reasoningEffort=off",
+        "每次执行唯一 sessionId + runtimeGeneration，迟到事件按三元组丢弃"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "短事务与输入顺序",
+      "items": [
+        "同一 Session 的输入判定与提交串行，执行与发送不进门闩（session-actor.ts）",
+        "generation 与回放边界写入 task-sessions.json，重启后 /new 与自动换话题仍生效",
+        "主动提交在等门闩之前固定触发窗口与 generation，不随后来的输入改写"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "状态所有权",
+      "items": [
+        "TaskLifeCycleManager 唯一写 Task 状态；MessageQueue 唯一写投递状态",
+        "双 lane 都终结才结算 Task：取消优先，否则任一失败为 failed，其余 completed",
+        "执行结束不等待投递；投递失败只记投递终态，不改写执行状态"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "取消与恢复",
+      "items": [
+        "/stop 只取消命令到达时正在执行的 Task；/new 取消全部未完成 Task 并推进 generation",
+        "取消先记 cancelAccepted，再由 Actor 终止调度；已入队产物继续投递",
+        "重启不重跑执行：未完成 lane 记为中断失败，sending 消息标失败并补一次通知"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "上下文与产物",
+      "items": [
+        "PromptPreparer 每次输入固定窗口与回放，每个 Task 的 prepare 只摄取一次",
+        "附件先复制到队列目录，Task 工作区到期清理后仍能发送",
+        "存活提醒最多一次；没有合法出口时直接放弃"
+      ]
+    }
+  ]
+}
