@@ -13,86 +13,25 @@
  */
 
 /** 消息段（数组形式的消息体） */
-export interface OneBotSegment {
-  type: string; // 'text' | 'at' | 'image' | 'reply' | ...
-  data: Record<string, unknown>;
-}
+export type { OneBotSegment } from '@qqbot/contracts';
 
 /** 消息体：数组形式（推荐）或 CQ 码字符串 */
-export type OneBotMessage = OneBotSegment[] | string;
+export type { OneBotMessage } from '@qqbot/contracts';
 
-export interface OneBotEventBase {
-  /** unix 秒 */
-  time?: number;
-  /** 收到事件的机器人 QQ 号 */
-  self_id?: number;
-  post_type?: string;
-}
+export type { OneBotEventBase } from '@qqbot/contracts';
 
-export interface OneBotMessageEvent extends OneBotEventBase {
-  post_type: 'message';
-  message_type: 'private' | 'group';
-  sub_type?: string;
-  message_id?: number;
-  user_id?: number;
-  group_id?: number;
-  message?: OneBotMessage;
-  raw_message?: string;
-  sender?: {
-    user_id?: number;
-    nickname?: string;
-    /** 群名片（优先于 nickname 展示） */
-    card?: string;
-    role?: string;
-  };
-}
+export type { OneBotMessageEvent } from '@qqbot/contracts';
 
-export interface OneBotNoticeEvent extends OneBotEventBase {
-  post_type: 'notice';
-  notice_type?: string;
-  user_id?: number;
-  group_id?: number;
-  operator_id?: number;
-}
+export type { OneBotNoticeEvent } from '@qqbot/contracts';
 
-export interface OneBotRequestEvent extends OneBotEventBase {
-  post_type: 'request';
-  request_type?: 'friend' | 'group';
-  /** group 请求的子类型：'add'（加群）| 'invite'（邀请机器人进群） */
-  sub_type?: string;
-  user_id?: number;
-  group_id?: number;
-  /** 审批请求时回传的标识 */
-  flag?: string;
-  comment?: string;
-}
+export type { OneBotRequestEvent } from '@qqbot/contracts';
 
-export interface OneBotMetaEvent extends OneBotEventBase {
-  post_type: 'meta_event';
-  meta_event_type?: 'lifecycle' | 'heartbeat';
-  /** lifecycle 的子类型：connect / enable / disable */
-  sub_type?: string;
-  interval?: number;
-}
+export type { OneBotMetaEvent } from '@qqbot/contracts';
 
-export type OneBotEvent =
-  OneBotMessageEvent | OneBotNoticeEvent | OneBotRequestEvent | OneBotMetaEvent;
+export type { OneBotEvent } from '@qqbot/contracts';
 
 /** 本服务 → 框架的动作请求 */
-export interface OneBotActionRequest {
-  action: string;
-  params: Record<string, unknown>;
-  echo?: string;
-}
+export type { OneBotActionRequest } from '@qqbot/contracts';
 
 /** 框架 → 本服务的动作响应（用 echo 与请求对回） */
-export interface OneBotActionResponse {
-  /** 'ok' | 'async' | 'failed' */
-  status?: string;
-  /** 0 表示成功；非 0 为错误码 */
-  retcode?: number;
-  data?: unknown;
-  echo?: string;
-  message?: string;
-  wording?: string;
-}
+export type { OneBotActionResponse } from '@qqbot/contracts';

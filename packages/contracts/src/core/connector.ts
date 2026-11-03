@@ -1,0 +1,501 @@
+/**
+ * 接入层核心抽象：平台无关的连接器契约。
+ *
+ * 为什么需要这一层：
+ *   官方开放平台（api.bot.qq.com）与社区框架（NapCat / LLOneBot / Lagrange 等
+ *   OneBot v11 实现）在事件形状、回复语义、配额约束上完全不同，但编排层
+ *   （去重、串行、并发闸门、进度回执、冷启动回放、runtime 池）与平台无关。
+ *   本文件定义的就是两侧之间的唯一接缝：
+ *
+ *     适配器（adapters/*） ──NormalizedEvent──▶ 编排层（pipeline/*）
+ *     适配器 ◀──reply(ReplyContext, OutgoingMessage)── 编排层
+ *
+ * 设计约束：
+ *   - 编排层只允许 import 本文件与 reply.ts，不允许 import 任何 adapters/* 内部；
+ *   - 平台专有行为（msg_seq、markdown 请求体、被动窗口、CQ 码）全部留在适配器内；
+ *   - 会话键 key 的构造归各适配器所有（官方保持裸 openid 以兼容既有部署，
+ *     OneBot 用 `ob11:g<id>` / `ob11:u<id>` 前缀隔离命名空间），
+ *     存储层与编排层一律把 key 当不透明字符串。
+ */
+
+// ---------------------------------------------------------------------------
+// 会话目标
+// ---------------------------------------------------------------------------
+
+export type ConversationKind = 'group' | 'c2c';
+
+/**
+ * 一次对话的寻址信息。
+ *
+ * - `platform`：接入平台标识（等于产生该事件的 connector.platform），
+ *   编排层按它把回复路由回正确的连接器；
+ * - `id`：平台侧的会话 id（官方是 openid，OneBot 是群号/QQ 号字符串），
+ *   适配器发送消息时使用；
+ * - `key`：编排层的会话命名空间键，同时用作工作区目录、对话记录、
+ *   会话映射、串行锁与 runtime 池的键。不同平台的 key 必须不会碰撞。
+ */
+export interface ConversationTarget {
+  platform: string;
+  kind: ConversationKind;
+  id: string;
+  key: string;
+}
+
+// ---------------------------------------------------------------------------
+// 归一化事件（适配器对外只吐这一种形状）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条用户消息里的内容片段（平台无关）。
+ *
+ * 为什么需要这一层：官方开放平台与 OneBot 对"图片 / 语音 / 引用 / 卡片"的表达
+ * 完全不同（官方是 attachments + msg_elements，OneBot 是消息段数组），但编排层
+ * 需要的是同一种东西——"这条消息有哪些可读内容、要送几张图给模型"。适配器负责
+ * 把平台专有结构翻译成这里的片段，PromptPreparer 再把它翻译成 DSH 的
+ * prompt content blocks。
+ *
+ * 关键设计：
+ *   - 片段里**只放引用信息**（url / 文本），不放字节。下载字节是 IO，放在 turn 期
+ *     做（见 dsh/media.ts），这样被闸拦掉的消息不会白白下载图片；
+ *   - `quote` 是递归结构：引用消息自己也可能带图片（官方 msg_elements 支持嵌套）；
+ *   - `forward` 同样是递归结构（转发块里还能再转发），但它的展开是**连接器期**做
+ *     的（见 adapters/onebot/connector.ts）：转发内容必须进 `content`，否则对话记录、
+ *     冷启动回放、话题判定、命令匹配会集体失明（详见 docs/FORWARD-FILE-INGRESS-PLAN.md §4）。
+ *     这不是"字节提前下载"——它取的是文本，且有三道闸（触发前置、LRU 缓存、四重上限）
+ *     把代价压回；字节仍然一律等 turn 期。
+ */
+export interface MessageTextPart {
+  type: 'text';
+  text: string;
+}
+
+/** 图片：url 指向平台侧可下载地址，真正取字节由 BotConnector.fetchMedia 完成 */
+export interface MessageImagePart {
+  type: 'image';
+  /**
+   * 平台侧可下载地址（http/https）。可能缺失：NapCat 有头形态的图片段经常只给
+   * 文件标识（`file` 字段是本地路径或内部 id），此时只能靠 fetchMedia 经
+   * 平台动作（get_file/get_image）取字节。
+   */
+  url?: string;
+  /**
+   * 平台侧文件标识（OneBot image 段的 `file` 原值）。url 缺失或过期时，
+   * 适配器用它回查文件（NapCat 图片 URL 约 2 小时过期，需要刷新）。
+   */
+  fileId?: string;
+  /** 平台声明的 MIME（可能不准，实际以响应头与字节嗅探为准） */
+  mimeType?: string;
+  filename?: string;
+  /**
+   * 平台声明的像素尺寸（官方 attachments 会给；OneBot 通常没有）。
+   *
+   * 只用来在下载**之前**挡掉明显超过 runtime 准入上限的图（长截图很常见），
+   * 省一次下载；真实像素仍以 runtime 准入为准，被拒时走纯文本回退。
+   */
+  width?: number;
+  height?: number;
+}
+
+/** 语音：官方会直接给 ASR 文本（asr_refer_text），有文本就不必再下载音频 */
+export interface MessageVoicePart {
+  type: 'voice';
+  url?: string;
+  /** 平台侧语音识别结果，存在时直接作为可读内容 */
+  text?: string;
+  filename?: string;
+}
+
+/** 其他附件：视频 / 文件等。视频等渲染成一行文字说明；文件会被下载解析（见 §10）。 */
+export interface MessageMediaPart {
+  type: 'media';
+  mediaKind: 'video' | 'file' | 'unknown';
+  url?: string;
+  /**
+   * 平台侧文件标识（OneBot `file` 段的 `file_id` / `file` 原值）。
+   *
+   * 为什么必要：NapCat 的普通文件链接**受下载次数限制**，上报里的 url 一旦失效
+   * 就要靠这个 id 重新申请直链（`get_group_file_url` / `get_private_file_url`）。
+   * 与图片同构：url 是快路径，fileId 是可靠路径。
+   */
+  fileId?: string;
+  filename?: string;
+  sizeBytes?: number;
+}
+
+/**
+ * 转发消息块（合并转发 / 聊天记录）：**一捆**别人的发言。
+ *
+ * 为什么不复用 `MessageQuotePart`：引用是"我回复的那一条"，转发是"别人聊天记录
+ * 的一捆"。两者在模型眼里是完全不同的东西——引用是对话的直接上下文，转发是要被
+ * 审阅的资料。混用会让前缀渲染（`[引用 谁]`）与后续的话题判定都出现语义错位。
+ *
+ * `parts` 是递归的（转发里还能再转发），遍历一律受调用方的深度与条数上限约束。
+ */
+export interface MessageForwardPart {
+  type: 'forward';
+  /** 转发块标题（平台给出时才有；多数实现不给，不要为它额外发请求） */
+  title?: string;
+  /** 平台侧声明的总条数；未知时不写（渲染成"共 ? 条"很别扭，不如不写） */
+  nodeCount?: number;
+  /** 是否因条数/字符/深度上限被截断（渲染时在尾部显式说明） */
+  truncated?: boolean;
+  parts: readonly MessagePart[];
+  /**
+   * 平台侧 id（合并转发的回查凭据）：**只在内容还没展开时才有**。
+   *
+   * 为什么它要挂在片段上：旁听消息里的聊天记录**不进 `content`**（那是"普通群聊
+   * 上下文"，见 `store/window.ts` 的说明），但 id 必须留下来——被 @ 且这次的问题
+   * 明确提到那条记录时，才知道该去回查哪一条（`BotConnector.fetchForward`）。
+   * 展开之后这个字段自然消失：`resolveForwardRefs` 会把整个占位片段换掉。
+   */
+  refId?: string;
+}
+
+/**
+ * 引用（回复）消息。
+ *
+ * 官方 `message_type=103` 时把被引用的内容放在 `msg_elements` 里；OneBot 的
+ * `reply` 段只有消息 id，需要额外回查（见 adapters/onebot/connector.ts）。
+ */
+export interface MessageQuotePart {
+  type: 'quote';
+  /** 被引用消息的发送者显示名（平台给出时才有） */
+  author?: string;
+  parts: readonly MessagePart[];
+}
+
+export type MessagePart =
+  | MessageTextPart
+  | MessageImagePart
+  | MessageVoicePart
+  | MessageMediaPart
+  | MessageQuotePart
+  | MessageForwardPart;
+
+/** 需要平台侧取字节的远端媒体（fetchMedia 的入参） */
+export interface RemoteMedia {
+  /**
+   * 取字节的策略差异（默认 `image`，兼容既有调用方）。
+   *
+   * 图片与文件的取件路径在平台上完全不同：图片走 `get_image` / `get_file`，
+   * 而群文件必须走 `get_group_file_url`（见 fetchMedia 的实现说明）。
+   * 与其让适配器去猜，不如由调用方明说。
+   */
+  kind?: 'image' | 'file' | 'voice';
+  /**
+   * 会话上下文：平台侧取件的**寻址凭据**。
+   *
+   * OneBot 的群文件直链申请必须带群号（`get_group_file_url` 的 `group` 参数），
+   * 私聊文件只需 file_id。它看着不像"平台无关"的字段，但和 url 同级——
+   * 没有它就取不到这个字节。替代方案是让连接器自己维护"这个 fileId 属于哪个群"
+   * 的跨请求状态表，比多两个可选字段糟得多。
+   */
+  context?: { groupId?: string; userId?: string };
+  /** http/https 下载地址；可能缺失（见 MessageImagePart.url） */
+  url?: string;
+  /** 平台侧文件标识；url 缺失或过期时适配器用它回查 */
+  fileId?: string;
+  mimeType?: string;
+  filename?: string;
+}
+
+export interface MediaFetchOptions {
+  /** 允许的最大字节数；超过时实现应放弃并返回 undefined */
+  maxBytes: number;
+  timeoutMs: number;
+}
+
+export interface MediaBytes {
+  data: Uint8Array;
+  /** 响应头给出的 MIME（可信度高于平台事件里的声明） */
+  mimeType?: string;
+}
+
+/**
+ * 归一化后的用户消息。
+ *
+ * 各平台的群聊/单聊消息都归一化成这个形状，编排层只有一条代码路径。
+ * 平台专有的字段（消息段、附件等）放在 raw 里，编排层不解读。
+ *
+ * `kind` 三种取值的语义差别只有一件事——**这条消息是不是在跟 bot 说话**：
+ *
+ * | kind | 含义 | 编排层走向 |
+ * |---|---|---|
+ * | `group-at-message` | 群里 @ 了 bot | Ingress 管线 → agent turn → 回复 |
+ * | `c2c-message` | 单聊消息（私聊天然是"对 bot 说"） | 同上 |
+ * | `group-message` | **群里没 @ bot 的旁听消息** | 只进主动介入层（判断要不要插话），**不进 Ingress** |
+ *
+ * 旁听消息在 OneBot 上需要框架推送全量群消息；官方通道需要平台侧开通
+ * 「接收所有消息」能力（未开通时永远收不到，见 §接入能力）。
+ */
+export interface NormalizedMessage {
+  kind: 'group-at-message' | 'c2c-message' | 'group-message';
+  target: ConversationTarget;
+  /**
+   * 事件级去重 id。适配器必须保证它在平台内唯一且已带平台命名空间
+   * （例如 OneBot 用 `ob11:<self_id>:<message_id>`），因为去重表是全局共用的。
+   */
+  eventId: string;
+  /** 消息 id。需要「被动回复锚点」的平台（官方 QQ）在回复时回传它。 */
+  msgId: string;
+  /** 发送者 id：官方是 member/user openid，OneBot 是 QQ 号字符串 */
+  senderId: string;
+  username?: string;
+  /**
+   * 可读的纯文本形态（由 parts 扁平化而来，见 core/content.ts）。
+   *
+   * 它同时是：对话记录 / 冷启动回放的正文、管理员命令的匹配对象、日志内容。
+   * 注意"只有图片、没有文字"的消息 content 也不为空（至少是 `[图片]`），
+   * 否则记录与回放会丢掉这条消息发生过的事实。
+   */
+  content: string;
+  /**
+   * 结构化内容片段。缺省表示"适配器只归一化出了文本"（兼容既有部署与测试），
+   * 此时编排层按 `content` 处理。
+   */
+  parts?: readonly MessagePart[];
+  /** 毫秒时间戳 */
+  ts: number;
+  /** 原始事件，便于排障与将来扩展 */
+  raw: Record<string, unknown>;
+}
+
+export interface NormalizedSystemEvent {
+  kind: 'ready' | 'resumed' | 'connected' | 'disconnected' | 'group-add-robot' | 'c2c-friend-add';
+  at: number;
+  reason?: string;
+  /** 需要主动回一条问候语时的目标（进群 / 加好友事件） */
+  target?: ConversationTarget;
+  /** 事件信封 id（官方 QQ 的进群/加好友事件用它做 event_id 回复） */
+  eventId?: string;
+  raw?: Record<string, unknown>;
+}
+
+export type NormalizedEvent = NormalizedMessage | NormalizedSystemEvent;
+
+/** 是否为用户消息（群聊 / 单聊 / 旁听），用于把消息事件与系统事件分开。 */
+export function isUserMessage(event: NormalizedEvent): event is NormalizedMessage {
+  return (
+    event.kind === 'group-at-message' ||
+    event.kind === 'c2c-message' ||
+    event.kind === 'group-message'
+  );
+}
+
+/**
+ * 是否为**旁听消息**（群里没 @ bot）。
+ *
+ * 这是编排层的分流依据，且分流点只有一处（`Orchestrator.handleEvent`）：
+ * 旁听消息**不进 Ingress 管线**（不写对话记录、不占并发、不回复），
+ * 只交给主动介入层判断"要不要插话"。
+ */
+export function isObservedMessage(event: NormalizedEvent): event is NormalizedMessage {
+  return event.kind === 'group-message';
+}
+
+/** 是否为「在跟 bot 说话」的消息（@ 或私聊）——这些才走完整的 Ingress 管线。 */
+export function isAddressedMessage(event: NormalizedEvent): event is NormalizedMessage {
+  return event.kind === 'group-at-message' || event.kind === 'c2c-message';
+}
+
+// ---------------------------------------------------------------------------
+// 连接器契约
+// ---------------------------------------------------------------------------
+
+/** 连接器的健康状态。`detail` 放平台专有信息（如 token 状态、已接入的 self_id）。 */
+export interface ConnectorHealth {
+  connected: boolean;
+  /** 平台自定义的状态词（如官方网关的 ready/resuming，OneBot 的 listening） */
+  state: string;
+  lastEventAt?: number;
+  reconnectAttempts?: number;
+  /** 适配器自己判断的告警（如「尚未取得 access_token」），health 聚合并原样展示 */
+  warnings?: readonly string[];
+  detail?: Record<string, unknown>;
+}
+
+/**
+ * 一个接入平台的连接实例。
+ *
+ * 生命周期由 main.ts 统一管理：start() 建立事件通道，stop() 必须能让
+ * start() 的在途 promise 落定（官方网关的 stopSignal 竞态教训见 gateway.ts）。
+ */
+export interface BotConnector {
+  /** 平台标识，全进程唯一；同时是 ConversationTarget.platform 与回复路由键 */
+  readonly platform: string;
+  /**
+   * 是否响应单聊（c2c）消息。
+   * 订阅层往往无法只收群聊（官方是 intent 粒度，OneBot 是框架推送粒度），
+   * 所以"只服务群聊"在业务层用这个开关拦。
+   */
+  readonly acceptsC2C: boolean;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  /** 订阅归一化事件；返回退订函数 */
+  on(handler: (event: NormalizedEvent) => void): () => void;
+  health(): ConnectorHealth;
+  /** 是否有此目标的即时出口；缺省使用 health.connected。 */
+  canReply?(target: ConversationTarget): boolean;
+  /** 该平台某类会话的回复策略（配额、分段、进度、单轮超时） */
+  policy(kind: ConversationKind): ReplyPolicy;
+  /** 发送一条回复。平台专有的请求体构造在适配器内部完成。 */
+  reply(ctx: ReplyContext, out: OutgoingMessage): Promise<void>;
+  /**
+   * 【主动发言能力】在没有用户消息可锚定时，往会话里发一条 bot 自己发起的话。
+   *
+   * 这是**唯一**的平台能力差异点，且差异只允许通过返回值表达：
+   *   - OneBot（社区协议）：直接发，返回 `{ ok: true }`；
+   *   - 官方 QQ：主动推送受限（文档载明主动推送自 2025-04-21 起不再提供、
+   *     群聊主动消息每月 4 条，且用户可关闭接收），实现**什么都不做**并返回
+   *     `{ ok: false, reason: 'unsupported' }`（或 'quota'）。
+   *
+   * 纪律（与 fetchMedia 一致）：
+   *   - 永不抛错表达"平台不支持"，一律用返回值表达——否则外层逻辑会被迫
+   *     为每个平台写 try/catch 分支；
+   *   - 缺省（未实现）= 返回 `unsupported`，与"官方层 do nothing"同义；
+   *   - 额度策略**不在适配器里判断**，适配器只如实表达结果（'quota' / 'rate-limit'）。
+   */
+  proactive?(target: ConversationTarget, out: OutgoingMessage): Promise<ProactiveResult>;
+  /**
+   * 取平台侧附件的字节（图片/语音等）。
+   *
+   * 存在的理由是"鉴权差异"：官方 QQ 的多媒体 CDN 需要 `Authorization: QQBot <token>`，
+   * 而 OneBot 的图片地址通常是框架自带的 HTTP 服务、无需鉴权。把这件事留在适配器里，
+   * 编排层就不必知道任何平台的取字节方式。
+   *
+   * 缺省（未实现）时编排层直接用 url 发一次普通 GET。实现必须遵守 maxBytes 与
+   * timeoutMs，失败时返回 undefined（由调用方降级成文字说明），不要抛错打断整轮。
+   */
+  fetchMedia?(media: RemoteMedia, options: MediaFetchOptions): Promise<MediaBytes | undefined>;
+  /**
+   * 【按需展开】取一条**聊天记录（合并转发）**的内容。
+   *
+   * 与 `fetchMedia` 同一类能力：平台专有的取件方式（OneBot 走 `get_forward_msg`
+   * 动作、带 LRU 缓存与配额），编排层只说"我要 `refId` 这条记录的内容"。
+   *
+   * 为什么是**按需**而不是像 @ 消息那样在归一化期就展开：旁听消息里的聊天记录
+   * 不该被当作普通群聊上下文（一条转发动辄几十条发言，灌进上下文既烧 token 又把
+   * 真正在聊的事淹掉）。只有被 @ 且这次的问题**明确提到**了它时才取（由话题判定
+   * 那一次 LLM 调用顺带判断，见 `pipeline/topic-judge.ts`）。
+   *
+   * 纪律与 `fetchMedia` 一致：返回 undefined 表示"取不到"，**绝不抛错**——调用方
+   * 会把它降级成一句"这条记录没读出来"，让模型如实告诉用户而不是猜。
+   */
+  fetchForward?(target: ConversationTarget, refId: string): Promise<MessageForwardPart | undefined>;
+}
+
+/**
+ * 一次主动发言的投放结果。
+ *
+ * `retryable` 表达"下次还有机会"，交给上层决定是否补投；主动发言的场景里
+ * 补投通常没有意义（话题已经翻篇），所以上层默认记为降级而不是重试。
+ */
+export type ProactiveResult =
+  { ok: true } | { ok: false; reason: ProactiveRejectReason; detail?: string; retryable: boolean };
+
+export type ProactiveRejectReason =
+  /** 平台不提供主动推送能力（官方通道的默认实现） */
+  | 'unsupported'
+  /** 平台侧额度用尽（官方：每群每月 4 条） */
+  | 'quota'
+  /** 平台侧限频（子频道每秒条数、风控等） */
+  | 'rate-limit'
+  /** 鉴权 / 网络 / 未知故障 */
+  | 'error';
+
+// ---------------------------------------------------------------------------
+// 回复
+// ---------------------------------------------------------------------------
+
+export type OutgoingKind = 'progress' | 'final' | 'error';
+
+/**
+ * 一个待发送的附件（agent 在会话工作区里的产物）。
+ *
+ * 编排层只说"发什么"，怎么发（官方两步上传、OneBot 消息段）是适配器的事。
+ * 安全不变量由编排层保证（见 pipeline/egress/outbox.ts）：
+ * `absPath` 必须 realpath 后仍落在该会话工作区的 outbox 目录内。
+ */
+export interface OutgoingAttachment {
+  /** audio/video 预留，本期只做这两种 */
+  kind: 'image' | 'file';
+  /** 已通过工作区包含性校验的绝对路径 */
+  absPath: string;
+  /** 发送时展示的文件名（不含目录） */
+  fileName: string;
+  sizeBytes: number;
+}
+
+/**
+ * 编排层给出的回复内容。text 是 agent 原始输出（可能是 Markdown）。
+ *
+ * attachments 与 text 的关系由发送方（Responder）决定：一次 reply() 调用
+ * 要么只有 text、要么只带一个附件——因为官方平台"一次 reply = 一个 msg_seq"
+ * 的账本语义装不下混合消息（见 pipeline/egress/responder.ts）。
+ */
+export interface OutgoingMessage {
+  text: string;
+  attachments?: readonly OutgoingAttachment[];
+  reference?: OriginalMessageReference;
+}
+
+/** 引用目标是输入时的事实，不等同于平台被动回复的发送锚点。 */
+export interface OriginalMessageReference {
+  messageId?: string;
+  excerpt: string;
+  senderId: string;
+  senderName?: string;
+  ts: number;
+}
+
+/**
+ * 一次回复的上下文。
+ *
+ * - `msgId` / `eventId`：需要被动回复锚点的平台使用（官方 QQ：两者互斥，
+ *   回复提问用 msgId，回复进群/加好友用 eventId）；无此概念的平台直接忽略。
+ * - `seq`：针对同一条用户消息的第几条回复，从 1 单调递增（由编排层的
+ *   配额账本统一分配）。官方 QQ 把它映射为 msg_seq 做平台去重；
+ *   无 seq 概念的平台直接忽略。
+ */
+export interface ReplyContext {
+  target: ConversationTarget;
+  msgId?: string;
+  eventId?: string;
+  seq: number;
+  kind: OutgoingKind;
+  signal?: AbortSignal;
+}
+
+/**
+ * 一个平台（按会话类型）的回复策略。
+ *
+ * 这是「自由度差异」的显式表达：
+ *   - 官方 QQ：被动窗口 5 分钟、每条消息最多回 5（群）/4（单聊）条，
+ *     所以 turnTimeoutMs 必须压在窗口内，配额必须当稀缺资源分配；
+ *   - OneBot：无窗口、无平台级配额，maxRepliesPerMsg 只是防失控的安全阀，
+ *     turnTimeoutMs 可以放宽到任务真正需要的时长。
+ */
+export interface ReplyPolicy {
+  /** 单条消息最大字符数（分段依据） */
+  maxChars: number;
+  /** 针对一个平台发送锚点的最大消息条数，所有 lane、附件和通知共享 */
+  maxRepliesPerMsg: number;
+  /** 旧周期进度条数上限，仅保留配置兼容 */
+  progressMax: number;
+  /** 旧周期进度首次延迟，仅保留配置兼容 */
+  progressAfterMs: number;
+  /** 旧周期进度间隔，仅保留配置兼容 */
+  progressIntervalMs: number;
+  /** 旧单轮超时，仅保留兼容；执行时限由 tasks 的 lane 配置决定 */
+  turnTimeoutMs: number;
+  /**
+   * 被动回复窗口（毫秒）：一条用户消息到达后，多久之内还能用它的 msg_id 作锚点
+   * 主动补发消息（算被动回复，不消耗稀缺的主动消息额度）。
+   *
+   * MessageQueue 在窗口与共享条数额度内使用该锚点。尚未尝试的产物可等待
+   * 后续合法锚点；引用目标始终保留原消息（见 task/message-queue.ts）。
+   *   - 官方群聊 5 分钟、单聊 60 分钟（平台硬约束）；
+   *   - OneBot 无窗口，用 Number.POSITIVE_INFINITY 表示"永远可主动发"。
+   */
+  passiveWindowMs: number;
+}

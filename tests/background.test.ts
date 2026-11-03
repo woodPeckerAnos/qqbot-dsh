@@ -9,6 +9,16 @@
  *   D. snapshot 暴露待带出的会话数与条数。
  */
 
+/**
+ * BackgroundPusher 单测（全离线，假连接器）。
+ *
+ * 覆盖后台结果投递的四条路径：
+ *   A. OneBot 无窗口 → 完成即主动推送；
+ *   B. 官方在被动窗口内且配额未尽 → 用最后 msg_id 续 seq 即时投递；
+ *      超窗 / 配额耗尽 → 回落暂存，等下一条消息带出；
+ *   C. 暂存持久化 → 重启后（新实例）仍能带出；
+ *   D. snapshot 暴露待带出的会话数与条数。
+ */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

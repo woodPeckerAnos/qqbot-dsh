@@ -20,20 +20,23 @@ jobs:
         # 与 Dockerfile 一致：按 package-lock.json 精确安装，锁文件不一致时直接失败
         run: npm ci --no-audit --no-fund
 
-      - name: 类型检查
-        run: npx tsc -p tsconfig.json --noEmit
+      - name: 编译、契约、边界、兼容、离线验收
+        run: npm run check
 
-      - name: 代码风格检查
-        run: npx prettier --check .
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: ESLint 静态检查
-        # 存量债务记录在 eslint-suppressions.json；这里只拦新增违规。
-        run: npx eslint .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
 
-      # 单测必须全离线可跑：不触网、不启动 DSH 子进程。
-      # 这是刻意的约束，保证 CI 不需要任何密钥。
-      - name: 单元测试
-        run: npx vitest run
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+
+      - name: 独立 localhost WebSocket 集成检查
+        run: npm run test:integration
 
   docker:
     runs-on: ubuntu-latest
@@ -42,6 +45,9 @@ jobs:
 
       - name: 构建镜像
         run: docker build -t qqbot-dsh:ci .
+
+      - name: 验证运行镜像内契约 workspace 链接与 12 个模块
+        run: docker run --rm --entrypoint node qqbot-dsh:ci --input-type=module -e "await import('@qqbot/contracts'); for (const id of 'config content connectors store media runtime task delivery ingress proactive offpeak observability'.split(' ')) await import('./dist/' + id + '/index.js')"
 
       - name: 验证入口脚本的快速失败（缺密钥时必须报错退出）
         run: |

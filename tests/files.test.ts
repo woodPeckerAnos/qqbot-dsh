@@ -6,6 +6,13 @@
  * 不依赖宿主上有没有装 pdftotext。
  */
 
+/**
+ * 入站文件链路单测：inbox 落盘 → 摄取编排（下载/落盘/抽取/说明文本）→
+ * OneBot 文件取字节。
+ *
+ * 全部离线：取字节用注入替身或本地 http 服务器，抽取器用注入的桩，
+ * 不依赖宿主上有没有装 pdftotext。
+ */
 import { createServer, type Server } from 'node:http';
 import { mkdir } from 'node:fs/promises';
 import {

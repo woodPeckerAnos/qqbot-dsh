@@ -1,3 +1,4 @@
+import type { SegmentOptions, SegmentationResult } from '@qqbot/contracts';
 /**
  * 长回复分段。
  *
@@ -12,20 +13,9 @@
  * 开启/闭合围栏，保证每段 Markdown 自身合法（否则 QQ 端渲染会错乱）。
  */
 
-export interface SegmentOptions {
-  /** 单段最大字符数 */
-  maxChars: number;
-  /** 最多分多少段；超出部分合并进最后一段并截断 */
-  maxSegments: number;
-}
+export type { SegmentOptions } from '@qqbot/contracts';
 
-export interface SegmentationResult {
-  segments: string[];
-  /** 是否因为段数上限而丢弃了内容 */
-  truncated: boolean;
-  /** 原始文本长度 */
-  originalLength: number;
-}
+export type { SegmentationResult } from '@qqbot/contracts';
 
 const PARAGRAPH_BREAK = '\n\n';
 const LINE_BREAK = '\n';

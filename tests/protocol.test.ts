@@ -7,6 +7,14 @@
  *   - 并发请求按 id 正确配对。
  */
 
+/**
+ * DSH 协议客户端与 turn 归并单测（全离线，不启动任何子进程）。
+ *
+ * 这一层最容易出的 bug 是"帧错位导致请求永久挂起"，所以重点测：
+ *   - 粘包/拆包（一次 data 里多个帧、一个帧跨多次 data）；
+ *   - stdout 污染必须被显式报错，而不是静默丢弃；
+ *   - 并发请求按 id 正确配对。
+ */
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 

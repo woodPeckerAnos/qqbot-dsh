@@ -5,6 +5,12 @@
  * 每个计数器/窗口都有正反两面（什么时候涨、什么时候归零）。
  */
 
+/**
+ * 会话级旁听状态单测（离线、纯状态机、不读墙上时钟）。
+ *
+ * 这是"`SceneEvidence` 每个字段都有生产者"的兑现处。用例按**字段**分组，
+ * 每个计数器/窗口都有正反两面（什么时候涨、什么时候归零）。
+ */
 import { describe, expect, it } from 'vitest';
 
 import type { NormalizedMessage } from '../src/core/connector.js';
@@ -255,10 +261,11 @@ describe('让路台账：预算、判定时刻与"问题关闭"通知', () => {
     expect(s.hasNewContentSince(undefined)).toBe(true);
 
     s.markEvaluated(id, T0 + 5_000);
-    expect(q?.lastEvaluatedAt).toBe(T0 + 5_000);
+    expect(s.questionsById.get(id)?.lastEvaluatedAt).toBe(T0 + 5_000);
+    expect(q?.lastEvaluatedAt).toBeUndefined();
     // 乱序/并发调用不该把标记拉回去
     s.markEvaluated(id, T0 + 1_000);
-    expect(q?.lastEvaluatedAt).toBe(T0 + 5_000);
+    expect(s.questionsById.get(id)?.lastEvaluatedAt).toBe(T0 + 5_000);
 
     // 转录里没有**晚于**判定时刻的消息 → 无新增（唤醒时因此不花 LLM）。
     // 边界是严格大于：判定那一刻已经在转录里的那条消息不算"新增"，
@@ -418,5 +425,90 @@ describe('话题 session 的状态机', () => {
     // 时间戳判据本身保持严格大于（wait 票据用它，语义不能变）
     expect(s.hasNewContentSince(T0 + 1_000)).toBe(false);
     expect(s.hasNewContentSince(T0)).toBe(true);
+  });
+});
+
+describe('主动状态契约：深快照、话题身份与确定性输出', () => {
+  it('问题Map与每条记录不可修改，旧快照保留读取时值', () => {
+    const s = state();
+    s.observe(msg('m1', 'u1', '这个接口怎么调用？', T0));
+    const snapshot = s.questionsById;
+    const question = [...snapshot.values()][0]!;
+    expect(() => {
+      (snapshot as Map<string, unknown>).clear();
+    }).toThrow();
+    expect(() => Object.assign(question, { probes: 99 })).toThrow();
+    s.recordProbe(question.id);
+    expect(question.probes).toBe(0);
+    expect(s.questionsById.get(question.id)?.probes).toBe(1);
+  });
+
+  it('session读取与关闭事件隔离写能力，同时保留旧scope提交计数', () => {
+    const s = state();
+    s.openSession(T0, 2);
+    const snapshot = s.session!;
+    const oldScope = s.taskBudgetScope(2);
+    expect(() => Object.assign(snapshot, { budgetLeft: 99 })).toThrow();
+    oldScope.reserve();
+    expect(snapshot.budgetLeft).toBe(2);
+    s.closeSession('idle');
+    s.openSession(T0 + 1, 2);
+    oldScope.commit(T0 + 2);
+    expect(s.committedTaskCount(snapshot)).toBe(1);
+    expect(s.session?.budgetLeft).toBe(2);
+    expect(s.session?.lastSpokeAt).toBeUndefined();
+  });
+
+  it('固定种子的重复关闭只发一次通知，退订后不再接收', () => {
+    const s = state();
+    let seed = 0x24680;
+    const closed: string[] = [];
+    const unsubscribe = s.onSessionClosed((event) => closed.push(event.cause));
+    let expected = 0;
+    for (let index = 0; index < 200; index += 1) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      if (seed % 3 === 0) s.openSession(T0 + index, 2);
+      else if (s.closeSession('idle')) expected += 1;
+      expect(closed).toHaveLength(expected);
+    }
+    unsubscribe();
+    s.openSession(T0 + 999, 2);
+    s.closeSession('idle');
+    expect(closed).toHaveLength(expected);
+  });
+
+  it('固定时钟与ID的金标准保留话题范围与问题状态', () => {
+    let nextId = 0;
+    const s = new ConversationState('ob11:g8888', windows().for('ob11:g8888'), {
+      idFactory: () => `topic-${++nextId}`,
+    });
+    s.observe(msg('m1', 'u1', '这个接口怎么调用？', T0));
+    s.openSession(T0, 2);
+    const scope = s.taskBudgetScope(2);
+    scope.reserve();
+    scope.commit(T0 + 10);
+    expect(
+      JSON.stringify({
+        scopeId: scope.id,
+        session: s.session,
+        question: [...s.questionsById.values()][0],
+      })
+    ).toBe(
+      JSON.stringify({
+        scopeId: 'ob11:g8888:topic-2',
+        session: { openedAt: T0, budgetLeft: 1, lastSpokeAt: T0 + 10 },
+        question: {
+          id: `m1@${T0}`,
+          msgId: 'm1',
+          askerId: 'u1',
+          text: '这个接口怎么调用？',
+          topicId: `topic:${T0}`,
+          askedAt: T0,
+          probes: 0,
+          state: 'open',
+          yieldBudgetUsed: 0,
+        },
+      })
+    );
   });
 });

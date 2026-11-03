@@ -1,3 +1,9 @@
+import type {
+  ChatMessage,
+  ProactiveJudgeInput,
+  ProactiveJudge,
+  CreateProactiveJudgeOptions,
+} from '@qqbot/contracts';
 /**
  * ② LLM 层的**调用侧**：把候选场景 + 转录 + 结构化事实发给模型，拿回逐场景判定。
  *
@@ -12,43 +18,21 @@
  *   3. **全局并发闸**：判定是 LLM 调用，全局同时最多 N 个（默认 2），
  *      超出排队——否则长群里会出现"判定风暴"把配额吃光。
  */
-
-import type { SceneCandidate, SceneEvidence, SceneVerdict } from '../contract.js';
+import type { SceneVerdict } from '@qqbot/contracts';
 import { JUDGE_OUTPUT_CONTRACT, parseSceneVerdicts, renderJudgeCriteria } from './judge.js';
 
 /** 一次对话补全的消息（与 OpenAI 兼容 API 的形状一致）。 */
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
+export type { ChatMessage } from '@qqbot/contracts';
 
 /** 一次判定的输入：候选 + 事实 + 转录（转录已由调用方用不可信边界包裹）。 */
-export interface ProactiveJudgeInput {
-  readonly candidates: readonly SceneCandidate[];
-  readonly evidence: SceneEvidence;
-  /** `<群聊转录 …>` 包裹后的近期聊天记录（见 scene/transcript.ts） */
-  readonly transcript: string;
-}
+export type { ProactiveJudgeInput } from '@qqbot/contracts';
 
 /** 判定能力（真实实现走 HTTP；测试注入 fake）。 */
-export interface ProactiveJudge {
-  /** 返回逐场景判定；**任何失败都返回 undefined**（调用方按沉默处理）。 */
-  judge(input: ProactiveJudgeInput): Promise<readonly SceneVerdict[] | undefined>;
-}
+export type { ProactiveJudge } from '@qqbot/contracts';
 
-export interface ChatClientLike {
-  complete(messages: ChatMessage[]): Promise<string>;
-}
+export type { ChatClientLike } from '@qqbot/contracts';
 
-export interface CreateProactiveJudgeOptions {
-  chat: ChatClientLike;
-  /** 判定标准正文（由候选场景渲染而来） */
-  renderCriteria: (candidates: readonly SceneCandidate[]) => string;
-  /** 全局并发上限（默认 2） */
-  maxConcurrent?: number;
-  /** 判定失败 / 解析失败的回调（进日志与统计，不进用户可见文案） */
-  onError?: (reason: 'call-failed' | 'unparseable', detail: string) => void;
-}
+export type { CreateProactiveJudgeOptions } from '@qqbot/contracts';
 
 /**
  * 组装判定客户端。

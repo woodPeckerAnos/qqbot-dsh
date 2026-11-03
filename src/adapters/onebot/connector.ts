@@ -1,3 +1,4 @@
+import type { OnebotConnectorOptions } from '@qqbot/contracts';
 /**
  * OneBot v11 连接器：本服务起 WS server，社区框架（NapCat / LLOneBot / Lagrange）
  * 作为客户端连入（OneBot 生态称之为"反向 WebSocket"）。
@@ -14,7 +15,6 @@
  *   - 拉群邀请默认不自动同意（ONEBOT_AUTO_ACCEPT_GROUP_INVITE=false）：
  *     被拉进陌生群等于把 agent 暴露给陌生人。
  */
-
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
@@ -40,64 +40,25 @@ import type {
   RemoteMedia,
   ReplyContext,
   ReplyPolicy,
-} from '../../core/connector.js';
-import { flattenParts } from '../../core/content.js';
-import type { ForwardConfig } from '../../config.js';
-import type { Logger } from '../../logger.js';
-import { normalizeWhitespace, stripControlChars, toPlainText } from '../../pipeline/markdown.js';
+} from '@qqbot/contracts';
+import { flattenParts } from '../../content/index.js';
+
+import { normalizeWhitespace, stripControlChars, toPlainText } from '../../content/index.js';
 import {
   normalizeOneBotEvent,
-  ONEBOT_PLATFORM,
   onebotC2cTarget,
   onebotGroupTarget,
   parseForwardNodes,
   quotedAuthorFromGetMsg,
   quotedContentFromGetMsg,
-  type ForwardRef,
-  type ForwardNode,
-  type NormalizeResult,
 } from './normalize.js';
-import type { OneBotActionResponse, OneBotEvent } from './types.js';
+import { ONEBOT_PLATFORM } from '@qqbot/contracts';
+import type { ForwardRef, ForwardNode, NormalizeResult } from '@qqbot/contracts';
+import type { OneBotActionResponse, OneBotEvent } from '@qqbot/contracts';
 
 export { ONEBOT_PLATFORM };
 
-export interface OnebotConnectorOptions {
-  host: string;
-  port: number;
-  accessToken: string;
-  acceptsC2C: boolean;
-  autoAcceptFriend: boolean;
-  autoAcceptGroupInvite: boolean;
-  /** 回复策略（群聊与单聊相同——OneBot 没有官方那种按会话类型的配额差） */
-  replyPolicy: ReplyPolicy;
-  /**
-   * 附件字节怎么传给框架（ONEBOT_FILE_TRANSPORT / onebot.fileTransport）：
-   *   - `base64`（默认）：文件内容编码进 WS 帧，跨容器部署也能用；
-   *   - `path`：只传绝对路径，要求 bot 与框架同机同文件系统（省 33% 体积）。
-   */
-  fileTransport?: 'base64' | 'path';
-  /**
-   * 转发消息块（合并转发 / 聊天记录）的展开配额（config.attachments.forward）。
-   * 缺省或 `enabled: false` 时不做任何回查，行为退回 `[聊天记录]` 占位。
-   */
-  forward?: ForwardConfig;
-  /**
-   * 转发块回查结果上报（用于 /metrics 计数）。
-   *
-   * 用回调而不是 import PipelineStats：接入层不认识编排层的统计对象，
-   * 这条边界与"编排层不 import adapters/*"是对称的。
-   */
-  onForward?: (info: { ok: boolean; nodes: number }) => void;
-  logger: Logger;
-  /** 动作响应等待超时（毫秒） */
-  actionTimeoutMs?: number;
-  now?: () => number;
-  /** Inject the authenticated socket channel for deterministic contract tests. */
-  transport?: {
-    start(onConnection: (socket: WebSocket) => void): Promise<void>;
-    stop(): Promise<void>;
-  };
-}
+export type { OnebotConnectorOptions } from '@qqbot/contracts';
 
 /** 一条已鉴权的框架连接 */
 interface Session {
@@ -704,7 +665,7 @@ export class OnebotConnector implements BotConnector {
     event: NormalizedMessage,
     enrichment: { quotedMessageId?: string; forwardRefs?: ForwardRef[] }
   ): Promise<NormalizedMessage> {
-    let parts: MessagePart[] = event.parts ?? [];
+    let parts: MessagePart[] = structuredClone([...(event.parts ?? [])]);
     // 预算在整个事件内共享：引用里的转发与消息本身的转发消耗同一份额度
     const budget = this.newForwardBudget();
 

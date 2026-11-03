@@ -11,21 +11,19 @@
  * 与 dispatcher 解耦的关键：本 stage 只依赖 OffpeakGate 服务（配置与持久化）
  * 和 ctx.responder（回执），不知道 turn 的存在。
  */
-
-import type { Config } from '../../config.js';
+import type { Config } from '@qqbot/contracts';
 import {
   commandNeedsAdmin,
   evaluateGate,
   formatWindows,
-  OffpeakConfigError,
-  OFFPEAK_COMMAND_USAGE,
   parseOffpeakCommand,
   parseWindowsSpec,
-  type OffpeakCommand,
-  type OffpeakGate,
 } from '../../offpeak/index.js';
-import type { PipelineStats } from '../stats.js';
-import { logInputShortcut, type IngressStage, type MessageContext } from './types.js';
+import { OffpeakConfigError, OFFPEAK_COMMAND_USAGE } from '@qqbot/contracts';
+import type { OffpeakCommand, OffpeakGate } from '@qqbot/contracts';
+import type { PipelineStats } from '@qqbot/contracts';
+import { logInputShortcut } from './types.js';
+import type { IngressStage, MessageContext } from '@qqbot/contracts';
 
 export class OffpeakCommandRouter {
   constructor(
@@ -59,7 +57,7 @@ export class OffpeakCommandRouter {
       return;
     }
 
-    this.deps.stats.adminCommands += 1;
+    this.deps.stats.record('adminCommands', 1);
     logInputShortcut(ctx, 'offpeak-command', `command-${command.action}`);
 
     switch (command.action) {

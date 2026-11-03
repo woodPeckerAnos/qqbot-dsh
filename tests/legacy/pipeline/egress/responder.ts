@@ -19,6 +19,26 @@
  * （startProgress → deliver），不会两条都走。
  */
 
+/**
+ * Egress 收口：一条用户消息的所有回复都经 Responder 发出。
+ *
+ * 为什么收口：
+ *   QQ 的被动回复窗口把"回复次数"变成稀缺资源（群聊 5 分钟 / 5 次），
+ *   所以 `ReplyLedger` 必须是**唯一**分配 `msg_seq` 的地方。收口前它散在
+ *   runTurn / replySimple / deliverOutcome 三处各自 new，不变量靠注释维持；
+ *   现在一条消息一个 Responder、一个账本，不变量由结构保证。
+ *
+ * 职责边界：
+ *   - 持有配额账本（ReplyLedger）与进度回执调度（ProgressScheduler）；
+ *   - 长文本分段（segmentText）、配额分配、经 BotConnector.reply 发送；
+ *   - 把 turn 结果（TurnOutcome）渲染成用户可读文案（deliver）；
+ *   - 记录助手回复到对话记录（供重启后回放）；
+ *   - 平台专有行为（msg_seq、markdown 请求体）仍在适配器内，这里只调 reply()。
+ *
+ * 生命周期：每条用户消息一个实例，由 Ingress 管线入口创建，随消息处理结束而弃。
+ * 同一条消息要么走"简短回复"路径（error），要么走"turn 结果"路径
+ * （startProgress → deliver），不会两条都走。
+ */
 import type {
   BotConnector,
   NormalizedMessage,
@@ -137,7 +157,7 @@ export class Responder {
       send: async (text) => {
         const ticket = this.ledger.allocate('progress');
         await this.sendSegment({ text }, ticket);
-        stats.progressSent += 1;
+        stats.record('progressSent', 1);
       },
       allocateTicket: () => {
         // 试分配哨兵：真正的分配发生在 send 里。这里只回答"还该不该继续调度"。
@@ -292,7 +312,7 @@ export class Responder {
         } else {
           archiveNames.push(attachment.fileName);
         }
-        stats.attachmentsSent += 1;
+        stats.record('attachmentsSent', 1);
       } catch (error) {
         logger.error('发送附件失败', {
           seq: ticket.msgSeq,
@@ -385,7 +405,7 @@ export class Responder {
       },
       out
     );
-    stats.repliesSent += 1;
+    stats.record('repliesSent', 1);
     logger.debug('已发送回复', {
       seq: ticket.msgSeq,
       kind: ticket.kind,

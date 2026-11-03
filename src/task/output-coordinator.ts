@@ -1,3 +1,4 @@
+import type { DeepReadonly } from '@qqbot/contracts';
 /**
  * Task 产物出口：正文规范化与精确去重、原消息引用、可靠附件副本、一次性提醒。
  * 只负责形成候选消息并入队，不持有平台发送锁，也不改写 Task 执行状态。
@@ -5,22 +6,23 @@
  */
 import { copyFile, mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { traceSpan, legacyTrace } from '../logger.js';
-import { randomUUID } from 'node:crypto';
-import { normalizeWhitespace, stripControlChars } from '../pipeline/markdown.js';
-import { segmentText } from '../pipeline/egress/chunk.js';
-import type { TaskBudget } from './budget.js';
-import { SYSTEM_CLOCK, type TaskClock } from './clock.js';
-import type { TaskLifeCycleManager } from './lifecycle.js';
-import type { MessageQueue } from './message-queue.js';
-import {
-  isTaskTerminal,
-  type DeliveryResult,
-  type Lane,
-  type LaneResult,
-  type ReplyCandidate,
-  type TaskSnapshot,
-} from './types.js';
+import { traceSpan, legacyTrace } from '../observability/index.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { normalizeWhitespace, stripControlChars } from '../content/index.js';
+import { segmentText } from '../content/index.js';
+import type { TaskBudget } from '@qqbot/contracts';
+import { SYSTEM_CLOCK } from '@qqbot/contracts';
+import type { TaskClock } from '@qqbot/contracts';
+import type { TaskLifeCycleManager } from '@qqbot/contracts';
+import type { MessageQueue } from '@qqbot/contracts';
+import { isTaskTerminal } from '@qqbot/contracts';
+import type {
+  DeliveryResult,
+  Lane,
+  LaneResult,
+  ReplyCandidate,
+  TaskSnapshot,
+} from '@qqbot/contracts';
 
 export class SessionOutputCoordinator {
   private readonly texts = new Map<string, Set<string>>();
@@ -35,10 +37,10 @@ export class SessionOutputCoordinator {
       queue: MessageQueue;
       budget: TaskBudget;
       filesDir: string;
-      maxChars: (task: Readonly<TaskSnapshot>) => number;
+      maxChars: (task: DeepReadonly<TaskSnapshot>) => number;
       clock?: TaskClock;
       reminderMs?: number;
-      onDelivered?: (candidate: Readonly<ReplyCandidate>, ts: number) => void;
+      onDelivered?: (candidate: DeepReadonly<ReplyCandidate>, ts: number) => void;
       onBudgetSettled?: (taskId: string, outcome: 'committed' | 'released') => void;
     }
   ) {
@@ -61,7 +63,7 @@ export class SessionOutputCoordinator {
   }
   /** runner 已验证静默契约；不同 lane 的不同正文分别保留，附件不参与正文去重。 */
   async accept(
-    task: Readonly<TaskSnapshot>,
+    task: DeepReadonly<TaskSnapshot>,
     lane: Lane,
     result: LaneResult,
     resultId?: string
@@ -99,8 +101,9 @@ export class SessionOutputCoordinator {
     const seen = this.texts.get(task.taskId) ?? new Set<string>();
     this.texts.set(task.taskId, seen);
     if (text && !seen.has(text)) {
-      seen.add(text);
       let i = 0;
+      const bodyId =
+        resultId ?? `${task.taskId}:body:${createHash('sha256').update(text).digest('hex')}`;
       const spokenText =
         quote && !reference.messageId
           ? `（关于 ${reference.senderName ?? reference.senderId} 的「${reference.excerpt.slice(0, 120)}」）\n${text}`
@@ -109,10 +112,8 @@ export class SessionOutputCoordinator {
         maxChars: this.options.maxChars(task),
         maxSegments: Math.max(1, spokenText.length),
       }).segments)
-        this.options.queue.enqueue(
-          { ...base, text: part },
-          resultId ? `${resultId}:text:${i++}` : undefined
-        );
+        this.options.queue.enqueue({ ...base, text: part }, `${bodyId}:text:${i++}`);
+      seen.add(text);
     }
     for (const attachment of result.attachments ?? []) {
       // 先复制到队列专属目录，Task 工作区到期清理后待发附件仍能取到字节。
@@ -138,7 +139,7 @@ export class SessionOutputCoordinator {
   reconcile(taskId: string): void {
     const task = this.options.manager.get(taskId);
     const delivery = this.options.queue.taskDelivery(taskId);
-    if (task && isTaskTerminal(task)) this.options.budget.finish(taskId);
+    if (!task || isTaskTerminal(task)) this.options.budget.finish(taskId);
     const settled = this.options.budget.settle(
       taskId,
       delivery.success,
@@ -164,7 +165,10 @@ export class SessionOutputCoordinator {
     this.fastSent.delete(taskId);
     this.reminded.delete(taskId);
   }
-  private onDelivery(result: DeliveryResult, candidate: Readonly<ReplyCandidate>): void {
+  private onDelivery(
+    result: DeepReadonly<DeliveryResult>,
+    candidate: DeepReadonly<ReplyCandidate>
+  ): void {
     const deliveredAt = result.deliveredAt;
     if (result.status === 'sent' && deliveredAt !== undefined) {
       // 先保存实际送达内容，再触发预算回调，主动 adapter 才能记录真实发言。
@@ -184,7 +188,7 @@ export class SessionOutputCoordinator {
     this.reconcile(result.taskId);
   }
   /** 从快回复送达与慢执行开始的较晚时刻计时；结束、取消或无即时出口均放弃。 */
-  private scheduleReminder(task: Readonly<TaskSnapshot>): void {
+  private scheduleReminder(task: DeepReadonly<TaskSnapshot>): void {
     const fastSent = this.fastSent.get(task.taskId);
     const slow = task.lanes.slow;
     if (slow.status !== 'running' || slow.executionEndedAt !== undefined) {

@@ -9,6 +9,16 @@
  *   4. 投递：dryRun 只记 wouldSend；平台不支持 → 记 deliveryDegraded；成功 → 记账。
  */
 
+/**
+ * 主动介入 watcher 单测：`collect → judge → veto → deliver` 全链（离线）。
+ *
+ * 用手动时钟 + 假判定 + 假适配器，因此可以断言"第几步发生了什么"，
+ * 而不是只能看最终有没有说话。覆盖四类不变量：
+ *   1. 成本闸：白名单/开关/无候选 → 一次 LLM 都不调；
+ *   2. 触发面：消息即时评估、问题挂起后探针、滚动收敛（条数与时间两条路）；
+ *   3. 降级：判定失败 → 沉默并计数；连续失败 → 暂停该会话；
+ *   4. 投递：dryRun 只记 wouldSend；平台不支持 → 记 deliveryDegraded；成功 → 记账。
+ */
 import { describe, expect, it } from 'vitest';
 
 import type {

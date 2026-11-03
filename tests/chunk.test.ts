@@ -5,6 +5,12 @@
  * "会不会不小心 at 了全群的人"，都值得测。
  */
 
+/**
+ * 分段与渲染单测。
+ *
+ * 这层直接决定"机器人会不会因为消息太长而报 40054007"，以及
+ * "会不会不小心 at 了全群的人"，都值得测。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { segmentText } from '../src/pipeline/egress/chunk.js';

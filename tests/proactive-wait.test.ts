@@ -13,6 +13,20 @@
  *   3. **每张票据只有一个终局**：`resolved + spent + stale + unchanged == created`。
  */
 
+/**
+ * **wait 收敛**的专项单测（对应 docs/WAIT-CONVERGENCE-REQUIREMENT.md 的验收 1–11）。
+ *
+ * 为什么单独一个文件：wait 的每一条纪律都是"**在某个时刻不该发生某件事**"
+ * ——不排唤醒、不调 LLM、不建票据、不重复唤醒。这类断言必须用**手动时钟 +
+ * 假判定**逐步推进才看得出来，混在通用 watcher 用例里会退化成
+ * "最后有没有说话"，而那个问题恰恰是上一轮灰度回答不了的
+ * （`vetoed.wait` 占 46%、`wouldSend` 只有 56）。
+ *
+ * 三条被反复验证的硬纪律：
+ *   1. **上限在代码里**：同一个问题最多让路 `maxWaitPerItem` 次，配大了按硬上限 3 处理；
+ *   2. **唤醒前两道本地检查**：对象还在吗 / 转录有新增吗——任何一道不过都不调 LLM；
+ *   3. **每张票据只有一个终局**：`resolved + spent + stale + unchanged == created`。
+ */
 import { describe, expect, it } from 'vitest';
 
 import type {

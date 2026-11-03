@@ -8,6 +8,16 @@
 
 Logger 子实例共享配置、预算与 stderr JSONL 缓冲。TaskLifeCycleManager 与 MessageQueue 在状态持久化后记录事件，DshLaneRunner 记录执行与产物，独立 AgentTraceObserver 只消费实时通知、按每个 DSH 会话水位去重并在执行结束释放有界缓存。RuntimePool 只保留资源事件，DshRuntime 记录首次进程/协议根因，状态事件引用 errorId。日志配置可用 SIGHUP 重载，其他配置仍需原来的生效流程。
 
+## 机器强制的模块边界
+
+现行跨模块值、错误、常量和接口在独立 workspace `packages/contracts`，实现以 `src/{config,content,connectors,store,media,runtime,task,delivery,ingress,proactive,offpeak,observability}/index.ts` 提供具有契约类型的工厂与函数。旧目录路径保留同模块内部协作与历史夹具；生产消费者只通过公共入口和契约接口。`docs/MODULE-CONTRACTS.md` 从独立编译声明、元数据和可执行示例确定性生成，接口签名不再手写复制。
+
+边界检查使用 TypeScript 解析与模块解析，覆盖各导入形态、再导出、别名、动态目标、运行依赖环和公共类型来源。状态写能力按 `tasks`、`messages`、`task-budgets`、`task-sessions` 分配，仅装配器发放；检查拒绝越权调用、能力解构及绑定旁路。网络、文件与子进程能力按模块清单声明，协议、下载、文档抽取和持久化故障通过注入替身验证。
+
+状态所有者准备候选值并成功持久化后，才提交内存、通知与结算。未落盘执行结果保留用于后续仅补保存；平台发送后保存失败保留结果未知，不能重发。Runtime 池持有 busy 和子代理集合，仅发放身份绑定的只读租约及受限协议能力。深快照隔离对象、数组、Map、Set 与字节引用；PipelineStats 只提供记录方法和只读快照。
+
+`npm run check` 包含契约编译、公共工厂反向类型用例、边界、版本兼容基线、文档漂移、模块覆盖、离线消费者测试、36 个独立冒烟示例和 Docker 目录解析。真实 WebSocket 单列 `test:integration`。决策和兼容流程见 [ADR-003](adr/003-enforced-module-contracts.md)；历史手写接口与可写租约见该 ADR 之前的 git 版本及 `tests/legacy`。
+
 ## Task 与双 lane
 
 当前运行架构：接入、归一化、去重、命令、输入判定 → SessionActor → TaskLifeCycleManager → 两个独立 LaneScheduler → SessionOutputCoordinator → MessageQueue → 连接器。唯一入口 `src/main.ts` 已完成装配。

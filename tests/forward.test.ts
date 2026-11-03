@@ -11,6 +11,18 @@
  * 一段转发的历史记录凭空叫醒。
  */
 
+/**
+ * 转发消息块（合并转发 / 聊天记录）单测。
+ *
+ * 分两层，与实现的分层一致：
+ *   - 纯函数：`forward` 段 → 占位片段 + 待回查下标；`get_forward_msg` 多形状响应解析；
+ *   - 反向 WS 全回路（真实 socket，全离线）：回查、就地替换、失败降级、
+ *     LRU 缓存、上限截断、开关关闭时零请求。
+ *
+ * 这里刻意把 `forward` 段的 @ 惰性单独测一条：群里转发的聊天记录里可能有人
+ * @机器人，但那在 QQ 语义上**不构成提及**——一旦把它算成 atSelf，机器人会被
+ * 一段转发的历史记录凭空叫醒。
+ */
 import { afterEach, describe, expect, it } from 'vitest';
 const socketDescribe = process.env.BOT_TEST_INTEGRATION === '1' ? describe : describe.skip;
 import WebSocket from 'ws';

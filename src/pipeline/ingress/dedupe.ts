@@ -6,16 +6,23 @@
  *
  * eventId 为空时回退用 msgId——两种 id 都带平台命名空间，去重表全局共用。
  */
-
-import type { SeenStore } from '../../store/seen.js';
-import type { PipelineStats } from '../stats.js';
-import { logInputShortcut, type IngressStage } from './types.js';
+import type { SeenStore } from '@qqbot/contracts';
+import type { PipelineStats } from '@qqbot/contracts';
+import { logInputShortcut } from './types.js';
+import type { IngressStage } from '@qqbot/contracts';
 
 export function createDedupeStage(deps: { seen: SeenStore; stats: PipelineStats }): IngressStage {
   return async (ctx, next) => {
     const eventKey = ctx.message.eventId !== '' ? ctx.message.eventId : ctx.message.msgId;
-    if (!deps.seen.claim(eventKey)) {
-      deps.stats.deduplicated += 1;
+    const result = deps.seen.claimResult(eventKey);
+    if (!result.ok)
+      ctx.logger.warn('去重持久化降级', {
+        code: result.error.code,
+        errorId: ctx.logger.cause(result.error.cause, 'persistence'),
+      });
+    const claimed = result.ok ? result.value : deps.seen.claimVolatile(eventKey);
+    if (!claimed) {
+      deps.stats.record('deduplicated', 1);
       logInputShortcut(ctx, 'dedupe', 'duplicate-event');
       return;
     }

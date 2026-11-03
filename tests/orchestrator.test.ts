@@ -11,6 +11,18 @@
  *   - 冷启动会把历史回放进 prompt。
  */
 
+/**
+ * 编排层集成单测（假 runtime + 假 QQ API，全离线）。
+ * 被测对象是 Orchestrator（Ingress 管线 + TurnRunner + Responder 的组装门面）。
+ *
+ * 这是最接近真实行为的一层，验证的是**用户最终看到的东西**：
+ *   - 一轮问答结束后回复了正确的最终答案（而不是中间那句"我来看看"）；
+ *   - `msg_seq` 单调递增且不重复（否则平台会 40054005 去重，用户收不到第二条）；
+ *   - 进度回执不会把配额吃光；
+ *   - 超时能给出交代；
+ *   - 重复事件被丢弃；
+ *   - 冷启动会把历史回放进 prompt。
+ */
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,9 +30,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig, type Config } from '../src/config.js';
 import { createNullLogger } from '../src/logger.js';
-import type { RuntimeEntry, RuntimePool } from '../src/dsh/pool.js';
+import type { RuntimeEntry, RuntimePool } from './legacy/runtime-entry.js';
 import type { SessionEventNotification, PromptContentBlock } from '../src/dsh/protocol.js';
-import { CN_HOLIDAYS_2026, OffpeakGate } from '../src/offpeak/index.js';
+import { CN_HOLIDAYS_2026, createOffpeakGate } from '../src/offpeak/index.js';
 import { BackgroundPusher } from './legacy/pipeline/egress/background.js';
 import { Responder } from './legacy/pipeline/egress/responder.js';
 import { AdmissionGate } from './legacy/pipeline/ingress/admission.js';
@@ -298,7 +310,7 @@ function setup(
   // 组装方式与 main.ts 保持一致（显式构造每个 stage / 闸门 / 服务）。
   // 这里故意不抽公共工厂：组装就是业务逻辑，测试要验证的正是这套真实接线。
   const stats = new PipelineStats();
-  const offpeak = new OffpeakGate({
+  const offpeak = createOffpeakGate({
     defaults: {
       enabled: config.offpeak.enabled,
       windows: config.offpeak.windows,

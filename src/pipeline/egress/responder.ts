@@ -1,6 +1,6 @@
-import type { TraceContext } from '../../logger.js';
-import type { NormalizedMessage } from '../../core/connector.js';
-import type { MessageQueue } from '../../task/message-queue.js';
+import type { TraceContext } from '@qqbot/contracts';
+import type { NormalizedMessage } from '@qqbot/contracts';
+import type { MessageQueue } from '@qqbot/contracts';
 
 /**
  * 命令回执和准入错误也通过持久消息队列发送，共享平台锚点的条数与 seq。

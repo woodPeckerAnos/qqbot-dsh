@@ -1,28 +1,9 @@
-import { ConfigError } from '../config-error.js';
-import type { LogLevel } from '../logger.js';
+import { DEFAULT_LOGGING } from '@qqbot/contracts';
+import type { LoggingSettings } from '@qqbot/contracts';
+import { ConfigError } from '@qqbot/contracts';
 
-export interface LoggingSettings {
-  level: LogLevel;
-  maxRecordBytes: number;
-  maxQueuedBytes: number;
-  agentDetailLimit: number;
-  dedupeWindowMs: number;
-  diagnosticTraceIds: string[];
-  diagnosticSessionKeys: string[];
-  diagnosticTtlMs: number;
-  flushTimeoutMs: number;
-}
-export const DEFAULT_LOGGING: LoggingSettings = {
-  level: 'info',
-  maxRecordBytes: 8192,
-  maxQueuedBytes: 1048576,
-  agentDetailLimit: 100,
-  dedupeWindowMs: 60000,
-  diagnosticTraceIds: [],
-  diagnosticSessionKeys: [],
-  diagnosticTtlMs: 600000,
-  flushTimeoutMs: 2000,
-};
+export type { LoggingSettings } from '@qqbot/contracts';
+export { DEFAULT_LOGGING } from '@qqbot/contracts';
 const LIMITS = {
   maxRecordBytes: [1024, 8192],
   maxQueuedBytes: [8192, 1048576],

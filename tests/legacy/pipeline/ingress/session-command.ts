@@ -13,7 +13,21 @@
  * 命令群聊形态：`/stop`、`/new`（整句匹配，前后空白忽略；带参数一律不识别）。
  */
 
-import type { RuntimePool } from '../../../../src/dsh/pool.js';
+/**
+ * Ingress stage：会话控制命令（/stop、/new）。
+ *
+ * 位置理由：去重之后、谷时段闸之前（与 /offpeak 命令同级）——
+ * 控制命令必须永远可用：峰时段被闸拦住时管理员也要能 /stop 一个失控任务；
+ * 命令不写对话记录、不占并发名额、不进会话锁（/stop 的意义恰恰是在锁被
+ * 长任务占住时也能立刻生效）。
+ *
+ * 权限：两个命令都只限管理员（BOT_ADMINS）。它们都会回收 runtime 进程——
+ * /stop 终止在途 turn 与其承载的后台子代理，/new 丢弃整个会话上下文——
+ * 对普通群成员开放等于把"打断别人任务"的权力交给任何人。
+ *
+ * 命令群聊形态：`/stop`、`/new`（整句匹配，前后空白忽略；带参数一律不识别）。
+ */
+import type { RuntimePool } from '../../runtime-entry.js';
 import type { PipelineStats } from '../../../../src/pipeline/stats.js';
 import type { TurnRunner } from '../turn-runner.js';
 import type { IngressStage } from '../../../../src/pipeline/ingress/types.js';
@@ -59,7 +73,7 @@ export class SessionCommandRouter {
         return;
       }
 
-      this.deps.stats.sessionCommands += 1;
+      this.deps.stats.record('sessionCommands', 1);
       const key = ctx.message.target.key;
 
       if (command === 'stop') {

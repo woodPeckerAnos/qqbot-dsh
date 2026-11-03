@@ -4,6 +4,11 @@
  * 全离线：预设目录与工作区都在临时目录里。
  */
 
+/**
+ * 预设风格前台（/persona）单测：预设读取、AGENTS.md 标记区块合并、选择持久化。
+ *
+ * 全离线：预设目录与工作区都在临时目录里。
+ */
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -166,5 +171,60 @@ describe('预设名约束', () => {
     expect(PRESET_NAME_RE.test('Bad')).toBe(false);
     expect(PRESET_NAME_RE.test('../x')).toBe(false);
     expect(PRESET_NAME_RE.test('a'.repeat(33))).toBe(false);
+  });
+});
+
+describe('人设契约：保存失败不宣告已切换', () => {
+  function faultStore(reject: () => boolean) {
+    return new PersonaStore({
+      dir: presetDir,
+      persistPath: join(paths.stateDir, 'personas.json'),
+      paths,
+      logger: createNullLogger(),
+      persistSelection: (file, text) => {
+        if (reject()) throw new Error('injected persona persistence failure');
+        writeFileSync(file, text);
+      },
+    });
+  }
+
+  it('切换保存失败回滚旧区块，同时保留内存及磁盘选择', () => {
+    store.apply(KEY, 'concise');
+    const previous = readFileSync(agentsFile(), 'utf8');
+    const broken = faultStore(() => true);
+    expect(broken.apply(KEY, 'teacher')).toMatchObject({ ok: false, reason: 'io' });
+    expect(broken.current(KEY)).toBe('concise');
+    expect(readFileSync(agentsFile(), 'utf8')).toBe(previous);
+    expect(
+      new PersonaStore({
+        dir: presetDir,
+        persistPath: join(paths.stateDir, 'personas.json'),
+        paths,
+        logger: createNullLogger(),
+      }).current(KEY)
+    ).toBe('concise');
+  });
+
+  it('clear 保存失败保留旧区块和选择，之后可正常重试', () => {
+    store.apply(KEY, 'concise');
+    const previous = readFileSync(agentsFile(), 'utf8');
+    let reject = true;
+    const broken = faultStore(() => reject);
+    expect(() => broken.clear(KEY)).toThrow('人设选择持久化失败');
+    expect(broken.current(KEY)).toBe('concise');
+    expect(readFileSync(agentsFile(), 'utf8')).toBe(previous);
+    reject = false;
+    expect(broken.clear(KEY)).toEqual({ hadSelection: true });
+    expect(broken.current(KEY)).toBeUndefined();
+  });
+
+  it('失效预设清理保存失败不能丢弃旧选择', () => {
+    store.apply(KEY, 'concise');
+    rmSync(join(presetDir, 'concise.md'));
+    const broken = faultStore(() => true);
+    expect(() => {
+      broken.restoreAll();
+    }).toThrow('injected persona persistence failure');
+    expect(broken.current(KEY)).toBe('concise');
   });
 });

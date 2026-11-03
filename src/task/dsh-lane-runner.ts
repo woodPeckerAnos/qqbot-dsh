@@ -1,3 +1,6 @@
+import { failure } from '@qqbot/contracts';
+import type { DeepReadonly } from '@qqbot/contracts';
+import type { AgentTraceObserver, LaneRunner } from '@qqbot/contracts';
 /**
  * 一个 lane 的 DSH 执行边界：取得独占 runtime 租约、注册执行身份与事件监听，
  * 再派发 prompt。父执行及所属子代理全部结束后，停止具体进程并收集交付物。
@@ -6,34 +9,29 @@
 import { randomUUID } from 'node:crypto';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { RuntimeEntry, RuntimePool } from '../dsh/pool.js';
+import type { RuntimeLease, RuntimePool } from '@qqbot/contracts';
 import type {
   SessionEventNotification,
   SessionStatusNotification,
   SubagentStartedNotification,
   SubagentFinishedNotification,
-} from '../dsh/protocol.js';
-import { AgentTraceObserver } from '../dsh/agent-trace.js';
-import { TurnAccumulator } from '../dsh/turns.js';
-import { scanOutbox } from '../pipeline/egress/outbox.js';
-import type { MessageContext } from '../pipeline/ingress/types.js';
-import type { Config } from '../config.js';
-import { traceSpan, legacyTrace, type Logger } from '../logger.js';
-import { SYSTEM_CLOCK, type TaskClock } from './clock.js';
-import type { TaskLifeCycleManager } from './lifecycle.js';
-import type { PromptPreparer } from './prompt-preparer.js';
-import type { TaskControlBridge } from './control-bridge.js';
-import type { Lane, LaneEvent, LaneResult, TaskSnapshot } from './types.js';
+} from '@qqbot/contracts';
+import { createAgentTraceObserver } from '../runtime/index.js';
+import { createTurnAccumulator } from '../runtime/index.js';
+import { scanOutbox } from '../media/index.js';
+import type { MessageContext } from '@qqbot/contracts';
+import type { Config } from '@qqbot/contracts';
+import { traceSpan, legacyTrace } from '../observability/index.js';
+import type { Logger } from '@qqbot/contracts';
+import { SYSTEM_CLOCK } from '@qqbot/contracts';
+import type { TaskClock } from '@qqbot/contracts';
+import type { TaskLifeCycleManager } from '@qqbot/contracts';
+import type { PromptPreparer } from '@qqbot/contracts';
+import type { TaskControlBridge } from '@qqbot/contracts';
+import type { Lane, LaneEvent, LaneResult, TaskSnapshot } from '@qqbot/contracts';
 
 /** 调度器只依赖此接口，验收可替换 DSH，不需要真实模型或已部署客户端。 */
-export interface LaneRunner {
-  run(
-    task: Readonly<TaskSnapshot>,
-    lane: Lane,
-    context: MessageContext,
-    signal: AbortSignal
-  ): Promise<LaneResult>;
-}
+export type { LaneRunner } from '@qqbot/contracts';
 export class DshLaneRunner implements LaneRunner {
   private readonly clock: TaskClock;
   constructor(
@@ -51,7 +49,7 @@ export class DshLaneRunner implements LaneRunner {
     this.clock = options.clock ?? SYSTEM_CLOCK;
   }
   async run(
-    task: Readonly<TaskSnapshot>,
+    task: DeepReadonly<TaskSnapshot>,
     lane: Lane,
     context: MessageContext,
     signal: AbortSignal
@@ -63,7 +61,7 @@ export class DshLaneRunner implements LaneRunner {
     );
     let observer: AgentTraceObserver | undefined;
     let executionId: string | undefined;
-    let lease: RuntimeEntry | undefined;
+    let lease: RuntimeLease | undefined;
     let result: LaneResult;
     const disposers: (() => void)[] = [];
     try {
@@ -106,7 +104,7 @@ export class DshLaneRunner implements LaneRunner {
         },
         signal
       );
-      lease = await new Promise<RuntimeEntry>((resolveLease, reject) => {
+      lease = await new Promise<RuntimeLease>((resolveLease, reject) => {
         const aborted = () => {
           reject(new Error('runtime 租约等待已取消'));
         };
@@ -127,7 +125,6 @@ export class DshLaneRunner implements LaneRunner {
         );
         if (signal.aborted) aborted();
       });
-      lease.busy = true;
       if (signal.aborted) return { kind: 'cancelled' };
       const execution = { executionId, sessionId, runtimeGeneration: lease.generation };
       if (!manager.start(task.taskId, lane, execution)) return { kind: 'cancelled' };
@@ -135,7 +132,7 @@ export class DshLaneRunner implements LaneRunner {
       logger = this.options.logger.withTrace(trace);
       logger.event('execution.started');
       const executionStartedAt = this.clock.now();
-      observer = new AgentTraceObserver({
+      observer = createAgentTraceObserver({
         trace,
         logger,
         deferBudgetRelease: true,
@@ -144,7 +141,7 @@ export class DshLaneRunner implements LaneRunner {
       });
       const tracing = observer;
       const runtime = lease.runtime;
-      const accumulator = new TurnAccumulator(sessionId);
+      const accumulator = createTurnAccumulator(sessionId);
       const children = new Set<string>();
       const childParents = new Map<string, string>();
       let businessCalls = 0;
@@ -378,6 +375,15 @@ export class DshLaneRunner implements LaneRunner {
       }
       if (result.kind === 'failed' && !result.errorId)
         result = { ...result, errorId: logger.cause(new Error(result.error), result.error) };
+      if (result.kind === 'failed')
+        result = {
+          ...result,
+          failure: failure(
+            result.error === 'lane-timeout' ? 'TIMEOUT' : 'UPSTREAM_FAILED',
+            result.error,
+            result.errorId
+          ),
+        };
       result = { ...result, trace: artifactTrace };
       logger.event('artifact.prepared', {
         resultKind: result.kind,
@@ -393,6 +399,7 @@ export class DshLaneRunner implements LaneRunner {
             kind: 'failed',
             text: '任务执行失败，请稍后重新提交。',
             error: 'lane-failed',
+            failure: failure('UPSTREAM_FAILED', undefined, logger.cause(error, 'lane-failed')),
             errorId: logger.cause(error, 'lane-failed'),
           };
     } finally {

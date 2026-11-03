@@ -8,11 +8,12 @@
  * 与 dispatcher 解耦的关键：判定配置来自 OffpeakGate 服务（env 默认 +
  * 运行期覆盖，下一条消息即生效），本 stage 只做"拦截并回复"这一件事。
  */
-
-import type { Config } from '../../config.js';
-import { evaluateGate, renderGateNotice, type OffpeakGate } from '../../offpeak/index.js';
-import type { PipelineStats } from '../stats.js';
-import { logInputShortcut, type IngressStage } from './types.js';
+import type { Config } from '@qqbot/contracts';
+import { evaluateGate, renderGateNotice } from '../../offpeak/index.js';
+import type { OffpeakGate } from '@qqbot/contracts';
+import type { PipelineStats } from '@qqbot/contracts';
+import { logInputShortcut } from './types.js';
+import type { IngressStage } from '@qqbot/contracts';
 
 export function createOffpeakGateStage(deps: {
   gate: OffpeakGate;
@@ -30,7 +31,7 @@ export function createOffpeakGateStage(deps: {
       now: now(),
     });
     if (decision.gated) {
-      deps.stats.gatedOffpeak += 1;
+      deps.stats.record('gatedOffpeak', 1);
       logInputShortcut(ctx, 'offpeak-gate', decision.reason);
       await ctx.responder.error(renderGateNotice(deps.gate.effective())).catch(() => {});
       return;

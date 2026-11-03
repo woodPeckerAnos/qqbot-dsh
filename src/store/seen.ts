@@ -1,3 +1,4 @@
+import type { SeenStoreOptions } from '@qqbot/contracts';
 /**
  * 事件去重。
  *
@@ -10,7 +11,6 @@
  *
  * 定期按 mtime 清理超过保留期的标记，避免无界增长。
  */
-
 import {
   closeSync,
   mkdirSync,
@@ -21,28 +21,20 @@ import {
   writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { failure, readonlySnapshot, type Result } from '@qqbot/contracts';
 
-import type { Logger } from '../logger.js';
-import type { StorePaths } from './paths.js';
-
-export interface SeenStoreOptions {
-  paths: StorePaths;
-  logger: Logger;
-  /** 磁盘标记保留时长，默认 24 小时 */
-  retentionMs?: number;
-  /** 内存 LRU 容量 */
-  memoryLimit?: number;
-  now?: () => number;
-}
+export type { SeenStoreOptions } from '@qqbot/contracts';
 
 export class SeenStore {
+  private readonly options: SeenStoreOptions;
   private readonly memory = new Set<string>();
   private readonly memoryOrder: string[] = [];
   private readonly retentionMs: number;
   private readonly memoryLimit: number;
   private lastSweepAt = 0;
 
-  constructor(private readonly options: SeenStoreOptions) {
+  constructor(options: SeenStoreOptions) {
+    this.options = { ...options, paths: readonlySnapshot(options.paths) };
     this.retentionMs = options.retentionMs ?? 24 * 60 * 60 * 1000;
     this.memoryLimit = options.memoryLimit ?? 2_000;
     // 目录建不出来不是致命错误：claim() 会退化为纯内存去重。
@@ -62,33 +54,50 @@ export class SeenStore {
    * @returns true = 首次见到（调用方应处理）；false = 重复（调用方应丢弃）
    */
   claim(eventId: string): boolean {
-    if (eventId === '') return true; // 没有 id 的事件无法去重，按首次处理
+    const result = this.claimResult(eventId);
+    if (result.ok) return result.value;
+    this.options.logger.warn('事件去重标记写入失败，退化为内存去重', {
+      eventId,
+      error:
+        result.error.cause instanceof Error
+          ? result.error.cause.message
+          : String(result.error.cause),
+    });
+    return this.claimVolatile(eventId);
+  }
+
+  claimVolatile(eventId: string): boolean {
     if (this.memory.has(eventId)) return false;
+    this.rememberInMemory(eventId);
+    return true;
+  }
+
+  /** 显式返回磁盘故障；claim兼容层负责现行内存降级策略。 */
+  claimResult(eventId: string): Result<boolean> {
+    if (eventId === '') return { ok: true, value: true };
+    if (this.memory.has(eventId)) return { ok: true, value: false };
 
     const markerPath = this.markerPath(eventId);
     try {
       const fd = openSync(markerPath, 'wx');
       // 写入处理时间戳，便于人工排查
-      writeSync(fd, String(this.now()));
-      closeSync(fd);
+      try {
+        writeSync(fd, String(this.now()));
+      } finally {
+        closeSync(fd);
+      }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'EEXIST') {
         this.rememberInMemory(eventId);
-        return false;
+        return { ok: true, value: false };
       }
-      // 磁盘不可写（只读挂载、权限问题）时退化为纯内存去重，并告警。
-      this.options.logger.warn('事件去重标记写入失败，退化为内存去重', {
-        eventId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      this.rememberInMemory(eventId);
-      return true;
+      return { ok: false, error: failure('PERSISTENCE_FAILED', error) };
     }
 
     this.rememberInMemory(eventId);
     this.maybeSweep();
-    return true;
+    return { ok: true, value: true };
   }
 
   /** 清理过期的磁盘标记。 */

@@ -1,3 +1,4 @@
+import type { PersonaCommand } from '@qqbot/contracts';
 /**
  * Ingress stage：预设风格前台命令（/persona）。
  *
@@ -12,12 +13,12 @@
  * 权限：仅管理员（BOT_ADMINS）。切换人设改变的是**整个会话**的答复风格，
  * 对普通群成员开放等于任何人都能改写这个群的 bot 行为。
  */
+import type { PersonaStore } from '@qqbot/contracts';
+import type { PipelineStats } from '@qqbot/contracts';
+import { logInputShortcut } from './types.js';
+import type { IngressStage } from '@qqbot/contracts';
 
-import type { PersonaStore } from '../../store/personas.js';
-import type { PipelineStats } from '../stats.js';
-import { logInputShortcut, type IngressStage } from './types.js';
-
-export type PersonaCommand = { kind: 'list' } | { kind: 'set'; name: string } | { kind: 'clear' };
+export type { PersonaCommand } from '@qqbot/contracts';
 
 /** 解析 /persona 命令；不是 /persona 形态时返回 undefined（放行给后续 stage）。 */
 export function parsePersonaCommand(content: string): PersonaCommand | undefined {
@@ -57,7 +58,7 @@ export class PersonaCommandRouter {
         return;
       }
 
-      this.deps.stats.sessionCommands += 1;
+      this.deps.stats.record('sessionCommands', 1);
       const key = ctx.message.target.key;
       const { personas } = this.deps;
 

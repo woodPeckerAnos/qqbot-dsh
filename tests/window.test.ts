@@ -8,6 +8,15 @@
  *   ④ 渲染（不可信边界、`[我]` 标注、当前消息剔除、空窗返回空串）。
  */
 
+/**
+ * 观察窗口单测（离线、纯状态机、不读墙上时钟）。
+ *
+ * 这个模块是"滚窗从介入层抽出来"的兑现处，所以用例分四组：
+ *   ① 准入（白名单）——它与主动发言开关**无关**这件事必须有用例锁住；
+ *   ② 写入与保留期（条数 / 时长 / 时钟回退）；
+ *   ③ 读取（`sinceTs` / `limit` / `excludeMsgId` / `anySince` 的严格边界）；
+ *   ④ 渲染（不可信边界、`[我]` 标注、当前消息剔除、空窗返回空串）。
+ */
 import { describe, expect, it } from 'vitest';
 
 import type { MessagePart, NormalizedMessage } from '../src/core/connector.js';
@@ -565,5 +574,53 @@ describe('collectWindowMedia（挑哪几张送给模型）', () => {
       { maxImages: 1 }
     );
     expect(anonymous.images[0]!.sender).toBe('u1');
+  });
+});
+
+describe('观察窗口契约：深快照与输入隔离', () => {
+  it('输入媒体及引用后续变化不会修改已收录条目', () => {
+    const windows = store();
+    const parts: MessagePart[] = [{ type: 'image', url: 'https://example.test/original.png' }];
+    windows.observe(msg('m1', '[图片]', T0, { parts }));
+    const image = parts[0];
+    if (image?.type === 'image') image.url = 'https://example.test/changed.png';
+    expect(windows.read(GROUP)[0]?.media?.images[0]?.url).toBe('https://example.test/original.png');
+  });
+
+  it('entries/read 返回深只读快照，新事件不会出现在旧快照中', () => {
+    const windows = store();
+    windows.observe(
+      msg('m1', '[图片]', T0, {
+        parts: [{ type: 'image', url: 'https://example.test/original.png' }],
+      })
+    );
+    const snapshot = windows.for(GROUP).entries;
+    expect(() => Object.assign(snapshot, { 0: undefined })).toThrow();
+    expect(() => Object.assign(snapshot[0]!.media!.images[0]!, { url: 'changed' })).toThrow();
+    windows.observe(msg('m2', '新的事件', T0 + 1));
+    expect(snapshot).toHaveLength(1);
+    expect(windows.read(GROUP)).toHaveLength(2);
+  });
+
+  it('策略输入在构造后不能被外部改写', () => {
+    const allowlist = [GROUP];
+    const windows = new ObservationWindowStore({ allowlist });
+    allowlist.length = 0;
+    expect(windows.observe(msg('m1', '仍在白名单内'))).toBe(true);
+  });
+
+  it('固定种子的乱序事件始终满足窗口条数与TTL不变量', () => {
+    const windows = store({ maxMessages: 7, maxAgeMs: 200 });
+    let seed = 0x13579;
+    let newest = T0;
+    for (let index = 0; index < 300; index += 1) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const ts = T0 + (seed % 1000);
+      newest = Math.max(newest, ts);
+      windows.observe(msg(`m${index}`, `seed:${seed}`, ts));
+      const retained = windows.read(GROUP);
+      expect(retained.length).toBeLessThanOrEqual(7);
+      expect(retained.every((entry) => entry.ts >= newest - 200)).toBe(true);
+    }
   });
 });

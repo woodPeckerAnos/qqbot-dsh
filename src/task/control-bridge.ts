@@ -1,22 +1,23 @@
+import type { DeepReadonly } from '@qqbot/contracts';
 /**
  * 把 Task 管理工具绑定到原始输入身份；模型只能传 taskId，不能指定 Session 或角色。
  * 查询限本 Session，取消还要求目标先于调用者创建；普通成员限本人旧 Task。
  * 接受取消后调用 Actor 的执行取消接缝，已入队消息保留。
  */
-import type { TaskLifeCycleManager } from './lifecycle.js';
-import type { TaskSnapshot } from './types.js';
+import type { TaskLifeCycleManager } from '@qqbot/contracts';
+import type { TaskSnapshot } from '@qqbot/contracts';
 export class TaskControlBridge {
   constructor(
     private readonly manager: TaskLifeCycleManager,
     private readonly cancelTask: (id: string) => void
   ) {}
   /** 闭包捕获可信快照，后续输入或模型参数不能改变调用者权限。 */
-  bind(caller: Readonly<TaskSnapshot>) {
+  bind(caller: DeepReadonly<TaskSnapshot>) {
     const key = caller.input.message.target.key;
     return {
       query: (taskId?: string) => {
         const tasks = taskId
-          ? [this.manager.get(taskId)].filter((t): t is Readonly<TaskSnapshot> => !!t)
+          ? [this.manager.get(taskId)].filter((t): t is DeepReadonly<TaskSnapshot> => !!t)
           : this.manager.list(key);
         return tasks
           .filter((t) => t.input.message.target.key === key)

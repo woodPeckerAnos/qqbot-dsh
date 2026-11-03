@@ -6,6 +6,13 @@
  * CRC 没写、条目数不对这类真实 bug。
  */
 
+/**
+ * zip.ts 单测：store-only ZIP 结构的正确性。
+ *
+ * 测试里用一个最小只读解析器（读 EOCD → 中央目录 → 按 local header offset
+ * 取回条目内容与 CRC）做整包校验——比"看看 PK 头"强，能抓住偏移量算错、
+ * CRC 没写、条目数不对这类真实 bug。
+ */
 import { describe, expect, it } from 'vitest';
 import { crc32 } from 'node:zlib';
 

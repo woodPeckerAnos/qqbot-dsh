@@ -1,3 +1,9 @@
+import type {
+  OffpeakGateConfig,
+  GateDecision,
+  OffpeakOverride,
+  OffpeakSnapshot,
+} from '@qqbot/contracts';
 /**
  * 谷时段闸：运行时判定（evaluateGate）与有状态服务（OffpeakGate）。
  *
@@ -8,11 +14,11 @@
  *   到 stateDir。当前生效配置 = env 默认 + 运行期覆盖，每次调用现算，
  *   改完下一条消息即生效。
  */
-
 import { readFileSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { Logger } from '../logger.js';
+import { readonlySnapshot, failure, type DeepReadonly } from '@qqbot/contracts';
+import type { Logger } from '@qqbot/contracts';
 import {
   dateStringInTimeZone,
   isValidDateString,
@@ -24,31 +30,16 @@ import {
   formatMinutes,
   formatWindow,
   isInOffpeakWindows,
-  OffpeakConfigError,
   parseWindowRange,
-  type OffpeakWindow,
 } from './windows.js';
+import { OffpeakConfigError } from '@qqbot/contracts';
+import type { OffpeakWindow } from '@qqbot/contracts';
 
-export interface OffpeakGateConfig {
-  enabled: boolean;
-  /** 一天内的谷时段窗口列表（工作日生效；节假日/周末按配置全天谷价） */
-  windows: readonly OffpeakWindow[];
-  timeZone: string;
-  /** 命中判定：`<provider>/<model>` 包含该子串（大小写不敏感）时视为 DeepSeek 计费模型 */
-  modelPattern: string;
-  /** 周六、周日全天谷价（DeepSeek 2026-08-23 起规则，自动覆盖调休上班的周末） */
-  weekendsAllDay: boolean;
-  /** 全天谷价的日期表（YYYY-MM-DD）：内置官方节假日 + env/管理员追加 */
-  holidays: ReadonlySet<string>;
-}
+export type { OffpeakGateConfig } from '@qqbot/contracts';
 
-export type GateReason =
-  'admin' | 'disabled' | 'model-mismatch' | 'weekend' | 'holiday' | 'in-window' | 'peak-hours';
+export type { GateReason } from '@qqbot/contracts';
 
-export interface GateDecision {
-  gated: boolean;
-  reason: GateReason;
-}
+export type { GateDecision } from '@qqbot/contracts';
 
 export function evaluateGate(args: {
   config: OffpeakGateConfig;
@@ -79,32 +70,10 @@ export function evaluateGate(args: {
 // 运行期覆盖（热切换）+ 持久化
 // ---------------------------------------------------------------------------
 
-export interface OffpeakOverride {
-  enabled?: boolean;
-  windows?: readonly OffpeakWindow[];
-  /** 在默认节假日表上追加的日期（YYYY-MM-DD） */
-  holidaysAdd?: string[];
-  /** 从默认节假日表里移除的日期（YYYY-MM-DD） */
-  holidaysDel?: string[];
-  updatedBy: string;
-  updatedAt: number;
-}
+export type { OffpeakOverride } from '@qqbot/contracts';
 
 /** /metrics 里暴露的闸状态快照。 */
-export interface OffpeakSnapshot {
-  enabled: boolean;
-  /** 生效的窗口列表，已格式化为显示串（如 `00:00–09:00`） */
-  windows: string[];
-  timeZone: string;
-  modelPattern: string;
-  weekendsAllDay: boolean;
-  /** 生效的节假日表覆盖到哪天（取最大日期，便于发现"数据过期"） */
-  holidaysCount: number;
-  holidaysCoverageUntil?: string;
-  overridden: boolean;
-  updatedBy?: string;
-  updatedAt?: number;
-}
+export type { OffpeakSnapshot } from '@qqbot/contracts';
 
 /**
  * 覆盖文件的磁盘格式（窗口存可读的 HH:MM，便于人工排查）。
@@ -132,16 +101,18 @@ export class OffpeakGate {
       filePath: string;
       logger: Logger;
       now?: () => number;
+      persistOverride?: (file: string, text: string) => void;
     }
   ) {
+    this.options = { ...options, defaults: readonlySnapshot(options.defaults) };
     this.override = this.load();
   }
 
   /** 当前生效配置 = env 默认 + 运行期覆盖。每次调用现算，改完下条消息即生效。 */
-  effective(): OffpeakGateConfig {
+  effective(): DeepReadonly<OffpeakGateConfig> {
     const base = this.options.defaults;
     const override = this.override;
-    if (override === undefined) return base;
+    if (override === undefined) return readonlySnapshot(base);
     let holidays = base.holidays;
     if ((override.holidaysAdd?.length ?? 0) > 0 || (override.holidaysDel?.length ?? 0) > 0) {
       const merged = new Set(base.holidays);
@@ -149,21 +120,21 @@ export class OffpeakGate {
       for (const date of override.holidaysDel ?? []) merged.delete(date);
       holidays = merged;
     }
-    return {
+    return readonlySnapshot({
       enabled: override.enabled ?? base.enabled,
       windows: override.windows ?? base.windows,
       timeZone: base.timeZone,
       modelPattern: base.modelPattern,
       weekendsAllDay: base.weekendsAllDay,
       holidays,
-    };
+    });
   }
 
-  snapshot(): OffpeakSnapshot {
+  snapshot(): DeepReadonly<OffpeakSnapshot> {
     const effective = this.effective();
     const override = this.override;
     const sorted = [...effective.holidays].sort();
-    return {
+    return readonlySnapshot({
       enabled: effective.enabled,
       windows: effective.windows.map(formatWindow),
       timeZone: effective.timeZone,
@@ -175,11 +146,11 @@ export class OffpeakGate {
       ...(override !== undefined
         ? { updatedBy: override.updatedBy, updatedAt: override.updatedAt }
         : {}),
-    };
+    });
   }
 
   /** 追加一个全天谷价日期。日期非法抛 OffpeakConfigError。 */
-  addHoliday(date: string, actor: string): OffpeakGateConfig {
+  addHoliday(date: string, actor: string): DeepReadonly<OffpeakGateConfig> {
     const normalized = date.trim();
     if (!isValidDateString(normalized)) {
       throw new OffpeakConfigError(`日期必须是真实存在的 YYYY-MM-DD，收到 ${JSON.stringify(date)}`);
@@ -187,19 +158,18 @@ export class OffpeakGate {
     const add = (this.override?.holidaysAdd ?? []).filter((item) => item !== normalized);
     const del = (this.override?.holidaysDel ?? []).filter((item) => item !== normalized);
     add.push(normalized);
-    this.override = {
+    this.commitOverride({
       ...this.override,
       holidaysAdd: [...add].sort(),
       holidaysDel: [...del].sort(),
       updatedBy: actor,
       updatedAt: this.now(),
-    };
-    this.persist();
+    });
     return this.effective();
   }
 
   /** 移除一个全天谷价日期（从默认表与追加表中同时剔除）。 */
-  delHoliday(date: string, actor: string): OffpeakGateConfig {
+  delHoliday(date: string, actor: string): DeepReadonly<OffpeakGateConfig> {
     const normalized = date.trim();
     if (!isValidDateString(normalized)) {
       throw new OffpeakConfigError(`日期必须是真实存在的 YYYY-MM-DD，收到 ${JSON.stringify(date)}`);
@@ -207,20 +177,18 @@ export class OffpeakGate {
     const add = (this.override?.holidaysAdd ?? []).filter((item) => item !== normalized);
     const del = (this.override?.holidaysDel ?? []).filter((item) => item !== normalized);
     del.push(normalized);
-    this.override = {
+    this.commitOverride({
       ...this.override,
       holidaysAdd: [...add].sort(),
       holidaysDel: [...del].sort(),
       updatedBy: actor,
       updatedAt: this.now(),
-    };
-    this.persist();
+    });
     return this.effective();
   }
 
-  setEnabled(enabled: boolean, actor: string): OffpeakGateConfig {
-    this.override = { ...this.override, enabled, updatedBy: actor, updatedAt: this.now() };
-    this.persist();
+  setEnabled(enabled: boolean, actor: string): DeepReadonly<OffpeakGateConfig> {
+    this.commitOverride({ ...this.override, enabled, updatedBy: actor, updatedAt: this.now() });
     return this.effective();
   }
 
@@ -230,24 +198,22 @@ export class OffpeakGate {
    * 窗口的解析与校验由 windows.ts 的 parseWindowsSpec 负责（它在那里抛
    * OffpeakConfigError），这里只接收已解析的结果，避免两处各写一套校验。
    */
-  setWindows(windows: readonly OffpeakWindow[], actor: string): OffpeakGateConfig {
+  setWindows(windows: readonly OffpeakWindow[], actor: string): DeepReadonly<OffpeakGateConfig> {
     if (windows.length === 0) {
       throw new OffpeakConfigError('谷时段窗口不能为空，至少需要一个 HH:MM-HH:MM');
     }
     assertNoOverlap(windows);
-    this.override = {
+    this.commitOverride({
       ...this.override,
-      windows: [...windows],
+      windows: structuredClone(windows),
       updatedBy: actor,
       updatedAt: this.now(),
-    };
-    this.persist();
+    });
     return this.effective();
   }
 
   clearOverride(actor: string): void {
-    this.override = undefined;
-    this.persist();
+    this.commitOverride(undefined);
     this.options.logger.info('谷时段闸覆盖已清除，恢复 env 默认', { actor });
   }
 
@@ -260,7 +226,12 @@ export class OffpeakGate {
     let raw: string;
     try {
       raw = readFileSync(this.options.filePath, 'utf8');
-    } catch {
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== 'ENOENT')
+        this.options.logger.warn('谷时段覆盖读取失败，使用默认值', {
+          code: 'UPSTREAM_FAILED',
+          errorId: this.options.logger.cause(cause, 'persistence'),
+        });
       return undefined; // 文件不存在是常态（首次启动）
     }
     try {
@@ -302,8 +273,12 @@ export class OffpeakGate {
   }
 
   /** 原子写覆盖文件：先写临时文件再 rename，避免进程崩溃留下半个 JSON。 */
-  private persist(): void {
-    const override = this.override;
+  private commitOverride(candidate: OffpeakOverride | undefined): void {
+    this.persist(candidate);
+    this.override = candidate;
+  }
+
+  private persist(override: OffpeakOverride | undefined): void {
     const file: OverrideFile =
       override === undefined
         ? {}
@@ -327,16 +302,22 @@ export class OffpeakGate {
               : {}),
           };
     try {
+      const text = `${JSON.stringify(file, null, 2)}\n`;
+      if (this.options.persistOverride) {
+        this.options.persistOverride(this.options.filePath, text);
+        return;
+      }
       mkdirSync(dirname(this.options.filePath), { recursive: true });
       const tmp = `${this.options.filePath}.tmp`;
-      writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, 'utf8');
+      writeFileSync(tmp, text, 'utf8');
       renameSync(tmp, this.options.filePath);
     } catch (error) {
-      // 持久化失败不阻断本次切换（内存里已生效），但必须告警：重启后会丢。
-      this.options.logger.warn('谷时段闸覆盖持久化失败，重启后将回落到 env 默认', {
-        file: this.options.filePath,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      const info = failure(
+        'PERSISTENCE_FAILED',
+        error,
+        this.options.logger.cause(error, 'persistence')
+      );
+      throw Object.assign(new Error('谷时段覆盖保存失败', { cause: error }), { error: info });
     }
   }
 }

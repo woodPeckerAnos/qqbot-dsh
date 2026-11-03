@@ -4,18 +4,22 @@
  * 位置理由：在闸之后——被拦截的消息不进对话记录，避免伪造的 turn
  * 混进会话历史污染回放；在准入之前——消息先落盘再排队，崩溃也不丢。
  */
-
-import type { ConversationStore } from '../../store/conversations.js';
-import type { IngressStage } from './types.js';
+import type { ConversationStore } from '@qqbot/contracts';
+import type { IngressStage } from '@qqbot/contracts';
 
 export function createRecordStage(deps: { conversations: ConversationStore }): IngressStage {
   return async (ctx, next) => {
-    deps.conversations.append(ctx.message.target.key, {
+    const result = deps.conversations.appendResult(ctx.message.target.key, {
       role: 'user',
       speaker: ctx.message.username ?? ctx.message.senderId,
       text: ctx.message.content,
       ts: ctx.message.ts,
     });
+    if (!result.ok)
+      ctx.logger.warn('对话记录写入降级', {
+        code: result.error.code,
+        errorId: ctx.logger.cause(result.error.cause, 'persistence'),
+      });
     await next();
   };
 }

@@ -8,6 +8,15 @@
  *   - 事件归一化（尤其是 @前缀已被平台剥离、时间戳解析）。
  */
 
+/**
+ * 网关状态机单测（用假 WebSocket，全离线）。
+ *
+ * 这一层的问题表现为"机器人看着在线但永远不回消息"，所以重点测：
+ *   - Hello → Identify 的帧形态（token 前缀、intents、shard）；
+ *   - 心跳携带最后收到的 seq；
+ *   - 4009 走 Resume、4006 走重新 Identify；
+ *   - 事件归一化（尤其是 @前缀已被平台剥离、时间戳解析）。
+ */
 import { describe, expect, it, vi } from 'vitest';
 
 import { createNullLogger } from '../src/logger.js';

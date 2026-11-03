@@ -1,3 +1,12 @@
+import { MIN_QUESTION_CHARS, DEFAULT_ACTIVITY_WINDOW_MS } from '@qqbot/contracts';
+import type {
+  ObservationWindow,
+  ObservationWindowStore,
+  PendingQuestion,
+  QuestionClosedCause,
+  QuestionClosedEvent,
+  ConversationStateOptions,
+} from '@qqbot/contracts';
 /**
  * ① 搜集层的**会话状态**：旁听缓冲 + 未答问题台账 + 无人回应计数 + bot 参与窗口
  * + **话题 session**（主动发言的唯一放行闸门）。
@@ -28,16 +37,12 @@
  * | `botSpeaksInWindow` | 同上 | 活动窗口过期（无新消息） |
  * | 未答问题 | 检测到疑问句时登记 | 被答/超时/被自己撤回 |
  */
-
-import type { NormalizedMessage } from '../../../core/connector.js';
-import {
-  ObservationWindow,
-  ObservationWindowStore,
-  toObservationEntry,
-  type ObservationEntry,
-} from '../../../store/window.js';
+import type { NormalizedMessage } from '@qqbot/contracts';
+import { readonlySnapshot, type DeepReadonly } from '@qqbot/contracts';
+import { toObservationEntry } from '../../../store/index.js';
+import type { ObservationEntry } from '@qqbot/contracts';
 import { randomUUID } from 'node:crypto';
-import type { SessionCloseCause, SessionClosedEvent, TopicSession } from '../contract.js';
+import type { SessionCloseCause, SessionClosedEvent, TopicSession } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 数据类型
@@ -53,43 +58,13 @@ import type { SessionCloseCause, SessionClosedEvent, TopicSession } from '../con
 export type { ObservationEntry };
 
 /** 未答问题台账的一条。 */
-export interface PendingQuestion {
-  readonly id: string;
-  readonly msgId: string;
-  readonly askerId: string;
-  readonly askerName?: string;
-  readonly text: string;
-  readonly topicId: string;
-  readonly askedAt: number;
-  /** 已经探针过几次（上限由 watcher 与 veto 策略决定） */
-  probes: number;
-  state: 'open' | 'answered' | 'expired' | 'silenced';
-  /**
-   * 该问题已经"让路"过几次（与 `VetoPolicy.maxWaitPerItem` 比）。
-   *
-   * 生命周期与问题本身一致：问题还在台账里就累计，问题关闭即随票据一起作废。
-   * 记在**问题这一行**上（而不是会话上）是项目纪律的直接应用：
-   * 「状态只按会话/话题/问题/花费窗口记账，永不按场景记账」
-   * （架构文档 §3.0），同时把"等待"从会话级收窄为条目级。
-   */
-  yieldBudgetUsed: number;
-  /**
-   * 最近一次**真正跑到判定**的时刻（挂起问题版本）。
-   *
-   * 用途：唤醒前的第二道本地检查——"转录自上次判定以来无新增"就不调 LLM。
-   * `undefined` = 还没判定过（此时一律按"有新增"处理，宁可多查一次）。
-   */
-  lastEvaluatedAt?: number;
-}
+export type { PendingQuestion } from '@qqbot/contracts';
 
 /** 问题关闭的原因（回调里带出去，供调度层作废票据时记账）。 */
-export type QuestionClosedCause = 'answered' | 'expired' | 'window-reset';
+export type { QuestionClosedCause } from '@qqbot/contracts';
 
 /** 台账里一条问题关闭时的通知载荷。 */
-export interface QuestionClosedEvent {
-  readonly id: string;
-  readonly cause: QuestionClosedCause;
-}
+export type { QuestionClosedEvent } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 问题识别（本地、纯函数、宁漏不误报）
@@ -111,7 +86,7 @@ const PURE_MEDIA_PLACEHOLDER = /^\s*(\[[^\]]{1,32}\]\s*)+$/;
  *   4. 去掉问号后至少 `MIN_QUESTION_CHARS` 个字符——"?"或"在?"这种不算问题，
  *      否则场景 3 会在群里任何一句敷衍话上触发。
  */
-export const MIN_QUESTION_CHARS = 4;
+export { MIN_QUESTION_CHARS } from '@qqbot/contracts';
 
 export function looksLikeQuestion(text: string): boolean {
   const trimmed = text.trim();
@@ -127,14 +102,7 @@ export function looksLikeQuestion(text: string): boolean {
 // 会话状态
 // ---------------------------------------------------------------------------
 
-export interface ConversationStateOptions {
-  /** 活动窗口：多久没新消息就算"话题翻篇"（bot 参与窗口与计数一并失效） */
-  activityWindowMs?: number;
-  /** 未答问题台账上限 */
-  maxQuestions?: number;
-  /** 挂了多久仍无人应答就作废（防止台账把十分钟前的问题一直当"挂起"） */
-  questionTtlMs?: number;
-}
+export type { ConversationStateOptions } from '@qqbot/contracts';
 
 /**
  * 默认活动窗口（毫秒）：静默这么久就算话题翻篇。watcher 与 veto 上下文共用它。
@@ -143,12 +111,13 @@ export interface ConversationStateOptions {
  * 那个决定"我们记得多久"（由 `store/window.ts` 持有），这个决定"当前话题有多长"
  * （判定层的口径）。前者宽、后者窄，是有意的——判定要能回看，计数只算当下。
  */
-export const DEFAULT_ACTIVITY_WINDOW_MS = 10 * 60_000;
+export { DEFAULT_ACTIVITY_WINDOW_MS } from '@qqbot/contracts';
 
 export const DEFAULT_STATE_OPTIONS: Required<ConversationStateOptions> = {
   activityWindowMs: DEFAULT_ACTIVITY_WINDOW_MS,
   maxQuestions: 20,
   questionTtlMs: 30 * 60_000,
+  idFactory: randomUUID,
 };
 
 export class ConversationState {
@@ -184,8 +153,9 @@ export class ConversationState {
    *
    * 类型与 `TopicSession` 同构（那份是 readonly 的**对外视图**，这里是可变实现）。
    */
-  private topicBudgetId = randomUUID();
+  private topicBudgetId: string;
   private readonly committedTasks = new WeakMap<object, number>();
+  private readonly sessionIdentities = new WeakMap<object, object>();
   private topicSession?: { openedAt: number; budgetLeft: number; lastSpokeAt?: number };
   /**
    * 该会话**上次进入判定**的时刻（会话级字段，见 docs/TOPIC-SESSION-REQUIREMENT.md §三）。
@@ -228,6 +198,7 @@ export class ConversationState {
     this.convKey = convKey;
     this.window = window;
     this.options = { ...DEFAULT_STATE_OPTIONS, ...options };
+    this.topicBudgetId = this.options.idFactory();
   }
 
   // --- 写入 -----------------------------------------------------------------
@@ -312,7 +283,7 @@ export class ConversationState {
    * 关闭后立即返回 `undefined`——"关闭后下次唤醒回到流程 ①"靠的就是这一条。
    */
   get session(): TopicSession | undefined {
-    return this.topicSession;
+    return this.topicSession && this.sessionSnapshot(this.topicSession);
   }
 
   /**
@@ -324,7 +295,7 @@ export class ConversationState {
    */
   openSession(now: number, budget: number): boolean {
     if (this.topicSession !== undefined) return false;
-    this.topicBudgetId = randomUUID();
+    this.topicBudgetId = this.options.idFactory();
     this.topicSession = {
       openedAt: now,
       budgetLeft: Math.max(0, Math.trunc(budget)),
@@ -377,14 +348,14 @@ export class ConversationState {
    * 就建立在"只有这一个出口"上。
    */
   committedTaskCount(session: TopicSession): number {
-    return this.committedTasks.get(session) ?? 0;
+    return this.committedTasks.get(this.sessionIdentities.get(session) ?? session) ?? 0;
   }
 
   closeSession(cause: SessionCloseCause): boolean {
     const session = this.topicSession;
     if (session === undefined) return false;
     this.topicSession = undefined;
-    const event: SessionClosedEvent = { cause, session };
+    const event: SessionClosedEvent = { cause, session: this.sessionSnapshot(session) };
     for (const listener of this.sessionClosedListeners) listener(event);
     return true;
   }
@@ -465,7 +436,7 @@ export class ConversationState {
    * 上下文整段抹掉会让判定看不懂指代（"这个"指的是什么）。计数类
    * （`messageCount` / `humanParticipants`）才按活动窗口过滤。
    */
-  get entries(): readonly ObservationEntry[] {
+  get entries(): DeepReadonly<ObservationEntry[]> {
     return this.window.entries;
   }
 
@@ -530,15 +501,16 @@ export class ConversationState {
   }
 
   /** 当前**仍挂起**的问题（按提问时间升序；已过期/已答/已静默的不返回）。 */
-  pendingQuestions(now: number): readonly PendingQuestion[] {
+  pendingQuestions(now: number): DeepReadonly<PendingQuestion[]> {
     this.expireQuestions(now);
-    return [...this.questions.values()]
+    const questions = [...this.questions.values()]
       .filter((question) => question.state === 'open')
       .sort((left, right) => left.askedAt - right.askedAt);
+    return readonlySnapshot(questions);
   }
 
-  get questionsById(): ReadonlyMap<string, PendingQuestion> {
-    return this.questions;
+  get questionsById(): DeepReadonly<Map<string, PendingQuestion>> {
+    return readonlySnapshot(this.questions);
   }
 
   /**
@@ -607,6 +579,12 @@ export class ConversationState {
   }
 
   // --- 内部 -----------------------------------------------------------------
+
+  private sessionSnapshot(session: TopicSession): TopicSession {
+    const snapshot = readonlySnapshot(session);
+    this.sessionIdentities.set(snapshot, session);
+    return snapshot;
+  }
 
   /**
    * 关闭一条问题（幂等）：只在**从挂起变为关闭**的那一次通知监听者。
@@ -711,7 +689,7 @@ export class ConversationStateStore {
    */
   constructor(windows: ObservationWindowStore, options: ConversationStateOptions = {}) {
     this.windows = windows;
-    this.options = options;
+    this.options = { ...options };
   }
 
   /** 取（或首次创建）某会话的状态。 */

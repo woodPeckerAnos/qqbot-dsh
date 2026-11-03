@@ -1,3 +1,6 @@
+import { readonlySnapshot } from '@qqbot/contracts';
+import { TokenError } from '@qqbot/contracts';
+import type { TokenManagerOptions } from '@qqbot/contracts';
 /**
  * App Access Token 管理。
  *
@@ -14,30 +17,11 @@
  *      注意不是 `Bot <appid>.<token>`——那是旧文档里的写法，会 401。
  */
 
-import type { Logger } from '../../logger.js';
-import type { AppAccessTokenResponse } from './types.js';
+import type { AppAccessTokenResponse } from '@qqbot/contracts';
 
-export interface TokenManagerOptions {
-  appId: string;
-  appSecret: string;
-  apiBase: string;
-  logger: Logger;
-  /** 提前刷新窗口，默认 60 秒（与官方"临近过期 60 秒返回新 token"对齐） */
-  refreshAheadMs?: number;
-  /** 注入 fetch，便于单测 */
-  fetchImpl?: typeof fetch;
-  now?: () => number;
-}
+export type { TokenManagerOptions } from '@qqbot/contracts';
 
-export class TokenError extends Error {
-  constructor(
-    message: string,
-    readonly code?: number
-  ) {
-    super(message);
-    this.name = 'TokenError';
-  }
-}
+export { TokenError } from '@qqbot/contracts';
 
 /** 把 QQ 的鉴权错误码翻译成可操作的提示 */
 export function describeTokenError(code: number | undefined, message: string | undefined): string {
@@ -84,10 +68,10 @@ export class TokenManager {
   /** 供 health 展示 */
   snapshot(): { hasToken: boolean; expiresInMs: number } {
     const now = this.now();
-    return {
+    return readonlySnapshot({
       hasToken: this.token !== undefined,
       expiresInMs: this.token === undefined ? 0 : Math.max(0, this.expiresAt - now),
-    };
+    });
   }
 
   private now(): number {

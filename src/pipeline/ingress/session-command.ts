@@ -1,6 +1,7 @@
-import type { SessionActor } from '../../task/session-actor.js';
-import type { PipelineStats } from '../stats.js';
-import { logInputShortcut, type IngressStage } from './types.js';
+import type { SessionActor } from '@qqbot/contracts';
+import type { PipelineStats } from '@qqbot/contracts';
+import { logInputShortcut } from './types.js';
+import type { IngressStage } from '@qqbot/contracts';
 /** 整句匹配控制命令，兼容官方 @ 前缀；/reset 是 /new 的别名。 */
 export function parseSessionCommand(content: string): 'stop' | 'new' | undefined {
   const text = content
@@ -26,7 +27,7 @@ export class SessionCommandRouter {
         await context.responder.error('无权限：/stop 和 /new 仅限管理员（BOT_ADMINS 白名单）。');
         return;
       }
-      this.options.stats.sessionCommands++;
+      this.options.stats.record('sessionCommands');
       logInputShortcut(context, 'session-command', `command-${command}`);
       const key = context.message.target.key;
       if (command === 'stop') {

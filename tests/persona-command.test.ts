@@ -2,6 +2,9 @@
  * /persona 命令单测：解析形态 + 管理员闸门 + 命令行为（全离线）。
  */
 
+/**
+ * /persona 命令单测：解析形态 + 管理员闸门 + 命令行为（全离线）。
+ */
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

@@ -1,3 +1,5 @@
+import { DAY_MINUTES, OffpeakConfigError } from '@qqbot/contracts';
+import type { OffpeakWindow } from '@qqbot/contracts';
 /**
  * 谷时段窗口：解析、格式化与命中判定。
  *
@@ -17,20 +19,12 @@
  * - 支持跨零点（如 `22:00–06:00`，此时 `startMin > endMin`）；
  * - `endMin` 允许取 {@link DAY_MINUTES}，表示 `24:00`（当天结束）。
  */
-export interface OffpeakWindow {
-  startMin: number;
-  endMin: number;
-}
+export type { OffpeakWindow } from '@qqbot/contracts';
 
 /** 一天的总分钟数。`endMin` 取该值等价于写 `24:00`。 */
-export const DAY_MINUTES = 24 * 60;
+export { DAY_MINUTES } from '@qqbot/contracts';
 
-export class OffpeakConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'OffpeakConfigError';
-  }
-}
+export { OffpeakConfigError } from '@qqbot/contracts';
 
 const HH_MM = /^(\d{1,2}):(\d{2})$/;
 

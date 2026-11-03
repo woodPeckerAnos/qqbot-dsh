@@ -1,3 +1,4 @@
+import type { BotReferenceHit } from '@qqbot/contracts';
 /**
  * ① **搜集层**：本地、零 LLM 成本地找出"哪些场景有可能成立"。
  *
@@ -10,19 +11,18 @@
  * 全局保险（"没人理我就停"）刻意放在这一层的**入口**而不是某个场景的
  * `precheck` 里：没人理是会话级事实，写进某个场景会让别的场景绕过它。
  */
-
-import type { InterestPool } from '../interests/pool.js';
-import type { ConversationState } from './state.js';
-import {
-  sceneOrder,
-  type SceneCandidate,
-  type SceneDefinition,
-  type SceneEvidence,
-  type SceneHit,
-  type SceneId,
-  type ScenePrecheckContext,
-  type SceneTrigger,
-} from '../contract.js';
+import type { InterestPool } from '@qqbot/contracts';
+import type { ConversationState } from '@qqbot/contracts';
+import { sceneOrder } from '@qqbot/contracts';
+import type {
+  SceneCandidate,
+  SceneDefinition,
+  SceneEvidence,
+  SceneHit,
+  SceneId,
+  ScenePrecheckContext,
+  SceneTrigger,
+} from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 场景 4 的指代检测（搜集层最"重"的一段本地逻辑）
@@ -54,11 +54,7 @@ const ADDRESS_CUES = [
   '有没有',
 ];
 
-export interface BotReferenceHit {
-  /** 'alias' = 命中精确别名（高置信）；'generic' = 泛称 + 动作词（需 LLM 复核） */
-  kind: 'alias' | 'generic';
-  matched: string;
-}
+export type { BotReferenceHit } from '@qqbot/contracts';
 
 export function detectBotReference(input: {
   text: string;

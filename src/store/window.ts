@@ -1,3 +1,18 @@
+import {
+  DEFAULT_OBSERVATION_MAX_MESSAGES,
+  DEFAULT_OBSERVATION_MAX_AGE_MS,
+  WINDOW_BLOCK_MAX_CHARS,
+} from '@qqbot/contracts';
+import type {
+  ObservationEntry,
+  ObservationPolicy,
+  ReadWindowOptions,
+  WindowMediaRef,
+  WindowMediaSelection,
+  CollectWindowMediaOptions,
+  PendingRecordRef,
+  RenderWindowOptions,
+} from '@qqbot/contracts';
 /**
  * 观察窗口（旁听滚窗）：**全局**共享的"群里刚刚说了什么"。
  *
@@ -33,14 +48,14 @@
  * 图"——而这正是最常被 @ 的场景。引用在写入时只存不取，由 `collectWindowMedia`
  * 在注入时按配额挑出来，再交给与当前消息**同一条**下载/降采样/落盘通路。
  */
-
-import type { MessageImagePart, MessageMediaPart, NormalizedMessage } from '../core/connector.js';
+import type { MessageImagePart, MessageMediaPart, NormalizedMessage } from '@qqbot/contracts';
+import { readonlySnapshot, type DeepReadonly } from '@qqbot/contracts';
 import {
   flattenParts,
   messageForwardRefIds,
   messageImageParts,
   messageMediaParts,
-} from '../core/content.js';
+} from '../content/index.js';
 
 // ---------------------------------------------------------------------------
 // 白名单（纯函数：介入层与本模块共用同一份判据）
@@ -79,36 +94,7 @@ export function matchesGroupAllowlist(convKey: string, allowlist: readonly strin
  * 一个 `isBot`：判定层需要知道"哪句是我说的"（场景 1 的判据），被动注入同样
  * 需要——否则模型看到群友追问却看不到自己刚回答过什么。
  */
-export interface ObservationEntry {
-  readonly reference?: import('../core/connector.js').OriginalMessageReference;
-  readonly taskId?: string;
-  readonly lane?: 'fast' | 'slow';
-  readonly msgId: string;
-  readonly eventId: string;
-  readonly senderId: string;
-  readonly senderName?: string;
-  readonly text: string;
-  readonly ts: number;
-  /** 这条消息是否**已经把疑问抛给 bot**（@ 了 bot 或接着 bot 的话说）。 */
-  readonly addressed: boolean;
-  /** 是否是 bot 自己的发言（被动回复或主动发言）。渲染时标成「我」。 */
-  readonly isBot?: boolean;
-  /**
-   * 这条消息里的**媒体引用**（只有地址/标识，没有字节）。
-   *
-   * 见 {@link ObservationMedia}：`text` 里的 `[图片: x.jpg]` 只是占位，光有它
-   * 不足以让模型看到那张图。
-   */
-  readonly media?: ObservationMedia;
-  /**
-   * 这条消息里**还没展开**的聊天记录 id（合并转发；按出现顺序）。
-   *
-   * 刻意不进 `text`：聊天记录一条动辄几十条发言，当"普通群聊上下文"灌进去既烧
-   * token 又把真正在聊的事淹掉。只有被 @ 且这次的问题**明确提到**它时，才凭这个
-   * id 去回查（见 {@link latestPendingRecord} 与 `BotConnector.fetchForward`）。
-   */
-  readonly recordIds?: readonly string[];
-}
+export type { ObservationEntry } from '@qqbot/contracts';
 
 /**
  * 一条消息里能取到字节的媒体引用。
@@ -130,17 +116,7 @@ export interface ObservationEntry {
  *
  * 纪律与窗口本体一致：**只存引用、不存字节、不落盘**。
  */
-export interface ObservationMedia {
-  /** 图片（含引用消息里的图片；转发块里的不在这里，见 `core/content.ts` 的说明） */
-  images: readonly MessageImagePart[];
-  /**
-   * 文件（`mediaKind === 'file'`）。
-   *
-   * 视频等其它形态**刻意不收**：当前消息的处理面也只到"渲染成一行标记"，
-   * 窗口里多留一份只会让"清单里有的却没读"看起来像 bug。
-   */
-  files: readonly MessageMediaPart[];
-}
+export type { ObservationMedia } from '@qqbot/contracts';
 
 /**
  * 把一条归一化消息变成窗口条目——**唯一的转换点**。
@@ -170,18 +146,11 @@ export function toObservationEntry(
   };
 }
 
-export interface ObservationPolicy {
-  /** 观察范围：只有落在白名单里的会话才入窗（空 = 不观察任何会话） */
-  allowlist: readonly string[];
-  /** 每会话保留的消息条数上限 */
-  maxMessages?: number;
-  /** 每条消息在窗口里的最长保留时长（毫秒） */
-  maxAgeMs?: number;
-}
+export type { ObservationPolicy } from '@qqbot/contracts';
 
 /** 保留期的默认值（沿用介入层搬过来的原值，避免行为漂移）。 */
-export const DEFAULT_OBSERVATION_MAX_MESSAGES = 200;
-export const DEFAULT_OBSERVATION_MAX_AGE_MS = 30 * 60_000;
+export { DEFAULT_OBSERVATION_MAX_MESSAGES } from '@qqbot/contracts';
+export { DEFAULT_OBSERVATION_MAX_AGE_MS } from '@qqbot/contracts';
 
 /**
  * 被 @ 时最多内联几张上下文里的图片（`observation.injectImages`）。
@@ -189,7 +158,7 @@ export const DEFAULT_OBSERVATION_MAX_AGE_MS = 30 * 60_000;
  * 2 的取法：最常见的形态是"发一张图 + @ 一句问"，第二张用于"这两张哪个好"；
  * 再往上就是拿背景图片烧 token 了——而真正被问的那张几乎总是最近的。
  */
-export const DEFAULT_OBSERVATION_INJECT_IMAGES = 2;
+export { DEFAULT_OBSERVATION_INJECT_IMAGES } from '@qqbot/contracts';
 
 /**
  * 被 @ 时最多摄取几个上下文里的文件（`observation.injectFiles`）。
@@ -197,23 +166,10 @@ export const DEFAULT_OBSERVATION_INJECT_IMAGES = 2;
  * 1 而不是 2：文件要下载 + 落 inbox + 可能起抽取子进程，"翻背景资料"通常
  * 只需要最近那一个（"这个 PDF 讲的是什么"）。
  */
-export const DEFAULT_OBSERVATION_INJECT_FILES = 1;
+export { DEFAULT_OBSERVATION_INJECT_FILES } from '@qqbot/contracts';
 
 /** 读取窗口的选项。三个条件同时生效（先按时间/条数裁，再排除指定消息）。 */
-export interface ReadWindowOptions {
-  /** 最多取多少条（取**最近**的 N 条，缺省不限） */
-  limit?: number;
-  /**
-   * 只取 `sinceTs` 之后的消息。
-   *
-   * 注意语义是"窗口起点"，不是"距现在多久"——调用方自己算
-   * `now - activityWindowMs`。这样时钟只有一个来源（调用方的 `now`），
-   * 本模块里不出现 `Date.now()`，单测因此可复现。
-   */
-  sinceTs?: number;
-  /** 排除某条消息（典型用法：排除当前这条触发消息，避免与单独渲染的当前行重复） */
-  excludeMsgId?: string;
-}
+export type { ReadWindowOptions } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 单个会话的窗口
@@ -230,6 +186,7 @@ export class ObservationWindow {
   private readonly maxMessages: number;
   private readonly maxAgeMs: number;
   private readonly buffer: ObservationEntry[] = [];
+  private newestTs = -Infinity;
 
   constructor(convKey: string, options: { maxMessages?: number; maxAgeMs?: number } = {}) {
     this.convKey = convKey;
@@ -267,7 +224,7 @@ export class ObservationWindow {
     text: string;
     ts: number;
     dryRun?: boolean;
-    reference?: import('../core/connector.js').OriginalMessageReference;
+    reference?: import('@qqbot/contracts').OriginalMessageReference;
     taskId?: string;
     lane?: 'fast' | 'slow';
   }): void {
@@ -290,7 +247,7 @@ export class ObservationWindow {
   /**
    * 直接写入一条（供委托方与测试使用）。
    *
-   * 清理用**窗口里的最新时间戳**（不是刚写进来的那条的）：平台事件时间未必有序
+   * 清理用**已观察来源时间的高水位**（不是刚写进来的那条的）：平台事件时间未必有序
    * ——转发的旧消息、补投的延迟消息、以及"进程睡过去再醒来"都会让 `ts` 回退。
    * 拿新条目的 `ts` 当基准会算出偏早的 cutoff，于是**什么都不淘汰**，窗口悄悄
    * 长到几百条却没人发现（单测踩过）。
@@ -299,12 +256,9 @@ export class ObservationWindow {
    * 留下，否则 OneBot 的秒级时间戳（`time * 1000`）下并发消息会被逐条吃掉。
    */
   observeEntry(entry: ObservationEntry): void {
-    this.buffer.push(entry);
-    let newest = entry.ts;
-    for (const item of this.buffer) {
-      if (item.ts > newest) newest = item.ts;
-    }
-    const cutoff = newest - this.maxAgeMs;
+    this.buffer.push(readonlySnapshot(entry));
+    this.newestTs = Math.max(this.newestTs, entry.ts);
+    const cutoff = this.newestTs - this.maxAgeMs;
     // **整段过滤**，不是"从头部 shift 直到遇到未过期的"：乱序到达的旧消息会落在
     // 缓冲中间，靠头部 shift 会在第一条未过期处停下，把中间的过期条目永远留下
     // （单测踩过）。窗口上限只有几百条，一次 filter 的代价可以忽略。
@@ -318,9 +272,9 @@ export class ObservationWindow {
 
   // --- 读取 -----------------------------------------------------------------
 
-  /** 当前保留的全部条目（按时间升序）。返回内部数组的只读视图，不要持有。 */
-  get entries(): readonly ObservationEntry[] {
-    return this.buffer;
+  /** 当前保留的全部条目。快照隔离内部引用，后续写入不会改写已读取的数据。 */
+  get entries(): DeepReadonly<ObservationEntry[]> {
+    return readonlySnapshot(this.buffer);
   }
 
   get size(): number {
@@ -338,7 +292,7 @@ export class ObservationWindow {
    * 实现刻意朴素（一次 `filter` + 一次 `slice`）：窗口上限是几百条，
    * 二分/索引带来的复杂度不值得，而"读到的与写入的完全一致"这件事更值钱。
    */
-  read(options: ReadWindowOptions = {}): readonly ObservationEntry[] {
+  read(options: ReadWindowOptions = {}): DeepReadonly<ObservationEntry[]> {
     const { sinceTs, excludeMsgId } = options;
     let result: readonly ObservationEntry[] = this.buffer;
     if (sinceTs !== undefined) {
@@ -351,7 +305,7 @@ export class ObservationWindow {
     if (limit !== undefined && limit >= 0 && result.length > limit) {
       result = result.slice(-limit);
     }
-    return result;
+    return readonlySnapshot(result);
   }
 
   /**
@@ -390,7 +344,7 @@ export class ObservationWindowStore {
   private readonly policy: ObservationPolicy;
 
   constructor(policy: ObservationPolicy) {
-    this.policy = policy;
+    this.policy = readonlySnapshot(policy);
   }
 
   /** 该会话是否在观察范围内（白名单；与介入层共用同一份判据）。 */
@@ -436,7 +390,7 @@ export class ObservationWindowStore {
       text: string;
       ts: number;
       dryRun?: boolean;
-      reference?: import('../core/connector.js').OriginalMessageReference;
+      reference?: import('@qqbot/contracts').OriginalMessageReference;
       taskId?: string;
       lane?: 'fast' | 'slow';
     }
@@ -447,8 +401,8 @@ export class ObservationWindowStore {
   }
 
   /** 只读读取（不创建窗口：读一个从未收过消息的会话应当返回空，而不是建一个）。 */
-  read(convKey: string, options: ReadWindowOptions = {}): readonly ObservationEntry[] {
-    return this.windows.get(convKey)?.read(options) ?? [];
+  read(convKey: string, options: ReadWindowOptions = {}): DeepReadonly<ObservationEntry[]> {
+    return this.windows.get(convKey)?.read(options) ?? readonlySnapshot([]);
   }
 
   /** 已建立窗口的会话数（health 展示用）。 */
@@ -465,7 +419,7 @@ export class ObservationWindowStore {
 
   /** 全部会话键（health / 排障用）。 */
   keys(): readonly string[] {
-    return [...this.windows.keys()];
+    return readonlySnapshot([...this.windows.keys()]);
   }
 }
 
@@ -474,47 +428,11 @@ export class ObservationWindowStore {
 // ---------------------------------------------------------------------------
 
 /** 滚窗里被选中送入 prompt 的一条媒体：带来源，说明文本才能指认"这是谁发的那张"。 */
-export interface WindowMediaRef<T> {
-  part: T;
-  /** 来自哪条消息（说明文本用 sender + placeholder 指认；这个给排障与测试用） */
-  msgId: string;
-  /** 发送者显示名（缺省退到 id） */
-  sender: string;
-  /**
-   * 这条媒体在窗口正文里的**原样占位文本**（`[图片: x.jpg]` / `[文件: a.pdf]`）。
-   *
-   * 说明文本里必须用它指认（而不是"第几张图"这种自造编号）：模型要能把它与
-   * `<群聊上下文>` 里那一行**逐字对上**——多个群友都发过图时，没有这个对应关系
-   * 就只能猜哪张是谁发的。
-   */
-  placeholder: string;
-}
+export type { WindowMediaRef } from '@qqbot/contracts';
 
-export interface WindowMediaSelection {
-  /** 选中的图片，**时间顺序**（与上下文块一致） */
-  images: WindowMediaRef<MessageImagePart>[];
-  /** 选中的文件，时间顺序 */
-  files: WindowMediaRef<MessageMediaPart>[];
-  /** 因配额没被选中的张数 / 个数（说明文本要如实说出来，不能让模型以为只有这些） */
-  imagesSkipped: number;
-  filesSkipped: number;
-}
+export type { WindowMediaSelection } from '@qqbot/contracts';
 
-export interface CollectWindowMediaOptions {
-  /** 最多选几张图（缺省 0 = 不选） */
-  maxImages?: number;
-  /** 最多选几个文件（缺省 0 = 不选） */
-  maxFiles?: number;
-  /**
-   * 已经随**当前这条消息**进来的媒体（url / fileId）。
-   *
-   * 为什么要排重：同一条消息既被 @ 又带图时它不在窗口里（注入时按 msgId 排除），
-   * 但**引用**场景会重叠——用户引用别人那条带图的消息再 @ bot，引用里的图按
-   * `messageImageParts` 已经要进来了，而那条被引用的消息十有八九也在窗口里。
-   * 送两遍既烧 token，又会让模型以为群里发了两张一样的图。
-   */
-  exclude?: { readonly urls: ReadonlySet<string>; readonly fileIds: ReadonlySet<string> };
-}
+export type { CollectWindowMediaOptions } from '@qqbot/contracts';
 
 /**
  * 从窗口条目里挑出要随本轮 prompt 送入的媒体（**纯函数**，不下载、不落盘）。
@@ -608,14 +526,7 @@ export function collectWindowMedia(
 // ---------------------------------------------------------------------------
 
 /** 窗口里等着被展开的一条聊天记录（最近的优先）。 */
-export interface PendingRecordRef {
-  /** 平台侧 id：交给 `BotConnector.fetchForward` 回查 */
-  refId: string;
-  /** 来自哪条消息（说明文本里指认"是谁发的那条"） */
-  msgId: string;
-  /** 发送者显示名（缺省退到 id） */
-  sender: string;
-}
+export type { PendingRecordRef } from '@qqbot/contracts';
 
 /**
  * 窗口里**最近一条**还没展开的聊天记录（没有则 undefined）。
@@ -651,21 +562,9 @@ export function latestPendingRecord(
 // ---------------------------------------------------------------------------
 
 /** 渲染正文的字符上限（超出从头部截断，保留最近的）。 */
-export const WINDOW_BLOCK_MAX_CHARS = 4_000;
+export { WINDOW_BLOCK_MAX_CHARS } from '@qqbot/contracts';
 
-export interface RenderWindowOptions {
-  /**
-   * 当前这条触发消息的 msgId：**从正文里剔除**。
-   *
-   * 它会被单独渲染成"当前消息"一行，留在块里就是同一句话说两遍；更要紧的是
-   * 模型会以为那是别人之前说的。
-   */
-  excludeMsgId?: string;
-  /** bot 自己的显示名（缺省 `我`） */
-  botLabel?: string;
-  /** 字符上限 */
-  maxChars?: number;
-}
+export type { RenderWindowOptions } from '@qqbot/contracts';
 
 /**
  * 把窗口渲染成喂给 **被动回复** 的上下文块。

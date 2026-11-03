@@ -1,3 +1,5 @@
+import { TRANSCRIPT_MAX_CHARS } from '@qqbot/contracts';
+import type { RenderTranscriptOptions } from '@qqbot/contracts';
 /**
  * 转录渲染：把旁听缓冲变成喂给判定的文本，并套上**不可信内容边界**。
  *
@@ -11,20 +13,13 @@
  *   - 给出结构化事实块（挂起问题、参与人数、bot 发言次数）：让模型不必从
  *     转录里数数——数数正是幻觉的高发区。
  */
-
-import type { SceneEvidence } from '../contract.js';
-import type { ObservationEntry } from '../../../store/window.js';
+import type { SceneEvidence } from '@qqbot/contracts';
+import type { ObservationEntry } from '@qqbot/contracts';
 
 /** 转录正文的字符上限（超出从头部截断，保留最近的）。 */
-export const TRANSCRIPT_MAX_CHARS = 4_000;
+export { TRANSCRIPT_MAX_CHARS } from '@qqbot/contracts';
 
-export interface RenderTranscriptOptions {
-  /** 最多渲染多少条（缺省 30） */
-  limit?: number;
-  maxChars?: number;
-  /** bot 自己的显示名（用于标注"哪句是我说的"），缺省 `我` */
-  botLabel?: string;
-}
+export type { RenderTranscriptOptions } from '@qqbot/contracts';
 
 /**
  * 渲染近期聊天记录。

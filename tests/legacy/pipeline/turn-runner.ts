@@ -17,6 +17,24 @@
  * 本文件不允许 import 任何 adapters/* 内部实现。
  */
 
+/**
+ * TurnRunner：把一条已通过 Ingress 管线的用户消息变成一次 DSH turn。
+ *
+ * 这是原 Dispatcher 收窄后的样子——只管 turn 生命周期：
+ *   1. 取该会话的 DSH runtime（必要时新建进程 + 冷启动回放）
+ *   2. 组装 prompt：**群聊上下文（观察窗口）+ 冷启动回放 + 当前这条**
+ *   3. session/prompt 派发（先注册在途 turn 再派发，避免事件早于注册到达）
+ *   4. 起进度回执调度（经 Responder，策略来自该平台该会话类型的 ReplyPolicy）
+ *   5. 消费事件：累积 assistant 文本、记 turn/end
+ *   6. status 回 idle 且本轮已 turn/end → 结束；超时则回收 runtime 终止任务
+ *   7. 结果经 Responder.deliver 发出并记录
+ *
+ * 不负责的事（都在别处）：去重、命令、闸、记录、并发/串行准入（Ingress
+ * stage），配额/分段/发送（Responder），滚窗的**写入**（接入层与投递回调）。
+ *
+ * 平台差异只通过一个接缝进入本文件：`ctx.policy` 的 turnTimeoutMs。
+ * 本文件不允许 import 任何 adapters/* 内部实现。
+ */
 import type { Config } from '../../../src/config.js';
 import type {
   MediaFetchOptions,
@@ -34,7 +52,7 @@ import {
   buildImageBlocks,
   describeImageRejection,
 } from '../../../src/dsh/media.js';
-import type { RuntimeEntry, RuntimePool } from '../../../src/dsh/pool.js';
+import type { RuntimeEntry, RuntimePool } from '../runtime-entry.js';
 import type {
   PromptContentBlock,
   SessionEventNotification,
@@ -268,7 +286,7 @@ export class TurnRunner {
             ...(pendingRecord === undefined ? {} : { askAboutChatRecord: true }),
           });
           if (history.length > 0 && !verdict.related) {
-            stats.topicResets += 1;
+            stats.record('topicResets', 1);
             logger.info('新消息与既有话题无关（LLM 判定），按新话题处理（重置上下文）', {
               conversation: conversationKey,
               historyTurns: history.length,
@@ -336,9 +354,9 @@ export class TurnRunner {
       let outcome: TurnOutcome;
       if (settled) {
         outcome = accumulator.result();
-        stats.completed += 1;
+        stats.record('completed', 1);
       } else {
-        stats.timedOut += 1;
+        stats.record('timedOut', 1);
         outcome = accumulator.timeoutResult();
         logger.warn('本轮超时，将回收 runtime 以终止任务', {
           timeoutMs: policy.turnTimeoutMs,
@@ -493,7 +511,7 @@ export class TurnRunner {
    */
   routeSessionEvent(conversationKey: string, notification: SessionEventNotification): void {
     if (!this.isParentSession(conversationKey, notification.sessionId)) {
-      this.deps.stats.childEventsFiltered += 1;
+      this.deps.stats.record('childEventsFiltered', 1);
       this.deps.logger.debug('过滤掉子会话事件（后台子代理，不进父轮次）', {
         conversation: conversationKey,
         sessionId: notification.sessionId,
@@ -579,7 +597,7 @@ export class TurnRunner {
       this.deps.logger.debug('自发轮次没有产出可见文本，不投递', { conversation: conversationKey });
       return;
     }
-    this.deps.stats.backgroundCaptured += 1;
+    this.deps.stats.record('backgroundCaptured', 1);
     this.deps.logger.info('捕获后台任务结果，交由投递器处理', {
       conversation: conversationKey,
       length: text.length,
@@ -596,7 +614,7 @@ export class TurnRunner {
   private attachPendingBackground(conversationKey: string, outcome: TurnOutcome): TurnOutcome {
     const queue = this.deps.background.takePending(conversationKey);
     if (queue.length === 0) return outcome;
-    this.deps.stats.backgroundDelivered += queue.length;
+    this.deps.stats.record('backgroundDelivered', queue.length);
     const prefix = queue.map((text) => `【后台任务完成】${text}`).join('\n\n');
     const body = outcome.text.trim();
     return { ...outcome, text: body === '' ? prefix : `${prefix}\n\n${body}` };
@@ -658,7 +676,7 @@ export class TurnRunner {
     const fetchForward = ctx.connector.fetchForward;
     if (fetchForward === undefined) {
       logger.info('该平台不支持按需展开聊天记录', { conversation, refId: record.refId });
-      stats.windowForwardsFailed += 1;
+      stats.record('windowForwardsFailed', 1);
       return `（你这次问到了上下文里 ${what}，但这个平台取不到它的内容）`;
     }
 
@@ -676,7 +694,7 @@ export class TurnRunner {
     }
 
     if (part === undefined) {
-      stats.windowForwardsFailed += 1;
+      stats.record('windowForwardsFailed', 1);
       logger.info('上下文里的聊天记录未能展开', { conversation, refId: record.refId });
       return (
         `（你这次问到了上下文里 ${what}，但它没能读出来` +
@@ -684,7 +702,7 @@ export class TurnRunner {
       );
     }
 
-    stats.windowForwardsExpanded += 1;
+    stats.record('windowForwardsExpanded', 1);
     logger.info('按需展开上下文里的聊天记录', {
       conversation,
       refId: record.refId,
@@ -763,7 +781,7 @@ export class TurnRunner {
     const longTask = config.hints.longTask;
     let hint = '';
     if (longTask.enabled && matchLongTaskHint(message.content, longTask.patterns)) {
-      this.deps.stats.longTaskHints += 1;
+      this.deps.stats.record('longTaskHints', 1);
       hint = longTask.text;
     }
     const blocks = [context, recordBlock, replay, hint, current].filter((block) => block !== '');
@@ -1040,29 +1058,32 @@ export class TurnRunner {
           text: `${body}\n（${imageBlocks} 张图片未能被模型接收${fromContext}：${describeImageRejection(reason)}。请直接告诉用户这些图没读进来，不要猜测图里的内容。）`,
         },
       ]);
-      stats.imagesSkipped += prepared.inlinedImages;
+      stats.record('imagesSkipped', prepared.inlinedImages);
       // 上下文那几张同样没送到：这里与 windowImagesSkipped 同口径（源图张数）
-      stats.windowImagesSkipped += prepared.windowImagesInlined + prepared.windowImagesSkipped;
+      stats.record(
+        'windowImagesSkipped',
+        prepared.windowImagesInlined + prepared.windowImagesSkipped
+      );
       // 回退用的是同一个文本块，文件正文照旧送达，所以计数照落
       this.commitFileStats(prepared.files);
       return;
     }
-    stats.imagesInlined += prepared.inlinedImages;
-    stats.imagesSkipped += Math.max(0, prepared.totalImages - prepared.inlinedImages);
-    stats.windowImagesInlined += prepared.windowImagesInlined;
-    stats.windowImagesSkipped += prepared.windowImagesSkipped;
-    stats.windowFilesFetched += prepared.windowFilesFetched;
+    stats.record('imagesInlined', prepared.inlinedImages);
+    stats.record('imagesSkipped', Math.max(0, prepared.totalImages - prepared.inlinedImages));
+    stats.record('windowImagesInlined', prepared.windowImagesInlined);
+    stats.record('windowImagesSkipped', prepared.windowImagesSkipped);
+    stats.record('windowFilesFetched', prepared.windowFilesFetched);
     this.commitFileStats(prepared.files);
   }
 
   /** 文件计数落账：runtime 确实收下了这一轮 prompt 之后才调。 */
   private commitFileStats(files: FileIngestCounts): void {
     const { stats } = this.deps;
-    stats.filesFetched += files.fetched;
-    stats.filesExtracted += files.extracted;
-    stats.filesSavedOnly += files.savedOnly;
-    stats.filesSkipped += files.skipped;
-    stats.fileCharsInlined += files.charsInlined;
+    stats.record('filesFetched', files.fetched);
+    stats.record('filesExtracted', files.extracted);
+    stats.record('filesSavedOnly', files.savedOnly);
+    stats.record('filesSkipped', files.skipped);
+    stats.record('fileCharsInlined', files.charsInlined);
   }
 
   private elapsedSince(startedAt: number): number {

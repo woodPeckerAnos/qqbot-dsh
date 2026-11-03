@@ -5,6 +5,12 @@
  * file_info / msg_id / msg_seq），不发真实网络请求。
  */
 
+/**
+ * 官方适配器富媒体出站测试：/files 上传 + msg_type=7 媒体消息。
+ *
+ * 用 fetchImpl 注入假的 OpenAPI：验证请求体形状（file_type / srv_send_msg=false /
+ * file_info / msg_id / msg_seq），不发真实网络请求。
+ */
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

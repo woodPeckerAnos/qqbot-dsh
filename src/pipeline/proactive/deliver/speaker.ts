@@ -1,3 +1,11 @@
+import type {
+  ProactiveTrigger,
+  ProactiveDegradeReason,
+  ProactiveOutcome,
+  ProactiveDelivery,
+  ProactiveMetrics,
+  ProactiveSpeakerOptions,
+} from '@qqbot/contracts';
 /**
  * 主动发言（proactive speak）—— 能力契约、投放入口与记账。
  *
@@ -29,14 +37,7 @@
  * 4. **记账必须可观测**：每次发言/降级都进 metrics，否则"官方通道静默不发言"
  *    在现场会变成"bot 坏了"。
  */
-
-import type {
-  BotConnector,
-  ConversationTarget,
-  OutgoingMessage,
-  ProactiveRejectReason,
-} from '../../../core/connector.js';
-import type { Logger } from '../../../logger.js';
+import type { ConversationTarget, ProactiveRejectReason } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 触发来源
@@ -51,23 +52,7 @@ import type { Logger } from '../../../logger.js';
  * `manual` 与 `system-event` 是介入之外的两类主动发言（运维命令、进群问候），
  * 它们共用同一条投放路径——这正是"能力统一"的收益。
  */
-export type ProactiveTrigger =
-  /** 场景 1：@ 之后的续聊追问（话题延续） */
-  | 'intervention:scene-1'
-  /** 场景 2：用户之间的持续讨论 */
-  | 'intervention:scene-2'
-  /** 场景 3：长期无人应答的问题 */
-  | 'intervention:scene-3'
-  /** 场景 4：无 @ 的指代（在谈论 bot） */
-  | 'intervention:scene-4'
-  /** 场景 5：命中兴趣 / 性格话题 */
-  | 'intervention:scene-5'
-  /** 命中场景但未标注（旧调用方 / 兜底） */
-  | 'intervention'
-  /** 运维或管理员的显式触发 */
-  | 'manual'
-  /** 平台系统事件（进群问候等） */
-  | 'system-event';
+export type { ProactiveTrigger } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 结果
@@ -80,59 +65,18 @@ export type ProactiveTrigger =
  * （unsupported / quota / rate-limit / error），这里多了**外层**自己会产生的原因
  * （disabled / empty）。
  */
-export type ProactiveDegradeReason =
-  /** 主动发言总开关关闭（默认关，fail-closed） */
-  | 'disabled'
-  /** 平台不提供主动发言能力（官方通道的定稿行为） */
-  | 'unsupported'
-  /** 平台侧额度用尽（官方每群每月 4 条） */
-  | 'quota'
-  /** 平台侧限频 / 风控 */
-  | 'rate-limit'
-  /** 平台调用失败（鉴权、网络、未知） */
-  | 'error'
-  /** 内容为空，不值得发（防"发一条空消息"这种低级事故） */
-  | 'empty';
+export type { ProactiveDegradeReason } from '@qqbot/contracts';
 
 /** 降级原因的排查顺序（同时是 `/metrics` 的输出顺序）。 */
-export const PROACTIVE_DEGRADE_ORDER: readonly ProactiveDegradeReason[] = [
-  'disabled',
-  'unsupported',
-  'quota',
-  'rate-limit',
-  'error',
-  'empty',
-];
+export { PROACTIVE_DEGRADE_ORDER } from '@qqbot/contracts';
 
-export type ProactiveOutcome =
-  | { status: 'sent'; trigger: ProactiveTrigger }
-  /**
-   * 灰度观察模式（`dryRun`）：判定链完整跑完，但**不真的发**。
-   * 与 `disabled` 的区别很重要：disabled 是"功能关着"，would-send 是
-   * "它本来会说话，只是我们按住了"——后者才是调参需要的信号。
-   */
-  | { status: 'would-send'; trigger: ProactiveTrigger }
-  | {
-      status: 'degraded';
-      trigger: ProactiveTrigger;
-      reason: ProactiveDegradeReason;
-      /** 适配器给的可读细节（进日志，不进用户可见文案） */
-      detail?: string;
-      /** 适配器认为"下次还有机会"（上层默认仍不补投，只记进指标） */
-      retryable: boolean;
-    };
+export type { ProactiveOutcome } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 接口
 // ---------------------------------------------------------------------------
 
-export interface ProactiveDelivery {
-  target: ConversationTarget;
-  content: OutgoingMessage;
-  trigger: ProactiveTrigger;
-  /** 可读的触发说明（进 debug 日志；例如"场景 3：问题挂起 11 分钟无人应答"） */
-  reason?: string;
-}
+export type { ProactiveDelivery } from '@qqbot/contracts';
 
 /**
  * 主动发言的记账口。由组装层接到 PipelineStats / health 快照上。
@@ -140,10 +84,7 @@ export interface ProactiveDelivery {
  * 用接口而不是直接 import stats：本模块与 pipeline 其他部分解耦，
  * 单测可以注入 fake 计数（与接入层用回调上报转发结果是对称的做法）。
  */
-export interface ProactiveMetrics {
-  sent(trigger: ProactiveTrigger): void;
-  degraded(reason: ProactiveDegradeReason, trigger: ProactiveTrigger): void;
-}
+export type { ProactiveMetrics } from '@qqbot/contracts';
 
 /** 无操作的记账实现（单测 / 未接入统计时使用）。 */
 export const NULL_PROACTIVE_METRICS: ProactiveMetrics = {
@@ -151,31 +92,7 @@ export const NULL_PROACTIVE_METRICS: ProactiveMetrics = {
   degraded: () => {},
 };
 
-export interface ProactiveSpeakerOptions {
-  /**
-   * 平台连接器查询口。之所以是函数而不是一次性传入 connector：
-   * 装配期 connector 可能还没建好（多接入模型下甚至是多个 connector），
-   * 由组装层按会话键路由，本模块不持有平台对象。
-   */
-  connectorFor: (target: ConversationTarget) => BotConnector | undefined;
-  /**
-   * 主动发言总开关（默认关，fail-closed）。
-   *
-   * ⚠️ 组装纪律：这个值**应当直接来自介入层的开关**（`intervention.enabled`，
-   * 它已经是默认关 + 群白名单 + 谷时段的那套闸），不要另立一个并列配置——
-   * 两个开关会让人无法回答"为什么它不说话"。
-   * 本类之所以仍然持有它，是为了让"关闭"这件事也能被记账（`disabled` 降级），
-   * 而不是让调用方在外部写 `if (enabled)` 分支。
-   */
-  enabled: boolean;
-  /**
-   * 灰度观察模式（默认关）：判定照跑、trace 照记、**永不真的发言**。
-   * 上线顺序建议：先 dryRun 观察一到两周，确认判据准了再打开真发言。
-   */
-  dryRun?: boolean;
-  metrics?: ProactiveMetrics;
-  logger: Logger;
-}
+export type { ProactiveSpeakerOptions } from '@qqbot/contracts';
 
 /**
  * 主动发言的唯一出口。

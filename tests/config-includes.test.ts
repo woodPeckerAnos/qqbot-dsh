@@ -6,6 +6,13 @@
  * 真实文件，不依赖仓库里的 config/（CI 与开发者本机的 local 文件可能不同）。
  */
 
+/**
+ * 配置模块（include）单测。
+ *
+ * 这一层的价值是"拆分之后仍然管得住"：合并顺序、深合并/数组替换、可选文件、
+ * 循环引用、模块内报错定位，全都必须在启动期有确定答案。全部用临时目录 +
+ * 真实文件，不依赖仓库里的 config/（CI 与开发者本机的 local 文件可能不同）。
+ */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';

@@ -1,3 +1,9 @@
+import type {
+  RuntimeHandle,
+  RuntimeLease,
+  RuntimeLeaseSnapshot,
+  RuntimePoolOptions,
+} from '@qqbot/contracts';
 /**
  * 按调用方隔离键管理 DSH runtime 租约，带硬上限、LRU 和空闲回收。
  *
@@ -13,20 +19,27 @@
  *
  * runtime 回收不恢复 DSH 历史；Task 输入由 PromptPreparer 固定上下文与回放。
  */
-
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 
-import type { Logger } from '../logger.js';
-import { DshRuntime, type DshRuntimeOptions } from './process.js';
+import { DshRuntime as RuntimeImplementation } from './process.js';
+import type { DshRuntime } from '@qqbot/contracts';
+import type { DshRuntimeEvents, DshRuntimeOptions } from '@qqbot/contracts';
 import type {
-  SessionEventNotification,
-  SessionStatusNotification,
+  PromptContentBlock,
   SubagentFinishedNotification,
   SubagentStartedNotification,
-} from './protocol.js';
+} from '@qqbot/contracts';
 
-export interface RuntimeEntry {
+/** 租约消费者只获得协议操作，不能启动、关闭或改写池内 runtime。 */
+export type { RuntimeHandle } from '@qqbot/contracts';
+
+/** 每次准入产生独立身份；相同进程上的旧租约不能释放新的占用。 */
+export type { RuntimeLease } from '@qqbot/contracts';
+
+export type { RuntimeLeaseSnapshot } from '@qqbot/contracts';
+
+interface RuntimeEntry {
   generation: string;
   conversationKey: string;
   runtime: DshRuntime;
@@ -44,36 +57,15 @@ export interface RuntimeEntry {
    * 非空 = 视同 busy，豁免一切自动回收（手动 drop / disposeAll 仍会杀，带告警）。
    */
   activeChildren: Set<string>;
+  handle: RuntimeHandle;
+  lease?: RuntimeLease;
+  closing: boolean;
+  disposal?: Promise<void>;
 }
 
-export interface RuntimePoolOptions {
-  maxRuntimes: number;
-  runtimeIdleMs: number;
-  /** new DshRuntime 用的模板（cwd 与 logger 由池按会话替换） */
-  base: Omit<DshRuntimeOptions, 'cwd' | 'logger'>;
-  logger: Logger;
-  /** 注入时钟，便于单测 */
-  now?: () => number;
-  /** 注入 runtime 工厂，便于单测 */
-  runtimeFactory?: (options: DshRuntimeOptions) => DshRuntime;
-  /** sessionId 生成器，便于单测断言 */
-  sessionIdFactory?: (conversationKey: string) => string;
-}
+export type { RuntimePoolOptions } from '@qqbot/contracts';
 
-export interface RuntimePoolEvents {
-  'session.event': (conversationKey: string, notification: SessionEventNotification) => void;
-  'session.status': (conversationKey: string, notification: SessionStatusNotification) => void;
-  'subagent.started': (conversationKey: string, notification: SubagentStartedNotification) => void;
-  'subagent.finished': (
-    conversationKey: string,
-    notification: SubagentFinishedNotification
-  ) => void;
-  'runtime.exit': (
-    conversationKey: string,
-    code: number | null,
-    signal: NodeJS.Signals | null
-  ) => void;
-}
+export type { RuntimePoolEvents } from '@qqbot/contracts';
 
 /**
  * 为一个会话生成稳定的 sessionId。
@@ -117,14 +109,14 @@ export class RuntimePool extends EventEmitter {
     return total;
   }
 
-  /** 取该会话的条目，不存在则创建运行时并完成 initialize。 */
+  /** 只读非独占租约，用于最小协议检查；执行使用 acquireLease。 */
   async acquire(
     conversationKey: string,
     workspacePath: string,
     overrides: Partial<DshRuntimeOptions> = {},
     exclusive = false,
     signal?: AbortSignal
-  ): Promise<RuntimeEntry> {
+  ): Promise<RuntimeLease> {
     const before = this.acquisition;
     let unlock!: () => void;
     this.acquisition = new Promise<void>((resolve) => {
@@ -133,7 +125,14 @@ export class RuntimePool extends EventEmitter {
     await before;
     try {
       signal?.throwIfAborted();
-      return await this.acquireSerial(conversationKey, workspacePath, overrides, exclusive, signal);
+      const entry = await this.acquireSerial(
+        conversationKey,
+        workspacePath,
+        overrides,
+        exclusive,
+        signal
+      );
+      return this.issueLease(entry);
     } finally {
       unlock();
     }
@@ -144,7 +143,7 @@ export class RuntimePool extends EventEmitter {
     workspacePath: string,
     overrides: Partial<DshRuntimeOptions> = {},
     signal?: AbortSignal
-  ): Promise<RuntimeEntry> {
+  ): Promise<RuntimeLease> {
     return this.acquire(conversationKey, workspacePath, overrides, true, signal);
   }
 
@@ -159,8 +158,8 @@ export class RuntimePool extends EventEmitter {
 
     const existing = this.entries.get(conversationKey);
     if (existing !== undefined) {
-      if (existing.runtime.isReady) {
-        if (exclusive && existing.busy) throw new Error('runtime 租约已占用');
+      if (existing.runtime.isReady && !existing.closing) {
+        if (existing.busy) throw new Error('runtime 租约已占用');
         if (exclusive) existing.busy = true;
         existing.lastUsedAt = this.now();
         return existing;
@@ -170,7 +169,7 @@ export class RuntimePool extends EventEmitter {
         conversation: conversationKey,
         state: existing.runtime.state,
       });
-      await this.drop(conversationKey);
+      await this.dropEntry(existing);
     }
 
     while (!(await this.evictIfNeeded())) {
@@ -198,21 +197,65 @@ export class RuntimePool extends EventEmitter {
     return entry;
   }
 
-  /** 标记该会话空闲（turn 结束）。 */
-  release(lease: string | RuntimeEntry): void {
-    const conversationKey = typeof lease === 'string' ? lease : lease.conversationKey;
-    const entry = this.entries.get(conversationKey);
-    if (entry === undefined || (typeof lease !== 'string' && entry !== lease)) return;
+  /** 标记具体租约空闲并撤销其写入能力；重复或伪造身份无副作用。 */
+  release(lease: RuntimeLease): void {
+    const entry = this.currentEntry(lease);
+    if (!entry) return;
+    entry.lease = undefined;
     entry.busy = false;
     entry.lastUsedAt = this.now();
     this.wakeWaiters();
   }
 
-  /** 立即移除并关闭某会话的 runtime。 */
-  async drop(lease: string | RuntimeEntry): Promise<void> {
-    const conversationKey = typeof lease === 'string' ? lease : lease.conversationKey;
-    const entry = this.entries.get(conversationKey);
-    if (entry === undefined || (typeof lease !== 'string' && entry !== lease)) return;
+  /** 关闭具体租约；调用者不能用会话键误伤后续执行。 */
+  async drop(lease: RuntimeLease): Promise<void> {
+    const entry = this.currentEntry(lease);
+    if (!entry) {
+      await this.leases.get(lease)?.disposal;
+      return;
+    }
+    await this.dropEntry(entry);
+  }
+
+  snapshot(lease: RuntimeLease): RuntimeLeaseSnapshot | undefined {
+    const entry = this.currentEntry(lease);
+    if (!entry) return undefined;
+    return Object.freeze({
+      leaseId: lease.leaseId,
+      busy: entry.busy,
+      replayed: entry.replayed,
+      lastUsedAt: entry.lastUsedAt,
+      activeChildren: Object.freeze([...entry.activeChildren]),
+    });
+  }
+
+  private readonly leases = new WeakMap<RuntimeLease, RuntimeEntry>();
+
+  private issueLease(entry: RuntimeEntry): RuntimeLease {
+    const lease: RuntimeLease = Object.freeze({
+      leaseId: (this.options.idFactory ?? randomUUID)(),
+      generation: entry.generation,
+      conversationKey: entry.conversationKey,
+      runtime: entry.handle,
+      sessionId: entry.sessionId,
+      createdAt: entry.createdAt,
+    });
+    this.leases.set(lease, entry);
+    entry.lease = lease;
+    return lease;
+  }
+
+  private currentEntry(lease: RuntimeLease): RuntimeEntry | undefined {
+    const entry = this.leases.get(lease);
+    if (entry?.lease !== lease || entry.closing) return undefined;
+    return this.entries.get(lease.conversationKey) === entry ? entry : undefined;
+  }
+
+  private async dropEntry(entry: RuntimeEntry): Promise<void> {
+    if (entry.disposal) return entry.disposal;
+    entry.closing = true;
+    entry.lease = undefined;
+    const conversationKey = entry.conversationKey;
     if (entry.activeChildren.size > 0) {
       // 关闭进程会连带停止驻留其中的子代理。自动回收路径已豁免这种情况，
       // 能走到这里说明是手动 drop（超时终止 / disposeAll / runtime 死亡重建），
@@ -227,12 +270,13 @@ export class RuntimePool extends EventEmitter {
       conversation: conversationKey,
       pid: entry.runtime.pid,
     });
-    await entry.runtime.dispose().catch((error: unknown) => {
+    entry.disposal = entry.runtime.dispose().catch((error: unknown) => {
       this.options.logger.warn('关闭 runtime 时出错', {
         conversation: conversationKey,
         error: error instanceof Error ? error.message : String(error),
       });
     });
+    await entry.disposal;
     if (this.entries.get(conversationKey) === entry) this.entries.delete(conversationKey);
     this.wakeWaiters();
   }
@@ -245,8 +289,9 @@ export class RuntimePool extends EventEmitter {
       clearInterval(this.reclaimTimer);
       this.reclaimTimer = undefined;
     }
-    const keys = [...this.entries.keys()];
-    await Promise.allSettled(keys.map((key) => this.drop(key)));
+    const entries = [...this.entries.values()];
+    await Promise.allSettled(entries.map((entry) => this.dropEntry(entry)));
+    await this.acquisition;
   }
 
   private now(): number {
@@ -259,7 +304,7 @@ export class RuntimePool extends EventEmitter {
     overrides: Partial<DshRuntimeOptions>
   ): Promise<RuntimeEntry> {
     const { base, logger } = this.options;
-    const generation = randomUUID();
+    const generation = (this.options.idFactory ?? randomUUID)();
     const runtimeOptions: DshRuntimeOptions = {
       ...base,
       ...overrides,
@@ -270,7 +315,7 @@ export class RuntimePool extends EventEmitter {
       }),
     };
     const factory =
-      this.options.runtimeFactory ?? ((opts: DshRuntimeOptions) => new DshRuntime(opts));
+      this.options.runtimeFactory ?? ((opts: DshRuntimeOptions) => new RuntimeImplementation(opts));
     const runtime = factory(runtimeOptions);
 
     // 先建 entry 再接线：subagent 计数要写进 entry.activeChildren，
@@ -286,10 +331,12 @@ export class RuntimePool extends EventEmitter {
       lastUsedAt: at,
       busy: false,
       activeChildren: new Set<string>(),
+      handle: this.runtimeHandle(runtime),
+      closing: false,
     };
 
-    runtime.on('session.event', (n) => this.emit('session.event', conversationKey, n, entry));
-    runtime.on('session.status', (n) => this.emit('session.status', conversationKey, n, entry));
+    runtime.on('session.event', (n) => this.emit('session.event', conversationKey, n));
+    runtime.on('session.status', (n) => this.emit('session.status', conversationKey, n));
     // 子代理进出：维护 activeChildren（回收豁免的依据），并向上冒泡供统计/日志。
     runtime.on('subagent.started', (n: SubagentStartedNotification) => {
       entry.activeChildren.add(n.childSessionId);
@@ -313,6 +360,31 @@ export class RuntimePool extends EventEmitter {
     return entry;
   }
 
+  private runtimeHandle(runtime: DshRuntime): RuntimeHandle {
+    return Object.freeze({
+      get isReady() {
+        return runtime.isReady;
+      },
+      get state() {
+        return runtime.state;
+      },
+      get pid() {
+        return runtime.pid;
+      },
+      get lastErrorId() {
+        return runtime.lastErrorId;
+      },
+      prompt: (sessionId: string, blocks: PromptContentBlock[]) =>
+        runtime.prompt(sessionId, structuredClone(blocks)),
+      on: <K extends keyof DshRuntimeEvents>(event: K, listener: DshRuntimeEvents[K]): void => {
+        runtime.on(event, listener);
+      },
+      off: <K extends keyof DshRuntimeEvents>(event: K, listener: DshRuntimeEvents[K]): void => {
+        runtime.off(event, listener);
+      },
+    });
+  }
+
   /** 超过上限时回收最久未使用、不忙且无子代理的 runtime。 */
   private async evictIfNeeded(): Promise<boolean> {
     const { maxRuntimes, logger } = this.options;
@@ -333,7 +405,7 @@ export class RuntimePool extends EventEmitter {
         conversation: victim.conversationKey,
         size: this.entries.size,
       });
-      await this.drop(victim.conversationKey);
+      await this.dropEntry(victim);
     }
     return true;
   }
@@ -371,7 +443,7 @@ export class RuntimePool extends EventEmitter {
         conversation: entry.conversationKey,
         idleMs: now - entry.lastUsedAt,
       });
-      await this.drop(entry.conversationKey);
+      await this.dropEntry(entry);
     }
   }
 }

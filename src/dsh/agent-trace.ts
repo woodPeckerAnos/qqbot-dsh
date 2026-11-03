@@ -1,13 +1,15 @@
+import { readonlySnapshot } from '@qqbot/contracts';
 /** 只读实时通知；与父会话结果累积器独立。DSH 构造时继承历史不回灌。 */
 import type { LlmRetryEventData } from '@deepseek-ai/dsh-llm-retry';
 import type { SessionEventMap } from '@deepseek-ai/dsh-session';
-import { traceSpan, type Logger, type TraceContext } from '../logger.js';
-import {
-  parseSessionEvent,
-  type SessionEventNotification,
-  type SubagentStartedNotification,
-  type SubagentFinishedNotification,
-} from './protocol.js';
+import { traceSpan } from '../observability/index.js';
+import type { Logger, TraceContext } from '@qqbot/contracts';
+import { parseSessionEvent } from './protocol.js';
+import type {
+  SessionEventNotification,
+  SubagentStartedNotification,
+  SubagentFinishedNotification,
+} from '@qqbot/contracts';
 
 const CORE_EVENTS = [
   'turn/start',
@@ -84,7 +86,7 @@ export class AgentTraceObserver {
   }
   private current(): boolean {
     if (this.closed || !this.options.isCurrent()) {
-      this.stats.late++;
+      this.stats.late += 1;
       return false;
     }
     return true;
@@ -93,16 +95,16 @@ export class AgentTraceObserver {
     if (!this.current()) return false;
     const n = parseSessionEvent(raw);
     if (!n) {
-      this.stats.invalid++;
+      this.stats.invalid += 1;
       return false;
     }
     const session = this.sessions.get(n.sessionId);
     if (!session || session.finished) {
-      this.stats.late++;
+      this.stats.late += 1;
       return false;
     }
     if (n.event.seq <= session.seq) {
-      this.stats.duplicate++;
+      this.stats.duplicate += 1;
       return false;
     }
     session.seq = n.event.seq;
@@ -113,11 +115,11 @@ export class AgentTraceObserver {
     if (!this.current()) return false;
     const parent = this.sessions.get(n.parentSessionId);
     if (!parent || parent.finished) {
-      this.stats.late++;
+      this.stats.late += 1;
       return false;
     }
     if (this.sessions.has(n.childSessionId)) {
-      this.stats.duplicate++;
+      this.stats.duplicate += 1;
       return false;
     }
     if (this.sessions.size >= 129) {
@@ -135,18 +137,18 @@ export class AgentTraceObserver {
     return true;
   }
   private recordStarted(trace: TraceContext, parentDshSessionId: string): void {
-    this.stats.subagents++;
+    this.stats.subagents += 1;
     this.options.logger.withTrace(trace).event('agent.started', { parentDshSessionId });
   }
   finished(n: SubagentFinishedNotification): boolean {
     if (!this.current()) return false;
     const session = this.sessions.get(n.childSessionId);
     if (!session || session.parent !== n.parentSessionId) {
-      this.stats.late++;
+      this.stats.late += 1;
       return false;
     }
     if (session.finished) {
-      this.stats.duplicate++;
+      this.stats.duplicate += 1;
       return false;
     }
     session.finished = true;
@@ -159,10 +161,10 @@ export class AgentTraceObserver {
     return true;
   }
   invalid(): void {
-    if (this.current()) this.stats.invalid++;
+    if (this.current()) this.stats.invalid += 1;
   }
   unknown(): void {
-    if (this.current()) this.stats.unknown++;
+    if (this.current()) this.stats.unknown += 1;
   }
   private metadata(n: SessionEventNotification, session: SessionTrace): void {
     const { type, data, seq } = n.event;
@@ -178,25 +180,25 @@ export class AgentTraceObserver {
       step: number(data.step),
       toolClass: type === 'tool/call' ? toolClass(data.name) : undefined,
     });
-    if (!emitted) this.stats.suppressed++;
+    if (!emitted) this.stats.suppressed += 1;
   }
   private recordCounters(type: string, data: Record<string, unknown>): void {
     if (type === 'assistant/message') this.tokens(data.usage);
     if (type === 'llm/retry') this.retry(data);
     if (type === 'turn/end' && object(data.reason)?.kind === 'error') this.failure('turn-failed');
-    if (!(CORE_EVENTS as readonly string[]).includes(type)) this.stats.unknown++;
+    if (!(CORE_EVENTS as readonly string[]).includes(type)) this.stats.unknown += 1;
   }
   private retry(data: Partial<LlmRetryEventData>): void {
-    if (typeof data.retry === 'number') this.stats.retries++;
+    if (typeof data.retry === 'number') this.stats.retries += 1;
   }
   private boundaries(type: string, session: SessionTrace): void {
     if (type === 'turn/start') {
-      this.stats.turns++;
+      this.stats.turns += 1;
       session.turn = traceSpan(session.trace);
       session.step = undefined;
     }
     if (type === 'step/start') {
-      this.stats.steps++;
+      this.stats.steps += 1;
       session.step = traceSpan(session.turn ?? session.trace);
     }
   }
@@ -216,7 +218,7 @@ export class AgentTraceObserver {
     return tool;
   }
   private toolCall(data: Record<string, unknown>, session: SessionTrace): ToolTrace {
-    this.stats.tools++;
+    this.stats.tools += 1;
     const category = toolClass(data.name);
     if (this.toolCounts.size < 32 || this.toolCounts.has(category))
       this.toolCounts.set(category, (this.toolCounts.get(category) ?? 0) + 1);
@@ -243,18 +245,18 @@ export class AgentTraceObserver {
       this.errors.push(classification);
   }
   private overflow(): void {
-    this.stats.overflow++;
+    this.stats.overflow += 1;
     this.stats.incomplete = true;
   }
   snapshot() {
-    return {
+    return readonlySnapshot({
       ...this.stats,
       sessions: this.sessions.size,
       pendingTools: this.calls.size,
       toolCategories: this.toolCounts.size,
       errorExamples: this.errors.length,
       usage: { ...this.usage },
-    };
+    });
   }
   close(): void {
     if (this.closed) return;

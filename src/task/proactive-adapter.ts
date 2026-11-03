@@ -1,30 +1,22 @@
+import { failure, type Result } from '@qqbot/contracts';
+import type { DeepReadonly } from '@qqbot/contracts';
+import type { ProactiveBudgetScope, ProactiveTaskRequest } from '@qqbot/contracts';
 /**
  * 主动判定到 Task 的适配边界，保留触发依据、引用和旧话题预算范围。
  * 持久预算由 TaskBudget 结算；本模块把首次实际送达反馈给 watcher 的原范围。
  * 后来的话题翻篇不撤销已准入请求，也不把旧结果扣到新范围。
  */
-import type { BotConnector, NormalizedMessage } from '../core/connector.js';
-import { createTrace, traceSpan, type TraceContext, type Logger } from '../logger.js';
-import type { MessageContext } from '../pipeline/ingress/types.js';
-import type { ProactiveComposeInput } from '../pipeline/proactive/contract.js';
-import type { SessionActor } from './session-actor.js';
-import type { ReplyCandidate } from './types.js';
+import type { BotConnector, NormalizedMessage } from '@qqbot/contracts';
+import { createTrace, traceSpan } from '../observability/index.js';
+import type { TraceContext, Logger } from '@qqbot/contracts';
+import type { MessageContext } from '@qqbot/contracts';
+
+import type { SessionActor } from '@qqbot/contracts';
+import type { ReplyCandidate } from '@qqbot/contracts';
 
 /** watcher 的触发时预算投影，回调闭包始终指向原话题对象。 */
-export interface ProactiveBudgetScope {
-  id: string;
-  limit: number;
-  reserve(): void;
-  release(): void;
-  commit(ts: number): void;
-}
-export interface ProactiveTaskRequest {
-  trace?: TraceContext;
-  input: ProactiveComposeInput;
-  scope: ProactiveBudgetScope;
-  reference?: NormalizedMessage;
-  onSpoke(text: string, ts: number): void;
-}
+export type { ProactiveBudgetScope } from '@qqbot/contracts';
+export type { ProactiveTaskRequest } from '@qqbot/contracts';
 export class ProactiveTaskAdapter {
   private readonly callbacks = new Map<
     string,
@@ -48,8 +40,12 @@ export class ProactiveTaskAdapter {
   ) {}
   /** true 只表示双 lane Task 已准入；发言记账等待 DeliveryResult 成功。 */
   async submit(request: ProactiveTaskRequest): Promise<boolean> {
+    const result = await this.submitResult(request);
+    return result.ok && result.value;
+  }
+  async submitResult(request: ProactiveTaskRequest): Promise<Result<boolean>> {
     const connector = this.options.connectors.get(request.input.target.platform);
-    if (!connector) return false;
+    if (!connector) return { ok: false, error: failure('NOT_FOUND') };
     try {
       const handle = await this.options.actor.submit(
         this.inputContext(request, connector),
@@ -68,9 +64,12 @@ export class ProactiveTaskAdapter {
           request.onSpoke(text, ts);
         },
       });
-      return true;
-    } catch {
-      return false;
+      return { ok: true, value: true };
+    } catch (cause) {
+      return {
+        ok: false,
+        error: failure('UPSTREAM_FAILED', cause, this.options.logger.cause(cause, 'task-submit')),
+      };
     }
   }
   private inputContext(request: ProactiveTaskRequest, connector: BotConnector): MessageContext {
@@ -101,7 +100,7 @@ export class ProactiveTaskAdapter {
     return { ...this.options.context(message, connector, trace), trace, logger };
   }
   /** 输出协调器先调用此方法保存真实内容，再通知预算结算。 */
-  delivered(candidate: Readonly<ReplyCandidate>, ts: number): void {
+  delivered(candidate: DeepReadonly<ReplyCandidate>, ts: number): void {
     const callback = this.callbacks.get(candidate.taskId);
     if (callback && !callback.delivered)
       callback.delivered = {

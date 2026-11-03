@@ -1,27 +1,24 @@
+import { readonlySnapshot } from '@qqbot/contracts';
+
 /**
  * Session 输入协调者，拥有上下文 generation 和逐 Session 的输入事务顺序。
  * 只等待输入判定与准入；提交两条 lane 后立即返回 handle，执行与投递独立推进。
  * 取消请求先记入管理器，再交给调度器；已入队产物由消息队列继续处理。
  */
 import { randomUUID } from 'node:crypto';
-import { createTrace, traceSpan, type TraceContext } from '../logger.js';
-import type { MessageContext } from '../pipeline/ingress/types.js';
-import type { TaskLifeCycleManager } from './lifecycle.js';
-import type { PromptPreparer } from './prompt-preparer.js';
-import type { LaneScheduler } from './lane-scheduler.js';
-import type { LaneRunner } from './dsh-lane-runner.js';
-import type { SessionOutputCoordinator } from './output-coordinator.js';
-import type { TaskBudget } from './budget.js';
-import type { TaskClock } from './clock.js';
-import type { TaskStore } from '../store/tasks.js';
-import {
-  LANES,
-  isTaskTerminal,
-  type Lane,
-  type LaneResult,
-  type TaskHandle,
-  type TaskInput,
-} from './types.js';
+import { createTrace, traceSpan } from '../observability/index.js';
+import type { TraceContext } from '@qqbot/contracts';
+import type { MessageContext } from '@qqbot/contracts';
+import type { TaskLifeCycleManager } from '@qqbot/contracts';
+import type { PromptPreparer } from '@qqbot/contracts';
+import type { LaneScheduler } from '@qqbot/contracts';
+import type { LaneRunner } from '@qqbot/contracts';
+import type { SessionOutputCoordinator } from '@qqbot/contracts';
+import type { TaskBudget } from '@qqbot/contracts';
+import type { TaskClock } from '@qqbot/contracts';
+import type { SessionStateWriter } from '@qqbot/contracts';
+import { LANES, isTaskTerminal } from '@qqbot/contracts';
+import type { Lane, LaneResult, TaskHandle, TaskInput } from '@qqbot/contracts';
 
 export class SessionActor {
   private readonly generations = new Map<string, { generation: number; sinceTs: number }>();
@@ -37,10 +34,11 @@ export class SessionActor {
       output: SessionOutputCoordinator;
       budget: TaskBudget;
       clock?: TaskClock;
-      sessions?: TaskStore<SessionContextState>;
+      sessions?: SessionStateWriter;
+      taskIdFactory?: () => string;
     }
   ) {
-    for (const state of options.sessions?.load() ?? [])
+    for (const state of structuredClone(options.sessions?.load() ?? []))
       this.generations.set(state.sessionKey, state);
   }
   /** 主动请求在等待输入门闩之前固定触发上下文，避免换成后来话题。 */
@@ -95,8 +93,7 @@ export class SessionActor {
         current = { generation: generation.generation + 1, sinceTs: context.message.ts };
       }
       if (!proactive) {
-        this.generations.set(key, current);
-        this.persistSessions();
+        this.commitGeneration(key, current);
       }
       const input: TaskInput = {
         trace,
@@ -119,7 +116,7 @@ export class SessionActor {
         proactive,
       };
       input.context.mentionsChatRecord = verdict.mentionsChatRecord;
-      const id = randomUUID();
+      const id = this.options.taskIdFactory?.() ?? randomUUID();
       if (proactive && !this.options.budget.reserve(id, proactive.budgetScope, budgetLimit ?? 1))
         throw new Error('主动 Task 预算已耗尽');
       let handle: TaskHandle;
@@ -200,21 +197,24 @@ export class SessionActor {
   /** /new 清空未完成执行并持久化新回放边界；已完成 Task 的消息继续投递。 */
   reset(sessionKey: string, initiator?: TraceContext): number {
     const previous = this.generations.get(sessionKey);
-    this.generations.set(sessionKey, {
+    this.commitGeneration(sessionKey, {
       generation: (previous?.generation ?? 1) + 1,
       sinceTs: this.options.clock?.now() ?? Date.now(),
     });
-    this.persistSessions();
     const tasks = this.options.manager.list(sessionKey).filter((t) => !isTaskTerminal(t));
     tasks.forEach((t) => this.cancel(t.taskId, initiator));
     return tasks.length;
   }
   snapshot() {
-    return {
+    return readonlySnapshot({
       fast: this.options.schedulers.fast.snapshot(),
       slow: this.options.schedulers.slow.snapshot(),
       unfinished: this.options.manager.list().filter((t) => !isTaskTerminal(t)).length,
-    };
+    });
+  }
+  flushSettlements(): void {
+    this.options.schedulers.fast.flushSettlements();
+    this.options.schedulers.slow.flushSettlements();
   }
   close(): void {
     this.closed = true;
@@ -226,14 +226,14 @@ export class SessionActor {
       this.options.schedulers[l].close();
     });
   }
-  private persistSessions(): void {
-    this.options.sessions?.save(
-      [...this.generations].map(([sessionKey, state]) => ({ sessionKey, ...state }))
-    );
+  private commitGeneration(
+    sessionKey: string,
+    state: { generation: number; sinceTs: number }
+  ): void {
+    const next = new Map(this.generations);
+    next.set(sessionKey, state);
+    this.options.sessions?.save([...next].map(([key, value]) => ({ sessionKey: key, ...value })));
+    this.generations.set(sessionKey, state);
   }
 }
-export interface SessionContextState {
-  sessionKey: string;
-  generation: number;
-  sinceTs: number;
-}
+export type { SessionContextState } from '@qqbot/contracts';

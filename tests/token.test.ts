@@ -7,6 +7,14 @@
  *   3. 并发请求要去重，否则会撞 100001 限频。
  */
 
+/**
+ * TokenManager 单测。
+ *
+ * 重点覆盖三个"看着在跑其实废掉"的坑：
+ *   1. 鉴权失败时 HTTP 状态码仍是 200，必须靠 `code` 判断；
+ *   2. `expires_in` 是字符串；
+ *   3. 并发请求要去重，否则会撞 100001 限频。
+ */
 import { describe, expect, it, vi } from 'vitest';
 
 import { describeTokenError, TokenError, TokenManager } from '../src/adapters/qq-official/token.js';

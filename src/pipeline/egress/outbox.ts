@@ -1,3 +1,5 @@
+import { SENT_DIR_NAME, MTIME_TOLERANCE_MS } from '@qqbot/contracts';
+import type { OutboxScanOptions, OutboxScanResult } from '@qqbot/contracts';
 /**
  * outbox 扫描器：发现 agent 放进 `<workspace>/outbox/` 的待发送产物。
  *
@@ -16,15 +18,13 @@
  *
  * 配额截断（发几个）**不在这里做**：那涉及回复账本，归 Responder。
  */
-
 import { mkdir, readdir, realpath, rename, stat } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 
-import type { OutgoingAttachment } from '../../core/connector.js';
-import type { Logger } from '../../logger.js';
+import type { Logger } from '@qqbot/contracts';
 
 /** 已发送文件的归档子目录名（隐藏目录，扫描时天然被跳过）。 */
-export const SENT_DIR_NAME = '.sent';
+export { SENT_DIR_NAME } from '@qqbot/contracts';
 
 /**
  * mtime 比较的容差（毫秒）。
@@ -43,35 +43,11 @@ export const SENT_DIR_NAME = '.sent';
  * 再试一次。发送成功的文件早已归档进 `.sent/`（不会重发），而失败件重试一次
  * 本来就是用户想要的——比"本轮文件被静默丢掉"好得多。
  */
-export const MTIME_TOLERANCE_MS = 1000;
+export { MTIME_TOLERANCE_MS } from '@qqbot/contracts';
 
-export interface OutboxScanOptions {
-  /** 单附件体积上限（字节），超出的进 oversize 名单 */
-  maxFileBytes: number;
-  /** 图片扩展名白名单（小写、不带点）；不在名单里的一律按 file 发 */
-  imageExtensions: readonly string[];
-  /**
-   * 只发送 mtime 不早于该时间戳的文件（= 本轮处理开始时间）。
-   *
-   * 为什么必须有：上轮发送失败/超额的文件会留在 outbox 里，不过滤的话下一轮
-   * 重扫会把它们再发一遍（"旧文件反复拆分发送"的生产问题）。早于此时间的
-   * 文件静默跳过（只在 debug 日志留痕）——要重发旧文件，persona 已约定
-   * "复制一份进 outbox"（复制即刷新 mtime）。
-   *
-   * 比较时留 `MTIME_TOLERANCE_MS` 的容差，理由见该常量：文件系统时间戳是粗粒度的。
-   */
-  notBeforeMs?: number;
-  logger: Logger;
-}
+export type { OutboxScanOptions } from '@qqbot/contracts';
 
-export interface OutboxScanResult {
-  /** 通过全部校验、可以发送的附件（按文件名排序，保证顺序确定） */
-  attachments: OutgoingAttachment[];
-  /** 超过体积上限的文件名（Responder 用来生成降级文案） */
-  oversize: string[];
-  /** 未通过校验（符号链接逃逸、非常规文件等）的文件名 */
-  skipped: string[];
-}
+export type { OutboxScanResult } from '@qqbot/contracts';
 
 /**
  * 扫描 outbox 目录。目录不存在视为"没有附件"（agent 没放东西是常态，不是错误）。

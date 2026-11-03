@@ -1,3 +1,4 @@
+import type { ZipEntry } from '@qqbot/contracts';
 /**
  * 最小 ZIP 打包器（store-only，不压缩）。
  *
@@ -13,15 +14,10 @@
  * 文件名按 UTF-8 写入并设置 general purpose bit 11（EPFS），中文名在
  * Windows/macOS/QQ 端都能正确解出。
  */
-
 import { readFile } from 'node:fs/promises';
 import { crc32 } from 'node:zlib';
 
-export interface ZipEntry {
-  /** 包内文件名（UTF-8；不含目录） */
-  name: string;
-  data: Buffer;
-}
+export type { ZipEntry } from '@qqbot/contracts';
 
 const LOCAL_HEADER_SIG = 0x04034b50;
 const CENTRAL_HEADER_SIG = 0x02014b50;

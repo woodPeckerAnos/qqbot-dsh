@@ -1,57 +1,20 @@
+import { readonlySnapshot } from '@qqbot/contracts';
+import type { OrchestratorDeps } from '@qqbot/contracts';
 /**
  * Ingress 运行机制：分流归一化事件，构建输入绑定，驱动注入的 stage 链。
  * main 负责 stage 顺序、SessionActor 提交和消息队列装配。
  * 这里不管理 runtime 事件或等待 Task 执行；状态由注入探针提供。
  */
+import type { NormalizedEvent, NormalizedMessage } from '@qqbot/contracts';
+import { isAddressedMessage, isObservedMessage } from '@qqbot/contracts';
+import { createTrace } from '../observability/index.js';
 
-import type {
-  BotConnector,
-  NormalizedEvent,
-  NormalizedMessage,
-  ReplyPolicy,
-} from '../core/connector.js';
-import { isAddressedMessage, isObservedMessage } from '../core/connector.js';
-import { createTrace, type TraceContext, type Logger } from '../logger.js';
-import type { OffpeakSnapshot } from '../offpeak/index.js';
-import type { Responder } from './egress/responder.js';
 import { handleWelcomeEvent } from './ingress/welcome.js';
-import { runStages, type IngressStage, type MessageContext } from './ingress/types.js';
-import type { PipelineStats, PipelineStatsSnapshot } from './stats.js';
+import { runStages } from './ingress/types.js';
+import type { MessageContext } from '@qqbot/contracts';
+import type { PipelineStatsSnapshot } from '@qqbot/contracts';
 
-export interface OrchestratorDeps {
-  logger: Logger;
-  /** 平台标识 → 连接器。回复按 target.platform 路由。 */
-  connectors: ReadonlyMap<string, BotConnector>;
-  /** 管理员白名单，条目为 `platform:senderId` 组合（见 BOT_ADMINS） */
-  admins: readonly string[];
-  /** 各 stage 自报的计数器（业务层创建，注入给所有 stage 与 Responder） */
-  stats: PipelineStats;
-  /**
-   * Ingress stage 链。**顺序即架构约束**（去重 → 命令 → 闸 → 记录 → Actor 准入，
-   * 理由见 ingress/types.ts），由业务层显式排布后整体传入——编排层不决定
-   * 有哪些拦截、也不决定它们的顺序。
-   */
-  stages: readonly IngressStage[];
-  /** 输入判定与 Task 提交；只等待短事务，不等待 Task.done。 */
-  terminal: (ctx: MessageContext) => Promise<void>;
-  /** 命令和准入错误收口工厂；Responder 将消息交给持久队列。 */
-  createResponder: (
-    message: NormalizedMessage,
-    connector: BotConnector,
-    policy: ReplyPolicy,
-    logger: Logger,
-    trace?: TraceContext
-  ) => Responder;
-  /**
-   * 主动介入层的入口（旁听消息的唯一去向）。
-   *
-   * 可选：未装配时旁听消息只计一个 skipped 计数（不报错）——这让"只想要
-   * @ 回复"的部署不必配介入层，也不会因为收到全量群消息而刷日志。
-   */
-  observe?: (message: NormalizedMessage) => void;
-  /** health 快照的状态探针：准入闸门与谷时段闸的实时状态（对象归业务层持有） */
-  status: () => { inFlight: number; queued: number; offpeak: OffpeakSnapshot };
-}
+export type { OrchestratorDeps } from '@qqbot/contracts';
 
 export class Orchestrator {
   /**
@@ -69,8 +32,8 @@ export class Orchestrator {
       proactiveSessionClosedBy,
       proactiveSpokeInSession,
       ...rest
-    } = this.deps.stats;
-    return {
+    } = this.deps.stats.snapshot();
+    return readonlySnapshot({
       ...rest,
       // 按理由/按句数拆开的分布一律映射成**数字**：`dispatcher` 的对外契约是
       // "字段全为数字"（RUNBOOK 在用），分布另在 health 的 proactive 段给。
@@ -80,7 +43,7 @@ export class Orchestrator {
       proactiveSessionClosedBy: sumValues(proactiveSessionClosedBy),
       proactiveSpokeInSession: sumValues(proactiveSpokeInSession),
       ...this.deps.status(),
-    };
+    });
   }
 
   /** 入口：处理一个归一化事件。永不抛错（所有失败都转成回复或日志）。 */
@@ -115,10 +78,10 @@ export class Orchestrator {
    * 加一个"顺手"的副作用。
    */
   private handleObserved(message: NormalizedMessage): void {
-    this.deps.stats.observed += 1;
+    this.deps.stats.record('observed', 1);
     const observe = this.deps.observe;
     if (observe === undefined) {
-      this.deps.stats.observedSkipped += 1;
+      this.deps.stats.record('observedSkipped', 1);
       return;
     }
     try {
@@ -152,7 +115,7 @@ export class Orchestrator {
   }
   private async handleMessage(message: NormalizedMessage): Promise<void> {
     const { trace, logger } = this.inputLogger(message);
-    this.deps.stats.received += 1;
+    this.deps.stats.record('received', 1);
 
     const connector = this.deps.connectors.get(message.target.platform);
     if (connector === undefined) {
@@ -168,7 +131,7 @@ export class Orchestrator {
     // 单聊开关：订阅层往往无法只收群聊，所以在业务层拦。
     // 位置在去重之前——被禁的消息连去重表都不该占。
     if (message.target.kind === 'c2c' && !connector.acceptsC2C) {
-      this.deps.stats.skippedC2C += 1;
+      this.deps.stats.record('skippedC2C', 1);
       logger.debug('单聊已禁用，忽略私聊消息', { conversation: message.target.key });
       return;
     }

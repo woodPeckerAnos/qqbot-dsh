@@ -1,5 +1,5 @@
 /** 脱敏先于字节截断；不调用 toJSON/getter，也不保留业务内容和错误正文。 */
-import { LOG_CATEGORIES } from './events.js';
+import { LOG_CATEGORIES } from '@qqbot/contracts';
 
 const PRIVATE_KEY =
   /^(raw|frame|body|content|text|preview|response|result|arguments|params|line|detail|stderr|stack|lastAssistantMessage|transcript|evidence|directive|excerpt|url|message|prompt|input|output|args|toolArguments|toolResults)$/i;
@@ -14,15 +14,7 @@ export function redact(text: string): string {
     )
     .replace(/\b([A-Z_]*(?:TOKEN|SECRET|API_KEY|PASSWORD))=[^\s"']+/g, '$1=<redacted>');
 }
-export class LoggedError extends Error {
-  constructor(
-    readonly errorId: string,
-    message: string,
-    options?: ErrorOptions
-  ) {
-    super(message, options);
-  }
-}
+export { LoggedError } from '@qqbot/contracts';
 export function errorClass(error: unknown): string {
   if (typeof error === 'string' && /^[a-z]+(?:-[a-z]+){0,4}$/.test(error))
     return error.slice(0, 80);

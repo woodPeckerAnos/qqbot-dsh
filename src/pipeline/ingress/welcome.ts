@@ -5,10 +5,9 @@
  * event_id 回复，与 msg_id 互斥；无此概念的平台忽略 eventId），
  * 所以直接经 BotConnector.reply 发出，只计 repliesSent。
  */
-
-import type { BotConnector, NormalizedEvent } from '../../core/connector.js';
-import type { Logger } from '../../logger.js';
-import type { PipelineStats } from '../stats.js';
+import type { BotConnector, NormalizedEvent } from '@qqbot/contracts';
+import type { Logger } from '@qqbot/contracts';
+import type { PipelineStats } from '@qqbot/contracts';
 
 export async function handleWelcomeEvent(
   event: NormalizedEvent,
@@ -51,7 +50,7 @@ export async function handleWelcomeEvent(
       },
       { text }
     );
-    deps.stats.repliesSent += 1;
+    deps.stats.record('repliesSent', 1);
   } catch (error) {
     deps.logger.warn('发送欢迎语失败（不影响主要功能）', {
       error: error instanceof Error ? error.message : String(error),

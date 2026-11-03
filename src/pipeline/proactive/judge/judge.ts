@@ -9,17 +9,8 @@
  * 输出是**逐场景的多标签**而不是"五选一 + 是否发言"。理由见 contract.ts 顶部：
  * 「取第一个」是资源分配问题，必须在代码里可测、可参数化、可回放对比。
  */
-
-import {
-  isSessionDirective,
-  isWaitReason,
-  SCENE_ORDER,
-  sceneOrder,
-  type SceneCandidate,
-  type SceneId,
-  type SceneVerdict,
-  type SessionDirective,
-} from '../contract.js';
+import { isSessionDirective, isWaitReason, SCENE_ORDER, sceneOrder } from '@qqbot/contracts';
+import type { SceneCandidate, SceneId, SceneVerdict, SessionDirective } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 每个场景的判据正文（自然语言；需求即 prompt）
@@ -143,7 +134,7 @@ function criteriaFor(scene: SceneId): string {
  * 要求那个对象**有稳定的名字**——所以结构化事实块里的每条挂起问题都带上
  * `q:<id>`，模型原样回抄，否决层据此在台账里查。
  */
-export const WAIT_TARGET_PREFIX = 'q:';
+export { WAIT_TARGET_PREFIX } from '@qqbot/contracts';
 
 /**
  * 从模型给的 `evidence` 里取出它对挂起问题的**对象引用**。
@@ -312,4 +303,4 @@ export function parseSceneVerdicts(
 }
 
 /** 供测试与文档使用：当前场景全集（顺序即优先级）。 */
-export const SCENE_IDS: readonly SceneId[] = [...SCENE_ORDER];
+export { SCENE_IDS } from '@qqbot/contracts';

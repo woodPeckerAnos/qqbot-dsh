@@ -1,3 +1,4 @@
+import type { MessageContext, IngressStage } from '@qqbot/contracts';
 /**
  * Ingress 管线的公共类型。
  *
@@ -17,27 +18,15 @@
  * 模糊顺序约束——而顺序恰恰是这里最值钱的东西。
  */
 
-import type { BotConnector, NormalizedMessage, ReplyPolicy } from '../../core/connector.js';
-import { traceSpan, type Logger, type TraceContext } from '../../logger.js';
-import type { Responder } from '../egress/responder.js';
+import { traceSpan } from '../../observability/index.js';
 
 /**
  * 一条用户消息在 Ingress 管线中的上下文。
  * 由 Orchestrator 在管线入口一次性构建，stage 只读。
  */
-export interface MessageContext {
-  readonly trace?: TraceContext;
-  readonly message: NormalizedMessage;
-  readonly connector: BotConnector;
-  readonly policy: ReplyPolicy;
-  /** 白名单判定（platform:senderId 组合），入口算好，命令与闸共用 */
-  readonly isAdmin: boolean;
-  readonly logger: Logger;
-  /** 本条消息的命令与准入错误收口；只入队，配额账本由 MessageQueue 持有 */
-  readonly responder: Responder;
-}
+export type { MessageContext } from '@qqbot/contracts';
 
-export type IngressStage = (ctx: MessageContext, next: () => Promise<void>) => Promise<void>;
+export type { IngressStage } from '@qqbot/contracts';
 
 /** 具体 stage 拥有短路原因；runner 不重复记录。 */
 export function logInputShortcut(ctx: MessageContext, stage: string, reason: string): void {

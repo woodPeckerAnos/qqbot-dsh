@@ -1,3 +1,5 @@
+import { SessionPersistenceError } from '@qqbot/contracts';
+import type { ConversationSessionRecord, SessionStoreOptions } from '@qqbot/contracts';
 /**
  * 会话 → DSH 会话映射（群聊与单聊共用）。
  *
@@ -15,26 +17,14 @@
  * 历史上下文由对话记录回放提供（store/conversations.ts），与 sessionId 无关。
  * 将来 DSH 若开放 resume，只需把 `newSessionId` 换成"复用旧的 + 调 resume"。
  */
-
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { readonlySnapshot, type DeepReadonly } from '@qqbot/contracts';
 
-import type { Logger } from '../logger.js';
-import { conversationHash, type StorePaths } from './paths.js';
+import { conversationHash } from './paths.js';
 
-export interface ConversationSessionRecord {
-  /** 会话键（群 = group_openid；单聊 = `c2c:<user_openid>`） */
-  conversationKey: string;
-  /** 稳定标识（= conversationHash），永远不变 */
-  logicalId: string;
-  /** 当前 DSH 会话 id；每次 runtime 重建都会更新 */
-  currentSessionId: string;
-  /** 当前 runtime 是第几次创建（1 开始） */
-  generation: number;
-  createdAt: number;
-  updatedAt: number;
-}
+export type { ConversationSessionRecord } from '@qqbot/contracts';
 
 interface SessionsFileShape {
   version: 1;
@@ -46,19 +36,19 @@ interface StoredSessionRecord extends Partial<ConversationSessionRecord> {
   groupOpenid?: string;
 }
 
-export interface SessionStoreOptions {
-  paths: StorePaths;
-  logger: Logger;
-  now?: () => number;
-  sessionIdFactory?: (conversationKey: string, generation: number) => string;
-}
+export type { SessionStoreOptions } from '@qqbot/contracts';
+
+/** 写入失败不能让未持久化 generation 成为当前会话。 */
+export { SessionPersistenceError } from '@qqbot/contracts';
 
 export class SessionStore {
+  private readonly options: SessionStoreOptions;
   private readonly sessions = new Map<string, ConversationSessionRecord>();
   private readonly now: () => number;
   private readonly sessionIdFactory: (conversationKey: string, generation: number) => string;
 
-  constructor(private readonly options: SessionStoreOptions) {
+  constructor(options: SessionStoreOptions) {
+    this.options = { ...options, paths: readonlySnapshot(options.paths) };
     this.now = options.now ?? Date.now;
     this.sessionIdFactory =
       options.sessionIdFactory ??
@@ -72,9 +62,9 @@ export class SessionStore {
    *
    * @param rotate 是否强制开新会话（runtime 重建时传 true）
    */
-  ensure(conversationKey: string, rotate = false): ConversationSessionRecord {
+  ensure(conversationKey: string, rotate = false): DeepReadonly<ConversationSessionRecord> {
     const existing = this.sessions.get(conversationKey);
-    if (existing !== undefined && !rotate) return existing;
+    if (existing !== undefined && !rotate) return readonlySnapshot(existing);
 
     const generation = (existing?.generation ?? 0) + 1;
     const at = this.now();
@@ -86,23 +76,26 @@ export class SessionStore {
       createdAt: existing?.createdAt ?? at,
       updatedAt: at,
     };
+    const next = new Map(this.sessions);
+    next.set(conversationKey, record);
+    this.persist(next);
     this.sessions.set(conversationKey, record);
-    this.persist();
     this.options.logger.info(
       existing === undefined ? '为会话创建 DSH 会话' : '为会话轮换 DSH 会话（runtime 重建）',
       { conversation: record.logicalId, generation, sessionId: record.currentSessionId }
     );
-    return record;
+    return readonlySnapshot(record);
   }
 
   /** 只读查询（不创建）。 */
-  peek(conversationKey: string): ConversationSessionRecord | undefined {
-    return this.sessions.get(conversationKey);
+  peek(conversationKey: string): DeepReadonly<ConversationSessionRecord> | undefined {
+    const record = this.sessions.get(conversationKey);
+    return record && readonlySnapshot(record);
   }
 
   /** 全部记录（health / 诊断用） */
-  all(): ConversationSessionRecord[] {
-    return [...this.sessions.values()];
+  all(): DeepReadonly<ConversationSessionRecord[]> {
+    return readonlySnapshot([...this.sessions.values()]);
   }
 
   private load(): void {
@@ -150,21 +143,27 @@ export class SessionStore {
   }
 
   /** 原子写：先写临时文件再 rename，避免半截文件。 */
-  private persist(): void {
+  private persist(sessions: ReadonlyMap<string, ConversationSessionRecord>): void {
     const file = this.options.paths.sessionsFile;
     const payload: SessionsFileShape = {
       version: 1,
-      sessions: Object.fromEntries([...this.sessions.entries()]),
+      sessions: Object.fromEntries(sessions),
     };
     try {
+      const text = `${JSON.stringify(payload, null, 2)}\n`;
+      if (this.options.persistSession) {
+        this.options.persistSession(file, text);
+        return;
+      }
       mkdirSync(dirname(file), { recursive: true });
       const tmp = `${file}.tmp`;
-      writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+      writeFileSync(tmp, text, 'utf8');
       renameSync(tmp, file);
     } catch (error) {
-      this.options.logger.warn('写入 sessions.json 失败（不影响运行）', {
+      this.options.logger.warn('写入 sessions.json 失败，保留原 generation', {
         error: error instanceof Error ? error.message : String(error),
       });
+      throw new SessionPersistenceError(error);
     }
   }
 }

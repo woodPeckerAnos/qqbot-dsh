@@ -1,3 +1,4 @@
+import type { ChatClientOptions, ChatClient } from '@qqbot/contracts';
 /**
  * 判定用的最小 Chat 客户端（OpenAI 兼容 `/chat/completions`）。
  *
@@ -13,22 +14,11 @@
  *     （`judge/client.ts` 统一转成 undefined = 沉默）；
  *   - 密钥只从 env 来（组装层负责），不进配置文件、不进日志（logger 会脱敏）。
  */
+import type { ChatMessage } from '@qqbot/contracts';
 
-import type { ChatMessage } from './client.js';
+export type { ChatClientOptions } from '@qqbot/contracts';
 
-export interface ChatClientOptions {
-  /** 基址，不含 `/chat/completions` 后缀 */
-  apiBase: string;
-  apiKey: string;
-  model: string;
-  timeoutMs: number;
-  /** 测试注入；缺省用全局 fetch */
-  fetchImpl?: typeof fetch;
-}
-
-export interface ChatClient {
-  complete(messages: ChatMessage[]): Promise<string>;
-}
+export type { ChatClient } from '@qqbot/contracts';
 
 export function createChatClient(options: ChatClientOptions): ChatClient {
   const fetchImpl = options.fetchImpl ?? fetch;

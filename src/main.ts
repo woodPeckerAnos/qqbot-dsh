@@ -1,3 +1,5 @@
+import type { PipelineStats } from '@qqbot/contracts';
+import type { ProactiveWatcher } from '@qqbot/contracts';
 /**
  * 组装入口：唯一的 new 汇聚点。
  *
@@ -18,51 +20,49 @@
  * 退出路径必须是**优雅**的：先停全部连接器（不再接新消息），再等待未完成 Task 的短暂收尾，最后关掉所有 DSH runtime（shutdown → SIGTERM → SIGKILL）。
  * 粗暴退出会让 DSH 的会话日志留半条记录，而那正是我们排障的依据。
  */
-
 import { join } from 'node:path';
 
-import {
-  resolveLoggingSettings,
-  loadConfig,
-  describeConfig,
-  ConfigError,
-  type Config,
-} from './config.js';
-import { loadConfigFile } from './config-file.js';
-import { QqOfficialConnector } from './adapters/qq-official/connector.js';
-import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
-import { TokenError } from './adapters/qq-official/token.js';
-import { OnebotConnector } from './adapters/onebot/connector.js';
-import type { BotConnector } from './core/connector.js';
-import { installLoggingReload } from './logging/reload.js';
-import { createLogger } from './logger.js';
-import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
-import { TaskSystem } from './task/system.js';
-import { createDocumentExtractor } from './dsh/document.js';
-import { writeModelApiPatch } from './dsh/model-config.js';
-import { Responder } from './pipeline/egress/responder.js';
-import { createDedupeStage } from './pipeline/ingress/dedupe.js';
-import { OffpeakCommandRouter } from './pipeline/ingress/offpeak-command.js';
-import { createOffpeakGateStage } from './pipeline/ingress/offpeak-gate.js';
-import { createRecordStage } from './pipeline/ingress/record.js';
-import { SessionCommandRouter } from './pipeline/ingress/session-command.js';
-import { PersonaCommandRouter } from './pipeline/ingress/persona-command.js';
-import type { IngressStage } from './pipeline/ingress/types.js';
-import { Orchestrator } from './pipeline/orchestrator.js';
-import { PipelineStats } from './pipeline/stats.js';
-import { createTopicJudge } from './pipeline/topic-judge.js';
-import { ProactiveSpeaker } from './pipeline/proactive/deliver/speaker.js';
-import { loadInterestPool } from './pipeline/proactive/interests/pool.js';
-import { createChatClient } from './pipeline/proactive/judge/chat-client.js';
-import { createDefaultProactiveJudge } from './pipeline/proactive/judge/client.js';
-import { DEFAULT_WATCHER_CONFIG, ProactiveWatcher } from './pipeline/proactive/scene/watcher.js';
-import type { ProactiveHealthSnapshot } from './health.js';
-import { ConversationStore } from './store/conversations.js';
-import { ObservationWindowStore } from './store/window.js';
-import { SeenStore } from './store/seen.js';
-import { PersonaStore } from './store/personas.js';
-import { ensureStoreDirs, resolveStorePaths } from './store/paths.js';
-import { buildHealthSnapshot, createHealthServer, type HealthServer } from './health.js';
+import { resolveLoggingSettings, loadConfig, describeConfig } from './config/index.js';
+import { ConfigError } from '@qqbot/contracts';
+import type { Config } from '@qqbot/contracts';
+import { loadConfigFile } from './config/index.js';
+import { createQqOfficialConnector } from './connectors/index.js';
+import { QQ_OFFICIAL_PLATFORM } from '@qqbot/contracts';
+import { TokenError } from '@qqbot/contracts';
+import { createOnebotConnector } from './connectors/index.js';
+import type { BotConnector } from '@qqbot/contracts';
+import { installLoggingReload } from './observability/index.js';
+import { createLogger } from './observability/index.js';
+import { CN_HOLIDAYS_2026 } from '@qqbot/contracts';
+import { createOffpeakGate } from './offpeak/index.js';
+import { createTaskSystem } from './task/index.js';
+import { createDocumentExtractor } from './media/index.js';
+import { writeModelApiPatch } from './config/index.js';
+import { createResponder } from './delivery/index.js';
+import { createDedupeStage } from './ingress/index.js';
+import { createOffpeakCommandRouter } from './ingress/index.js';
+import { createOffpeakGateStage } from './ingress/index.js';
+import { createRecordStage } from './ingress/index.js';
+import { createSessionCommandRouter } from './ingress/index.js';
+import { createPersonaCommandRouter } from './ingress/index.js';
+import type { IngressStage } from '@qqbot/contracts';
+import { createOrchestrator } from './ingress/index.js';
+import { createPipelineStats } from './observability/index.js';
+import { createTopicJudgeResult } from './ingress/index.js';
+import { createProactiveSpeaker } from './proactive/index.js';
+import { loadInterestPool } from './proactive/index.js';
+import { createChatClient } from './proactive/index.js';
+import { createDefaultProactiveJudge } from './proactive/index.js';
+import { DEFAULT_WATCHER_CONFIG } from '@qqbot/contracts';
+import { createProactiveWatcher } from './proactive/index.js';
+import type { ProactiveHealthSnapshot } from '@qqbot/contracts';
+import { createConversationStore } from './store/index.js';
+import { createObservationWindowStore } from './store/index.js';
+import { createSeenStore } from './store/index.js';
+import { createPersonaStore } from './store/index.js';
+import { ensureStoreDirs, resolveStorePaths } from './store/index.js';
+import { buildHealthSnapshot, createHealthServer } from './observability/index.js';
+import type { HealthServer } from '@qqbot/contracts';
 
 /** 处理中的 turn 结束前最多等多久（毫秒） */
 const DRAIN_TIMEOUT_MS = 30_000;
@@ -82,7 +82,7 @@ function buildConnector(
   stats: PipelineStats
 ): BotConnector {
   if (name === QQ_OFFICIAL_PLATFORM) {
-    return new QqOfficialConnector({
+    return createQqOfficialConnector({
       appId: config.qq.appId,
       appSecret: config.qq.appSecret,
       apiBase: config.qq.apiBase,
@@ -111,17 +111,17 @@ function buildConnector(
       // 转发块展开结果计入 /metrics（与 OneBot 侧同一套计数）
       onForward: ({ ok, nodes }) => {
         if (ok) {
-          stats.forwardsExpanded += 1;
-          stats.forwardNodesInlined += nodes;
+          stats.record('forwardsExpanded', 1);
+          stats.record('forwardNodesInlined', nodes);
         } else {
-          stats.forwardsFailed += 1;
+          stats.record('forwardsFailed', 1);
         }
       },
       logger: logger.child({ component: `connector:${name}` }),
     });
   }
   // ONEBOT_PLATFORM
-  return new OnebotConnector({
+  return createOnebotConnector({
     host: config.onebot.host,
     port: config.onebot.port,
     accessToken: config.onebot.accessToken,
@@ -133,10 +133,10 @@ function buildConnector(
     // 转发块回查结果计入 /metrics（接入层不认识 PipelineStats，只回调）
     onForward: ({ ok, nodes }) => {
       if (ok) {
-        stats.forwardsExpanded += 1;
-        stats.forwardNodesInlined += nodes;
+        stats.record('forwardsExpanded', 1);
+        stats.record('forwardNodesInlined', nodes);
       } else {
-        stats.forwardsFailed += 1;
+        stats.record('forwardsFailed', 1);
       }
     },
     replyPolicy: {
@@ -214,12 +214,12 @@ async function main(): Promise<void> {
   ensureStoreDirs(paths);
   logger.info('存储目录就绪', { ...paths });
 
-  const conversations = new ConversationStore(paths, logger);
-  const seen = new SeenStore({ paths, logger });
+  const conversations = createConversationStore(paths, logger);
+  const seen = createSeenStore({ paths, logger });
 
   // 预设风格前台（/persona）：选择持久化在 stateDir，启动期把每个已选会话的
   // 人设区块幂等重写进工作区 AGENTS.md（防"工作区被手工清掉但选择还在"）。
-  const personas = new PersonaStore({
+  const personas = createPersonaStore({
     dir: config.personas.dir,
     persistPath: join(paths.stateDir, 'personas.json'),
     paths,
@@ -238,7 +238,7 @@ async function main(): Promise<void> {
   //
   // 两个消费者：主动介入的判定层（读宽窗）与被 @ 的被动回复（读活动窗口）。见
   // store/window.ts 顶部。
-  const windows = new ObservationWindowStore({
+  const windows = createObservationWindowStore({
     allowlist: config.observation.allowlist,
     maxMessages: config.observation.maxMessages,
     maxAgeMs: config.observation.maxAgeMs,
@@ -257,7 +257,7 @@ async function main(): Promise<void> {
   // stats 提前到这里：连接器需要上报转发块回查结果（onForward 回调），
   // 而它是编排层与接入层之间唯一的"计数"通道。放在最前面也让它成为
   // 整条装配链上第一个可观测对象。
-  const stats = new PipelineStats();
+  const stats = createPipelineStats();
   const connectors = new Map<string, BotConnector>();
   for (const name of config.connectors) {
     connectors.set(name, buildConnector(name, config, logger, stats));
@@ -291,7 +291,7 @@ async function main(): Promise<void> {
   // 谷时段闸服务：生效配置 = env 默认 + 运行期覆盖（持久化在 stateDir，
   // 由管理员 /offpeak 命令热切换，下一条消息即生效）。
   // 命令路由与闸拦截两个 stage 共享同一个实例。
-  const offpeak = new OffpeakGate({
+  const offpeak = createOffpeakGate({
     defaults: {
       enabled: config.offpeak.enabled,
       windows: config.offpeak.windows,
@@ -304,7 +304,7 @@ async function main(): Promise<void> {
     logger: logger.child({ component: 'offpeak' }),
   });
 
-  const taskSystem = new TaskSystem({
+  const taskSystem = createTaskSystem({
     config,
     logger: logger.child({ component: 'tasks' }),
     paths,
@@ -316,7 +316,7 @@ async function main(): Promise<void> {
     extractDocument: createDocumentExtractor({ logger: logger.child({ component: 'document' }) }),
     ...(config.topic.enabled
       ? {
-          topicJudge: createTopicJudge({
+          topicJudgeResult: createTopicJudgeResult({
             apiBase: config.topic.apiBase,
             apiKey: config.topic.apiKey,
             model: config.topic.model,
@@ -350,7 +350,7 @@ async function main(): Promise<void> {
     config.proactive.interestsLoaded = interests.size > 0;
     config.proactive.interestsCount = interests.size;
 
-    const speaker = new ProactiveSpeaker({
+    const speaker = createProactiveSpeaker({
       connectorFor: (target) => connectors.get(target.platform),
       // 单一开关：主动发言复用介入层总开关（见 deliver/speaker.ts 的说明）
       enabled: true,
@@ -381,12 +381,12 @@ async function main(): Promise<void> {
             }),
             maxConcurrent: 2,
             onError: (reason, detail) => {
-              stats.proactiveJudgeFailures += 1;
+              stats.record('proactiveJudgeFailures', 1);
               logger.warn('主动介入判定失败（本次按沉默处理）', { reason, detail });
             },
           });
 
-    proactive = new ProactiveWatcher({
+    proactive = createProactiveWatcher({
       config: {
         ...DEFAULT_WATCHER_CONFIG,
         enabled: true,
@@ -411,7 +411,15 @@ async function main(): Promise<void> {
       speaker,
       // Task 提交：保存判定的 directive、依据、引用与旧预算范围；真实文案由两个 lane 生成。
       // 只在真实发言时被调用（dryRun 不碰它，见 watcher 的 deliver）。
-      submitTask: (request) => taskSystem.proactive.submit(request),
+      submitTask: async (request) => {
+        const result = await taskSystem.proactive.submitResult(request);
+        if (!result.ok)
+          logger.warn('主动Task准入失败', {
+            code: result.error.code,
+            errorId: result.error.errorId,
+          });
+        return result.ok && result.value;
+      },
       // 观察窗口：判定层与被动回复路径读同一份
       windows,
       ...(judge === undefined ? {} : { judge }),
@@ -419,54 +427,52 @@ async function main(): Promise<void> {
       logger: logger.child({ component: 'proactive-watcher' }),
       metrics: {
         evaluated: (_trigger) => {
-          stats.proactiveEvaluated += 1;
-          stats.proactiveJudgeCalls += 1;
+          stats.record('proactiveEvaluated', 1);
+          stats.record('proactiveJudgeCalls', 1);
         },
         judgeFailed: () => {
-          stats.proactiveJudgeFailures += 1;
+          stats.record('proactiveJudgeFailures', 1);
         },
         judgeSuspended: (_conversation) => {
-          stats.proactiveSuspended += 1;
+          stats.record('proactiveSuspended', 1);
         },
         vetoed: (_reason, _scene) => {
-          stats.proactiveVetoed += 1;
+          stats.record('proactiveVetoed', 1);
         },
         spoke: (_scene, dryRun) => {
-          if (dryRun) stats.proactiveWouldSend += 1;
+          if (dryRun) stats.record('proactiveWouldSend', 1);
           else {
-            stats.proactiveSpoke += 1;
+            stats.record('proactiveSpoke', 1);
           }
         },
         deliveryDegraded: (_reason, _scene) => {
-          stats.proactiveDegraded += 1;
+          stats.record('proactiveDegraded', 1);
         },
         // wait 票据：每张票据只有一个终局，四个计数之和 == created（账目闭合）。
         // 这四个数是"wait 到底有没有价值"的唯一答案来源：
         // `resolved` 长期为 0 → 正确答案可能是把 `yielding` 也按 silent 处理。
         waitTicket: (terminal, _scene) => {
-          stats.proactiveWaitTickets[terminal] = (stats.proactiveWaitTickets[terminal] ?? 0) + 1;
+          stats.recordDistribution('proactiveWaitTickets', terminal);
         },
         waitTicketCreated: (reason, _scene) => {
-          stats.proactiveWaitTicketCreated += 1;
-          stats.proactiveWaitTicketCreatedByReason[reason] =
-            (stats.proactiveWaitTicketCreatedByReason[reason] ?? 0) + 1;
+          stats.record('proactiveWaitTicketCreated', 1);
+          stats.recordDistribution('proactiveWaitTicketCreatedByReason', reason);
         },
         waitDeclined: (reason, _scene) => {
-          stats.proactiveWaitDeclined[reason] = (stats.proactiveWaitDeclined[reason] ?? 0) + 1;
+          stats.recordDistribution('proactiveWaitDeclined', reason);
         },
         waitInvalidTarget: (_scene) => {
-          stats.proactiveWaitInvalidTarget += 1;
+          stats.record('proactiveWaitInvalidTarget', 1);
         },
         // 话题 session：账目**必须闭合**（`opened === closed === Σ closedBy`）。
         // `spokeInSession` 的分布是"预算 2 到底对不对"的唯一答案来源。
         sessionOpened: (_scene) => {
-          stats.proactiveSessionOpened += 1;
+          stats.record('proactiveSessionOpened', 1);
         },
         sessionClosed: (cause, speaks) => {
-          stats.proactiveSessionClosed += 1;
-          stats.proactiveSessionClosedBy[cause] = (stats.proactiveSessionClosedBy[cause] ?? 0) + 1;
-          stats.proactiveSpokeInSession[String(speaks)] =
-            (stats.proactiveSpokeInSession[String(speaks)] ?? 0) + 1;
+          stats.record('proactiveSessionClosed', 1);
+          stats.recordDistribution('proactiveSessionClosedBy', cause);
+          stats.recordDistribution('proactiveSpokeInSession', String(speaks));
         },
       },
     });
@@ -539,13 +545,13 @@ async function main(): Promise<void> {
     });
   }
 
-  const offpeakCommands = new OffpeakCommandRouter({ gate: offpeak, config, stats });
+  const offpeakCommands = createOffpeakCommandRouter({ gate: offpeak, config, stats });
   // 会话控制命令（/stop、/new，仅管理员）：在闸之前直接操作 Actor，
   // 无需等待 lane 执行或输出投递。
-  const sessionCommands = new SessionCommandRouter({ actor: taskSystem.actor, stats });
+  const sessionCommands = createSessionCommandRouter({ actor: taskSystem.actor, stats });
   // 人设切换命令（/persona，仅管理员）：与 /stop、/new 同级——控制面操作，
   // 不创建 Task、不等待 lane，峰时段也可用。
-  const personaCommands = new PersonaCommandRouter({ personas, stats });
+  const personaCommands = createPersonaCommandRouter({ personas, stats });
   const stages: IngressStage[] = [
     createDedupeStage({ seen, stats }),
     sessionCommands.stage(),
@@ -555,7 +561,7 @@ async function main(): Promise<void> {
     createRecordStage({ conversations }),
   ];
 
-  const orchestrator = new Orchestrator({
+  const orchestrator = createOrchestrator({
     logger: logger.child({ component: 'orchestrator' }),
     connectors,
     admins: config.admins,
@@ -565,16 +571,16 @@ async function main(): Promise<void> {
       try {
         const handle = await taskSystem.actor.submit(ctx);
         void handle.done.then((task) => {
-          if (task.status === 'failed') stats.failed++;
-          else if (task.status === 'completed') stats.completed++;
+          if (task.status === 'failed') stats.record('failed');
+          else if (task.status === 'completed') stats.record('completed');
         });
       } catch (error) {
-        stats.rejectedBusy++;
+        stats.record('rejectedBusy');
         await ctx.responder.error(error instanceof Error ? error.message : '任务准入失败。');
       }
     },
     createResponder: (message, _connector, _policy, _logger, trace) =>
-      new Responder({ message, queue: taskSystem.queue, trace }),
+      createResponder({ message, queue: taskSystem.queue, trace }),
     // 旁听消息的去向：唯一入口是 watcher（未启用时留 undefined →
     // orchestrator 只计 skipped 计数）
     ...(proactive === undefined

@@ -1,3 +1,5 @@
+import type { DeepReadonly } from '@qqbot/contracts';
+import { TaskAdmissionError } from '@qqbot/contracts';
 /**
  * Task 执行状态的唯一写入者：准入、lane 转移、整体终态、恢复和保留期清理。
  * 状态先持久化再通知观察者；观察者失败不阻止 done 结算。
@@ -10,43 +12,40 @@ import {
   traceSpan,
   legacyTrace,
   errorClass,
-  type Logger,
-  type TraceContext,
-} from '../logger.js';
-import { TaskStore } from '../store/tasks.js';
-import {
-  LANES,
-  isLaneTerminal,
-  isTaskTerminal,
-  readonlySnapshot,
-  type Lane,
-  type LaneExecution,
-  type LaneResult,
-  type TaskHandle,
-  type TaskInput,
-  type TaskSnapshot,
-} from './types.js';
+} from '../observability/index.js';
+import type { Logger, TraceContext } from '@qqbot/contracts';
+import type { TaskStateWriter } from '@qqbot/contracts';
+import { LANES, isLaneTerminal, isTaskTerminal, readonlySnapshot } from '@qqbot/contracts';
+import type {
+  Lane,
+  LaneExecution,
+  LaneResult,
+  TaskHandle,
+  TaskInput,
+  TaskSnapshot,
+} from '@qqbot/contracts';
 
-export class TaskAdmissionError extends Error {}
+export { TaskAdmissionError } from '@qqbot/contracts';
 export class TaskLifeCycleManager {
   private readonly tasks = new Map<string, TaskSnapshot>();
   private readonly completions = new Map<
     string,
-    { done: TaskHandle['done']; resolve: (t: Readonly<TaskSnapshot>) => void }
+    { done: TaskHandle['done']; resolve: (t: DeepReadonly<TaskSnapshot>) => void }
   >();
-  private readonly listeners = new Set<(task: Readonly<TaskSnapshot>) => void>();
+  private readonly listeners = new Set<(task: DeepReadonly<TaskSnapshot>) => void>();
   private nextSequence = 0;
   constructor(
     private readonly options: {
-      store?: TaskStore<TaskSnapshot>;
+      store?: TaskStateWriter;
       now?: () => number;
       maxPerSession?: number;
       maxGlobal?: number;
       retentionMs?: number;
       logger?: Logger;
+      idFactory?: () => string;
     } = {}
   ) {
-    for (const task of options.store?.load() ?? []) {
+    for (const task of structuredClone(options.store?.load() ?? [])) {
       task.input.trace ??= legacyTrace(task.taskId, task.input.message.target.key);
       for (const lane of LANES)
         task.lanes[lane].trace ??= traceSpan(
@@ -62,7 +61,7 @@ export class TaskLifeCycleManager {
   private now(): number {
     return this.options.now?.() ?? Date.now();
   }
-  onChange(listener: (task: Readonly<TaskSnapshot>) => void): () => void {
+  onChange(listener: (task: DeepReadonly<TaskSnapshot>) => void): () => void {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -80,7 +79,10 @@ export class TaskLifeCycleManager {
     }
   }
   /** 同步创建双 lane 初态；落盘失败时不留下可调度的半成品 Task。 */
-  create(input: TaskInput, taskId = randomUUID()): TaskHandle {
+  create(
+    input: TaskInput,
+    taskId: string = this.options.idFactory?.() ?? randomUUID()
+  ): TaskHandle {
     this.assertAdmission(input.message.target.key);
     if (this.tasks.has(taskId)) throw new Error('Task ID 已存在');
     const task: TaskSnapshot = {
@@ -89,43 +91,47 @@ export class TaskLifeCycleManager {
         ...input,
         trace: traceSpan(
           input.trace ??
-            createTrace({
-              sessionKey: input.message.target.key,
-              inputMessageId: input.message.msgId,
-              inputEventId: input.message.eventId,
-            }),
-          { taskId }
+            createTrace(
+              {
+                sessionKey: input.message.target.key,
+                inputMessageId: input.message.msgId,
+                inputEventId: input.message.eventId,
+              },
+              this.options.idFactory
+            ),
+          { taskId },
+          this.options.idFactory
         ),
       }),
       createdAt: this.now(),
-      creationSequence: ++this.nextSequence,
+      creationSequence: this.nextSequence + 1,
       status: 'pending',
       cancelAccepted: false,
       lanes: { fast: { status: 'queued' }, slow: { status: 'queued' } },
     };
     for (const lane of LANES)
-      task.lanes[lane].trace = traceSpan(task.input.trace ?? legacyTrace(taskId), { lane });
+      task.lanes[lane].trace = traceSpan(
+        task.input.trace ?? legacyTrace(taskId),
+        { lane },
+        this.options.idFactory
+      );
+    this.persistTask(task);
+    this.nextSequence = task.creationSequence;
     const completion = this.completion(taskId);
-    this.tasks.set(taskId, task);
-    try {
-      this.persist();
-    } catch (error) {
-      this.tasks.delete(taskId);
-      this.completions.delete(taskId);
-      throw error;
-    }
     this.logAdmission(task);
     this.publish(task);
     return { taskId, done: completion.done };
   }
-  get(taskId: string): Readonly<TaskSnapshot> | undefined {
+  get(taskId: string): DeepReadonly<TaskSnapshot> | undefined {
     const task = this.tasks.get(taskId);
     return task && readonlySnapshot(task);
   }
-  list(sessionKey?: string): Readonly<TaskSnapshot>[] {
-    return [...this.tasks.values()]
-      .filter((t) => !sessionKey || t.input.message.target.key === sessionKey)
-      .map(readonlySnapshot);
+  list(sessionKey?: string): DeepReadonly<TaskSnapshot[]> {
+    return readonlySnapshot(
+      [...this.tasks.values()].filter(
+        (t) => !sessionKey || t.input.message.target.key === sessionKey
+      )
+    );
   }
   handle(taskId: string): TaskHandle {
     const task = this.tasks.get(taskId);
@@ -138,9 +144,14 @@ export class TaskLifeCycleManager {
     };
   }
   start(taskId: string, lane: Lane, execution?: LaneExecution): boolean {
-    const task = this.tasks.get(taskId);
+    const task = this.candidate(taskId);
     if (!task || task.cancelAccepted || task.lanes[lane].status !== 'queued') return false;
-    task.lanes[lane] = { ...task.lanes[lane], status: 'running', startedAt: this.now(), execution };
+    task.lanes[lane] = {
+      ...task.lanes[lane],
+      status: 'running',
+      startedAt: this.now(),
+      execution: execution && { ...execution },
+    };
     if (execution) task.lanes[lane].trace = this.executionTrace(task, lane, execution);
     task.status = 'running';
     this.commit(task, () => {
@@ -149,7 +160,7 @@ export class TaskLifeCycleManager {
     return true;
   }
   bindExecution(taskId: string, lane: Lane, execution: LaneExecution): boolean {
-    const task = this.tasks.get(taskId);
+    const task = this.candidate(taskId);
     if (!task || task.cancelAccepted || task.lanes[lane].status !== 'running') return false;
     task.lanes[lane].execution = { ...execution };
     task.lanes[lane].trace = this.executionTrace(task, lane, execution);
@@ -169,7 +180,7 @@ export class TaskLifeCycleManager {
   }
   /** 区分执行结束与产物收尾，供 /stop 和存活提醒判断实际执行是否仍在继续。 */
   endExecution(taskId: string, lane: Lane): void {
-    const task = this.tasks.get(taskId);
+    const task = this.candidate(taskId);
     if (
       !task ||
       task.lanes[lane].status !== 'running' ||
@@ -181,7 +192,7 @@ export class TaskLifeCycleManager {
   }
   /** lane 终态幂等；双终结后按取消、失败、完成的优先级结算整体状态。 */
   finish(taskId: string, lane: Lane, result: LaneResult): void {
-    const task = this.tasks.get(taskId);
+    const task = this.candidate(taskId);
     if (!task || isLaneTerminal(task.lanes[lane])) return;
     const state = task.lanes[lane];
     state.result = structuredClone(result);
@@ -207,8 +218,8 @@ export class TaskLifeCycleManager {
   cancel(
     taskId: string,
     initiator?: TraceContext
-  ): { accepted: boolean; task?: Readonly<TaskSnapshot> } {
-    const task = this.tasks.get(taskId);
+  ): { accepted: boolean; task?: DeepReadonly<TaskSnapshot> } {
+    const task = this.candidate(taskId);
     if (!task || isTaskTerminal(task))
       return { accepted: false, task: task && readonlySnapshot(task) };
     if (task.cancelAccepted) return { accepted: true, task: readonlySnapshot(task) };
@@ -222,7 +233,7 @@ export class TaskLifeCycleManager {
     return { accepted: true, task: readonlySnapshot(task) };
   }
   /** 冷启动不重跑执行；保留已终结 lane，仅将未完成 lane 标为中断失败。 */
-  recover(): Readonly<TaskSnapshot>[] {
+  recover(): DeepReadonly<TaskSnapshot[]> {
     const interrupted = this.list().filter((t) => !isTaskTerminal(t));
     for (const task of interrupted)
       for (const lane of LANES)
@@ -233,33 +244,36 @@ export class TaskLifeCycleManager {
             error: 'restart-interrupted',
           });
         }
-    return interrupted.flatMap((t) => {
-      const current = this.get(t.taskId);
-      return current === undefined ? [] : [current];
-    });
+    return readonlySnapshot(
+      interrupted.flatMap((t) => {
+        const current = this.get(t.taskId);
+        return current === undefined ? [] : [current];
+      })
+    );
   }
   destroy(taskId: string): boolean {
     const task = this.tasks.get(taskId);
     if (!task || !isTaskTerminal(task)) return false;
+    const next = new Map(this.tasks);
+    next.delete(taskId);
+    this.options.store?.save(structuredClone([...next.values()]));
     this.tasks.delete(taskId);
-    this.persist();
     return true;
   }
   /** 返回到期快照供装配层清理工作区；不触碰独立的消息队列及附件副本。 */
-  prune(): Readonly<TaskSnapshot>[] {
+  prune(): DeepReadonly<TaskSnapshot[]> {
     const cutoff = this.now() - (this.options.retentionMs ?? 7 * 86400_000);
     const expired = [...this.tasks.values()].filter(
       (task) => isTaskTerminal(task) && (task.endedAt ?? task.createdAt) < cutoff
     );
-    for (const task of expired) this.tasks.delete(task.taskId);
-    if (expired.length) this.persist();
-    return expired.map(readonlySnapshot);
+    if (expired.length) this.removeExpired(expired);
+    return readonlySnapshot(expired);
   }
   private completion(id: string) {
     let value = this.completions.get(id);
     if (!value) {
-      let resolve!: (t: Readonly<TaskSnapshot>) => void;
-      const done = new Promise<Readonly<TaskSnapshot>>((r) => {
+      let resolve!: (t: DeepReadonly<TaskSnapshot>) => void;
+      const done = new Promise<DeepReadonly<TaskSnapshot>>((r) => {
         resolve = r;
       });
       value = { done, resolve };
@@ -291,7 +305,7 @@ export class TaskLifeCycleManager {
       });
   }
   private commit(task: TaskSnapshot, record?: () => void): void {
-    this.persist();
+    this.persistTask(task);
     record?.();
     this.publish(task);
   }
@@ -308,18 +322,35 @@ export class TaskLifeCycleManager {
     }
   }
   private executionTrace(task: TaskSnapshot, lane: Lane, execution: LaneExecution): TraceContext {
-    return traceSpan(task.lanes[lane].trace ?? task.input.trace ?? legacyTrace(task.taskId), {
-      executionId: execution.executionId,
-      runtimeGeneration: execution.runtimeGeneration,
-      dshSessionId: execution.sessionId,
-    });
+    return traceSpan(
+      task.lanes[lane].trace ?? task.input.trace ?? legacyTrace(task.taskId),
+      {
+        executionId: execution.executionId,
+        runtimeGeneration: execution.runtimeGeneration,
+        dshSessionId: execution.sessionId,
+      },
+      this.options.idFactory
+    );
   }
   private log(task: TaskSnapshot, lane?: Lane): Logger {
     return (this.options.logger ?? createNullLogger()).withTrace(
       (lane && task.lanes[lane].trace) || task.input.trace || legacyTrace(task.taskId)
     );
   }
-  private persist(): void {
-    this.options.store?.save([...this.tasks.values()]);
+  private candidate(taskId: string): TaskSnapshot | undefined {
+    const task = this.tasks.get(taskId);
+    return task === undefined ? undefined : structuredClone(task);
+  }
+  private persistTask(task: TaskSnapshot): void {
+    const next = new Map(this.tasks);
+    next.set(task.taskId, task);
+    this.options.store?.save(structuredClone([...next.values()]));
+    this.tasks.set(task.taskId, task);
+  }
+  private removeExpired(expired: TaskSnapshot[]): void {
+    const next = new Map(this.tasks);
+    for (const task of expired) next.delete(task.taskId);
+    this.options.store?.save(structuredClone([...next.values()]));
+    for (const task of expired) this.tasks.delete(task.taskId);
   }
 }

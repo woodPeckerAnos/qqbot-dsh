@@ -5,6 +5,12 @@
  * 不依赖运行环境的本地时区。
  */
 
+/**
+ * 谷时段闸单测（纯函数 + 覆盖持久化，全离线）。
+ *
+ * 时区相关用例用固定 UTC 时间戳推算 Asia/Shanghai 的分钟数，
+ * 不依赖运行环境的本地时区。
+ */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,7 +32,7 @@ import {
   isWeekendInTimeZone,
   minutesInTimeZone,
   OffpeakConfigError,
-  OffpeakGate,
+  createOffpeakGate,
   commandNeedsAdmin,
   parseOffpeakCommand,
   parseTimeHHMM,
@@ -332,7 +338,7 @@ describe('OffpeakGate（覆盖与持久化）', () => {
 
   function makeGate() {
     dir = mkdtempSync(join(tmpdir(), 'qqbot-offpeak-'));
-    return new OffpeakGate({
+    return createOffpeakGate({
       defaults: DEFAULT_CONFIG,
       filePath: join(dir, 'offpeak-override.json'),
       logger: createNullLogger(),
@@ -356,7 +362,7 @@ describe('OffpeakGate（覆盖与持久化）', () => {
       { startMin: 23 * 60, endMin: 7 * 60 },
     ]);
 
-    const revived = new OffpeakGate({
+    const revived = createOffpeakGate({
       defaults: DEFAULT_CONFIG,
       filePath: join(dir, 'offpeak-override.json'),
       logger: createNullLogger(),
@@ -377,7 +383,7 @@ describe('OffpeakGate（覆盖与持久化）', () => {
     };
     expect(file.windows).toEqual([{ start: '18:00', end: '24:00' }]);
 
-    const revived = new OffpeakGate({
+    const revived = createOffpeakGate({
       defaults: DEFAULT_CONFIG,
       filePath: join(dir, 'offpeak-override.json'),
       logger: createNullLogger(),
@@ -393,7 +399,7 @@ describe('OffpeakGate（覆盖与持久化）', () => {
       JSON.stringify({ window: { start: '00:30', end: '08:30' }, updatedBy: 'ADMIN-9' }),
       'utf8'
     );
-    const revived = new OffpeakGate({
+    const revived = createOffpeakGate({
       defaults: DEFAULT_CONFIG,
       filePath: join(dir, 'offpeak-override.json'),
       logger: createNullLogger(),
@@ -436,7 +442,7 @@ describe('OffpeakGate（覆盖与持久化）', () => {
   it('覆盖文件损坏时告警并回落到默认，不炸启动', () => {
     const gate = makeGate();
     writeFileSync(join(dir, 'offpeak-override.json'), '{broken json', 'utf8');
-    const revived = new OffpeakGate({
+    const revived = createOffpeakGate({
       defaults: DEFAULT_CONFIG,
       filePath: join(dir, 'offpeak-override.json'),
       logger: createNullLogger(),
@@ -557,7 +563,7 @@ describe('OffpeakGate 节假日增删', () => {
 
   function makeGate() {
     dir = mkdtempSync(join(tmpdir(), 'qqbot-offpeak-holiday-'));
-    return new OffpeakGate({
+    return createOffpeakGate({
       defaults: DEFAULT_CONFIG,
       filePath: join(dir, 'offpeak-override.json'),
       logger: createNullLogger(),
@@ -571,7 +577,7 @@ describe('OffpeakGate 节假日增删', () => {
     expect(gate.effective().holidays.has('2027-01-01')).toBe(true);
     expect(gate.snapshot().holidaysCoverageUntil).toBe('2027-01-01');
 
-    const revived = new OffpeakGate({
+    const revived = createOffpeakGate({
       defaults: DEFAULT_CONFIG,
       filePath: join(dir, 'offpeak-override.json'),
       logger: createNullLogger(),

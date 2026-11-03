@@ -1,3 +1,12 @@
+import {
+  ADMIT_MAX_DIMENSION,
+  ADMIT_MAX_PIXELS,
+  MODEL_IMAGE_PIXEL_BUDGET,
+  MAX_DECODE_PIXELS,
+  SLICE_MIN_ASPECT,
+  TILE_TARGET_BYTES,
+} from '@qqbot/contracts';
+import type { ImageTile, ImagePrepareOptions, ImagePrepareResult } from '@qqbot/contracts';
 /**
  * 图片准入前处理：把 runtime 一定会拒收的图，变成"一定能被收下"的 1..N 个块。
  *
@@ -19,9 +28,8 @@
  * 静态 import 一旦加载失败，整个 bot 起不来；动态 import + 结果缓存之后，
  * 坏掉的只是"图片增强"这一条路，调用方拿到 `unavailable` 后退回旧行为即可。
  */
-
 import type { Metadata, Sharp, SharpOptions } from 'sharp';
-import type { Logger } from '../logger.js';
+import type { Logger } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 与 runtime 对齐的硬常量
@@ -31,13 +39,13 @@ import type { Logger } from '../logger.js';
  * 单边上限，对齐 `@deepseek-ai/dsh-attachment-local` 的 `maxImageDimension`（8192）。
  * 超过它的图在准入时被直接拒绝（`IMAGE_DIMENSION_TOO_LARGE`）。
  */
-export const ADMIT_MAX_DIMENSION = 8192;
+export { ADMIT_MAX_DIMENSION } from '@qqbot/contracts';
 
 /**
  * 总像素上限，对齐同一个包的 `maxImagePixels`（64_000_000）。
  * 准入时它**先于**单边上限判定，所以两个都要守。
  */
-export const ADMIT_MAX_PIXELS = 64_000_000;
+export { ADMIT_MAX_PIXELS } from '@qqbot/contracts';
 
 /**
  * 模型侧单图像素预算，对齐 `@deepseek-ai/dsh-llm-deepseek` 默认模型的
@@ -47,14 +55,14 @@ export const ADMIT_MAX_PIXELS = 64_000_000;
  * （不重编码、不掉画质），恰好等于"模型按原生分辨率看图"。切片按这个数切，
  * 每块就是"模型能看清的最大一块"。
  */
-export const MODEL_IMAGE_PIXEL_BUDGET = 640_000;
+export { MODEL_IMAGE_PIXEL_BUDGET } from '@qqbot/contracts';
 
 /**
  * 解码上限（1 亿像素），比准入上限宽一档：准入看的是"编码里的声明尺寸"，
  * 解码吃的是"真实内存"。1 亿像素 RGBA 已是 ~400MB，再往上就是解压炸弹与
  * 容器 OOM 的领域了——宁可判 `undecodable`，也不要把宿主拖死。
  */
-export const MAX_DECODE_PIXELS = 100_000_000;
+export { MAX_DECODE_PIXELS } from '@qqbot/contracts';
 
 /**
  * 长边/短边达到这个倍数才算"长图"，值得切片。
@@ -62,7 +70,7 @@ export const MAX_DECODE_PIXELS = 100_000_000;
  * 4 是个经验阈值：3 以下的图切片收益（读得清）抵不过代价（多张图的 token
  * 与调用方的配额）；而 4 以上基本就是截图/长图，缩放的损失已经很明显。
  */
-export const SLICE_MIN_ASPECT = 4;
+export { SLICE_MIN_ASPECT } from '@qqbot/contracts';
 
 /**
  * 单块字节目标，对齐 provider 的 `imageMaxBytes`（1MiB）。
@@ -70,7 +78,7 @@ export const SLICE_MIN_ASPECT = 4;
  * 对齐它是为了让调用方**省掉二次压缩**：provider 只对超预算的图重编码，
  * 我们这里就把块压到它的上限内，provider 那一步就成了纯直通。
  */
-export const TILE_TARGET_BYTES = 1024 * 1024;
+export { TILE_TARGET_BYTES } from '@qqbot/contracts';
 
 /** 质量阶梯：先高后低，命中即用。三档足够覆盖"能看"到"能收下"的区间。 */
 const QUALITY_LADDER = [90, 82, 72] as const;
@@ -79,34 +87,11 @@ const QUALITY_LADDER = [90, 82, 72] as const;
 // 对外类型
 // ---------------------------------------------------------------------------
 
-export interface ImageTile {
-  data: Uint8Array;
-  /** 'image/png' | 'image/jpeg' | 'image/webp' —— 必须是 runtime 准入的三种之一 */
-  mimeType: string;
-  width: number;
-  height: number;
-}
+export type { ImageTile } from '@qqbot/contracts';
 
-export interface ImagePrepareOptions {
-  /** 内联单张上限（配置值） */
-  maxBytes: number;
-  /** 本次最多允许产出几块（调用方按剩余配额传入，>=1） */
-  maxTiles: number;
-  /** 覆盖默认：单边上限 */
-  maxDimension?: number;
-  /** 覆盖默认：像素上限 */
-  maxPixels?: number;
-  /** 覆盖默认：切片单块像素预算 */
-  tilePixels?: number;
-  logger?: Logger;
-}
+export type { ImagePrepareOptions } from '@qqbot/contracts';
 
-export type ImagePrepareResult =
-  | { kind: 'prepared'; tiles: ImageTile[]; changed: boolean; notes: string[] }
-  /** sharp 无法加载：调用方退回旧行为 */
-  | { kind: 'unavailable' }
-  /** 字节不是可解码图片，或超出解码上限 */
-  | { kind: 'undecodable'; reason: string };
+export type { ImagePrepareResult } from '@qqbot/contracts';
 
 /** runtime 准入的三种栅格格式（gif 只能直通，重编码一律走 png/jpeg/webp）。 */
 type AdmittedMimeType = 'image/png' | 'image/jpeg' | 'image/webp';

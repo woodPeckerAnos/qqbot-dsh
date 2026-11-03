@@ -2,6 +2,9 @@
  * 长任务提示注入单测（pipeline/hints.ts，纯函数，全离线）。
  */
 
+/**
+ * 长任务提示注入单测（pipeline/hints.ts，纯函数，全离线）。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_LONG_TASK_PATTERNS, matchLongTaskHint } from '../src/pipeline/hints.js';

@@ -7,14 +7,17 @@ WORKDIR /app
 # package-lock.json 必须一起拷：docker-install.mjs 用 npm ci 安装，
 # 没有锁文件会直接失败（也保证不同时间构建装到同一批版本）。
 COPY package.json package-lock.json ./
+COPY packages/contracts/package.json ./packages/contracts/package.json
 COPY scripts/docker-install.mjs ./scripts/docker-install.mjs
 # 1) 安装全部依赖（含 devDependencies，编译需要 typescript）
 RUN node scripts/docker-install.mjs install
 
 COPY tsconfig.json ./
 COPY src ./src
+COPY packages/contracts/tsconfig.json ./packages/contracts/tsconfig.json
+COPY packages/contracts/src ./packages/contracts/src
 # 2) 编译。注意必须在剪枝之前——typescript 属于 devDependencies。
-RUN ./node_modules/.bin/tsc -p tsconfig.json
+RUN npm run build
 
 # 3) 剪枝：剔除 devDependencies 与不匹配本平台的可选依赖，
 #    否则 typescript/vitest 以及 macOS 平台的 .node 二进制都会被带进运行镜像。
@@ -53,6 +56,8 @@ WORKDIR /app
 
 COPY --from=build --chown=root:root /app/node_modules ./node_modules
 COPY --from=build --chown=root:root /app/dist ./dist
+COPY --from=build --chown=root:root /app/packages/contracts/package.json ./packages/contracts/package.json
+COPY --from=build --chown=root:root /app/packages/contracts/dist ./packages/contracts/dist
 COPY --chown=root:root package.json ./
 COPY --chown=root:root dsh-profile ./dsh-profile
 COPY --chown=root:root scripts ./scripts

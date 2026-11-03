@@ -1,3 +1,5 @@
+import { PDF_HELPER_MISSING_REASON } from '@qqbot/contracts';
+import type { DocumentExtractorFactoryOptions } from '@qqbot/contracts';
 /**
  * 文件正文抽取：PDF 走 `pdftotext` 子进程，纯文本类直接解码。
  *
@@ -16,15 +18,13 @@
  *
  * 不做什么：OCR（扫描件没有文本层就直说）、Office 三件套正文（落盘交给 agent）。
  */
-
 import { spawn } from 'node:child_process';
 
-import type { Logger } from '../logger.js';
 import { extensionOf } from './files.js';
-import type { DocumentExtraction, DocumentExtractor } from './files.js';
+import type { DocumentExtraction, DocumentExtractor } from '@qqbot/contracts';
 
 /** 抽取器缺失时给模型/用户看的说明（也是降级路径的出口） */
-export const PDF_HELPER_MISSING_REASON = '本服务未安装 PDF 解析工具（poppler-utils），未能提取正文';
+export { PDF_HELPER_MISSING_REASON } from '@qqbot/contracts';
 
 /** 纯文本类扩展名：直接解码，不经过任何解析器 */
 const PLAIN_TEXT_EXTENSIONS = new Set([
@@ -47,13 +47,7 @@ const PLAIN_TEXT_EXTENSIONS = new Set([
   'tex',
 ]);
 
-export interface DocumentExtractorFactoryOptions {
-  /** pdftotext 可执行路径（默认从 PATH 找） */
-  pdftotextBin?: string;
-  /** 测试注入：替换 spawn */
-  spawnImpl?: typeof spawn;
-  logger: Logger;
-}
+export type { DocumentExtractorFactoryOptions } from '@qqbot/contracts';
 
 /** UTF-8 每字符最多 4 字节：用它把"字符上限"换算成 stdout 的字节上限。 */
 const MAX_BYTES_PER_CHAR = 4;

@@ -1,4 +1,5 @@
 /** Historical runtime-event routing seam used only by legacy regression fixtures. */
+/** Historical runtime-event routing seam used only by legacy regression fixtures. */
 import {
   Orchestrator as IngressOrchestrator,
   type OrchestratorDeps,

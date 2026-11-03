@@ -8,6 +8,15 @@
  *      qqbot.yml 是随仓库提交的文件。
  */
 
+/**
+ * 模型 API 配置层单测（src/dsh/model-config.ts + 配置层集成）。
+ *
+ * 这一层守的是两类启动期故障：
+ *   1. 配置写错（键名拼错、类型错、取值越界、路由名撞车）必须在 qqbot 启动期炸，
+ *      而不是拖到 dsh 子进程 initialize / 首次请求才报；
+ *   2. 密钥纪律：内联密钥与带密钥语义的 header 名在解析期直接拒绝——
+ *      qqbot.yml 是随仓库提交的文件。
+ */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

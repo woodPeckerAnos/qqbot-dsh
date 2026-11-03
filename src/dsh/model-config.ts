@@ -1,3 +1,20 @@
+import { DEEPSEEK_OFFICIAL_PROVIDER, MODEL_API_PATCH_FILENAME } from '@qqbot/contracts';
+import type {
+  RetryBackoffConfig,
+  RetryPolicyConfig,
+  DeepSeekCatalogModelConfig,
+  DeepSeekRouteConfig,
+  PiAiThinkingLevel,
+  PiAiReasoningEfforts,
+  PiAiCompatConfig,
+  PiAiTemplateArg,
+  PiAiModelConfig,
+  PiAiModelOverride,
+  PiAiThinkingBudgets,
+  PiAiProviderConfig,
+  ModelApiConfig,
+  AuxRouteResolution,
+} from '@qqbot/contracts';
 /**
  * 模型 API 配置层（配置文件的 `models:` 段；推荐 config/local/models.yml）。
  *
@@ -28,215 +45,71 @@
  * `@deepseek-ai/dsh-llm-deepseek-api-key` 与 `@deepseek-ai/dsh-llm-pi-ai` 两节）；
  * 本模块的注释只记 qqbot 侧加的约束，不复述 DSH 的字段文档。
  */
-
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { stringify as stringifyYaml } from 'yaml';
 
-import { ConfigError } from '../config-error.js';
+import { ConfigError } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 类型（与 DSH 配置面一一对应；全部可选，缺省 = 用 DSH 自己的默认）
 // ---------------------------------------------------------------------------
 
 /** 重试退避（dsh-llm 的 BackoffConfig）。 */
-export interface RetryBackoffConfig {
-  initialDelayMs?: number;
-  maxDelayMs?: number;
-  /** 围绕 1 的对称随机抖动幅度（0–1） */
-  jitterRatio?: number;
-}
+export type { RetryBackoffConfig } from '@qqbot/contracts';
 
 /**
  * 提供商级重试策略（dsh-llm 的 RetryPolicyConfig）。
  * normal = 只重试可重试错误码，有次数上限；always = 直到成功/取消/关闭。
  */
-export interface RetryPolicyConfig {
-  mode: 'normal' | 'always';
-  /** 仅 normal：首次请求之后最多再试几次（默认 5） */
-  maxRetries?: number;
-  /** 仅 normal：可重试的稳定错误码列表 */
-  retryableCodes?: string[];
-  backoff?: RetryBackoffConfig;
-}
+export type { RetryPolicyConfig } from '@qqbot/contracts';
 
 /** 原生 DeepSeek 路由的目录条目（llm-deepseek 的 catalogModel）。 */
-export interface DeepSeekCatalogModelConfig {
-  id: string;
-  name?: string;
-  description?: string;
-  contextWindow?: number;
-  maxTokens?: number;
-  /** 该模型接受的请求模态（llm-deepseek 只认 text / image） */
-  inputModalities?: Array<'text' | 'image'>;
-  imagePixelBudget?: number | 'low';
-  imageMaxBytes?: number;
-  systemPromptUpdate?: 'in-history';
-  toolUpdate?: 'in-history' | 'addition-only';
-}
+export type { DeepSeekCatalogModelConfig } from '@qqbot/contracts';
 
 /**
  * 原生 DeepSeek 路由（`deepseek-official`）的配置，对应
  * `@deepseek-ai/dsh-llm-deepseek-api-key` 的 Config（= llm-deepseek 的
  * ProtocolConfig + `apiKeyEnv`）。
  */
-export interface DeepSeekRouteConfig {
-  /** 凭证引用（环境变量名），默认 DEEPSEEK_API_KEY；按请求解析 */
-  apiKeyEnv?: string;
-  /** Messages 端点基址；缺省读 $DEEPSEEK_BASE_URL，再退到官方公开 API */
-  baseURL?: string;
-  /** 部署级 thinking 策略；disabled = 所有请求强制 off */
-  thinking?: 'enabled' | 'disabled';
-  /** 默认 thinking 档位（默认 high） */
-  reasoningEffort?: 'off' | 'low' | 'high' | 'max';
-  /** 每次请求的输出上限默认值（模型自己的上限与显式请求值优先） */
-  maxTokens?: number;
-  /** 模型无精确值时的上下文容量兜底 */
-  defaultContextWindow?: number;
-  /** 该路由的模型目录（整份替换默认目录） */
-  models?: DeepSeekCatalogModelConfig[];
-  streamIdleTimeoutMs?: number;
-  maxRequestFilesBytes?: number;
-  maxInlineRequestImageBytes?: number;
-  maxImagesPerRequest?: number;
-  imageOffloadByteQuantum?: number;
-  inlineImageOffloadByteQuantum?: number;
-  imageOffloadCountQuantum?: number;
-  filesApiTimeoutMs?: number;
-  fileExpiresAfterSeconds?: number;
-  fileRefreshMarginSeconds?: number;
-  fileQuotaCleanupBatch?: number;
-  retryPolicy?: RetryPolicyConfig;
-}
+export type { DeepSeekRouteConfig } from '@qqbot/contracts';
 
 /** pi-ai 的思考档位（ModelThinkingLevel）。 */
-export type PiAiThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type { PiAiThinkingLevel } from '@qqbot/contracts';
 
 /**
  * 可选思考档位表：键是选择面提供的档位，值是发到线上的拼写；
  * `off` 的值可以为 null（"不思考"对多数提供商就是参数缺省）。
  */
-export type PiAiReasoningEfforts = Partial<Record<PiAiThinkingLevel, string | null>>;
+export type { PiAiReasoningEfforts } from '@qqbot/contracts';
 
 /**
  * pi-ai 线兼容开关（PiAiCompatProfile）。逐字段语义见 DSH 配置目录；
  * 这里只做形状与取值校验，是否适用于路由上模型的协议由 DSH 启动校验判定。
  */
-export interface PiAiCompatConfig {
-  supportsStore?: boolean;
-  supportsDeveloperRole?: boolean;
-  supportsReasoningEffort?: boolean;
-  supportsUsageInStreaming?: boolean;
-  supportsFinishReason?: boolean;
-  maxTokensField?: 'max_completion_tokens' | 'max_tokens';
-  requiresToolResultName?: boolean;
-  requiresAssistantAfterToolResult?: boolean;
-  requiresThinkingAsText?: boolean;
-  requiresReasoningContentOnAssistantMessages?: boolean;
-  thinkingFormat?:
-    | 'openai'
-    | 'openrouter'
-    | 'deepseek'
-    | 'together'
-    | 'baseten'
-    | 'zai'
-    | 'qwen'
-    | 'chat-template'
-    | 'qwen-chat-template'
-    | 'string-thinking'
-    | 'ant-ling';
-  chatTemplateKwargs?: Record<string, PiAiTemplateArg>;
-  chatTemplateArgs?: Record<string, PiAiTemplateArg>;
-  supportsThinkingTokenBudget?: boolean;
-  thinkingTokenBudgetField?: 'thinking_token_budget' | 'thinking_budget' | 'thinking_budget_tokens';
-  vllmPriority?: number;
-  supportsMaxOutputTokens?: boolean;
-  supportsStrictMode?: boolean;
-  cacheControlFormat?: 'anthropic';
-  supportsLongCacheRetention?: boolean;
-  supportsEagerToolInputStreaming?: boolean;
-  supportsCacheControlOnTools?: boolean;
-  supportsTemperature?: boolean;
-  forceAdaptiveThinking?: boolean;
-  allowEmptySignature?: boolean;
-  supportsStrictTools?: boolean;
-}
+export type { PiAiCompatConfig } from '@qqbot/contracts';
 
 /** chat_template_kwargs / args 的取值：字面量或 pi 控制的 $var 引用。 */
-export type PiAiTemplateArg =
-  | string
-  | number
-  | boolean
-  | null
-  | { $var: 'thinking.enabled' | 'thinking.effort' | 'thinking.budget'; omitWhenOff?: boolean };
+export type { PiAiTemplateArg } from '@qqbot/contracts';
 
 /** pi-ai 路由上的一个模型条目（PiAiModelProfile）。 */
-export interface PiAiModelConfig {
-  id: string;
-  name?: string;
-  contextWindow?: number;
-  /** 配了它同时也是该模型的每请求默认输出上限 */
-  maxTokens?: number;
-  /** 该模型接受的请求模态；缺省继承目录条目，再退到路由的 defaultInput */
-  input?: Array<'text' | 'image'>;
-  /** false = 声明该模型不思考；字典 = 可选档位与线上拼写 */
-  reasoningEfforts?: false | PiAiReasoningEfforts;
-  compat?: PiAiCompatConfig;
-}
+export type { PiAiModelConfig } from '@qqbot/contracts';
 
 /** modelOverrides 的条目：与 PiAiModelConfig 同字段，id 由字典键提供。 */
-export type PiAiModelOverride = Omit<PiAiModelConfig, 'id'>;
+export type { PiAiModelOverride } from '@qqbot/contracts';
 
 /** 思考档位对应的 token 预算（支持预算的推理提供商用）。 */
-export interface PiAiThinkingBudgets {
-  minimal?: number;
-  low?: number;
-  medium?: number;
-  high?: number;
-}
+export type { PiAiThinkingBudgets } from '@qqbot/contracts';
 
 /** 一条 pi-ai 提供商路由（PiAiProviderProfile）；`providers` 字典的键就是路由名。 */
-export interface PiAiProviderConfig {
-  /** 凭证引用（环境变量名），按请求经 DSH 凭证缝解析；缺省走 pi-ai 环境发现 */
-  apiKeyEnv?: string;
-  displayName?: string;
-  /** 线上协议；目录内路由可省略，目录外路由必填（如 openai-completions） */
-  api?: string;
-  baseURL?: string;
-  /** 整份替换该路由的目录；目录外路由必须非空 */
-  models?: PiAiModelConfig[];
-  /** 只改目录内个别模型（与 models 互斥，且仅目录内路由可用） */
-  modelOverrides?: Record<string, PiAiModelOverride>;
-  compat?: PiAiCompatConfig;
-  defaultContextWindow?: number;
-  defaultMaxTokens?: number;
-  defaultInput?: Array<'text' | 'image'>;
-  /** 提供商请求头；带密钥语义的名称（Authorization 等）被拒，见 SECRET_HEADER_NAMES */
-  headers?: Record<string, string>;
-  reasoning?: PiAiThinkingLevel;
-  thinkingBudgets?: PiAiThinkingBudgets;
-  cacheRetention?: 'none' | 'short' | 'long';
-  transport?: 'sse' | 'websocket' | 'websocket-cached' | 'auto';
-  timeoutMs?: number;
-  websocketConnectTimeoutMs?: number;
-  streamIdleTimeoutMs?: number;
-  maxRequestImageBytes?: number;
-  requestImagePixelBudget?: number;
-  requestImageMaxBytes?: number;
-  retryPolicy?: RetryPolicyConfig;
-}
+export type { PiAiProviderConfig } from '@qqbot/contracts';
 
 /** 配置文件 `models:` 段解析后的形状（也是 Config.modelApi 的类型）。 */
-export interface ModelApiConfig {
-  /** 原生 DeepSeek 路由（provider = deepseek-official）的配置 */
-  deepseek?: DeepSeekRouteConfig;
-  /** pi-ai 多提供商路由，键即 provider 路由名 */
-  providers: Record<string, PiAiProviderConfig>;
-}
+export type { ModelApiConfig } from '@qqbot/contracts';
 
 /** 原生 DeepSeek 路由名（llm-deepseek-api-key 插件注册的路由）。 */
-export const DEEPSEEK_OFFICIAL_PROVIDER = 'deepseek-official';
+export { DEEPSEEK_OFFICIAL_PROVIDER } from '@qqbot/contracts';
 
 /**
  * qqbot 不能占用的路由名：这两个由 base bundle 的原生插件注册，
@@ -1030,12 +903,7 @@ export function assertModelApiConfig(
  *   - 路由没给 baseURL 时返回 undefined，由调用方决定是否还有显式 apiBase
  *     兜底（都没有才报错——报错文案在 config.ts，因为那里才知道是哪个消费者）。
  */
-export interface AuxRouteResolution {
-  /** 凭证变量名（调用方负责从环境解析并校验非空） */
-  apiKeyEnv: string;
-  /** 路由自带的端点；没有则 undefined */
-  baseURL?: string;
-}
+export type { AuxRouteResolution } from '@qqbot/contracts';
 
 /**
  * 把路由名解析成辅助调用可用的凭证与端点。
@@ -1088,7 +956,7 @@ export function resolveAuxRoute(
 // ---------------------------------------------------------------------------
 
 /** 生成的 patch 文件名（落在 stateDir 下）。 */
-export const MODEL_API_PATCH_FILENAME = 'model-api.patch.yml';
+export { MODEL_API_PATCH_FILENAME } from '@qqbot/contracts';
 
 /** 去掉值为 undefined 的键，让生成的 YAML 只含用户显式配置的项。 */
 function stripUndefined<T extends Record<string, unknown>>(obj: T): T {

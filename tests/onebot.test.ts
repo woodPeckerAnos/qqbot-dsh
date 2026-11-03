@@ -8,6 +8,15 @@
  *   - 鉴权失败直接 401，不进入 WS 层。
  */
 
+/**
+ * OneBot 适配器测试：归一化纯函数 + 反向 WS 全回路（真实 socket，全离线）。
+ *
+ * 全回路用真实 WS 服务器与客户端（localhost），验证的是协议层最容易错的部分：
+ *   - token 鉴权（header 与 query 两种形式）；
+ *   - 事件进来 → 归一化 → 吐给编排层；
+ *   - reply() → action 帧出去 → echo 对回响应；
+ *   - 鉴权失败直接 401，不进入 WS 层。
+ */
 import { describe, expect, it, afterEach } from 'vitest';
 const socketDescribe = process.env.BOT_TEST_INTEGRATION === '1' ? describe : describe.skip;
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

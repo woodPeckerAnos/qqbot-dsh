@@ -1,3 +1,4 @@
+import type { RuntimePool, MessageQueue, SessionOutputCoordinator } from '@qqbot/contracts';
 /**
  * Task 架构装配与资源生命周期：独立状态存储、双 runtime 池、控制桥和出口回调。
  * 恢复先登记一次中断产物，再结算旧执行，最后释放孤立预算与到期工作区。
@@ -5,31 +6,37 @@
  */
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Config } from '../config.js';
-import type { BotConnector, NormalizedMessage } from '../core/connector.js';
-import { RuntimePool, type RuntimePoolOptions } from '../dsh/pool.js';
-import type { DocumentExtractor } from '../dsh/files.js';
-import { createTrace, type TraceContext, type Logger } from '../logger.js';
-import type { PipelineStats } from '../pipeline/stats.js';
-import type { TopicJudge } from '../pipeline/topic-judge.js';
-import type { ConversationStore } from '../store/conversations.js';
-import type { ObservationWindowStore } from '../store/window.js';
-import type { StorePaths } from '../store/paths.js';
-import { TaskStore } from '../store/tasks.js';
-import { Responder } from '../pipeline/egress/responder.js';
-import type { MessageContext } from '../pipeline/ingress/types.js';
+import type { Config } from '@qqbot/contracts';
+import type { BotConnector, NormalizedMessage } from '@qqbot/contracts';
+import { createRuntimePool } from '../runtime/index.js';
+import type { RuntimePoolOptions } from '@qqbot/contracts';
+import type { DocumentExtractor } from '@qqbot/contracts';
+import { createTrace } from '../observability/index.js';
+import type { TraceContext, Logger } from '@qqbot/contracts';
+import type { PipelineStats } from '@qqbot/contracts';
+import type { TopicJudge } from '@qqbot/contracts';
+import type { ConversationStore } from '@qqbot/contracts';
+import type { ObservationWindowStore } from '@qqbot/contracts';
+import type { StorePaths } from '@qqbot/contracts';
+import { createStateWriter } from '../store/index.js';
+import { createResponder } from '../delivery/index.js';
+import type { MessageContext } from '@qqbot/contracts';
 import { TaskLifeCycleManager } from './lifecycle.js';
-import { TaskBudget, type BudgetRecord } from './budget.js';
-import { MessageQueue, type QueuedMessage } from './message-queue.js';
+import { TaskBudget } from './budget.js';
+import type { BudgetRecord } from '@qqbot/contracts';
+import { createMessageQueue } from '../delivery/index.js';
+import type { QueuedMessage } from '@qqbot/contracts';
 import { PromptPreparer } from './prompt-preparer.js';
-import { SessionOutputCoordinator } from './output-coordinator.js';
+import { createSessionOutputCoordinator } from '../delivery/index.js';
 import { LaneScheduler } from './lane-scheduler.js';
 import { TaskControlBridge } from './control-bridge.js';
-import { DshLaneRunner, type LaneRunner } from './dsh-lane-runner.js';
-import { SessionActor, type SessionContextState } from './session-actor.js';
+import { DshLaneRunner } from './dsh-lane-runner.js';
+import type { LaneRunner } from '@qqbot/contracts';
+import { SessionActor } from './session-actor.js';
+import type { SessionContextState } from '@qqbot/contracts';
 import { ProactiveTaskAdapter } from './proactive-adapter.js';
-import type { TaskClock } from './clock.js';
-import type { Lane, TaskSnapshot } from './types.js';
+import type { TaskClock } from '@qqbot/contracts';
+import type { Lane, TaskSnapshot } from '@qqbot/contracts';
 
 export class TaskSystem {
   readonly manager: TaskLifeCycleManager;
@@ -52,6 +59,7 @@ export class TaskSystem {
       stats: PipelineStats;
       extractDocument?: DocumentExtractor;
       topicJudge?: TopicJudge;
+      topicJudgeResult?: import('@qqbot/contracts').TopicJudgeResult;
       modelPatches?: string[];
       pools?: Record<Lane, RuntimePool>;
       runner?: LaneRunner;
@@ -62,7 +70,7 @@ export class TaskSystem {
     const { config, logger, paths } = options;
     const clock = options.clock;
     this.manager = new TaskLifeCycleManager({
-      store: new TaskStore<TaskSnapshot>(join(paths.stateDir, 'tasks.json')),
+      store: createStateWriter<TaskSnapshot, 'tasks'>('tasks', join(paths.stateDir, 'tasks.json')),
       now: clock === undefined ? undefined : () => clock.now(),
       maxPerSession: config.tasks.maxPerSession,
       maxGlobal: config.tasks.maxGlobal,
@@ -70,11 +78,17 @@ export class TaskSystem {
       logger,
     });
     this.budget = new TaskBudget(
-      new TaskStore<BudgetRecord>(join(paths.stateDir, 'task-budgets.json'))
+      createStateWriter<BudgetRecord, 'task-budgets'>(
+        'task-budgets',
+        join(paths.stateDir, 'task-budgets.json')
+      )
     );
-    this.queue = new MessageQueue({
+    this.queue = createMessageQueue({
       connectors: options.connectors,
-      store: new TaskStore<QueuedMessage>(join(paths.stateDir, 'messages.json')),
+      store: createStateWriter<QueuedMessage, 'messages'>(
+        'messages',
+        join(paths.stateDir, 'messages.json')
+      ),
       logger,
       clock: options.clock,
     });
@@ -84,7 +98,7 @@ export class TaskSystem {
       (Object.fromEntries(
         (['fast', 'slow'] as const).map((lane) => [
           lane,
-          new RuntimePool({
+          createRuntimePool({
             maxRuntimes: config.tasks[lane === 'fast' ? 'fastRuntimes' : 'slowRuntimes'],
             runtimeIdleMs: config.pool.runtimeIdleMs,
             base: {
@@ -109,7 +123,7 @@ export class TaskSystem {
     const control = new TaskControlBridge(this.manager, (id) => {
       this.actor.cancelExecution(id);
     });
-    this.output = new SessionOutputCoordinator({
+    this.output = createSessionOutputCoordinator({
       manager: this.manager,
       budget: this.budget,
       queue: this.queue,
@@ -124,7 +138,7 @@ export class TaskSystem {
       onDelivered: (candidate, ts) => {
         const reference = candidate.reference;
         const text = candidate.text || `[附件：${candidate.attachment?.fileName ?? ''}]`;
-        options.conversations.append(candidate.message.target.key, {
+        const stored = options.conversations.appendResult(candidate.message.target.key, {
           role: 'assistant',
           speaker: 'bot',
           text,
@@ -134,6 +148,11 @@ export class TaskSystem {
           taskId: candidate.taskId,
           lane: candidate.lane,
         });
+        if (!stored.ok)
+          logger.warn('已发送回复的历史保存降级', {
+            code: stored.error.code,
+            errorId: logger.cause(stored.error.cause, 'persistence'),
+          });
         options.windows.recordBotReply(candidate.message.target.key, {
           text,
           ts,
@@ -141,7 +160,7 @@ export class TaskSystem {
           taskId: candidate.taskId,
           lane: candidate.lane,
         });
-        options.stats.repliesSent++;
+        options.stats.record('repliesSent');
         this.proactive?.delivered(candidate, ts);
       },
       onBudgetSettled: (id, result) => {
@@ -166,11 +185,18 @@ export class TaskSystem {
       preparer,
       runner,
       schedulers: {
-        fast: new LaneScheduler(config.tasks.fastRuntimes),
-        slow: new LaneScheduler(config.tasks.slowRuntimes),
+        fast: new LaneScheduler(config.tasks.fastRuntimes, (error, taskId) => {
+          logger.cause(error, 'persistence', { taskId });
+        }),
+        slow: new LaneScheduler(config.tasks.slowRuntimes, (error, taskId) => {
+          logger.cause(error, 'persistence', { taskId });
+        }),
       },
       clock: options.clock,
-      sessions: new TaskStore<SessionContextState>(join(paths.stateDir, 'task-sessions.json')),
+      sessions: createStateWriter<SessionContextState, 'task-sessions'>(
+        'task-sessions',
+        join(paths.stateDir, 'task-sessions.json')
+      ),
     });
     this.actor = actor;
     this.proactive = new ProactiveTaskAdapter({
@@ -184,7 +210,7 @@ export class TaskSystem {
         isAdmin: false,
         policy: connector.policy(message.target.kind),
         logger,
-        responder: new Responder({ message, queue: this.queue, trace }),
+        responder: createResponder({ message, queue: this.queue, trace }),
       }),
     });
     // 必须先登记中断产物再改变执行状态，避免预留预算在失败消息入队前被释放。
@@ -217,7 +243,16 @@ export class TaskSystem {
     });
     void this.prune();
     this.maintenance = setInterval(() => {
+      actor.flushSettlements();
       this.queue.wake();
+      for (const record of this.budget.list()) {
+        if (record.status !== 'reserved') continue;
+        try {
+          this.output.reconcile(record.taskId);
+        } catch (error) {
+          options.logger.cause(error, 'budget-settlement-persistence-failed');
+        }
+      }
       void this.prune();
     }, 30_000);
     this.maintenance.unref();
@@ -259,7 +294,7 @@ export class TaskSystem {
       isAdmin,
       policy: connector.policy(message.target.kind),
       logger: this.options.logger.withTrace(trace),
-      responder: new Responder({ message, queue: this.queue, trace }),
+      responder: createResponder({ message, queue: this.queue, trace }),
     };
   }
   async close(): Promise<void> {

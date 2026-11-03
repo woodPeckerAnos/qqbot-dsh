@@ -5,6 +5,12 @@
  * 只有真实 fs 才能验出真假。
  */
 
+/**
+ * outbox 扫描器测试：产物发现、分类、体积上限、符号链接安全、归档。
+ *
+ * 全部用真实文件系统（tmpdir）：符号链接逃逸与 realpath 包含性校验
+ * 只有真实 fs 才能验出真假。
+ */
 import { mkdtemp, mkdir, readdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

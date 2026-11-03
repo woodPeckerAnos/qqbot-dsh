@@ -8,6 +8,15 @@
  *     而"没展开"最多少看一条记录，模型会如实说看不到。
  */
 
+/**
+ * 话题判定器单测（fake fetch，不触网）。
+ *
+ * 两个 fail-safe 方向**刻意相反**，两条都要锁住：
+ *   - `related`：超时 / HTTP 错误 / JSON 解析失败一律 true（不重置上下文）——
+ *     误清的代价远大于误留；
+ *   - `mentionsChatRecord`：一律 false（不展开聊天记录）——展开要回查 + 花 token，
+ *     而"没展开"最多少看一条记录，模型会如实说看不到。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { createNullLogger } from '../src/logger.js';

@@ -1,3 +1,4 @@
+import type { SaveInboxFileOptions, SavedInboxFile, InboxCleanupOptions } from '@qqbot/contracts';
 /**
  * inbox：把用户发来的文件落到会话工作区，供 agent 用自己已有的工具继续深挖。
  *
@@ -17,11 +18,10 @@
  *   - 单文件体积由调用方按 maxFileBytes 预筛，本层再按实际字节数复核一次；
  *   - 清理与配额一律 best-effort：失败只记 warn，绝不影响本轮回答。
  */
-
 import { lstat, mkdir, open, readdir, realpath, stat, unlink } from 'node:fs/promises';
 import { extname, join, sep } from 'node:path';
 
-import type { Logger } from '../logger.js';
+import type { Logger } from '@qqbot/contracts';
 
 /** 兜底文件名（sanitize 后什么都不剩时用） */
 const FALLBACK_NAME = 'file';
@@ -60,29 +60,9 @@ export function sanitizeInboxFileName(raw: string): string {
   return `${name.slice(0, MAX_NAME_LENGTH - ext.length)}${ext}`;
 }
 
-export interface SaveInboxFileOptions {
-  /** 该会话的工作区绝对路径 */
-  workspacePath: string;
-  /** 工作区内的 inbox 目录名（配置层已保证是纯目录名） */
-  inboxDir: string;
-  /** 平台给的文件名（会被 sanitize） */
-  fileName: string;
-  data: Uint8Array;
-  /** 单文件字节上限（本层复核一次） */
-  maxBytes: number;
-  logger: Logger;
-  now?: () => number;
-}
+export type { SaveInboxFileOptions } from '@qqbot/contracts';
 
-export interface SavedInboxFile {
-  /** 落盘绝对路径 */
-  absPath: string;
-  /** 相对工作区的展示路径（`inbox/1767-report.pdf`），写进 prompt 用 */
-  relPath: string;
-  /** 实际落盘的文件名（含时间戳前缀） */
-  fileName: string;
-  sizeBytes: number;
-}
+export type { SavedInboxFile } from '@qqbot/contracts';
 
 /**
  * 落一个文件到 inbox。失败一律返回 undefined（调用方降级成文字说明）。
@@ -205,16 +185,7 @@ export async function saveInboxFile(
   }
 }
 
-export interface InboxCleanupOptions {
-  workspacePath: string;
-  inboxDir: string;
-  /** 保留天数（0 = 只按总量配额清理，不按时间） */
-  retentionDays: number;
-  /** 目录总字节上限；超出时**删最旧的**而不是拒绝新文件 */
-  maxBytes: number;
-  logger: Logger;
-  now?: () => number;
-}
+export type { InboxCleanupOptions } from '@qqbot/contracts';
 
 /**
  * inbox 清理：先删超期文件，再删最旧的直到总量回到上限内。

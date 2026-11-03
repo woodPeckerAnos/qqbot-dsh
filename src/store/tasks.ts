@@ -23,3 +23,18 @@ export class TaskStore<T> {
     renameSync(temp, this.file);
   }
 }
+
+/** Composition issues a writer for one persistent state namespace. */
+export function createStateWriter<
+  T,
+  D extends import('@qqbot/contracts').StateDomain = import('@qqbot/contracts').StateDomain,
+>(domain: D, file?: string): import('@qqbot/contracts').StateWriter<T> & { readonly domain: D } {
+  const store = new TaskStore<T>(file);
+  return Object.freeze({
+    domain,
+    load: () => store.load(),
+    save: (records: readonly T[]) => {
+      store.save(records);
+    },
+  });
+}

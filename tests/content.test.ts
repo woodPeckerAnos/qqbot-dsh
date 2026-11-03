@@ -4,6 +4,11 @@
  * 全部离线：图片下载用注入的 fetchMedia 替身，不触网。
  */
 
+/**
+ * 多模态输入链路单测：片段模型 → 官方事件归一化 → prompt blocks 组装。
+ *
+ * 全部离线：图片下载用注入的 fetchMedia 替身，不触网。
+ */
 import { randomBytes } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';

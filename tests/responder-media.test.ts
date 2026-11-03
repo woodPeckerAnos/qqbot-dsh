@@ -8,6 +8,15 @@
  *   4. 超预算/超体积的附件降级为文本说明，不静默丢弃。
  */
 
+/**
+ * Responder 富媒体出站测试：附件与文本的配额分配、发送顺序、降级文案、归档。
+ *
+ * 规则定稿（docs/RICH-MEDIA-PLAN.md §5）：
+ *   1. 平时文本保底 1 条：附件预算 = 剩余额度 - 1；
+ *   2. 只剩 1 条额度时反转：附件优先；
+ *   3. 发送顺序附件先、文本后；
+ *   4. 超预算/超体积的附件降级为文本说明，不静默丢弃。
+ */
 import { mkdtemp, mkdir, readdir, readFile, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

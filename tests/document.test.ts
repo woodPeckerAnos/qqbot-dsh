@@ -12,6 +12,19 @@
  *   4. 编码：UTF-8 优先，GBK 兜底，二进制（含 NUL）判非文本。
  */
 
+/**
+ * 文档正文抽取单测（全离线）。
+ *
+ * pdftotext 用**假子进程**替换 spawn：CI 不保证宿主装了 poppler，也不该在单测里
+ * 起真实子进程（与 CI 的"单测不触网、不起 DSH 子进程"约束同源）。真实 pdftotext
+ * 的行为走容器内手工验证，列在 RUNBOOK 的待实测项里。
+ *
+ * 这里要守住的四条硬性质：
+ *   1. 任何失败都变成 `{ reason }`，**永不抛错**（否则整个 turn 挂掉）；
+ *   2. 抽取器缺失只警告一次，之后不再 spawn；
+ *   3. 超时 / 超量都要能真的把子进程杀掉，并给出可读原因；
+ *   4. 编码：UTF-8 优先，GBK 兜底，二进制（含 NUL）判非文本。
+ */
 import { EventEmitter } from 'node:events';
 import type { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';

@@ -1,3 +1,4 @@
+import type { ConversationTurn, ConversationReadSnapshot } from '@qqbot/contracts';
 /**
  * 对话记录：每个会话（群聊/单聊）一个只追加的 JSONL 文件。
  *
@@ -10,59 +11,90 @@
  *   - 追加写 + tail 读正好是这个场景的全部需求，不需要事务/索引；
  *   - 纯文本便于运维直接看（`tail -f` 就能观察机器人在聊什么）。
  *
- * 写入策略：`appendFileSync` 单次写入（小于 PIPE_BUF 时是原子的），失败只记日志
- * 不抛错——记忆属于"尽力而为"，不能因为它让整个回复流程失败。
+ * 写入策略：单次调用 `appendFileSync`，失败可能已有部分写入，不自动重试。
+ * 兼容入口失败只记日志——记忆属于"尽力而为"，不能因此让整个回复流程失败。
  */
-
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { failure, readonlySnapshot, type DeepReadonly, type Result } from '@qqbot/contracts';
 
-import type { Logger } from '../logger.js';
-import type { OriginalMessageReference } from '../core/connector.js';
-import { conversationFileFor, type StorePaths } from './paths.js';
+import type { Logger } from '@qqbot/contracts';
 
-export type ConversationRole = 'user' | 'assistant' | 'system-note';
+import { conversationFileFor } from './paths.js';
+import type { StorePaths } from '@qqbot/contracts';
 
-export interface ConversationTurn {
-  role: ConversationRole;
-  /** 群成员昵称（user）或 "bot"（assistant） */
-  speaker: string;
-  text: string;
-  ts: number;
-  /** 触发本条的用户消息 id，便于把回复和提问关联起来 */
-  replyToMsgId?: string;
-  reference?: OriginalMessageReference;
-  taskId?: string;
-  lane?: 'fast' | 'slow';
-}
+export type { ConversationRole } from '@qqbot/contracts';
+
+export type { ConversationTurn } from '@qqbot/contracts';
+
+export type { ConversationReadSnapshot } from '@qqbot/contracts';
 
 export class ConversationStore {
+  private readonly paths: StorePaths;
   constructor(
-    private readonly paths: StorePaths,
+    paths: StorePaths,
     private readonly logger: Logger
   ) {
+    this.paths = readonlySnapshot(paths);
     mkdirSync(paths.conversationsDir, { recursive: true });
   }
 
   /** 追加一条记录。失败只记日志，不抛错。 */
   append(conversationKey: string, turn: ConversationTurn): void {
+    this.appendResult(conversationKey, turn);
+  }
+
+  /** 追加失败可能已写入部分数据，核查后才可补写；兼容 append 继续尽力而为。 */
+  appendResult(conversationKey: string, turn: ConversationTurn): Result<void> {
     const file = conversationFileFor(this.paths, conversationKey);
     try {
       mkdirSync(dirname(file), { recursive: true });
       appendFileSync(file, `${JSON.stringify({ ...turn, conversationKey })}\n`, 'utf8');
+      return { ok: true, value: undefined };
     } catch (error) {
       this.logger.warn('写入对话记录失败（不影响本次回复）', {
         file,
         error: error instanceof Error ? error.message : String(error),
       });
+      return {
+        ok: false,
+        error: Object.freeze({ ...failure('PERSISTENCE_FAILED', error), retry: 'after-change' }),
+      };
     }
   }
 
   /** 读取全部记录（诊断/测试用）。解析失败的行跳过并计数。 */
-  readAll(conversationKey: string): ConversationTurn[] {
+  readAll(conversationKey: string): DeepReadonly<ConversationTurn[]> {
+    const result = this.readResult(conversationKey);
+    if (!result.ok) {
+      if (result.error.code === 'NOT_FOUND') return readonlySnapshot([]);
+      throw new Error('读取对话记录失败', { cause: result.error.cause });
+    }
+    const { turns, corrupted } = result.value;
+    if (corrupted > 0) {
+      this.logger.warn('对话记录中有无法解析的行（已跳过）', {
+        file: conversationFileFor(this.paths, conversationKey),
+        corrupted,
+      });
+    }
+    return turns;
+  }
+
+  /** 历史无TTL；缺失、I/O失败和部分损坏均保留独立语义。 */
+  readResult(conversationKey: string): Result<ConversationReadSnapshot> {
     const file = conversationFileFor(this.paths, conversationKey);
-    if (!existsSync(file)) return [];
-    const raw = readFileSync(file, 'utf8');
+    try {
+      return { ok: true, value: readonlySnapshot(this.parseTurns(readFileSync(file, 'utf8'))) };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return {
+        ok: false,
+        error: failure(code === 'ENOENT' ? 'NOT_FOUND' : 'UPSTREAM_FAILED', error),
+      };
+    }
+  }
+
+  private parseTurns(raw: string): { turns: ConversationTurn[]; corrupted: number } {
     const turns: ConversationTurn[] = [];
     let corrupted = 0;
     for (const line of raw.split('\n')) {
@@ -75,17 +107,14 @@ export class ConversationStore {
         corrupted += 1;
       }
     }
-    if (corrupted > 0) {
-      this.logger.warn('对话记录中有无法解析的行（已跳过）', { file, corrupted });
-    }
-    return turns;
+    return { turns, corrupted };
   }
 
   /** 取最近 n 条记录。 */
-  readTail(conversationKey: string, n: number): ConversationTurn[] {
-    if (n <= 0) return [];
+  readTail(conversationKey: string, n: number): DeepReadonly<ConversationTurn[]> {
+    if (n <= 0) return readonlySnapshot([]);
     const all = this.readAll(conversationKey);
-    return all.slice(-n);
+    return readonlySnapshot(all.slice(-n));
   }
 }
 

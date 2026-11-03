@@ -1,3 +1,5 @@
+import { QqApiError_ } from '@qqbot/contracts';
+import type { QqApiOptions } from '@qqbot/contracts';
 /**
  * QQ OpenAPI 调用（只实现本 MVP 用到的端点）。
  *
@@ -16,51 +18,22 @@
  *   - 被动回复窗口：群聊 5 分钟 / 单聊 60 分钟；每条消息最多回复 群聊 5 次 / 单聊 4 次。
  */
 
-import type { Logger } from '../../logger.js';
-import { TokenManager } from './token.js';
-import {
-  SendErrorCode,
-  type GatewayResponse,
-  type QqApiError,
-  type SendGroupMessageRequest,
-  type SendUserMessageRequest,
-  type SendUserStreamMessageRequest,
-  type SendMessageResponse,
-  type UploadFileRequest,
-  type UploadFileResponse,
-} from './types.js';
+import { SendErrorCode } from '@qqbot/contracts';
+import type {
+  GatewayResponse,
+  QqApiError,
+  SendGroupMessageRequest,
+  SendUserMessageRequest,
+  SendUserStreamMessageRequest,
+  SendMessageResponse,
+  UploadFileRequest,
+  UploadFileResponse,
+} from '@qqbot/contracts';
 
-export interface QqApiOptions {
-  apiBase: string;
-  tokenManager: TokenManager;
-  logger: Logger;
-  fetchImpl?: typeof fetch;
-  /** 单次 HTTP 请求超时（毫秒） */
-  timeoutMs?: number;
-}
+export type { QqApiOptions } from '@qqbot/contracts';
 
 /** 业务错误：平台用 code 表达，HTTP 状态可能是 200。 */
-export class QqApiError_ extends Error {
-  constructor(
-    message: string,
-    readonly code: number | undefined,
-    readonly httpStatus: number | undefined,
-    readonly body: unknown
-  ) {
-    super(message);
-    this.name = 'QqApiError';
-  }
-
-  /** 消息被去重（(msg_id, msg_seq) 重复） */
-  get isDuplicate(): boolean {
-    return this.code === SendErrorCode.DUPLICATE;
-  }
-
-  /** 消息过长：终态失败，禁止以新长度重发同一消息。 */
-  get isTooLong(): boolean {
-    return this.code === SendErrorCode.TOO_LONG || this.code === SendErrorCode.TOO_LONG_OR_INVALID;
-  }
-}
+export { QqApiError_ } from '@qqbot/contracts';
 
 function describeApiError(code: number | undefined, message: string | undefined): string {
   switch (code) {

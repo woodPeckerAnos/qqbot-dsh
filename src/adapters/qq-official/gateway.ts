@@ -1,3 +1,12 @@
+import { QQ_OFFICIAL_PLATFORM, C2C_KEY_PREFIX } from '@qqbot/contracts';
+import type {
+  WebSocketLike,
+  WebSocketFactory,
+  QqEventSource,
+  EventSourceHealth,
+  GatewayState,
+  QqGatewayOptions,
+} from '@qqbot/contracts';
 /**
  * QQ 网关 WebSocket 生命周期状态机。
  *
@@ -21,36 +30,33 @@
  * 重连退避：指数增长 + 抖动，上限 60 秒。心跳 ack 超时（约 2 个周期）也触发重连，
  * 因为"连着但收不到事件"比断开更危险（机器人看着在线但没人应答）。
  */
-
 import { EventEmitter } from 'node:events';
 
-import type { ConversationTarget, MessagePart, NormalizedEvent } from '../../core/connector.js';
-import type { ForwardConfig } from '../../config.js';
-import { flattenParts } from '../../core/content.js';
-import type { Logger } from '../../logger.js';
-import type { QqApi } from './api.js';
+import type { ConversationTarget, MessagePart, NormalizedEvent } from '@qqbot/contracts';
+
+import { flattenParts } from '../../content/index.js';
+
 import { buildMessageParts } from './content.js';
-import { TokenManager } from './token.js';
-import {
-  OpCode,
-  WS_CLOSE_CODES,
-  canResumeAfterClose,
-  type GatewayPayload,
-  type HelloPayload,
-  type IdentifyPayload,
-  type ReadyPayload,
-  type ResumePayload,
-} from './types.js';
+
+import { OpCode, WS_CLOSE_CODES } from '@qqbot/contracts';
+import { canResumeAfterClose } from './types.js';
+import type {
+  GatewayPayload,
+  HelloPayload,
+  IdentifyPayload,
+  ReadyPayload,
+  ResumePayload,
+} from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 会话目标（官方平台专有的 key 构造规则）
 // ---------------------------------------------------------------------------
 
 /** 官方平台的 connector.platform 值 */
-export const QQ_OFFICIAL_PLATFORM = 'qq-official';
+export { QQ_OFFICIAL_PLATFORM } from '@qqbot/contracts';
 
 /** 单聊会话键前缀（官方 openid 字符集不含 `:`，前缀不会与真实群 openid 冲突） */
-export const C2C_KEY_PREFIX = 'c2c:';
+export { C2C_KEY_PREFIX } from '@qqbot/contracts';
 
 /**
  * 群聊会话：key 沿用原始 `group_openid`。
@@ -79,66 +85,21 @@ export function c2cTarget(userOpenid: string): ConversationTarget {
 // WebSocket 抽象（便于测试注入假实现）
 // ---------------------------------------------------------------------------
 
-export interface WebSocketLike {
-  send(data: string): void;
-  close(code?: number, reason?: string): void;
-  addEventListener(type: 'open', listener: () => void): void;
-  addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
-  addEventListener(
-    type: 'close',
-    listener: (event: { code: number; reason?: string }) => void
-  ): void;
-  addEventListener(type: 'error', listener: (event: { message?: string }) => void): void;
-}
+export type { WebSocketLike } from '@qqbot/contracts';
 
-export type WebSocketFactory = (url: string) => WebSocketLike;
+export type { WebSocketFactory } from '@qqbot/contracts';
 
-export interface QqEventSource {
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  on(handler: (event: NormalizedEvent) => void): () => void;
-  health(): EventSourceHealth;
-}
+export type { QqEventSource } from '@qqbot/contracts';
 
-export interface EventSourceHealth {
-  connected: boolean;
-  state: GatewayState;
-  sessionId?: string;
-  lastSeq?: number;
-  lastEventAt?: number;
-  reconnectAttempts: number;
-}
+export type { EventSourceHealth } from '@qqbot/contracts';
 
-export type GatewayState =
-  'stopped' | 'connecting' | 'identifying' | 'ready' | 'reconnecting' | 'resuming';
+export type { GatewayState } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 实现
 // ---------------------------------------------------------------------------
 
-export interface QqGatewayOptions {
-  api: Pick<QqApi, 'getGateway'>;
-  tokenManager: TokenManager;
-  intents: number;
-  logger: Logger;
-  /** WebSocket 工厂，默认用全局 WebSocket（Node 22+ 内置） */
-  webSocketFactory?: WebSocketFactory;
-  /** 心跳 ack 等待倍数：超过 interval × 该值没收到 ack 就重连 */
-  heartbeatAckTimeoutFactor?: number;
-  /** 退避参数（测试里调小） */
-  backoff?: { baseMs: number; maxMs: number };
-  now?: () => number;
-  random?: () => number;
-  /** 心跳抖动比例，默认 0.1（官方建议加抖动） */
-  heartbeatJitterRatio?: number;
-  /**
-   * 转发块（聊天记录形态的 msg_elements）展开配额
-   * （config.attachments.forward）。缺省用官方适配器的保守内置值。
-   */
-  forward?: ForwardConfig;
-  /** 转发块展开结果上报（/metrics 计数）；官方侧不需要回查，纯翻译 */
-  onForward?: (info: { ok: boolean; nodes: number }) => void;
-}
+export type { QqGatewayOptions } from '@qqbot/contracts';
 
 export class QqGateway implements QqEventSource {
   private readonly emitter = new EventEmitter();

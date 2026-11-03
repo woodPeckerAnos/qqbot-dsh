@@ -62,22 +62,23 @@
  * 注意 `no-response`（没人理我就停）**不在这里**：它必须在调用 LLM 之前短路，
  * 因此由 collect.ts 的入口执行、由调用方从 VetoPolicy 传入上限（见 §"三层分工"）。
  */
-
 import {
   aggregateSessionDirective,
   DEFAULT_VETO_POLICY,
   effectiveMaxWaitPerItem,
   effectiveSessionMinGapMs,
   sceneOrder,
-  type ProactiveDecision,
-  type SceneCandidate,
-  type SceneId,
-  type SceneVerdict,
-  type VetoContext,
-  type VetoPolicy,
-  type VetoReason,
-  type WaitReason,
-} from '../contract.js';
+} from '@qqbot/contracts';
+import type {
+  ProactiveDecision,
+  SceneCandidate,
+  SceneId,
+  SceneVerdict,
+  VetoContext,
+  VetoPolicy,
+  VetoReason,
+  WaitReason,
+} from '@qqbot/contracts';
 
 export { DEFAULT_VETO_POLICY, MAX_WAIT_PER_ITEM_CAP } from '../contract.js';
 

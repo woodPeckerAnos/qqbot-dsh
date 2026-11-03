@@ -1,5 +1,5 @@
 node_modules/
-dist/
+**/dist/
 tmp/
 coverage/
 package-lock.json
@@ -8,3 +8,5 @@ docs/diagrams/
 # 自动生成的架构预览与视觉验收副本，和 docs/diagrams 一样保留原输出。
 .archify/
 eslint-suppressions.json
+
+packages/contracts/compatibility/

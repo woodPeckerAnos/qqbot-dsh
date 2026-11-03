@@ -1,3 +1,5 @@
+import { ONEBOT_PLATFORM } from '@qqbot/contracts';
+import type { NormalizeResult, ExtractedContent, ForwardRef, ForwardNode } from '@qqbot/contracts';
 /**
  * OneBot v11 事件 → 归一化事件（纯函数，无 IO，便于单测）。
  *
@@ -21,19 +23,17 @@
  * 加 `ob11:` 前缀是必须的：OneBot 的数字 QQ 号与官方 openid 是两套命名空间，
  * 且去重表、工作区、对话记录全平台共用，无前缀就会互相污染。
  */
-
 import type {
   ConversationTarget,
   MessageImagePart,
   MessageMediaPart,
   MessagePart,
   MessageVoicePart,
-  NormalizedEvent,
-} from '../../core/connector.js';
-import { flattenParts } from '../../core/content.js';
-import type { OneBotEvent, OneBotSegment } from './types.js';
+} from '@qqbot/contracts';
+import { flattenParts } from '../../content/index.js';
+import type { OneBotEvent, OneBotSegment } from '@qqbot/contracts';
 
-export const ONEBOT_PLATFORM = 'onebot';
+export { ONEBOT_PLATFORM } from '@qqbot/contracts';
 
 export function onebotGroupTarget(groupId: number | string): ConversationTarget {
   const id = String(groupId);
@@ -45,60 +45,16 @@ export function onebotC2cTarget(userId: number | string): ConversationTarget {
   return { platform: ONEBOT_PLATFORM, kind: 'c2c', id, key: `ob11:u${id}` };
 }
 
-export type NormalizeResult =
-  | {
-      type: 'event';
-      event: NormalizedEvent;
-      /** 群/私聊消息引用了某条消息时为该消息 id（连接器据此回查引用内容） */
-      quotedMessageId?: string;
-      /** 消息里的转发块（连接器据此回查 get_forward_msg，见 ForwardRef） */
-      forwardRefs?: ForwardRef[];
-    }
-  | { type: 'friend-request'; flag: string; userId: number }
-  | { type: 'group-invite'; flag: string; groupId: number; userId: number }
-  | { type: 'lifecycle'; selfId: number }
-  | { type: 'heartbeat'; selfId: number }
-  | { type: 'ignored'; reason: string };
+export type { NormalizeResult } from '@qqbot/contracts';
 
 /** 一条消息解析出来的全部内容 */
-export interface ExtractedContent {
-  parts: MessagePart[];
-  /** parts 的扁平化文本（进对话记录、命令匹配、日志） */
-  content: string;
-  /** 是否 @ 了机器人自己 */
-  atSelf: boolean;
-  /** `reply` 段引用的消息 id */
-  quotedMessageId?: string;
-  /**
-   * 待展开的转发块：`index` 是它在 `parts` 里的位置（占位片段），
-   * `id` 是 get_forward_msg 的入参，`nodes` 是平台**已经随事件推过来**的逐条内容。
-   *
-   * 为什么不在归一化时就把内容渲染成最终片段：限额（条数/字符/深度）属于连接器的
-   * 配置，渲染必须和回查路径共用同一套限额，否则"内联"与"回查"两条路的成本不一样。
-   * 解析（纯函数）在这里做，渲染与限额在连接器做。
-   *
-   * 为什么 `id` 与 `nodes` 都可选：两者至少有一个（都没有时归一化直接给
-   * `[聊天记录]` 文本占位）；只有 nodes 的形态见 `case 'node'` 与部分实现。
-   */
-  forwardRefs?: ForwardRef[];
-}
+export type { ExtractedContent } from '@qqbot/contracts';
 
 /** 转发块占位片段在 parts 中的位置 + 平台侧 id / 已内联的逐条内容 */
-export interface ForwardRef {
-  index: number;
-  /** get_forward_msg 的入参；平台没给 id 且有内联内容时不写 */
-  id?: string;
-  /** 平台随事件推来的逐条发言（NapCat 的 `forward.data.content`）；有就不必回查 */
-  nodes?: ForwardNode[];
-}
+export type { ForwardRef } from '@qqbot/contracts';
 
 /** 转发块里的一条发言（已解析成片段，可能自己还带转发/引用） */
-export interface ForwardNode {
-  author?: string;
-  parts: MessagePart[];
-  /** 该条发言内部的嵌套转发（相对 `parts` 的下标）；没有嵌套时不写 */
-  forwardRefs?: ForwardRef[];
-}
+export type { ForwardNode } from '@qqbot/contracts';
 
 function asString(value: unknown): string | undefined {
   if (typeof value === 'string' && value !== '') return value;

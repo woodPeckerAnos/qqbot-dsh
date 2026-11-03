@@ -13,3 +13,6 @@ tests
 config
 *.log
 .DS_Store
+
+packages/contracts/dist
+packages/contracts/compatibility

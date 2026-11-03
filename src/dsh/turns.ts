@@ -1,3 +1,4 @@
+import type { TurnOutcome } from '@qqbot/contracts';
 /**
  * 把 DSH 的事件流归并成"一轮问答的结果"。
  *
@@ -17,16 +18,9 @@
  * 我们只取 type === 'text' 的块，其余（tool-call 等）忽略；结构不认识时
  * 不抛异常，只当作"没有文本"。
  */
+import type { SessionEventEnvelope } from '@qqbot/contracts';
 
-import type { SessionEventEnvelope } from './protocol.js';
-
-export type TurnOutcome =
-  | { kind: 'completed'; text: string; reason: string }
-  | { kind: 'error'; text: string; reason: string; errorMessage?: string }
-  | { kind: 'max-tokens'; text: string; reason: string }
-  | { kind: 'aborted'; text: string; reason: string }
-  | { kind: 'blocked'; text: string; reason: string }
-  | { kind: 'timeout'; text: string; reason: string };
+export type { TurnOutcome } from '@qqbot/contracts';
 
 /** 从 SessionEventMap['assistant/message'] 中抽出可见文本。 */
 export function extractAssistantText(event: SessionEventEnvelope): string {

@@ -5,6 +5,12 @@
  * 所以每一项硬约束都要有测试守着。
  */
 
+/**
+ * 配置校验单测。
+ *
+ * 配置错误是最"安静"的故障模式（进程在跑、日志正常、就是不干活），
+ * 所以每一项硬约束都要有测试守着。
+ */
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 

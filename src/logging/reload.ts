@@ -1,4 +1,4 @@
-import type { LoggingSettings, RootLogger } from '../logger.js';
+import type { LoggingSettings, RootLogger } from '@qqbot/contracts';
 interface SignalSource {
   on(event: 'SIGHUP', callback: () => void): unknown;
   off(event: 'SIGHUP', callback: () => void): unknown;

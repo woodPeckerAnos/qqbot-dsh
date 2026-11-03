@@ -33,6 +33,7 @@ const cleanups: (() => Promise<void>)[] = [];
 const logger = createNullLogger();
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()!();
+  vi.useRealTimers();
 });
 function message(id = '1', senderId = '123', platform = 'onebot'): NormalizedMessage {
   return {
@@ -190,6 +191,59 @@ async function harness(
 }
 
 describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端口）', () => {
+  it('预算保存故障后维护循环只补结算，平台消息与结算通知各一次', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const h = await harness();
+    const taskInput = input('settlement');
+    const handle = h.system.manager.create(taskInput, 'settlement');
+    h.system.budget.reserve(handle.taskId, 'scope', 1);
+    const actualSettle = h.system.budget.settle.bind(h.system.budget);
+    const settle = vi.spyOn(h.system.budget, 'settle').mockImplementation(() => {
+      throw new Error('injected-budget-save-failure');
+    });
+    const notified = vi.spyOn(h.system.proactive, 'settled');
+    h.system.queue.enqueue({
+      taskId: handle.taskId,
+      lane: 'fast',
+      message: taskInput.message,
+      reference: taskInput.reference,
+      text: '已送达',
+      kind: 'final',
+    });
+    h.system.manager.finish(handle.taskId, 'fast', { kind: 'reply', text: '已送达' });
+    h.system.manager.finish(handle.taskId, 'slow', { kind: 'silent', reason: 'no-long-skill' });
+    await handle.done;
+    await vi.waitFor(() => {
+      expect(h.system.queue.snapshot().sent).toBe(1);
+    });
+    expect(h.system.budget.get(handle.taskId)!.status).toBe('reserved');
+    expect(notified).not.toHaveBeenCalled();
+    settle.mockImplementation(actualSettle);
+    vi.advanceTimersByTime(30_000);
+    expect(h.system.budget.get(handle.taskId)!.status).toBe('committed');
+    vi.advanceTimersByTime(30_000);
+    expect(notified).toHaveBeenCalledTimes(1);
+    expect(h.mock.sentTexts).toEqual(['已送达']);
+    expect(h.stats.repliesSent).toBe(1);
+  });
+
+  it('准入保存失败留下的孤立预留由维护循环释放，不创建或重跑 Task', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const h = await harness();
+    h.system.budget.reserve('orphan', 'scope', 1);
+    const notified = vi.spyOn(h.system.proactive, 'settled');
+    vi.advanceTimersByTime(30_000);
+    expect(h.system.budget.get('orphan')).toMatchObject({
+      status: 'released',
+      executionFinished: true,
+    });
+    vi.advanceTimersByTime(30_000);
+    expect(notified).toHaveBeenCalledTimes(1);
+    expect(h.system.manager.list()).toEqual([]);
+    expect(h.runtimes).toEqual([]);
+    expect(h.mock.sentTexts).toEqual([]);
+  });
+
   it('每次有效输入恰好一个 Task，进入两个 lane；重复事件不创建', async () => {
     const h = await harness();
     h.mock.input(1, '你好');

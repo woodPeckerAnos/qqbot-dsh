@@ -10,6 +10,17 @@
  *   6. 失控兜底：模型写长文时按硬上限截断。
  */
 
+/**
+ * 主动发言「措辞轮次」单测（`TurnRunner.runProactiveTurn`，全离线）。
+ *
+ * 被测行为：
+ *   1. 正常路径：措辞经真实 agent turn 产出，prompt 里带判定要点与群聊上下文；
+ *   2. 并发护栏：会话有用户轮次在跑 → 直接放弃（不排队）；
+ *   3. 逃生门：模型看完完整上下文回「不说」→ 不发言；
+ *   4. 超时：回收 runtime、返回 undefined（本次不发言）；
+ *   5. 抢占：生成中来了用户消息 → 回收 runtime，用户轮次拿到全新 runtime 正常跑；
+ *   6. 失控兜底：模型写长文时按硬上限截断。
+ */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,7 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig, type Config } from '../src/config.js';
 import type { ConversationTarget, NormalizedMessage, ReplyPolicy } from '../src/core/connector.js';
-import type { RuntimeEntry, RuntimePool } from '../src/dsh/pool.js';
+import type { RuntimeEntry, RuntimePool } from './legacy/runtime-entry.js';
 import type { PromptContentBlock, SessionEventNotification } from '../src/dsh/protocol.js';
 import type { BackgroundPusher } from './legacy/pipeline/egress/background.js';
 import { Responder } from './legacy/pipeline/egress/responder.js';

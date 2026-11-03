@@ -1,3 +1,4 @@
+import type { OffpeakCommand } from '@qqbot/contracts';
 /**
  * /offpeak 管理员命令：解析与文案。
  *
@@ -5,23 +6,12 @@
  * 提示文案；命令的执行（权限检查、调用 OffpeakGate、回执）在 ingress 的
  * offpeak-command stage 里。
  */
-
-import type { OffpeakGateConfig } from './gate.js';
+import type { OffpeakGateConfig } from '@qqbot/contracts';
 import { formatWindows } from './windows.js';
 
-export type OffpeakCommand =
-  | { action: 'status' }
-  | { action: 'whoami' }
-  | { action: 'set-enabled'; enabled: boolean }
-  | { action: 'set-windows'; spec: string }
-  | { action: 'holiday-add'; date: string }
-  | { action: 'holiday-del'; date: string }
-  | { action: 'holiday-list' }
-  | { action: 'reset' }
-  | { action: 'invalid'; detail: string };
+export type { OffpeakCommand } from '@qqbot/contracts';
 
-export const OFFPEAK_COMMAND_USAGE =
-  '用法：/offpeak status | whoami | on | off | window 00:00-09:00,12:00-14:00,18:00-24:00 | holiday list | holiday add 2027-01-01 | holiday del 2027-01-01 | reset（仅管理员可变更）';
+export { OFFPEAK_COMMAND_USAGE } from '@qqbot/contracts';
 
 /**
  * 解析 /offpeak 命令。返回 undefined 表示这不是命令（按普通消息处理）。

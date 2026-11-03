@@ -181,11 +181,8 @@
     }
   },
   "src/dsh/media.ts": {
-    "@typescript-eslint/no-unnecessary-condition": {
-      "count": 1
-    },
     "complexity": {
-      "count": 3
+      "count": 2
     },
     "max-depth": {
       "count": 1
@@ -420,7 +417,7 @@
   },
   "src/pipeline/proactive/scene/watcher.ts": {
     "@typescript-eslint/no-deprecated": {
-      "count": 4
+      "count": 3
     },
     "complexity": {
       "count": 4
@@ -449,20 +446,6 @@
       "count": 2
     },
     "sonarjs/cognitive-complexity": {
-      "count": 1
-    }
-  },
-  "src/pipeline/topic-judge.ts": {
-    "@typescript-eslint/no-unnecessary-condition": {
-      "count": 1
-    },
-    "complexity": {
-      "count": 1
-    },
-    "max-lines-per-function": {
-      "count": 2
-    },
-    "max-statements": {
       "count": 1
     }
   },
@@ -515,11 +498,6 @@
       "count": 1
     },
     "sonarjs/cognitive-complexity": {
-      "count": 1
-    }
-  },
-  "src/task/clock.ts": {
-    "@typescript-eslint/no-unnecessary-condition": {
       "count": 1
     }
   },

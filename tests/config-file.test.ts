@@ -5,6 +5,12 @@
  * 都必须给出能直接照做的报错，而不是静默用默认值跑起来。
  */
 
+/**
+ * 配置文件层单测（YAML 解析 + 形状校验 + 读取策略，全离线）。
+ *
+ * 这一层的价值在于"配置写错了要在启动期炸"：键名拼错、类型写错、YAML 缩进错，
+ * 都必须给出能直接照做的报错，而不是静默用默认值跑起来。
+ */
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

@@ -1,3 +1,11 @@
+import { failure, type Result, type TopicJudgeResult } from '@qqbot/contracts';
+import { VERDICT_FALLBACK } from '@qqbot/contracts';
+import type {
+  TopicJudgeInput,
+  TopicVerdict,
+  TopicJudge,
+  TopicJudgeOptions,
+} from '@qqbot/contracts';
 /**
  * 话题判定器：新消息与当前会话的既有话题是否相关。
  *
@@ -15,23 +23,8 @@
  *   - 判定结果只影响"是否重置上下文"，永远不会吞掉用户消息本身。
  */
 
-import type { Logger } from '../logger.js';
-import type { ConversationTurn } from '../store/conversations.js';
-
 /** 判定输入。 */
-export interface TopicJudgeInput {
-  /** 最近的会话记录（不含当前这条新消息） */
-  history: readonly ConversationTurn[];
-  /** 当前新消息的扁平化文本 */
-  newMessage: string;
-  /**
-   * 是否**顺带**判定"这条新消息有没有明确提到一条聊天记录"（默认不问）。
-   *
-   * 只有观察窗口里真的躺着一条还没展开的聊天记录时才置 true：没得展开的时候问它，
-   * 等于邀请模型无中生有；而这是**同一次调用**的第二个字段，不问就没有任何代价。
-   */
-  askAboutChatRecord?: boolean;
-}
+export type { TopicJudgeInput } from '@qqbot/contracts';
 
 /**
  * 一次判定的结论。
@@ -41,31 +34,15 @@ export interface TopicJudgeInput {
  *   - `mentionsChatRecord` 失败时取 false（展开要回查、要花 token，而"没展开"
  *     最多少看一条记录——模型会如实说看不到，不会编）。
  */
-export interface TopicVerdict {
-  /** 新消息是否在延续既有话题（true = 保持上下文） */
-  related: boolean;
-  /** 新消息是否明确指向了一条聊天记录（只有 `askAboutChatRecord` 为 true 时才有意义） */
-  mentionsChatRecord: boolean;
-}
+export type { TopicVerdict } from '@qqbot/contracts';
 
 /**
  * 判定器函数签名。由 main.ts 用 createTopicJudge 构造后注入 PromptPreparer；
  * 未注入 = 关闭判定（也就**不会有**按需展开聊天记录的能力，见 §"聊天记录"）。
  */
-export type TopicJudge = (input: TopicJudgeInput) => Promise<TopicVerdict>;
+export type { TopicJudge } from '@qqbot/contracts';
 
-export interface TopicJudgeOptions {
-  apiBase: string;
-  /** 只来自 env（DEEPSEEK_API_KEY），不进配置文件 */
-  apiKey: string;
-  model: string;
-  timeoutMs: number;
-  /** 送给判定器的每条记录/新消息的最大字符数（防止超长输入） */
-  perTurnMaxChars: number;
-  logger: Logger;
-  /** 测试注入用：替换 fetch */
-  fetchImpl?: typeof fetch;
-}
+export type { TopicJudgeOptions } from '@qqbot/contracts';
 
 /** 判定用的系统提示：只输出严格 JSON。 */
 const SYSTEM_PROMPT = [
@@ -116,7 +93,7 @@ export function renderJudgePrompt(input: TopicJudgeInput, perTurnMaxChars: numbe
 }
 
 /** 判定结论的 fail-safe 值：相关（不重置）、不展开聊天记录。 */
-export const VERDICT_FALLBACK: TopicVerdict = { related: true, mentionsChatRecord: false };
+export { VERDICT_FALLBACK } from '@qqbot/contracts';
 
 /**
  * 从模型输出里解析结论；任何异常都落到 {@link VERDICT_FALLBACK}。
@@ -145,64 +122,120 @@ export function parseJudgeOutput(text: string, askAboutChatRecord = false): Topi
  * 失败原因记 warn 日志并计入返回值语义之外的观测面（调用方统计）。
  */
 export function createTopicJudge(options: TopicJudgeOptions): TopicJudge | undefined {
-  if (options.apiKey === '') return undefined;
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const judge = createTopicJudgeResult(options);
+  return (
+    judge &&
+    (async (input) => {
+      const result = await judge(input);
+      return result.ok ? result.value : VERDICT_FALLBACK;
+    })
+  );
+}
 
-  return async (input) => {
-    // 没有历史 = 没有可重置的上下文；但"要不要展开一条聊天记录"与历史无关，
-    // 所以被问到它时仍然走一次（见 TopicJudgeInput.askAboutChatRecord）。
-    if (input.history.length === 0 && input.askAboutChatRecord !== true) return VERDICT_FALLBACK;
-    const askAboutChatRecord = input.askAboutChatRecord === true;
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, options.timeoutMs);
-    timer.unref?.();
-    try {
-      const response = await fetchImpl(`${options.apiBase}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${options.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: options.model,
-          messages: [
-            {
-              role: 'system',
-              content: askAboutChatRecord
-                ? `${SYSTEM_PROMPT}\n${CHAT_RECORD_QUESTION}`
-                : SYSTEM_PROMPT,
-            },
-            { role: 'user', content: renderJudgePrompt(input, options.perTurnMaxChars) },
-          ],
-          temperature: 0,
-          // 32 只够一个字段；带上聊天记录那个字段要留出余量（仍是很短的结构化输出）
-          max_tokens: askAboutChatRecord ? 48 : 32,
-          stream: false,
-        }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        options.logger.warn('话题判定请求失败（按相关处理）', { status: response.status });
-        return VERDICT_FALLBACK;
-      }
-      const body = (await response.json()) as {
-        choices?: Array<{ message?: { content?: unknown } }>;
+export function parseJudgeResult(text: string, askAboutChatRecord = false): Result<TopicVerdict> {
+  const match = /\{[^{}]*"related"[^{}]*\}/.exec(text);
+  if (match === null) return { ok: false, error: failure('INVALID_INPUT') };
+  try {
+    const parsed = JSON.parse(match[0]) as { related?: unknown; mentions_chat_record?: unknown };
+    if (typeof parsed.related !== 'boolean') return { ok: false, error: failure('INVALID_INPUT') };
+    return {
+      ok: true,
+      value: {
+        related: parsed.related,
+        mentionsChatRecord: askAboutChatRecord && parsed.mentions_chat_record === true,
+      },
+    };
+  } catch (cause) {
+    return { ok: false, error: failure('INVALID_INPUT', cause) };
+  }
+}
+
+export function createTopicJudgeResult(options: TopicJudgeOptions): TopicJudgeResult | undefined {
+  if (options.apiKey === '') return undefined;
+  return (input) => requestTopicVerdict(options, input);
+}
+
+function topicRequestBody(options: TopicJudgeOptions, input: TopicJudgeInput): string {
+  return JSON.stringify({
+    model: options.model,
+    messages: [
+      {
+        role: 'system',
+        content: input.askAboutChatRecord
+          ? SYSTEM_PROMPT + '\n' + CHAT_RECORD_QUESTION
+          : SYSTEM_PROMPT,
+      },
+      { role: 'user', content: renderJudgePrompt(input, options.perTurnMaxChars) },
+    ],
+    temperature: 0,
+    max_tokens: input.askAboutChatRecord ? 48 : 32,
+    stream: false,
+  });
+}
+
+async function requestTopicVerdict(
+  options: TopicJudgeOptions,
+  input: TopicJudgeInput
+): Promise<Result<TopicVerdict>> {
+  if (!input.history.length && !input.askAboutChatRecord)
+    return { ok: true, value: VERDICT_FALLBACK };
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, options.timeoutMs);
+  timer.unref();
+  try {
+    const response = await (options.fetchImpl ?? fetch)(options.apiBase + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + options.apiKey },
+      body: topicRequestBody(options, input),
+      signal: controller.signal,
+    });
+    return await readTopicVerdict(response, input.askAboutChatRecord ?? false, options);
+  } catch (cause) {
+    return {
+      ok: false,
+      error: failure(
+        controller.signal.aborted ? 'TIMEOUT' : 'UPSTREAM_FAILED',
+        cause,
+        options.logger.cause(cause, 'topic-judge')
+      ),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readTopicVerdict(
+  response: Response,
+  ask: boolean,
+  options: TopicJudgeOptions
+): Promise<Result<TopicVerdict>> {
+  if (!response.ok)
+    return {
+      ok: false,
+      error: failure(
+        'UPSTREAM_FAILED',
+        response.status,
+        options.logger.cause(response.status, 'http')
+      ),
+    };
+  const body = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
+  const text = body.choices?.[0]?.message?.content;
+  if (typeof text !== 'string')
+    return {
+      ok: false,
+      error: failure('UPSTREAM_FAILED', undefined, options.logger.cause('schema', 'topic-judge')),
+    };
+  const parsed = parseJudgeResult(text, ask);
+  return parsed.ok
+    ? parsed
+    : {
+        ok: false,
+        error: failure(
+          'UPSTREAM_FAILED',
+          parsed.error.cause,
+          options.logger.cause('schema', 'topic-judge')
+        ),
       };
-      const text = body.choices?.[0]?.message?.content;
-      if (typeof text !== 'string') {
-        options.logger.warn('话题判定响应结构不认识（按相关处理）');
-        return VERDICT_FALLBACK;
-      }
-      return parseJudgeOutput(text, askAboutChatRecord);
-    } catch (error) {
-      options.logger.warn('话题判定调用异常（按相关处理）', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return VERDICT_FALLBACK;
-    } finally {
-      clearTimeout(timer);
-    }
-  };
 }

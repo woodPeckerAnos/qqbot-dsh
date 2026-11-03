@@ -1,3 +1,4 @@
+import type { StorePaths } from '@qqbot/contracts';
 /**
  * 存储路径布局与会话标识映射。
  *
@@ -17,7 +18,6 @@
  *   - 单聊：`c2c:<user_openid>`（用户 openid 与群 openid 是两套命名空间，必须隔离）。
  * 存储层只把它当不透明字符串，不解析其结构。
  */
-
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -27,13 +27,7 @@ export function conversationHash(conversationKey: string): string {
   return createHash('sha256').update(conversationKey).digest('hex').slice(0, 16);
 }
 
-export interface StorePaths {
-  workspacesRoot: string;
-  stateDir: string;
-  conversationsDir: string;
-  seenDir: string;
-  sessionsFile: string;
-}
+export type { StorePaths } from '@qqbot/contracts';
 
 export function resolveStorePaths(options: {
   workspacesRoot: string;

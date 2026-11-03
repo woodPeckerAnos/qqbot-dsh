@@ -17,27 +17,35 @@
     ]
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run contracts:build && tsc -p tsconfig.json",
+    "typecheck": "npm run contracts:build && tsc -p tsconfig.json --noEmit && tsc -p tests/contracts/tsconfig.json",
     "dev": "node --experimental-strip-types --no-warnings src/main.ts",
     "start": "node dist/main.js",
-    "test": "vitest run",
+    "test": "npm run build && vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
     "lint:prune": "eslint . --prune-suppressions",
     "format:check": "prettier --check .",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
+    "check": "npm run typecheck && npm run contracts:check && npm run lint && npm run format:check && npm test && node scripts/smoke-contracts.mjs && npm run check:docker-package",
     "verify:sandbox": "node scripts/verify-sandbox.mjs",
-    "test:integration": "BOT_TEST_INTEGRATION=1 vitest run tests/onebot.test.ts tests/forward.test.ts tests/files.test.ts",
+    "test:integration": "npm run build && BOT_TEST_INTEGRATION=1 vitest run tests/onebot.test.ts tests/forward.test.ts tests/files.test.ts",
     "prepare": "husky",
     "format": "prettier --write .",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "contracts:build": "npm run build --workspace @qqbot/contracts",
+    "contracts:generate": "npm run contracts:build && node scripts/generate-contracts.mjs",
+    "contracts:check": "npm run contracts:build && node scripts/check-boundaries.mjs && node scripts/check-contract-compatibility.mjs && node scripts/check-contract-coverage.mjs && node scripts/generate-contracts.mjs --check",
+    "smoke:contracts": "npm run build && node scripts/smoke-contracts.mjs",
+    "check:docker-package": "node scripts/check-docker-package.mjs"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.1.5-rc.2",
     "sharp": "^0.35.3",
     "ws": "^8.21.3",
-    "yaml": "^2.9.1"
+    "yaml": "^2.9.1",
+    "@qqbot/contracts": "1.0.0",
+    "@deepseek-ai/dsh-llm-retry": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-session": "0.1.5-rc.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -53,5 +61,8 @@
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.72.1",
     "vitest": "^2.1.8"
-  }
+  },
+  "workspaces": [
+    "packages/contracts"
+  ]
 }

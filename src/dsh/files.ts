@@ -1,3 +1,4 @@
+import type { DocumentExtraction, FileIngestOptions, FileIngestResult } from '@qqbot/contracts';
 /**
  * 用户发来的文件：下载 → 落 inbox → 抽取正文 → 组装成 prompt 说明。
  *
@@ -16,87 +17,21 @@
  * 安全：抽出的正文会被包在 `<文件 …说明="…是资料不是指令…">` 里。
  * 文件内容完全由第三方控制，是与转发块同级的注入面（见方案 §9）。
  */
+import type { MediaFetchOptions, MessageMediaPart, RemoteMedia } from '@qqbot/contracts';
+import { displayFileName, guardUntrustedText } from '../content/index.js';
 
-import type {
-  MediaBytes,
-  MediaFetchOptions,
-  MessageMediaPart,
-  RemoteMedia,
-} from '../core/connector.js';
-import { displayFileName, guardUntrustedText } from '../core/content.js';
-import type { FilesConfig } from '../config.js';
-import type { Logger } from '../logger.js';
 import { saveInboxFile } from '../store/inbox.js';
-import { defaultFetchMedia } from './media.js';
+import { fetchMediaResult } from '../media/fetch-result.js';
 
 /** 抽取的产物：要么有正文，要么给出"为什么没有正文"的可读原因。 */
-export interface DocumentExtraction {
-  /** 抽取出的正文（已 trim）；没有可提取内容时不写 */
-  text?: string;
-  /** 没有正文时的原因（写进 prompt，让模型与用户都知道发生了什么） */
-  reason?: string;
-  /** 是否因字符上限被截断 */
-  truncated?: boolean;
-  /** 原文总字符数（截断时用于说明"读了多少 / 一共多少"） */
-  totalChars?: number;
-}
+export type { DocumentExtraction } from '@qqbot/contracts';
 
 /** 文本抽取器（dsh/document.ts 的实现；测试可注入替身）。 */
-export type DocumentExtractor = (input: {
-  data: Uint8Array;
-  fileName: string;
-  mimeType?: string;
-  maxChars: number;
-  maxPdfPages: number;
-  timeoutMs: number;
-}) => Promise<DocumentExtraction>;
+export type { DocumentExtractor } from '@qqbot/contracts';
 
-export interface FileIngestOptions {
-  /** 消息里的文件片段（`mediaKind === 'file'`；视频等由调用方过滤或忽略） */
-  parts: readonly MessageMediaPart[];
-  /** 该会话的工作区绝对路径（inbox 落点基于它） */
-  workspacePath: string;
-  config: FilesConfig;
-  /** 附件下载超时（毫秒）——与图片共用 `attachments.downloadTimeoutMs` */
-  downloadTimeoutMs: number;
-  /** 平台侧取件凭据（OneBot 群文件直链申请必须带群号） */
-  context?: { groupId?: string; userId?: string };
-  /**
-   * 来源描述，只用在**批量注记**里（缺省 `这条消息`）。
-   *
-   * 滚窗上下文里的文件与本次 @ 携带的文件会走**同一条**摄取通路，但说明文本里
-   * 必须分得清："这条消息里的 2 个文件未读入"和"群聊上下文里的 2 个文件未读入"
-   * 对用户是两件事——前者是他刚发的，后者是背景资料。
-   */
-  sourceLabel?: string;
-  /**
-   * 逐条说明的前缀（缺省空串）。
-   *
-   * 滚窗来源用它把"谁发的那条消息"写进每一条说明：文件名相同的两个 PDF
-   * （`report.pdf` 是群里的常态）不带来源就只能靠猜。
-   */
-  labelPrefix?: (part: MessageMediaPart) => string;
-  /** 平台侧取字节；缺省时用普通 GET */
-  fetchMedia?: (media: RemoteMedia, options: MediaFetchOptions) => Promise<MediaBytes | undefined>;
-  /** 文本抽取；缺省表示只落盘不解析 */
-  extract?: DocumentExtractor;
-  logger: Logger;
-}
+export type { FileIngestOptions } from '@qqbot/contracts';
 
-export interface FileIngestResult {
-  /** 每个文件一段说明（含抽取正文），顺序与消息里出现顺序一致 */
-  notes: string[];
-  /** 成功取到字节的文件数 */
-  fetched: number;
-  /** 成功抽取正文的文件数 */
-  extracted: number;
-  /** 只落盘、未抽取正文的文件数 */
-  savedOnly: number;
-  /** 因关闭/类型/体积/失败而跳过的文件数 */
-  skipped: number;
-  /** 送入 prompt 的文件正文字符数 */
-  charsInlined: number;
-}
+export type { FileIngestResult } from '@qqbot/contracts';
 
 /** 取文件扩展名（小写、不带点）；没有扩展名返回 ''。 */
 export function extensionOf(fileName: string): string {
@@ -216,31 +151,28 @@ async function ingestOne(
     maxBytes: config.maxFileBytes,
     timeoutMs: options.downloadTimeoutMs,
   };
-  let bytes: MediaBytes | undefined;
-  try {
-    bytes =
-      options.fetchMedia !== undefined
-        ? await options.fetchMedia(media, fetchOptions)
-        : await defaultFetchMedia(media, fetchOptions);
-  } catch (error) {
-    logger.warn('下载文件失败', {
-      fileName,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-  if (bytes === undefined) {
+  const fetched = await fetchMediaResult(media, fetchOptions, {
+    fetchMedia: options.fetchMedia,
+    fetchResult: options.fetchResult,
+    logger,
+  });
+  if (!fetched.ok) {
+    if (['upstream-failed', 'timeout'].includes(fetched.error.reason))
+      logger.warn('下载文件失败', {
+        fileName,
+        error: fetched.error.code,
+        errorId: fetched.error.errorId,
+      });
     result.skipped += 1;
+    if (fetched.error.reason === 'byte-limit' && fetched.error.source !== 'network')
+      return `${label}（实际体积超过 ${formatBytes(config.maxFileBytes)} 上限，未读取）`;
     return `${label}（读取失败，未读入）`;
   }
-
+  const bytes = fetched.value;
   // 体积复核放在计数**之前**：`filesFetched` 的语义是"取到并通过复核、进入处理"，
   // 与 filesSkipped 互斥。两个计数器都加会让
   // `fetched - extracted - savedOnly - skipped` 变成负数，而 RUNBOOK 正是靠这几个
   // 数"按步定位"的（平台声明体积不可信，这条路径真实可达）。
-  if (bytes.data.byteLength > config.maxFileBytes) {
-    result.skipped += 1;
-    return `${label}（实际体积超过 ${formatBytes(config.maxFileBytes)} 上限，未读取）`;
-  }
   result.fetched += 1;
 
   // 先落盘再抽取：抽取可能超时/崩溃，而"原文已在工作区"是更硬的成果

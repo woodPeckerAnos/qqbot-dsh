@@ -1,3 +1,4 @@
+import type { DshRuntimeOptions, DshRuntimeState } from '@qqbot/contracts';
 /**
  * DSH runtime 子进程监督。
  *
@@ -9,69 +10,21 @@
  * 关闭顺序刻意做成三档（shutdown → SIGTERM → SIGKILL）：直接 SIGKILL 会让 DSH
  * 的 JSONL 会话日志留下半条记录，而那个日志是我们排查问题的主要依据。
  */
-
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Duplex } from 'node:stream';
 
-import { LoggedError, type Logger } from '../logger.js';
-import {
-  HarnessSdkClient,
-  SDK_SERVER_INFO_NAME,
-  type InitializeResult,
-  type PromptContentBlock,
-  type ProtocolViolationError,
-  type SessionEventNotification,
-  type SessionPromptResult,
-  type SessionStatusNotification,
-  type SubagentFinishedNotification,
-  type SubagentStartedNotification,
-} from './protocol.js';
+import { LoggedError } from '@qqbot/contracts';
 
-export interface DshRuntimeOptions {
-  /** dsh 可执行文件（默认 "dsh"，从 PATH 解析） */
-  bin: string;
-  /** profile patch 的绝对路径 */
-  profilePatch: string;
-  /**
-   * 追加的 patch 叠加层（绝对路径），按顺序排在 profilePatch 之后应用
-   * （dsh CLI 的 --patch 可重复、按 argv 顺序生效）。模型 API 配置层生成的
-   * patch 走这里，见 dsh/model-config.ts。
-   */
-  patches?: string[];
-  /** 该 runtime 的会话工作目录（= 某个群的工作区） */
-  cwd: string;
-  /** DSH_HOME 环境变量值 */
-  dshHome: string;
-  provider: string;
-  model: string;
-  reasoningEffort?: string;
-  /** Dedicated fd 3 channel; authorization is bound by the parent, never by model args. */
-  taskControl?: (request: { action: string; taskId?: string; sessionId?: string }) => unknown;
-  requestTimeoutMs?: number;
-  /** initialize 的等待超时（进程冷启动 + profile 组合，可能较慢） */
-  startTimeoutMs: number;
-  /** shutdown 发出后等待进程退出的时间 */
-  shutdownTimeoutMs: number;
-  logger: Logger;
-  /** 测试注入用：替换 spawn */
-  spawnImpl?: typeof spawn;
-  /** 附加环境变量（测试与代理场景） */
-  env?: Record<string, string | undefined>;
-}
+import { HarnessSdkClient } from './protocol.js';
+import { SDK_SERVER_INFO_NAME } from '@qqbot/contracts';
+import type { InitializeResult, PromptContentBlock, SessionPromptResult } from '@qqbot/contracts';
 
-export interface DshRuntimeEvents {
-  'session.event': (notification: SessionEventNotification) => void;
-  'session.status': (notification: SessionStatusNotification) => void;
-  'subagent.started': (notification: SubagentStartedNotification) => void;
-  'subagent.finished': (notification: SubagentFinishedNotification) => void;
-  violation: (error: ProtocolViolationError) => void;
-  invalid: (reason: string) => void;
-  unknown: () => void;
-  exit: (code: number | null, signal: NodeJS.Signals | null) => void;
-}
+export type { DshRuntimeOptions } from '@qqbot/contracts';
 
-export type DshRuntimeState = 'starting' | 'ready' | 'closing' | 'closed' | 'failed';
+export type { DshRuntimeEvents } from '@qqbot/contracts';
+
+export type { DshRuntimeState } from '@qqbot/contracts';
 
 export class DshRuntime extends EventEmitter {
   private client: HarnessSdkClient | undefined;

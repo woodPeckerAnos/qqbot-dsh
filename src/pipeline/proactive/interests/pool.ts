@@ -1,3 +1,7 @@
+import { readonlySnapshot } from '@qqbot/contracts';
+import type { InterestPool as InterestPoolContract } from '@qqbot/contracts';
+import { MAX_INTEREST_ENTRIES } from '@qqbot/contracts';
+import type { InterestEntry, InterestMatch } from '@qqbot/contracts';
 /**
  * 兴趣池（场景 5 的配置面）：读取、校验、匹配。
  *
@@ -36,42 +40,29 @@
  *    由 `scene/watcher.ts` 与 `veto/veto.ts` 持有，见 docs/TOPIC-SESSION-REQUIREMENT.md）；
  *    本模块只管"哪些条目被提到了"。
  */
-
 import { readFileSync, statSync } from 'node:fs';
 
 import { parse as parseYaml } from 'yaml';
 
-import { ConfigError } from '../../../config-error.js';
+import { ConfigError } from '@qqbot/contracts';
 
 /** 单条兴趣。字段含义见 `interests.yml.example` 顶部注释。 */
-export interface InterestEntry {
-  readonly id: string;
-  readonly topic: string;
-  /** 字符串包含匹配（大小写不敏感）；至少一个 */
-  readonly keywords: readonly string[];
-  readonly why?: string;
-  readonly note?: string;
-}
+export type { InterestEntry } from '@qqbot/contracts';
 
 /** 兴趣池上限：整份内容会进 prompt，条目越多判定越贵也越飘。 */
-export const MAX_INTEREST_ENTRIES = 20;
+export { MAX_INTEREST_ENTRIES } from '@qqbot/contracts';
 
 /** bot 别名的规模上限（同样进 prompt）。 */
-export const MAX_BOT_ALIASES = 5;
+export { MAX_BOT_ALIASES } from '@qqbot/contracts';
 
-export interface InterestMatch {
-  readonly id: string;
-  readonly topic: string;
-  /** 命中的关键词（进 trace，回答"为什么这次命中了"） */
-  readonly matchedKeyword: string;
-}
+export type { InterestMatch } from '@qqbot/contracts';
 
 export class InterestPool {
   private entries: readonly InterestEntry[];
   private enabled: boolean;
 
   constructor(entries: readonly InterestEntry[], enabled = true) {
-    this.entries = entries;
+    this.entries = readonlySnapshot(entries);
     this.enabled = enabled;
   }
 
@@ -81,7 +72,7 @@ export class InterestPool {
 
   /** 供 prompt / 控制面展示（顺序即来源顺序，人工可预期）。 */
   list(): readonly InterestEntry[] {
-    return this.entries;
+    return readonlySnapshot(this.entries);
   }
 
   /**
@@ -91,7 +82,7 @@ export class InterestPool {
    * health 快照）持有的是同一个对象引用，换池不该让它们看到旧数据。
    */
   replaceEntries(entries: readonly InterestEntry[]): void {
-    this.entries = entries;
+    this.entries = readonlySnapshot(entries);
   }
 
   /** 运行期开关（role-play 会话结束时可以整体停用，而不必清空条目）。 */
@@ -128,7 +119,7 @@ export class InterestPool {
 }
 
 /** 空池（未配置兴趣文件时的默认）。 */
-export const EMPTY_INTEREST_POOL = new InterestPool([]);
+export const EMPTY_INTEREST_POOL: InterestPoolContract = new InterestPool([]);
 
 // ---------------------------------------------------------------------------
 // 读取与校验
@@ -159,7 +150,7 @@ function optionalString(record: Record<string, unknown>, key: string): string | 
  * 校验规则与报错文案都刻意具体：配置错误必须在**启动期**暴露，
  * 而且要让维护者一眼知道改哪一条。
  */
-export function parseInterestPool(raw: string, source = 'interests.yml'): InterestPool {
+export function parseInterestPool(raw: string, source = 'interests.yml'): InterestPoolContract {
   let doc: unknown;
   try {
     doc = parseYaml(raw);
@@ -243,7 +234,7 @@ export function loadInterestPool(options: {
   path: string;
   explicit?: boolean;
   enabled?: boolean;
-}): InterestPool {
+}): InterestPoolContract {
   const { path, explicit = false, enabled = true } = options;
   let raw: string;
   try {

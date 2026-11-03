@@ -130,7 +130,9 @@ npm run format:check     # Prettier 只读校验
 npm test                 # 离线 mock；含本地文件/子进程桩，不请求真实模型
 npm run test:integration # 独立 localhost WebSocket 回路，无已部署客户端
 npm run build
-npm run check            # 上面的 typecheck + lint + format:check + test 串跑
+npm run contracts:check  # 边界、兼容、覆盖与生成契约漂移
+npm run smoke:contracts  # 12 模块、36 个公共入口离线示例
+npm run check            # 类型、契约、lint、格式、测试、冒烟与 Docker 包解析
 ```
 
 格式由 Prettier 统一（`npm run format` 写入）；提交时 husky 会跑 `lint-staged`。
@@ -172,6 +174,7 @@ qqbot.yml + config/        配置入口与共享模块（接入 / 运行时 / �
 config/local/              本机配置（模型路由、个人覆盖；*.yml 不进 git）
 interests.yml              兴趣池（场景 5；独立 schema）
 dsh-profile/               DSH profile 补丁 + 自动审批桩 + /persona 人设预设
+packages/contracts/        独立契约 workspace：接口、值类型、错误、元数据、示例与 v1 兼容基线
 src/                       后端源码：接入适配（adapters）/ 编排（pipeline）/ DSH 桥接（dsh）/
                            Task 与双 lane（task）/ 持久化与观察窗口（store）/ 配置合并（config*.ts）
 scripts/                   容器入口、云上 preflight（cloud-preflight.sh）、

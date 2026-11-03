@@ -1,3 +1,4 @@
+import type { DeepReadonly } from '@qqbot/contracts';
 /**
  * 固定 Task 输入并复用媒体摄取、聊天记录回查和文件解析结果。
  * capture 在准入时复制窗口与回放；prepare 按 Task 缓存 Promise，两个 lane
@@ -6,23 +7,26 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Config } from '../config.js';
-import type { Logger } from '../logger.js';
-import type { MediaFetchOptions, RemoteMedia, NormalizedMessage } from '../core/connector.js';
-import { flattenParts, messageImageParts, messageMediaParts } from '../core/content.js';
-import { ingestFiles, type DocumentExtractor, type FileIngestResult } from '../dsh/files.js';
-import { MAX_BLOCKS_PER_PROMPT, buildImageBlocks } from '../dsh/media.js';
-import type { PromptContentBlock } from '../dsh/protocol.js';
-import type { ConversationStore } from '../store/conversations.js';
-import { renderReplay } from '../store/conversations.js';
-import { workspacePathFor, type StorePaths } from '../store/paths.js';
-import type { ObservationEntry, ObservationWindowStore } from '../store/window.js';
-import { collectWindowMedia, latestPendingRecord, renderWindowBlock } from '../store/window.js';
-import type { MessageContext } from '../pipeline/ingress/types.js';
-import type { PipelineStats } from '../pipeline/stats.js';
-import type { TopicJudge } from '../pipeline/topic-judge.js';
-import type { TaskSnapshot, TaskInput } from './types.js';
-import type { TaskClock } from './clock.js';
+import type { Config } from '@qqbot/contracts';
+import type { Logger } from '@qqbot/contracts';
+import type { MediaFetchOptions, RemoteMedia, NormalizedMessage } from '@qqbot/contracts';
+import { flattenParts, messageImageParts, messageMediaParts } from '../content/index.js';
+import { ingestFiles } from '../media/index.js';
+import type { DocumentExtractor, FileIngestResult } from '@qqbot/contracts';
+import { MAX_BLOCKS_PER_PROMPT } from '@qqbot/contracts';
+import { buildImageBlocks } from '../media/index.js';
+import type { PromptContentBlock } from '@qqbot/contracts';
+import type { ConversationStore } from '@qqbot/contracts';
+import { renderReplay } from '../store/index.js';
+import { workspacePathFor } from '../store/index.js';
+import type { StorePaths } from '@qqbot/contracts';
+import type { ObservationEntry, ObservationWindowStore } from '@qqbot/contracts';
+import { collectWindowMedia, latestPendingRecord, renderWindowBlock } from '../store/index.js';
+import type { MessageContext } from '@qqbot/contracts';
+import type { PipelineStats } from '@qqbot/contracts';
+import type { TopicJudge } from '@qqbot/contracts';
+import type { TaskSnapshot, TaskInput } from '@qqbot/contracts';
+import type { TaskClock } from '@qqbot/contracts';
 interface PreparedPrompt {
   blocks: PromptContentBlock[];
   /** 这条消息里一共认出几张图 */
@@ -62,6 +66,7 @@ export class PromptPreparer {
       stats: PipelineStats;
       extractDocument?: DocumentExtractor;
       topicJudge?: TopicJudge;
+      topicJudgeResult?: import('@qqbot/contracts').TopicJudgeResult;
       clock?: TaskClock;
     }
   ) {}
@@ -75,30 +80,52 @@ export class PromptPreparer {
         ),
         excludeMsgId: message.msgId,
       }) ?? [];
-    const history = this.deps.conversations
-      .readTail(message.target.key, this.deps.config.pool.replayTurns * 2)
-      .filter(
-        (t) =>
-          t.ts >= sinceTs &&
-          !(t.role === 'user' && t.ts === message.ts && t.text === message.content)
-      );
+    const history = this.readHistory(
+      message.target.key,
+      this.deps.config.pool.replayTurns * 2
+    ).filter(
+      (t) =>
+        t.ts >= sinceTs && !(t.role === 'user' && t.ts === message.ts && t.text === message.content)
+    );
     return { window: structuredClone(window), replay: renderReplay(history) };
   }
   async judge(message: NormalizedMessage, context: TaskInput['context']) {
-    const history = this.deps.conversations
-      .readTail(message.target.key, this.deps.config.topic.contextTurns + 1)
-      .filter((t) => !(t.role === 'user' && t.ts === message.ts && t.text === message.content));
+    const history = this.readHistory(
+      message.target.key,
+      this.deps.config.topic.contextTurns + 1
+    ).filter((t) => !(t.role === 'user' && t.ts === message.ts && t.text === message.content));
     const pending = latestPendingRecord(context.window);
-    if (!this.deps.topicJudge || (!history.length && !pending))
+    if ((!this.deps.topicJudge && !this.deps.topicJudgeResult) || (!history.length && !pending))
       return { related: true, mentionsChatRecord: false };
-    return this.deps.topicJudge({
+    const input = {
       history,
       newMessage: message.content,
       ...(pending ? { askAboutChatRecord: true } : {}),
-    });
+    };
+    if (this.deps.topicJudgeResult) {
+      const result = await this.deps.topicJudgeResult(input);
+      if (result.ok) return result.value;
+      this.deps.logger.warn('话题判定降级', {
+        code: result.error.code,
+        errorId: result.error.errorId,
+      });
+      return { related: true, mentionsChatRecord: false };
+    }
+    return this.deps.topicJudge?.(input) ?? { related: true, mentionsChatRecord: false };
+  }
+  private readHistory(key: string, count: number) {
+    if (count <= 0) return [];
+    const result = this.deps.conversations.readResult(key);
+    if (result.ok) return result.value.turns.slice(-Math.max(0, count));
+    if (result.error.code !== 'NOT_FOUND')
+      this.deps.logger.warn('历史读取降级', {
+        code: result.error.code,
+        errorId: this.deps.logger.cause(result.error.cause, 'persistence'),
+      });
+    return [];
   }
   /** 创建所属 Task 目录并继承会话规则，输入文件与交付物均在该目录内。 */
-  workspace(task: Readonly<TaskSnapshot>): string {
+  workspace(task: DeepReadonly<TaskSnapshot>): string {
     const sessionDir = workspacePathFor(this.deps.paths, task.input.message.target.key);
     const directory = join(sessionDir, 'tasks', task.taskId);
     mkdirSync(directory, { recursive: true });
@@ -107,7 +134,7 @@ export class PromptPreparer {
     return directory;
   }
   /** Promise 本身缓存；并行 lane 不重复下载，失败也由两个 lane 各自显式收尾。 */
-  prepare(task: Readonly<TaskSnapshot>, ctx: MessageContext): Promise<PreparedPrompt> {
+  prepare(task: DeepReadonly<TaskSnapshot>, ctx: MessageContext): Promise<PreparedPrompt> {
     let promise = this.prepared.get(task.taskId);
     if (!promise) {
       promise = this.build(task, ctx);
@@ -119,7 +146,7 @@ export class PromptPreparer {
   release(taskId: string): void {
     this.prepared.delete(taskId);
   }
-  async removeWorkspace(task: Readonly<TaskSnapshot>): Promise<void> {
+  async removeWorkspace(task: DeepReadonly<TaskSnapshot>): Promise<void> {
     this.release(task.taskId);
     // 仅删除管理器提供的合法 Task 目录；队列附件副本保存在独立目录。
     if (!/^[A-Za-z0-9_-]+$/.test(task.taskId)) throw new Error('无效 Task 工作区 ID');
@@ -128,15 +155,18 @@ export class PromptPreparer {
       { recursive: true, force: true }
     );
   }
-  private async build(task: Readonly<TaskSnapshot>, ctx: MessageContext): Promise<PreparedPrompt> {
+  private async build(
+    task: DeepReadonly<TaskSnapshot>,
+    ctx: MessageContext
+  ): Promise<PreparedPrompt> {
     const context = task.input.context;
     let recordText = '';
     const pending = latestPendingRecord(context.window);
     if (pending && task.input.context.mentionsChatRecord) {
       const part = await ctx.connector.fetchForward?.(task.input.message.target, pending.refId);
       recordText = part ? flattenParts([part]) : '（被点名的聊天记录没能读出来，请如实说明。）';
-      if (part) this.deps.stats.windowForwardsExpanded++;
-      else this.deps.stats.windowForwardsFailed++;
+      if (part) this.deps.stats.record('windowForwardsExpanded');
+      else this.deps.stats.record('windowForwardsFailed');
     }
     const proactive = task.input.proactive;
     const current = proactive
@@ -152,16 +182,16 @@ export class PromptPreparer {
       context.window
     );
     const stats = this.deps.stats;
-    stats.imagesInlined += result.inlinedImages;
-    stats.imagesSkipped += Math.max(0, result.totalImages - result.inlinedImages);
-    stats.windowImagesInlined += result.windowImagesInlined;
-    stats.windowImagesSkipped += result.windowImagesSkipped;
-    stats.windowFilesFetched += result.windowFilesFetched;
-    stats.filesFetched += result.files.fetched;
-    stats.filesExtracted += result.files.extracted;
-    stats.filesSavedOnly += result.files.savedOnly;
-    stats.filesSkipped += result.files.skipped;
-    stats.fileCharsInlined += result.files.charsInlined;
+    stats.record('imagesInlined', result.inlinedImages);
+    stats.record('imagesSkipped', Math.max(0, result.totalImages - result.inlinedImages));
+    stats.record('windowImagesInlined', result.windowImagesInlined);
+    stats.record('windowImagesSkipped', result.windowImagesSkipped);
+    stats.record('windowFilesFetched', result.windowFilesFetched);
+    stats.record('filesFetched', result.files.fetched);
+    stats.record('filesExtracted', result.files.extracted);
+    stats.record('filesSavedOnly', result.files.savedOnly);
+    stats.record('filesSkipped', result.files.skipped);
+    stats.record('fileCharsInlined', result.files.charsInlined);
     return result;
   }
   private async buildPromptBlocks(

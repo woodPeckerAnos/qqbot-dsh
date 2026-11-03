@@ -1,3 +1,4 @@
+import type { RenderOptions } from '@qqbot/contracts';
 /**
  * 把 agent 的输出渲染成官方 QQ 平台的请求体。
  *
@@ -8,27 +9,17 @@
  *   - `0` 纯文本：剥掉 Markdown 标记。最稳，默认。
  *   - `2` Markdown：保留基础结构（标题/列表/代码块），做最小清洗。
  */
-
 import {
   defuseMentions,
   normalizeWhitespace,
   sanitizeMarkdown,
   stripControlChars,
   toPlainText,
-} from '../../pipeline/markdown.js';
-import { MsgType, type SendMessageRequest } from './types.js';
+} from '../../content/index.js';
+import { MsgType } from '@qqbot/contracts';
+import type { SendMessageRequest } from '@qqbot/contracts';
 
-export interface RenderOptions {
-  msgType: 0 | 2;
-  /** 被动回复的 msg_id */
-  msgId?: string;
-  /** 或用 event_id 回复（进群、加好友、按钮交互） */
-  eventId?: string;
-  /** 平台分配的 msg_seq */
-  msgSeq: number;
-  /** 是否引用被回复的消息 */
-  quoteMessageId?: string;
-}
+export type { RenderOptions } from '@qqbot/contracts';
 
 /**
  * 渲染成可直接发送的请求体。

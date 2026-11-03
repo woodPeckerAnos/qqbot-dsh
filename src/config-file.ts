@@ -1,3 +1,5 @@
+import { DEFAULT_CONFIG_FILE } from '@qqbot/contracts';
+import type { FileConfig, LoadedConfigFile } from '@qqbot/contracts';
 /**
  * 配置文件层（`qqbot.yml` 入口 + `config/*.yml` 模块）。
  *
@@ -24,130 +26,44 @@
  * `parseConfigFileText` / `parseConfigDocument` 仍是纯函数，可以直接单测；
  * 只有 `loadConfigFile` 会碰文件系统。
  */
-
 import { readFileSync, statSync } from 'node:fs';
 
 import { parse as parseYaml } from 'yaml';
 
-import { ConfigError } from './config-error.js';
-import {
-  loadConfigGraph,
-  parseIncludeDirectives,
-  type ParsedConfigDocument,
-} from './config-includes.js';
-import { parseModelApiSection, type ModelApiConfig } from './dsh/model-config.js';
+import { ConfigError } from '@qqbot/contracts';
+import { loadConfigGraph, parseIncludeDirectives } from './config-includes.js';
+import type { ParsedConfigDocument } from '@qqbot/contracts';
+import { parseModelApiSection } from './dsh/model-config.js';
 
 /** 未设置 QQ_CONFIG_FILE 时默认读的文件（相对进程 CWD）。 */
-export const DEFAULT_CONFIG_FILE = 'qqbot.yml';
+export { DEFAULT_CONFIG_FILE } from '@qqbot/contracts';
 
-export interface QqOfficialFileConfig {
-  apiBase?: string;
-  intents?: number;
-  msgType?: number;
-  maxChars?: number;
-  maxRepliesPerMsg?: number;
-  progressMax?: number;
-  progressAfterMs?: number;
-  progressIntervalMs?: number;
-  turnTimeoutMs?: number;
-  c2c?: { enabled?: boolean; maxRepliesPerMsg?: number; progressMax?: number };
-}
+export type { QqOfficialFileConfig } from '@qqbot/contracts';
 
-export interface OnebotFileConfig {
-  host?: string;
-  port?: number;
-  c2cEnabled?: boolean;
-  autoAcceptFriend?: boolean;
-  autoAcceptGroupInvite?: boolean;
-  fileTransport?: string;
-  maxChars?: number;
-  maxRepliesPerMsg?: number;
-  progressMax?: number;
-  progressAfterMs?: number;
-  progressIntervalMs?: number;
-  turnTimeoutMs?: number;
-}
+export type { OnebotFileConfig } from '@qqbot/contracts';
 
-export interface DshFileConfig {
-  provider?: string;
-  model?: string;
-  profilePatch?: string;
-  bin?: string;
-  startTimeoutMs?: number;
-  shutdownTimeoutMs?: number;
-}
+export type { DshFileConfig } from '@qqbot/contracts';
 
-export interface TasksFileConfig {
-  fastTimeoutMs?: number;
-  slowTimeoutMs?: number;
-  fastProvider?: string;
-  fastModel?: string;
-  slowProvider?: string;
-  slowModel?: string;
-  fastRuntimes?: number;
-  slowRuntimes?: number;
-  maxPerSession?: number;
-  maxGlobal?: number;
-  retentionMs?: number;
-  reminderMs?: number;
-}
+export type { TasksFileConfig } from '@qqbot/contracts';
 
-export interface PoolFileConfig {
-  maxConcurrentTurns?: number;
-  maxRuntimes?: number;
-  runtimeIdleMs?: number;
-  replayTurns?: number;
-}
+export type { PoolFileConfig } from '@qqbot/contracts';
 
 /** 话题判定（LLM 判断新消息与既有话题是否相关，见 pipeline/topic-judge.ts）。 */
-export interface TopicFileConfig {
-  enabled?: boolean;
-  /** 判定调用走的模型路由名（models: 段声明的路由）；不配 = 直连 apiBase + DEEPSEEK_API_KEY */
-  provider?: string;
-  apiBase?: string;
-  model?: string;
-  timeoutMs?: number;
-  contextTurns?: number;
-}
+export type { TopicFileConfig } from '@qqbot/contracts';
 
-export interface PathsFileConfig {
-  dshHome?: string;
-  workspacesRoot?: string;
-  stateDir?: string;
-}
+export type { PathsFileConfig } from '@qqbot/contracts';
 
-export interface OffpeakFileConfig {
-  enabled?: boolean;
-  /** 谷时段窗口：写成逗号分隔的字符串，或 YAML 数组（两种都会归一成一个 spec 串） */
-  windows?: string;
-  timeZone?: string;
-  modelPattern?: string;
-  weekendsAllDay?: boolean;
-  holidays?: string[];
-}
+export type { OffpeakFileConfig } from '@qqbot/contracts';
 
-export interface HealthFileConfig {
-  port?: number;
-}
+export type { HealthFileConfig } from '@qqbot/contracts';
 
 /** 预设风格前台（`personas:` 段）：/persona 命令可切换的每会话人设。 */
-export interface PersonasFileConfig {
-  /** 预设目录（每个 `<名>.md` 是一个可选人设） */
-  dir?: string;
-}
+export type { PersonasFileConfig } from '@qqbot/contracts';
 
 /** 长任务提示注入（`hints.longTask`，见 pipeline/hints.ts）。 */
-export interface LongTaskHintFileConfig {
-  enabled?: boolean;
-  /** 命中这些子串的消息，prompt 里追加"耗时任务请后台派发"提示 */
-  patterns?: string[];
-  /** 自定义提示文本（默认文本见 pipeline/hints.ts） */
-  text?: string;
-}
+export type { LongTaskHintFileConfig } from '@qqbot/contracts';
 
-export interface HintsFileConfig {
-  longTask?: LongTaskHintFileConfig;
-}
+export type { HintsFileConfig } from '@qqbot/contracts';
 
 /**
  * 主动发言的配置面（`proactive:` 段）。
@@ -156,151 +72,26 @@ export interface HintsFileConfig {
  * （`proactive.interestsFile`），不塞进本配置文件——它有自己的 schema 与校验
  * （见 `pipeline/proactive/interests/pool.ts`）。
  */
-export interface ProactiveFileConfig {
-  enabled?: boolean;
-  /** 灰度观察：判定照跑、不真发言（默认 true） */
-  dryRun?: boolean;
-  interestsEnabled?: boolean;
-  interestsFile?: string;
-  /** bot 在本群的别名（场景 4 指代检测用），如 ["小助手", "助手酱"] */
-  botAliases?: string[];
-  /** 话题滚动周期：每多少条旁听消息收敛一次（场景 2/5 的入口） */
-  topicRollMessages?: number;
-  /** 话题滚动周期：多少毫秒无仲裁则收敛一次 */
-  topicRollMs?: number;
-  /** 问题挂起多久后探针（场景 3 的答案窗口） */
-  questionProbeMs?: number;
-  /**
-   * 每个挂起问题最多"让路"几次（默认 1）。硬上限 3——超出按 3 处理并 warn，
-   * 因为"让路只能让一次"是**代码级**约束，不是 prompt 里的请求。
-   */
-  maxWaitPerItem?: number;
-  /** "让路"理由的等待时长（毫秒；默认 45000，范围 15000–120000） */
-  waitYieldMs?: number;
-  /**
-   * 一个话题 session 内允许的主动发言条数（默认 2）。硬上限 5——配得更大按 5
-   * 处理并 warn，因为"少说两句"是产品决策，不该被一行配置改回去。
-   */
-  sessionBudget?: number;
-  /** 静默多久自动关闭 session（毫秒；默认 600000，范围 60000–3600000） */
-  sessionIdleMs?: number;
-  /** 同一 session 内两次发言的最小间隔（毫秒；默认 45000，范围 10000–300000） */
-  sessionMinGapMs?: number;
-  /** 判定调用超时（毫秒）；与 topic.timeoutMs 分开，见 config.ts 的说明 */
-  judgeTimeoutMs?: number;
-  /** 发言生成（措辞轮次）超时（毫秒；默认 120000，范围 30000–300000） */
-  speakTimeoutMs?: number;
-  /** 旁听缓冲上限（条）与最长保留时长（毫秒） */
-  bufferMaxMessages?: number;
-  bufferMaxAgeMs?: number;
-}
+export type { ProactiveFileConfig } from '@qqbot/contracts';
 
 /** 观察窗口（旁听滚窗）的配置面（`observation:` 段）。 */
-export interface ObservationFileConfig {
-  /** 每会话保留的消息条数上限（默认 200） */
-  maxMessages?: number;
-  /** 每条消息的最长保留时长（毫秒；默认 1800000 = 30 分钟） */
-  maxAgeMs?: number;
-  /**
-   * 注入给**被动唤醒**（被 @）的窗口宽度（毫秒；默认 600000 = 10 分钟）。
-   *
-   * 窄于保留期是有意的：留 30 分钟是为了让判定能回看，回答当下这问题时把半小时前
-   * 另一个话题的内容灌进去只会稀释注意力。
-   */
-  injectWindowMs?: number;
-  /**
-   * 被 @ 时最多内联几张上下文里的图片（默认 2；0 = 不内联，只留 `[图片]` 占位）。
-   *
-   * 上下文里的图在窗口里只有占位文本，没有这个配额就永远看不到——"群里先发图、
-   * 再 @ bot 问这是什么"因此必然失败（见 `store/window.ts` 的 `ObservationMedia`）。
-   */
-  injectImages?: number;
-  /** 被 @ 时最多摄取几个上下文里的文件（默认 1；0 = 不摄取） */
-  injectFiles?: number;
-}
+export type { ObservationFileConfig } from '@qqbot/contracts';
 
 /** 富媒体输入配额（与平台无关，官方/OneBot 共用）。 */
-export interface AttachmentsFileConfig {
-  enabled?: boolean;
-  maxImages?: number;
-  maxImageBytes?: number;
-  maxImageTiles?: number;
-  downloadTimeoutMs?: number;
-  forward?: AttachmentsForwardFileConfig;
-  files?: AttachmentsFilesFileConfig;
-}
+export type { AttachmentsFileConfig } from '@qqbot/contracts';
 
 /** 转发消息块配额（`attachments.forward`）。 */
-export interface AttachmentsForwardFileConfig {
-  enabled?: boolean;
-  maxNodes?: number;
-  maxNodeChars?: number;
-  maxChars?: number;
-  maxDepth?: number;
-  timeoutMs?: number;
-}
+export type { AttachmentsForwardFileConfig } from '@qqbot/contracts';
 
 /** 文件下载与解析配额（`attachments.files`）。 */
-export interface AttachmentsFilesFileConfig {
-  enabled?: boolean;
-  maxFiles?: number;
-  maxFileBytes?: number;
-  maxExtractChars?: number;
-  maxPdfPages?: number;
-  extractTimeoutMs?: number;
-  saveToInbox?: boolean;
-  inboxDir?: string;
-  retentionDays?: number;
-  maxInboxMB?: number;
-  extractExtensions?: string[];
-}
+export type { AttachmentsFilesFileConfig } from '@qqbot/contracts';
 
 /** 富媒体出站（agent 产物回发，与平台无关）。 */
-export interface MediaFileConfig {
-  enabled?: boolean;
-  maxFileMB?: number;
-  maxAttachmentsPerMsg?: number;
-  imageExtensions?: string[];
-  outboxDir?: string;
-}
+export type { MediaFileConfig } from '@qqbot/contracts';
 
 /** 配置文件里允许出现的全部内容（每项都可选）。 */
-export interface LoggingFileConfig {
-  maxRecordBytes?: number;
-  maxQueuedBytes?: number;
-  agentDetailLimit?: number;
-  dedupeWindowMs?: number;
-  diagnosticTraceIds?: string[];
-  diagnosticSessionKeys?: string[];
-  diagnosticTtlMs?: number;
-  flushTimeoutMs?: number;
-}
-export interface FileConfig {
-  logging?: LoggingFileConfig;
-  connectors?: string[];
-  qqOfficial?: QqOfficialFileConfig;
-  onebot?: OnebotFileConfig;
-  dsh?: DshFileConfig;
-  /**
-   * 模型 API 配置层（`models:` 段）。结构与 DSH 的提供商配置面一一对应
-   * （透传 + 严格形状校验），解析与校验见 dsh/model-config.ts。
-   * 该段是结构化嵌套配置，不走上面的标量 spec 机制。
-   */
-  models?: ModelApiConfig;
-  pool?: PoolFileConfig;
-  tasks?: TasksFileConfig;
-  topic?: TopicFileConfig;
-  paths?: PathsFileConfig;
-  offpeak?: OffpeakFileConfig;
-  attachments?: AttachmentsFileConfig;
-  media?: MediaFileConfig;
-  health?: HealthFileConfig;
-  proactive?: ProactiveFileConfig;
-  observation?: ObservationFileConfig;
-  personas?: PersonasFileConfig;
-  hints?: HintsFileConfig;
-  logLevel?: string;
-}
+export type { LoggingFileConfig } from '@qqbot/contracts';
+export type { FileConfig } from '@qqbot/contracts';
 
 /**
  * 刻意**不**放进配置文件的键，以及原因。
@@ -718,18 +509,7 @@ export function resolveConfigFilePath(env: Record<string, string | undefined>): 
 }
 
 /** `loadConfigFile` 的结果：实际用到的文件路径 + 解析出来的配置。 */
-export interface LoadedConfigFile {
-  /** 入口文件路径；没使用配置文件时为 undefined */
-  path?: string;
-  config: FileConfig;
-  /**
-   * 实际加载的全部文件（按加载顺序，入口文件在最后）。
-   *
-   * 只有真正读到了入口文件才存在；默认路径下文件不存在时返回空配置，不带此字段。
-   * 启动日志用它回答排障第一个问题："这次到底读了哪几份配置"。
-   */
-  files?: string[];
-}
+export type { LoadedConfigFile } from '@qqbot/contracts';
 
 /**
  * 读取并解析配置文件。

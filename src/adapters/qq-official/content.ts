@@ -1,3 +1,4 @@
+import type { MessageBodyLike, MessagePartsOptions } from '@qqbot/contracts';
 /**
  * 官方消息事件 → 平台无关的内容片段（纯函数，无 IO，便于单测）。
  *
@@ -19,7 +20,6 @@
  * 这里只做"翻译"，不做下载：url 原样进片段，字节由 dsh/media.ts 在 turn 期取，
  * 这样被闸拦掉的消息不会白白下载图片。
  */
-
 import type {
   MessageForwardPart,
   MessageImagePart,
@@ -27,29 +27,17 @@ import type {
   MessagePart,
   MessageQuotePart,
   MessageVoicePart,
-} from '../../core/connector.js';
-import { flattenParts } from '../../core/content.js';
-import type { ForwardConfig } from '../../config.js';
-import { MessageType, type ArkData, type MessageAttachment, type MsgElement } from './types.js';
+} from '@qqbot/contracts';
+import { flattenParts } from '../../content/index.js';
+import type { ForwardConfig } from '@qqbot/contracts';
+import { MessageType } from '@qqbot/contracts';
+import type { ArkData, MessageAttachment, MsgElement } from '@qqbot/contracts';
 
 /** 事件里我们真正读的那些字段（群/单聊共用） */
-export interface MessageBodyLike {
-  content?: string;
-  message_type?: number;
-  attachments?: MessageAttachment[];
-  ark_data?: ArkData;
-  msg_elements?: MsgElement[];
-  mentions?: Array<{ id?: string; username?: string; bot?: boolean }>;
-}
+export type { MessageBodyLike } from '@qqbot/contracts';
 
 /** 组装片段时的可选配额（缺省 = 官方侧的保守内置值） */
-export interface MessagePartsOptions {
-  /**
-   * 转发块（聊天记录形态的 msg_elements）的展开上限。
-   * 复用入站富媒体的 `attachments.forward`，与 OneBot 保持同一套旋钮。
-   */
-  forward?: ForwardConfig;
-}
+export type { MessagePartsOptions } from '@qqbot/contracts';
 
 /** 解析 `message_scene.ext` 里的 `key=value` 列表，返回第一个匹配的值。 */
 export function sceneExtValue(ext: readonly string[] | undefined, key: string): string | undefined {

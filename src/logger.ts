@@ -1,69 +1,34 @@
+import { readonlySnapshot } from '@qqbot/contracts';
+import type {
+  LogLevel,
+  Logger,
+  RootLogger,
+  LoggingSnapshot,
+  LoggerOptions,
+} from '@qqbot/contracts';
 /** 核心日志：所有子 logger 共享配置、预算和 stderr JSONL 出口。 */
 import { randomUUID } from 'node:crypto';
-import {
-  EVENTS,
-  LOG_CATEGORIES,
-  type EventName,
-  type EventFieldsFor,
-  type EventFields,
-  type LogCategory,
-} from './logging/events.js';
-import { loggingSettings, type LoggingSettings } from './logging/settings.js';
-import { LoggedError, errorClass, recordLine } from './logging/serialize.js';
-import { LogBuffer, stderrTransport, type LogTransport } from './logging/transport.js';
-import type { TraceContext } from './logging/trace.js';
+import { EVENTS } from './logging/events.js';
+import { LOG_CATEGORIES } from '@qqbot/contracts';
+import type { EventName, EventFields, LogCategory } from '@qqbot/contracts';
+import { loggingSettings } from './logging/settings.js';
+import type { LoggingSettings } from '@qqbot/contracts';
+import { LoggedError } from '@qqbot/contracts';
+import { errorClass, recordLine } from './logging/serialize.js';
+import { LogBuffer, stderrTransport } from './logging/transport.js';
+import type { LogTransport } from '@qqbot/contracts';
+import type { TraceContext } from '@qqbot/contracts';
 export { LoggedError, redact, errorClass } from './logging/serialize.js';
 export { createTrace, traceSpan, legacyTrace, type TraceContext } from './logging/trace.js';
 export { DEFAULT_LOGGING, loggingSettings, type LoggingSettings } from './logging/settings.js';
 export type { LogTransport } from './logging/transport.js';
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type { LogLevel } from '@qqbot/contracts';
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
-export interface LogRecord {
-  level: LogLevel;
-  time: number;
-  msg: string;
-  [key: string]: unknown;
-}
-export interface Logger {
-  debug(msg: string, fields?: Record<string, unknown>): void;
-  info(msg: string, fields?: Record<string, unknown>): void;
-  warn(msg: string, fields?: Record<string, unknown>): void;
-  error(msg: string, fields?: Record<string, unknown>): void;
-  child(fields: Record<string, unknown>): Logger;
-  withTrace(context: TraceContext): Logger;
-  event<Name extends EventName>(name: Name, fields?: EventFieldsFor<Name>): boolean;
-  /** 首次根因生成身份，上层状态事件只引用；不保留 Error 正文。 */
-  cause(error: unknown, classification?: string, fields?: EventFields): string;
-  finishExecution(executionId: string): void;
-}
-export interface RootLogger extends Logger {
-  configure(settings: Partial<LoggingSettings>): void;
-  snapshot(): LoggingSnapshot;
-  flush(timeoutMs?: number): Promise<boolean>;
-  tick(): void;
-}
-export interface LoggingSnapshot {
-  emitted: number;
-  deduplicated: number;
-  aggregated: number;
-  truncated: number;
-  dropped: number;
-  sinkFailures: number;
-  queuedBytes: number;
-  droppedByCategory: Record<LogCategory, number>;
-  diagnostics: { active: boolean; targets: number; expiresAt?: number };
-}
-export interface LoggerOptions {
-  level?: LogLevel;
-  settings?: Partial<LoggingSettings>;
-  sink?: (line: string) => void;
-  transport?: LogTransport;
-  fields?: Record<string, unknown>;
-  extraRedactor?: (text: string) => string;
-  now?: () => number;
-  id?: () => string;
-  autoTick?: boolean;
-}
+export type { LogRecord } from '@qqbot/contracts';
+export type { Logger } from '@qqbot/contracts';
+export type { RootLogger } from '@qqbot/contracts';
+export type { LoggingSnapshot } from '@qqbot/contracts';
+export type { LoggerOptions } from '@qqbot/contracts';
 interface ExecutionBudget {
   used: number;
   suppressed: number;
@@ -370,7 +335,7 @@ class LoggerCore {
   }
   snapshot(): LoggingSnapshot {
     this.tick();
-    return {
+    return readonlySnapshot({
       emitted: this.buffer.emitted,
       deduplicated: this.deduplicated,
       aggregated: this.aggregated,
@@ -384,7 +349,7 @@ class LoggerCore {
         targets: this.expiresAt === undefined ? 0 : this.targets(),
         expiresAt: this.expiresAt,
       },
-    };
+    });
   }
   async flush(timeout = this.settings.flushTimeoutMs): Promise<boolean> {
     this.tick();

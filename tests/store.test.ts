@@ -4,6 +4,11 @@
  * 这三块是"重启不失忆"与"不重复回复"的地基，都必须能在临时目录里离线验证。
  */
 
+/**
+ * 存储层单测：对话记录、去重、目录布局。
+ *
+ * 这三块是"重启不失忆"与"不重复回复"的地基，都必须能在临时目录里离线验证。
+ */
 import { mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -308,5 +313,152 @@ describe('SessionStore', () => {
     expect(record?.conversationKey).toBe('g1');
     expect(record?.currentSessionId).toBe('sess-old');
     expect(record?.generation).toBe(3);
+  });
+});
+
+describe('存储契约：generation提交与深快照', () => {
+  const logger = createNullLogger();
+
+  it('首次持久化失败不留下未提交会话，重试仍为generation 1', () => {
+    let rejectWrite = true;
+    const cause = new Error('injected session write failure');
+    const store = new SessionStore({
+      paths,
+      logger,
+      now: () => 100,
+      sessionIdFactory: (_key, generation) => `session-${generation}`,
+      persistSession: (file, text) => {
+        if (rejectWrite) throw cause;
+        writeFileSync(file, text);
+      },
+    });
+    expect(() => store.ensure('g1')).toThrow('会话映射持久化失败');
+    expect(store.peek('g1')).toBeUndefined();
+    expect(store.all()).toEqual([]);
+    rejectWrite = false;
+    expect(store.ensure('g1').generation).toBe(1);
+  });
+
+  it('轮换保存失败保持内存和磁盘旧记录，根因可关联', () => {
+    let rejectWrite = false;
+    const cause = new Error('injected rotation failure');
+    const store = new SessionStore({
+      paths,
+      logger,
+      now: () => 100,
+      sessionIdFactory: (_key, generation) => `session-${generation}`,
+      persistSession: (file, text) => {
+        if (rejectWrite) throw cause;
+        writeFileSync(file, text);
+      },
+    });
+    const original = store.ensure('g1');
+    rejectWrite = true;
+    try {
+      store.ensure('g1', true);
+      throw new Error('expected persistence failure');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'PERSISTENCE_FAILED', cause });
+    }
+    expect(store.peek('g1')).toEqual(original);
+    expect(new SessionStore({ paths, logger }).peek('g1')).toEqual(original);
+  });
+
+  it('固定时钟/ID的金标准及快照拒绝外部状态写入', () => {
+    const store = new SessionStore({
+      paths,
+      logger,
+      now: () => 100,
+      sessionIdFactory: (_key, generation) => `fixed-${generation}`,
+    });
+    const original = store.ensure('g1');
+    expect(() => Object.assign(original, { generation: 99 })).toThrow();
+    expect(() => Object.assign(store.all(), { 0: undefined })).toThrow();
+    const rotated = store.ensure('g1', true);
+    expect(original.generation).toBe(1);
+    expect(JSON.stringify(rotated)).toBe(
+      JSON.stringify({
+        conversationKey: 'g1',
+        logicalId: conversationHash('g1'),
+        currentSessionId: 'fixed-2',
+        generation: 2,
+        createdAt: 100,
+        updatedAt: 100,
+      })
+    );
+  });
+});
+
+describe('对话存储结果契约', () => {
+  const logger = createNullLogger();
+
+  it('缺失与读取失败是不同结果，部分损坏显式计数', () => {
+    const store = new ConversationStore(paths, logger);
+    expect(store.readResult('missing')).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+    mkdirSync(conversationFileFor(paths, 'broken'));
+    expect(store.readResult('broken')).toMatchObject({
+      ok: false,
+      error: { code: 'UPSTREAM_FAILED' },
+    });
+    store.append('partial', { role: 'user', speaker: 'u1', text: 'valid', ts: 10 });
+    writeFileSync(conversationFileFor(paths, 'partial'), 'invalid-json\n', { flag: 'a' });
+    expect(store.readResult('partial')).toMatchObject({
+      ok: true,
+      value: { turns: [{ text: 'valid' }], corrupted: 1 },
+    });
+  });
+
+  it('appendResult写入失败携带稳定分类及根因，兼容append仍可降级', () => {
+    const store = new ConversationStore(paths, logger);
+    mkdirSync(conversationFileFor(paths, 'broken'));
+    const turn = { role: 'user' as const, speaker: 'u1', text: 'text', ts: 10 };
+    const result = store.appendResult('broken', turn);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'PERSISTENCE_FAILED', retry: 'after-change' },
+    });
+    if (!result.ok) expect(result.error.cause).toBeInstanceOf(Error);
+    expect(() => {
+      store.append('broken', turn);
+    }).not.toThrow();
+  });
+
+  it('读取结果与嵌套引用不可写', () => {
+    const store = new ConversationStore(paths, logger);
+    store.append('g1', {
+      role: 'assistant',
+      speaker: 'bot',
+      text: 'reply',
+      ts: 10,
+      reference: { messageId: 'original', senderId: 'u1', excerpt: 'question', ts: 10 },
+    });
+    const turns = store.readTail('g1', 1);
+    expect(() => Object.assign(turns[0]!.reference!, { messageId: 'changed' })).toThrow();
+    expect(() => Object.assign(turns, { 0: undefined })).toThrow();
+    expect(store.readAll('g1')[0]?.reference?.messageId).toBe('original');
+  });
+});
+
+describe('去重结果契约', () => {
+  const logger = createNullLogger();
+
+  it('持久化错误保留根因，兼容入口选择内存降级后重复事件仍被拒绝', () => {
+    const brokenPaths = { ...paths, seenDir: join(root, 'marker-file') };
+    writeFileSync(brokenPaths.seenDir, 'not-a-directory');
+    const store = new SeenStore({ paths: brokenPaths, logger });
+    const failure = store.claimResult('event-1');
+    expect(failure).toMatchObject({ ok: false, error: { code: 'PERSISTENCE_FAILED' } });
+    if (!failure.ok) expect(failure.error.cause).toBeInstanceOf(Error);
+    expect(store.claim('event-1')).toBe(true);
+    expect(store.claimResult('event-1')).toEqual({ ok: true, value: false });
+  });
+
+  it('成功与重复结果稳定，构造后不能通过paths输入改变写入目的地', () => {
+    const inputPaths = { ...paths };
+    const store = new SeenStore({ paths: inputPaths, logger, now: () => 100 });
+    inputPaths.seenDir = join(root, 'wrong-directory');
+    expect(store.claimResult('event-1')).toEqual({ ok: true, value: true });
+    expect(existsSync(join(paths.seenDir, 'event-1'))).toBe(true);
+    expect(store.claimResult('event-1')).toEqual({ ok: true, value: false });
   });
 });

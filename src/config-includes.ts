@@ -1,3 +1,4 @@
+import type { IncludeDirective, ConfigFileParser } from '@qqbot/contracts';
 /**
  * 配置模块（`include`）展开层。
  *
@@ -16,30 +17,19 @@
  * I/O 异常都会被翻译成带"来源 include 项"的 ConfigError，而不是让 ENOENT /
  * EISDIR 直接冒到日志里。
  */
-
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
-import { ConfigError } from './config-error.js';
+import { ConfigError } from '@qqbot/contracts';
 
 /** 一条 `include` 声明（已通过形状校验）。 */
-export interface IncludeDirective {
-  /** 模块路径；相对路径以"包含它的文件"所在目录为基准 */
-  path: string;
-  /** 文件不存在时是否允许跳过（本机可选配置用） */
-  optional: boolean;
-  /** false = 不读取、不校验、不合并（用于保留清单做开关） */
-  enabled: boolean;
-}
+export type { IncludeDirective } from '@qqbot/contracts';
 
 /** 单个配置文件解析后的产物：本文件的配置 + 它声明的模块。 */
-export interface ParsedConfigDocument<T> {
-  config: T;
-  includes: IncludeDirective[];
-}
+export type { ParsedConfigDocument } from '@qqbot/contracts';
 
 /** 解析一份配置文本的回调（由 config-file.ts 提供，避免本模块依赖 schema）。 */
-export type ConfigFileParser<T> = (text: string, source: string) => ParsedConfigDocument<T>;
+export type { ConfigFileParser } from '@qqbot/contracts';
 
 /** include 嵌套深度上限。正常配置只有入口 + 一层模块，16 层足够覆盖扩展场景。 */
 const MAX_INCLUDE_DEPTH = 16;

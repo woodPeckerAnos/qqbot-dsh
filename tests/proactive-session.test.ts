@@ -23,6 +23,30 @@
  * 用假判定 + 手动时钟，因此每一步都能断言"闸门为什么过/不过"。
  */
 
+/**
+ * 话题 session（主动发言的唯一放行闸门）专项单测。
+ *
+ * 逐条对应 docs/TOPIC-SESSION-REQUIREMENT.md 的**验收标准 1–14**：
+ *
+ * | 用例 | 验收 |
+ * |---|---|
+ * | 验收1 | 无 session + 判成立 → 开 session、扣 1 点预算、计 `proactiveSessionOpened` |
+ * | 验收2 | 无 session + 判不成立 → 不开 session，计 `proactiveNoSession` |
+ * | 验收3 | session 开启后再次唤醒 → 不再要求"有新内容"，直接进判定并说第二句 |
+ * | 验收4 | 预算减到 0 → 立即关闭；此后唤醒 `silent('no-session')` |
+ * | 验收5 | LLM 给 `close` → 关闭（llm-closed），**本次发言照常发出** |
+ * | 验收6 | 静默超过 `sessionIdleMs` → 自动关闭（idle），**不调 LLM** |
+ * | 验收7 | 间隔 < `sessionMinGapMs` → `min-gap`，**不消耗预算** |
+ * | 验收8 | 转录自上次评估无新增 → **不调 LLM** |
+ * | 验收9 | `sessionBudget=9` → 按硬上限 5 处理并 warn |
+ * | 验收10 | `rate-limit` 仍**先于** session 闸门 |
+ * | 验收11 | `opened === closed === Σ closedBy{reason}`（账目闭合） |
+ * | 验收12 | 旧标识符在 `src/` 里不再存在（grep 断言） |
+ * | 验收13 | session 关闭后再次判成立 → 重新开启（`openedAt` 更新、预算重置） |
+ * | 验收14 | session 期间话题换了（LLM 没给 close）→ 仍按旧 session 走，不崩溃 |
+ *
+ * 用假判定 + 手动时钟，因此每一步都能断言"闸门为什么过/不过"。
+ */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 

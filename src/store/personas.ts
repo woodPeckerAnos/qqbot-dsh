@@ -1,3 +1,5 @@
+import { PRESET_NAME_RE, MAX_PRESET_BYTES } from '@qqbot/contracts';
+import type { PersonaApplyFail, PersonaApplyResult, PersonaStoreOptions } from '@qqbot/contracts';
 /**
  * 预设风格前台（/persona 命令的存储与落盘层）。
  *
@@ -24,7 +26,6 @@
  * 所以只从配置的目录读、名字强制 `[a-z0-9-]`、体积封顶——群里任何人（包括
  * 管理员）都不能通过命令注入预设内容本身。
  */
-
 import {
   existsSync,
   mkdirSync,
@@ -34,15 +35,15 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
+import { failure, readonlySnapshot } from '@qqbot/contracts';
 
-import type { Logger } from '../logger.js';
-import { ensureWorkspace, workspacePathFor, type StorePaths } from './paths.js';
+import { ensureWorkspace, workspacePathFor } from './paths.js';
 
 /** 预设名：小写字母/数字/中划线。这条正则同时是路径穿越的防线。 */
-export const PRESET_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export { PRESET_NAME_RE } from '@qqbot/contracts';
 
 /** 单个预设的体积上限（字节）。人设是每轮都要付 token 的，不该是一篇文章。 */
-export const MAX_PRESET_BYTES = 16 * 1024;
+export { MAX_PRESET_BYTES } from '@qqbot/contracts';
 
 const BLOCK_END = '<!-- qqbot-persona:end -->';
 /** 整个区块（含前后至多一个换行），替换/清除用。 */
@@ -51,35 +52,23 @@ const BLOCK_RE = /\n?<!-- qqbot-persona:begin[^>]*-->[\s\S]*?<!-- qqbot-persona:
 /** 工作区里写人设区块的目标文件名（dsh-agent-instructions 自动加载它）。 */
 const AGENTS_FILE = 'AGENTS.md';
 
-export interface PersonaApplyOk {
-  ok: true;
-  name: string;
-}
-export interface PersonaApplyFail {
-  ok: false;
-  reason: 'invalid-name' | 'unknown-preset' | 'empty-preset' | 'preset-too-large' | 'io';
-  detail: string;
-}
-export type PersonaApplyResult = PersonaApplyOk | PersonaApplyFail;
+export type { PersonaApplyOk } from '@qqbot/contracts';
+export type { PersonaApplyFail } from '@qqbot/contracts';
+export type { PersonaApplyResult } from '@qqbot/contracts';
 
 interface PersistShape {
   version: 1;
   personas: Record<string, string>;
 }
 
-export interface PersonaStoreOptions {
-  /** 预设目录（`personas.dir` / BOT_PERSONA_DIR，默认 dsh-profile/personas） */
-  dir: string;
-  /** 选择持久化文件（stateDir 下） */
-  persistPath: string;
-  paths: StorePaths;
-  logger: Logger;
-}
+export type { PersonaStoreOptions } from '@qqbot/contracts';
 
 export class PersonaStore {
+  private readonly options: PersonaStoreOptions;
   private readonly selections = new Map<string, string>();
 
-  constructor(private readonly options: PersonaStoreOptions) {
+  constructor(options: PersonaStoreOptions) {
+    this.options = { ...options, paths: readonlySnapshot(options.paths) };
     this.load();
   }
 
@@ -117,31 +106,30 @@ export class PersonaStore {
       return { ok: false, reason: 'empty-preset', detail: `预设 ${name} 内容为空` };
     }
     try {
-      this.writeBlock(conversationKey, name, trimmed);
+      this.commitSelection(conversationKey, name, () => {
+        this.writeBlock(conversationKey, name, trimmed);
+      });
     } catch (error) {
       return {
         ok: false,
         reason: 'io',
         detail: error instanceof Error ? error.message : String(error),
+        error: failure(
+          error instanceof AggregateError ? 'UNKNOWN_OUTCOME' : 'PERSISTENCE_FAILED',
+          error
+        ),
       };
     }
-    this.selections.set(conversationKey, name);
-    this.persist();
     this.options.logger.info('会话人设已切换', { conversation: conversationKey, persona: name });
     return { ok: true, name };
   }
 
   /** 恢复全局默认人设：移除标记区块（保留区块外手写内容）+ 清除选择。 */
   clear(conversationKey: string): { hadSelection: boolean } {
-    const hadSelection = this.selections.delete(conversationKey);
-    if (hadSelection) this.persist();
-    const file = this.agentsFileFor(conversationKey);
-    if (existsSync(file)) {
-      const text = readFileSync(file, 'utf8');
-      if (BLOCK_RE.test(text)) {
-        this.writeFileAtomic(file, `${text.replace(BLOCK_RE, '\n').trimEnd()}\n`);
-      }
-    }
+    const hadSelection = this.selections.has(conversationKey);
+    this.commitSelection(conversationKey, undefined, () => {
+      this.clearBlock(conversationKey);
+    });
     this.options.logger.info('会话人设已恢复默认', { conversation: conversationKey, hadSelection });
     return { hadSelection };
   }
@@ -159,8 +147,10 @@ export class PersonaStore {
           persona: name,
           reason: content.reason,
         });
+        const next = new Map(this.selections);
+        next.delete(conversationKey);
+        this.persist(next);
         this.selections.delete(conversationKey);
-        this.persist();
         continue;
       }
       try {
@@ -227,6 +217,47 @@ export class PersonaStore {
     return join(workspacePathFor(this.options.paths, conversationKey), AGENTS_FILE);
   }
 
+  private clearBlock(conversationKey: string): void {
+    const file = this.agentsFileFor(conversationKey);
+    if (!existsSync(file)) return;
+    const text = readFileSync(file, 'utf8');
+    if (BLOCK_RE.test(text)) {
+      this.writeFileAtomic(file, `${text.replace(BLOCK_RE, '\n').trimEnd()}\n`);
+    }
+  }
+
+  /** 两个文件无法一次 rename；选择写入失败时回滚区块，内存始终最后提交。 */
+  private commitSelection(
+    conversationKey: string,
+    name: string | undefined,
+    write: () => void
+  ): void {
+    const file = this.agentsFileFor(conversationKey);
+    const previous = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const next = new Map(this.selections);
+    if (name === undefined) next.delete(conversationKey);
+    else next.set(conversationKey, name);
+    try {
+      write();
+      this.persist(next);
+    } catch (cause) {
+      this.restoreBlock(file, previous, cause);
+      throw new Error('人设选择持久化失败，保留原选择', { cause });
+    }
+    this.selections.clear();
+    for (const [key, selected] of next) this.selections.set(key, selected);
+  }
+
+  private restoreBlock(file: string, previous: string, cause: unknown): void {
+    try {
+      this.writeFileAtomic(file, previous);
+    } catch (rollbackCause) {
+      throw new AggregateError([cause, rollbackCause], '人设区块回滚失败，结果未知', {
+        cause: rollbackCause,
+      });
+    }
+  }
+
   /** 原子写：先写临时文件再 rename，不给读者半截文件。 */
   private writeFileAtomic(file: string, text: string): void {
     mkdirSync(dirname(file), { recursive: true });
@@ -258,21 +289,27 @@ export class PersonaStore {
     }
   }
 
-  private persist(): void {
+  private persist(selections: ReadonlyMap<string, string>): void {
     const file = this.options.persistPath;
     const payload: PersistShape = {
       version: 1,
-      personas: Object.fromEntries([...this.selections.entries()]),
+      personas: Object.fromEntries(selections),
     };
     try {
+      const text = `${JSON.stringify(payload, null, 2)}\n`;
+      if (this.options.persistSelection) {
+        this.options.persistSelection(file, text);
+        return;
+      }
       mkdirSync(dirname(file), { recursive: true });
       const tmp = `${file}.tmp`;
-      writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+      writeFileSync(tmp, text, 'utf8');
       renameSync(tmp, file);
     } catch (error) {
-      this.options.logger.warn('写入 personas.json 失败（不影响本次切换）', {
+      this.options.logger.warn('写入 personas.json 失败，保留原选择', {
         error: error instanceof Error ? error.message : String(error),
       });
+      throw error;
     }
   }
 }

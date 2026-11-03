@@ -19,6 +19,26 @@
  * 用户收不到。所以主动推送必须从"原轮次已用条数 + 1"开始，见 ReplyAnchor.usedSeq。
  */
 
+/**
+ * 后台任务结果的主动投递器（BackgroundPusher）。
+ *
+ * 背景：后台子代理完成后，父代理跑一个"自发轮次"总结结果（TurnRunner 捕获）。
+ * 但 QQ 官方被动回复窗口只有 5 分钟（单聊 60 分钟），窗口外无法主动补发；
+ * OneBot 则完全没有窗口，任何时候都能主动发。本模块统一收口"捕获到后台结果后
+ * 怎么送到用户手上"：
+ *
+ *   1. **能即时推送就推送**（OneBot 恒可行；官方在被动窗口内且回复配额未尽时可行），
+ *      用该会话**最后一条用户消息**的 msg_id 作锚点、接着已用的 msg_seq 往后发；
+ *   2. **推不出去就暂存**（pendingBackground），等该会话下一条用户消息的回复前置带出
+ *      （由 TurnRunner.attachPendingBackground 取走）；
+ *   3. 暂存**持久化**到 stateDir，桥接进程重启后仍能带出（内存态会在重启时丢）。
+ *
+ * 为什么锚点不持久化：msg_id 只在被动窗口内有效（几分钟），重启后基本都过期了，
+ * 持久化没有意义；重启后 OneBot/官方都退回"下一条消息带出"，安全且不丢内容。
+ *
+ * seq 续号是官方平台的硬约束：同 `(msg_id, msg_seq)` 重复发送会被去重（40054005），
+ * 用户收不到。所以主动推送必须从"原轮次已用条数 + 1"开始，见 ReplyAnchor.usedSeq。
+ */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -196,7 +216,7 @@ export class BackgroundPusher {
           { text: segment }
         );
         sent += 1;
-        this.deps.stats.repliesSent += 1;
+        this.deps.stats.record('repliesSent', 1);
       } catch (error) {
         // 发送失败：停止后续分段，但仍推进 usedSeq（该 seq 可能已被平台受理，
         // 复用会触发去重）。已发出的部分算成功，剩余的由调用方回落暂存。
@@ -218,7 +238,7 @@ export class BackgroundPusher {
     }
     if (sent === 0) return false;
 
-    this.deps.stats.backgroundPushed += 1;
+    this.deps.stats.record('backgroundPushed', 1);
     // 记录进对话（供冷启动回放）：主动推送的内容是独立一条 assistant 消息。
     this.deps.conversations.append(conversationKey, {
       role: 'assistant',

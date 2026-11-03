@@ -1,37 +1,62 @@
-/**
- * 谷时段闸：DeepSeek 错峰优惠时段之外，在编排层直接拒答，不调用模型 API。
- *
- * DeepSeek 官方计费规则（2026-09-19《API 峰谷时间说明》）：
- *   - 工作日：仅谷时段窗口内按谷价。**一天内有多个谷时段窗口**，默认
- *     北京时间 00:00–09:00、12:00–14:00、18:00–24:00（三个窗口之外是正价）；
- *   - 周六、周日：全天谷价（2026-08-23 起，含调休上班的周末——它们仍是周六/日）；
- *   - 中国法定节假日（放假调休期间）：全天谷价——需要日历表，
- *     内置国务院办公厅《关于 2026 年部分节假日安排的通知》（国办发明电〔2025〕7 号），
- *     跨年数据由 env（QQ_OFFPEAK_HOLIDAYS）或管理员 /offpeak holiday 命令追加。
- *
- * 为什么放在桥接层而不是 dsh plugin：
- *   - 决策依据（模型身份、时间策略）全部在桥接层配置里；
- *   - 在这里拦截可以不写对话记录、不占并发名额、不碰 DSH 进程，
- *     也不会把伪造的 turn 混进会话历史污染后续回放；
- *   - 判定是纯函数，可以直接进离线单测。
- *
- * 配置分三层，优先级从高到低：
- *   运行期覆盖（管理员 /offpeak 命令，持久化到 stateDir）
- *     > env 默认值（QQ_OFFPEAK_*，启动时读）
- *     > 代码内置默认
- *
- * 管理员（BOT_ADMINS 白名单）任何时段都不被拦截，且可以通过
- * QQ 消息热切换闸配置，下一条消息即生效。
- *
- * 模块划分：
- *   - windows.ts  谷时段窗口的解析/格式化/命中判定（配置 DSL，启动期与运行期复用）
- *   - calendar.ts 时区换算、周末判定与内置法定节假日表
- *   - gate.ts     evaluateGate 运行时判定 + OffpeakGate 服务（运行期覆盖与持久化）
- *   - command.ts  /offpeak 管理员命令解析与文案
- * ingress 侧的两个薄 stage（命令路由、拦截回执）在 pipeline/ingress/ 下。
- */
-
-export * from './windows.js';
-export * from './calendar.js';
-export * from './gate.js';
-export * from './command.js';
+/** Public module boundary. Consumers receive contract interfaces. */
+import { OffpeakGate } from './gate.js';
+export const createOffpeakGate: import('@qqbot/contracts').createOffpeakGateFactory = (...args) =>
+  new OffpeakGate(...args);
+import {
+  isValidTimeZone as isValidTimeZoneImplementation,
+  minutesInTimeZone as minutesInTimeZoneImplementation,
+  isValidDateString as isValidDateStringImplementation,
+  dateStringInTimeZone as dateStringInTimeZoneImplementation,
+  isWeekendInTimeZone as isWeekendInTimeZoneImplementation,
+} from './calendar.js';
+export const isValidTimeZone: import('@qqbot/contracts').isValidTimeZone =
+  isValidTimeZoneImplementation;
+export const minutesInTimeZone: import('@qqbot/contracts').minutesInTimeZone =
+  minutesInTimeZoneImplementation;
+export const isValidDateString: import('@qqbot/contracts').isValidDateString =
+  isValidDateStringImplementation;
+export const dateStringInTimeZone: import('@qqbot/contracts').dateStringInTimeZone =
+  dateStringInTimeZoneImplementation;
+export const isWeekendInTimeZone: import('@qqbot/contracts').isWeekendInTimeZone =
+  isWeekendInTimeZoneImplementation;
+export { CN_HOLIDAYS_2026 } from './calendar.js';
+import {
+  parseOffpeakCommand as parseOffpeakCommandImplementation,
+  commandNeedsAdmin as commandNeedsAdminImplementation,
+  renderGateNotice as renderGateNoticeImplementation,
+} from './command.js';
+export const parseOffpeakCommand: import('@qqbot/contracts').parseOffpeakCommand =
+  parseOffpeakCommandImplementation;
+export const commandNeedsAdmin: import('@qqbot/contracts').commandNeedsAdmin =
+  commandNeedsAdminImplementation;
+export const renderGateNotice: import('@qqbot/contracts').renderGateNotice =
+  renderGateNoticeImplementation;
+export { OFFPEAK_COMMAND_USAGE } from './command.js';
+import { evaluateGate as evaluateGateImplementation } from './gate.js';
+export const evaluateGate: import('@qqbot/contracts').evaluateGate = evaluateGateImplementation;
+import {
+  parseTimeHHMM as parseTimeHHMMImplementation,
+  formatMinutes as formatMinutesImplementation,
+  formatWindow as formatWindowImplementation,
+  formatWindows as formatWindowsImplementation,
+  parseWindowRange as parseWindowRangeImplementation,
+  assertNoOverlap as assertNoOverlapImplementation,
+  parseWindowsSpec as parseWindowsSpecImplementation,
+  isInOffpeakWindow as isInOffpeakWindowImplementation,
+  isInOffpeakWindows as isInOffpeakWindowsImplementation,
+} from './windows.js';
+export const parseTimeHHMM: import('@qqbot/contracts').parseTimeHHMM = parseTimeHHMMImplementation;
+export const formatMinutes: import('@qqbot/contracts').formatMinutes = formatMinutesImplementation;
+export const formatWindow: import('@qqbot/contracts').formatWindow = formatWindowImplementation;
+export const formatWindows: import('@qqbot/contracts').formatWindows = formatWindowsImplementation;
+export const parseWindowRange: import('@qqbot/contracts').parseWindowRange =
+  parseWindowRangeImplementation;
+export const assertNoOverlap: import('@qqbot/contracts').assertNoOverlap =
+  assertNoOverlapImplementation;
+export const parseWindowsSpec: import('@qqbot/contracts').parseWindowsSpec =
+  parseWindowsSpecImplementation;
+export const isInOffpeakWindow: import('@qqbot/contracts').isInOffpeakWindow =
+  isInOffpeakWindowImplementation;
+export const isInOffpeakWindows: import('@qqbot/contracts').isInOffpeakWindows =
+  isInOffpeakWindowsImplementation;
+export { DAY_MINUTES, OffpeakConfigError } from './windows.js';

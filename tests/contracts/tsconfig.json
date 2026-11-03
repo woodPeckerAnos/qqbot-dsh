@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "noEmit": true,
+    "strict": true
+  },
+  "include": ["./type-rejections.ts", "./*.test.ts"],
+  "exclude": []
+}

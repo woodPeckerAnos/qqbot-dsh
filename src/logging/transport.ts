@@ -1,10 +1,7 @@
-import type { LogCategory } from './events.js';
+import type { LogTransport } from '@qqbot/contracts';
+import type { LogCategory } from '@qqbot/contracts';
 
-export interface LogTransport {
-  /** line 包含换行；false 表示等待 drain，done 表示这条写入已完成。 */
-  write(line: string, done: (error?: Error | null) => void): boolean;
-  on?(event: 'drain' | 'error', listener: (error?: Error) => void): unknown;
-}
+export type { LogTransport } from '@qqbot/contracts';
 interface PendingLine {
   line: string;
   bytes: number;

@@ -1,3 +1,4 @@
+import type { TokenSnapshot, QqOfficialConnectorOptions } from '@qqbot/contracts';
 /**
  * 官方开放平台连接器：把 TokenManager + QqApi + QqGateway 包装成 BotConnector。
  *
@@ -8,7 +9,6 @@
  *
  * 编排层只看到 BotConnector 接口，不感知以上任何细节。
  */
-
 import { readFile } from 'node:fs/promises';
 
 import type {
@@ -25,51 +25,22 @@ import type {
   RemoteMedia,
   ReplyContext,
   ReplyPolicy,
-} from '../../core/connector.js';
-import type { ForwardConfig } from '../../config.js';
-import type { Logger } from '../../logger.js';
+} from '@qqbot/contracts';
+
 import { QqApi } from './api.js';
-import {
-  QqGateway,
-  QQ_OFFICIAL_PLATFORM,
-  type EventSourceHealth,
-  type WebSocketFactory,
-} from './gateway.js';
+import { QqGateway } from './gateway.js';
+import { QQ_OFFICIAL_PLATFORM } from '@qqbot/contracts';
+import type { EventSourceHealth } from '@qqbot/contracts';
 import { renderMediaMessage, renderMessage } from './render.js';
 import { TokenManager } from './token.js';
-import { MediaFileType, type UploadFileRequest } from './types.js';
+import { MediaFileType } from '@qqbot/contracts';
+import type { UploadFileRequest } from '@qqbot/contracts';
 
 /** access_token 状态快照（health 展示用） */
-export interface TokenSnapshot {
-  hasToken: boolean;
-  expiresInMs: number;
-}
+export type { TokenSnapshot } from '@qqbot/contracts';
 
 /** 官方连接器的配置（由 config.ts 的 config.qq 映射而来） */
-export interface QqOfficialConnectorOptions {
-  appId: string;
-  appSecret: string;
-  apiBase: string;
-  intents: number;
-  msgType: 0 | 2;
-  /** 是否响应单聊消息（intent 层无法只订群聊，所以在业务层拦） */
-  acceptsC2C: boolean;
-  /** 回复策略：群聊与单聊分开（官方单聊上限低于群聊） */
-  groupPolicy: ReplyPolicy;
-  c2cPolicy: ReplyPolicy;
-  /**
-   * 转发块（聊天记录形态的 msg_elements）展开配额（config.attachments.forward）。
-   * 官方接收侧只定义了 0/3/103 三种 message_type，转发能力按"尽力而为 + 实测"
-   * 定位，见 docs/FORWARD-FILE-INGRESS-PLAN.md §3.2。
-   */
-  forward?: ForwardConfig;
-  /** 转发块展开结果上报（/metrics 计数） */
-  onForward?: (info: { ok: boolean; nodes: number }) => void;
-  logger: Logger;
-  /** 测试注入 */
-  webSocketFactory?: WebSocketFactory;
-  fetchImpl?: typeof fetch;
-}
+export type { QqOfficialConnectorOptions } from '@qqbot/contracts';
 
 export class QqOfficialConnector implements BotConnector {
   readonly platform = QQ_OFFICIAL_PLATFORM;

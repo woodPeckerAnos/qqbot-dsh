@@ -1,20 +1,26 @@
+import { readonlySnapshot } from '@qqbot/contracts';
+import type { DeepReadonly } from '@qqbot/contracts';
 /**
  * 单个 lane 的执行额度与 Session FIFO。快慢 lane 各自创建实例，互不等待。
  * 调度器拥有 AbortController 和运行名额，Task 状态通过 settle 交回管理器。
  * run 包含所属执行的产物收尾；finally 后才允许同 Session 的下一项开始。
  */
-import type { LaneResult, TaskSnapshot } from './types.js';
+import type { LaneResult, TaskSnapshot } from '@qqbot/contracts';
 
 interface Job {
-  task: Readonly<TaskSnapshot>;
+  task: DeepReadonly<TaskSnapshot>;
   run: (signal: AbortSignal) => Promise<LaneResult>;
   settle: (result: LaneResult) => void;
 }
 export class LaneScheduler {
   private readonly queues = new Map<string, Job[]>();
   private readonly running = new Map<string, { taskId: string; controller: AbortController }>();
+  private readonly settlements = new Map<string, { job: Job; result: LaneResult }>();
   private closed = false;
-  constructor(private readonly capacity = 4) {
+  constructor(
+    private readonly capacity = 4,
+    private readonly onSettlementError?: (error: unknown, taskId: string) => void
+  ) {
     if (!Number.isInteger(capacity) || capacity < 1) throw new Error('lane 额度必须 >= 1');
   }
   enqueue(job: Job): void {
@@ -37,24 +43,24 @@ export class LaneScheduler {
         queue.filter((j) => j.task.taskId !== taskId)
       );
       removed.forEach((j) => {
-        j.settle({ kind: 'cancelled' });
+        this.settle(j, { kind: 'cancelled' });
       });
     }
     for (const active of this.running.values())
       if (active.taskId === taskId) active.controller.abort();
     this.pump();
   }
-  snapshot(): { running: number; queued: number } {
-    return {
+  snapshot(): DeepReadonly<{ running: number; queued: number }> {
+    return readonlySnapshot({
       running: this.running.size,
       queued: [...this.queues.values()].reduce((n, q) => n + q.length, 0),
-    };
+    });
   }
   close(): void {
     this.closed = true;
     for (const queue of this.queues.values())
       queue.forEach((j) => {
-        j.settle({ kind: 'cancelled' });
+        this.settle(j, { kind: 'cancelled' });
       });
     this.queues.clear();
     this.running.forEach((r) => {
@@ -62,6 +68,7 @@ export class LaneScheduler {
     });
   }
   private pump(): void {
+    this.flushSettlements();
     if (this.closed) return;
     for (const [key, queue] of this.queues) {
       if (this.running.size >= this.capacity) break;
@@ -81,7 +88,7 @@ export class LaneScheduler {
           error: String(error),
         }))
         .then((result) => {
-          job.settle(result);
+          this.settle(job, result);
         })
         .finally(() => {
           this.running.delete(key);
@@ -93,6 +100,26 @@ export class LaneScheduler {
           }
           this.pump();
         });
+    }
+  }
+  /** 只重试保存已完成结果，绝不重新执行 run；可由维护循环在存储恢复后唤醒。 */
+  flushSettlements(): void {
+    for (const { job, result } of this.settlements.values()) this.settle(job, result);
+  }
+  private settle(job: Job, result: LaneResult): void {
+    try {
+      job.settle(structuredClone(result));
+      this.settlements.delete(job.task.taskId);
+    } catch (error) {
+      this.settlements.set(job.task.taskId, { job, result: structuredClone(result) });
+      this.reportSettlementError(error, job.task.taskId);
+    }
+  }
+  private reportSettlementError(error: unknown, taskId: string): void {
+    try {
+      this.onSettlementError?.(error, taskId);
+    } catch {
+      // 错误观察者不能移除待保存的结果，存储恢复后仍能完成同一结算。
     }
   }
 }

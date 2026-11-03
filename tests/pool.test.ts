@@ -5,6 +5,12 @@
  * 所以重点测：每会话独立、死进程重建、LRU 回收、空闲回收、忙碌时不被强杀。
  */
 
+/**
+ * runtime 池单测（假 runtime 工厂，全离线）。
+ *
+ * 池的行为直接决定"会话与会话之间会不会串味"以及"进程会不会泄漏"，
+ * 所以重点测：每会话独立、死进程重建、LRU 回收、空闲回收、忙碌时不被强杀。
+ */
 import { describe, expect, it, vi } from 'vitest';
 
 import { createNullLogger } from '../src/logger.js';
@@ -82,6 +88,68 @@ function makePool(
 }
 
 describe('RuntimePool', () => {
+  it('租约与协议能力不暴露可写池记录，集合快照隔离且只读', async () => {
+    const { pool, created } = makePool();
+    const lease = await pool.acquireLease('G1', '/ws/1');
+    expect(Object.isFrozen(lease)).toBe(true);
+    expect(Object.isFrozen(lease.runtime)).toBe(true);
+    expect(lease).not.toHaveProperty('busy');
+    expect(lease).not.toHaveProperty('activeChildren');
+    expect(lease.runtime).not.toHaveProperty('dispose');
+    expect(lease.runtime).not.toHaveProperty('start');
+    expect(lease.runtime).not.toHaveProperty('emit');
+    expect(() => Object.assign(lease, { generation: 'forged' })).toThrow(TypeError);
+    created[0]!.emit('subagent.started', { parentSessionId: 'p', childSessionId: 'c' });
+    const before = pool.snapshot(lease)!;
+    expect(() => (before.activeChildren as string[]).push('forged')).toThrow(TypeError);
+    created[0]!.emit('subagent.finished', { parentSessionId: 'p', childSessionId: 'c' });
+    expect(before.activeChildren).toEqual(['c']);
+    expect(pool.snapshot(lease)!.activeChildren).toEqual([]);
+    await pool.disposeAll();
+  });
+  it('同一进程重新准入也铸新租约；复制身份与旧租约无写入能力', async () => {
+    const { pool, created } = makePool();
+    const first = await pool.acquireLease('G1', '/ws/1');
+    pool.release(first);
+    const next = await pool.acquireLease('G1', '/ws/1');
+    expect(created).toHaveLength(1);
+    expect(next.leaseId).not.toBe(first.leaseId);
+    expect(next.generation).toBe(first.generation);
+    pool.release(first);
+    pool.release({ ...next });
+    await pool.drop(first);
+    await pool.drop({ ...next });
+    expect(pool.snapshot(next)!.busy).toBe(true);
+    expect(next.runtime.isReady).toBe(true);
+    expect(pool.snapshot(first)).toBeUndefined();
+    await pool.disposeAll();
+  });
+  it('重复关闭等待同一次释放，关闭期间重建不突破进程硬上限', async () => {
+    const { pool, created } = makePool({ maxRuntimes: 1 });
+    const lease = await pool.acquireLease('G1', '/ws/1');
+    let finishDispose!: () => void;
+    created[0]!.dispose = () =>
+      new Promise<void>((resolve) => {
+        finishDispose = () => {
+          created[0]!.disposeCount += 1;
+          created[0]!.ready = false;
+          resolve();
+        };
+      });
+    const closing = pool.drop(lease);
+    const duplicate = pool.drop(lease);
+    const replacement = pool.acquireLease('G1', '/ws/1');
+    await Promise.resolve();
+    expect(created).toHaveLength(1);
+    finishDispose();
+    await Promise.all([closing, duplicate]);
+    const next = await replacement;
+    expect(created[0]!.disposeCount).toBe(1);
+    expect(created).toHaveLength(2);
+    expect(next.runtime.isReady).toBe(true);
+    expect(pool.size).toBe(1);
+    await pool.disposeAll();
+  });
   it('初始化失败释放创建中的 runtime，不占硬额度', async () => {
     const { pool, created } = makePool({ maxRuntimes: 1 });
     const originalStart = FakeRuntime.prototype.start;
@@ -102,8 +170,8 @@ describe('RuntimePool', () => {
   it('并发租约在返回前已标 busy，满池等待；旧租约不能释放新实例', async () => {
     const { pool, created } = makePool({ maxRuntimes: 2 });
     const [a, b] = await Promise.all([pool.acquireLease('A', '/a'), pool.acquireLease('B', '/b')]);
-    expect(a.busy).toBe(true);
-    expect(b.busy).toBe(true);
+    expect(pool.snapshot(a)!.busy).toBe(true);
+    expect(pool.snapshot(b)!.busy).toBe(true);
     const waiting = pool.acquireLease('C', '/c');
     await Promise.resolve();
     await Promise.resolve();
@@ -116,7 +184,7 @@ describe('RuntimePool', () => {
     const replacement = await pool.acquireLease('B', '/b');
     pool.release(b);
     await pool.drop(b);
-    expect(replacement.busy).toBe(true);
+    expect(pool.snapshot(replacement)!.busy).toBe(true);
     expect(replacement.runtime.isReady).toBe(true);
     await pool.disposeAll();
   });
@@ -151,22 +219,22 @@ describe('RuntimePool', () => {
     expect(created).toHaveLength(2);
     expect(a.runtime).not.toBe(b.runtime);
     // cwd 必须是各自的工作区
-    expect((a.runtime as unknown as FakeRuntime).options.cwd).toBe('/ws/a');
-    expect((b.runtime as unknown as FakeRuntime).options.cwd).toBe('/ws/b');
+    expect(created[0]!.options.cwd).toBe('/ws/a');
+    expect(created[1]!.options.cwd).toBe('/ws/b');
     await pool.disposeAll();
   });
 
   it('runtime 死掉后自动重建，而不是把坏 runtime 交出去', async () => {
     const { pool, created } = makePool();
     const first = await pool.acquire('GROUP-A', '/ws/a');
-    (first.runtime as unknown as FakeRuntime).ready = false;
+    created[0]!.ready = false;
 
     const second = await pool.acquire('GROUP-A', '/ws/a');
     expect(created).toHaveLength(2);
     expect(second.runtime).not.toBe(first.runtime);
     expect(second.runtime.isReady).toBe(true);
     // 旧的那个应该被 dispose 过
-    expect((first.runtime as unknown as FakeRuntime).disposeCount).toBeGreaterThanOrEqual(1);
+    expect(created[0]!.disposeCount).toBeGreaterThanOrEqual(1);
     await pool.disposeAll();
   });
 
@@ -174,14 +242,14 @@ describe('RuntimePool', () => {
     const { pool } = makePool();
     const entry = await pool.acquire('GROUP-A', '/ws/a');
     expect(entry.sessionId).toBe(stableSessionId('GROUP-A'));
-    expect(entry.replayed).toBe(false);
+    expect(pool.snapshot(entry)!.replayed).toBe(false);
     await pool.disposeAll();
   });
 
   it('release 只标记空闲，不立即销毁', async () => {
     const { pool, created } = makePool();
-    await pool.acquire('GROUP-A', '/ws/a');
-    pool.release('GROUP-A');
+    const lease = await pool.acquire('GROUP-A', '/ws/a');
+    pool.release(lease);
     expect(pool.size).toBe(1);
     expect((created[0] as unknown as FakeRuntime).disposeCount).toBe(0);
     await pool.disposeAll();
@@ -208,8 +276,7 @@ describe('RuntimePool', () => {
 
   it('全部 runtime 都在忙时等待，始终不突破硬上限', async () => {
     const { pool } = makePool({ maxRuntimes: 1 });
-    const entry = await pool.acquire('G1', '/ws/1');
-    entry.busy = true;
+    const entry = await pool.acquireLease('G1', '/ws/1');
 
     // 池已满且唯一成员在忙：不应丢弃 G1
     const waiting = pool.acquire('G2', '/ws/2');
@@ -228,8 +295,8 @@ describe('RuntimePool', () => {
     try {
       let nowMs = 0;
       const { pool } = makePool({ runtimeIdleMs: 1_000, now: () => nowMs });
-      await pool.acquire('G1', '/ws/1');
-      pool.release('G1');
+      const lease = await pool.acquire('G1', '/ws/1');
+      pool.release(lease);
 
       // 触发 reclaim 定时器（间隔 = max(30s, idleMs/2) = 30s）
       nowMs += 60_000;
@@ -248,8 +315,7 @@ describe('RuntimePool', () => {
     try {
       let nowMs = 0;
       const { pool } = makePool({ runtimeIdleMs: 1_000, now: () => nowMs });
-      const entry = await pool.acquire('G1', '/ws/1');
-      entry.busy = true;
+      await pool.acquireLease('G1', '/ws/1');
 
       nowMs += 60_000;
       await vi.advanceTimersByTimeAsync(30_000);
@@ -274,12 +340,12 @@ describe('RuntimePool', () => {
   });
 
   it('runtime 退出事件会向上冒泡（供健康检查与日志）', async () => {
-    const { pool } = makePool();
+    const { pool, created } = makePool();
     const onExit = vi.fn();
     pool.on('runtime.exit', onExit);
-    const entry = await pool.acquire('G1', '/ws/1');
+    await pool.acquire('G1', '/ws/1');
 
-    const handlers = (entry.runtime as unknown as FakeRuntime).handlers['exit'] ?? [];
+    const handlers = created[0]!.handlers['exit'] ?? [];
     for (const handler of handlers)
       (handler as unknown as (c: number, s: string) => void)(1, 'SIGTERM');
 
@@ -302,29 +368,29 @@ describe('RuntimePool', () => {
   };
 
   it('subagent.started/finished 维护 activeChildren 并按会话冒泡', async () => {
-    const { pool } = makePool();
+    const { pool, created } = makePool();
     const onStarted = vi.fn();
     const onFinished = vi.fn();
     pool.on('subagent.started', onStarted);
     pool.on('subagent.finished', onFinished);
 
     const entry = await pool.acquire('G1', '/ws/1');
-    const runtime = entry.runtime as unknown as FakeRuntime;
+    const runtime = created[0]!;
 
     runtime.emit('subagent.started', STARTED);
-    expect([...entry.activeChildren]).toEqual(['child-1']);
+    expect(pool.snapshot(entry)!.activeChildren).toEqual(['child-1']);
     expect(onStarted).toHaveBeenCalledWith('G1', STARTED);
 
     // 重复 started 幂等（Set 语义），finished 后清零
     runtime.emit('subagent.started', STARTED);
-    expect(entry.activeChildren.size).toBe(1);
+    expect(pool.snapshot(entry)!.activeChildren.length).toBe(1);
     runtime.emit('subagent.finished', FINISHED);
-    expect(entry.activeChildren.size).toBe(0);
+    expect(pool.snapshot(entry)!.activeChildren.length).toBe(0);
     expect(onFinished).toHaveBeenCalledWith('G1', FINISHED);
 
     // 未知子代理的 finished 不会把计数打成负数
     runtime.emit('subagent.finished', { ...FINISHED, childSessionId: 'child-unknown' });
-    expect(entry.activeChildren.size).toBe(0);
+    expect(pool.snapshot(entry)!.activeChildren.length).toBe(0);
     await pool.disposeAll();
   });
 
@@ -332,10 +398,10 @@ describe('RuntimePool', () => {
     vi.useFakeTimers();
     try {
       let nowMs = 0;
-      const { pool } = makePool({ runtimeIdleMs: 1_000, now: () => nowMs });
+      const { pool, created } = makePool({ runtimeIdleMs: 1_000, now: () => nowMs });
       const entry = await pool.acquire('G1', '/ws/1');
-      pool.release('G1');
-      (entry.runtime as unknown as FakeRuntime).emit('subagent.started', STARTED);
+      pool.release(entry);
+      created[0]!.emit('subagent.started', STARTED);
 
       nowMs += 60_000;
       await vi.advanceTimersByTimeAsync(30_000);
@@ -344,7 +410,7 @@ describe('RuntimePool', () => {
       expect(pool.size).toBe(1);
 
       // 子代理结束后恢复可回收
-      (entry.runtime as unknown as FakeRuntime).emit('subagent.finished', FINISHED);
+      created[0]!.emit('subagent.finished', FINISHED);
       nowMs += 60_000;
       await vi.advanceTimersByTimeAsync(30_000);
       await Promise.resolve();
@@ -358,7 +424,7 @@ describe('RuntimePool', () => {
   it('LRU 回收跳过承载后台子代理的 runtime', async () => {
     const { pool, created } = makePool({ maxRuntimes: 1 });
     const g1 = await pool.acquire('G1', '/ws/1');
-    (g1.runtime as unknown as FakeRuntime).emit('subagent.started', STARTED);
+    created[0]!.emit('subagent.started', STARTED);
 
     // 池已满且唯一成员承载后台任务：与 busy 同样豁免，不强杀
     const waiting = pool.acquire('G2', '/ws/2');
@@ -366,7 +432,7 @@ describe('RuntimePool', () => {
     await Promise.resolve();
     expect(pool.activeConversationKeys()).toContain('G1');
     expect((created[0] as unknown as FakeRuntime).disposeCount).toBe(0);
-    (g1.runtime as unknown as FakeRuntime).emit('subagent.finished', FINISHED);
+    created[0]!.emit('subagent.finished', FINISHED);
     pool.release(g1);
     await waiting;
     expect(pool.size).toBe(1);

@@ -1,3 +1,20 @@
+import { JsonRpcResponseError, ProtocolViolationError } from '@qqbot/contracts';
+import type {
+  InitializeParams,
+  InitializeResult,
+  SessionPromptParams,
+  SessionPromptResult,
+  SessionEventEnvelope,
+  SessionEventNotification,
+  SessionStatusNotification,
+  SubagentStartedNotification,
+  SubagentFinishedNotification,
+  HarnessSdkRequestMap,
+  HarnessSdkMethod,
+  JsonRpcError,
+  HarnessSdkClientEvents,
+  HarnessSdkClientOptions,
+} from '@qqbot/contracts';
 /**
  * DSH SDK wire 协议客户端：stdio 上的 NDJSON JSON-RPC 2.0。
  *
@@ -12,28 +29,18 @@
  *     否则帧错位会导致后续请求永远等不到响应（这类 bug 极难排查）；
  *   - `session/prompt` 只返回入队回执 `{messageId}`，真正结果在 `session.event`。
  */
-
 import { EventEmitter } from 'node:events';
 
 /** 服务端身份，用于校验协议漂移 */
-export const SDK_SERVER_INFO_NAME = 'deepseek-harness-sdk-runtime';
+export { SDK_SERVER_INFO_NAME } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // wire 类型（与 dsh-sdk-protocol 的命名类型一一对应）
 // ---------------------------------------------------------------------------
 
-export interface InitializeParams {
-  /** 会话的工作目录。**进程级**：同进程的所有会话共用这个 cwd。 */
-  cwd: string;
-  provider: string;
-  model: string;
-  reasoningEffort?: string;
-  maxTokens?: number;
-}
+export type { InitializeParams } from '@qqbot/contracts';
 
-export interface InitializeResult {
-  serverInfo: { name: string; version: string };
-}
+export type { InitializeResult } from '@qqbot/contracts';
 
 /**
  * 内联图片允许的 MIME 集合。
@@ -41,7 +48,7 @@ export interface InitializeResult {
  * 这就是 runtime 准入时接受的四种（见 @deepseek-ai/dsh-sdk-protocol 的
  * SdkEncodedImageBlock）：超出这个集合（例如 bmp/heic）不能内联，只能降级成文字说明。
  */
-export type PromptImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+export type { PromptImageMimeType } from '@qqbot/contracts';
 
 /**
  * 提示内容块。
@@ -50,31 +57,16 @@ export type PromptImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp' | 'i
  * （不需要我们先落盘）。这就是"多模态输入"的通道：文本块给出上下文与图片说明，
  * 图片块给出像素本身。
  */
-export type PromptContentBlock =
-  { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: PromptImageMimeType };
+export type { PromptContentBlock } from '@qqbot/contracts';
 
-export interface SessionPromptParams {
-  sessionId: string;
-  contentBlocks: PromptContentBlock[];
-}
+export type { SessionPromptParams } from '@qqbot/contracts';
 
-export interface SessionPromptResult {
-  /** 已入队用户消息的 id；**不是**助手消息 id，也不是本轮结束信号 */
-  messageId: string;
-}
+export type { SessionPromptResult } from '@qqbot/contracts';
 
 /** 会话日志事件的最小结构（我们只关心 type/seq/data，其余透传） */
-export interface SessionEventEnvelope {
-  type: string;
-  seq: number;
-  time?: number;
-  data: Record<string, unknown>;
-}
+export type { SessionEventEnvelope } from '@qqbot/contracts';
 
-export interface SessionEventNotification {
-  sessionId: string;
-  event: SessionEventEnvelope;
-}
+export type { SessionEventNotification } from '@qqbot/contracts';
 
 export function parseSessionEvent(params: unknown): SessionEventNotification | undefined {
   if (!plainObject(params)) return;
@@ -112,10 +104,7 @@ function parseSessionStatus(params: unknown): SessionStatusNotification | undefi
 function plainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
-export interface SessionStatusNotification {
-  sessionId: string;
-  status: 'idle' | 'running';
-}
+export type { SessionStatusNotification } from '@qqbot/contracts';
 
 /**
  * `subagent.started` 载荷：runtime 内创建了一个子代理会话。
@@ -125,12 +114,7 @@ export interface SessionStatusNotification {
  *      （子代理驻留在 runtime 进程内，所属执行必须等待它结束）；
  *   2. 统计与日志（health 可观测）。
  */
-export interface SubagentStartedNotification {
-  /** 发起委托的父会话（= 某会话的 currentSessionId） */
-  parentSessionId: string;
-  /** 新建的子会话 */
-  childSessionId: string;
-}
+export type { SubagentStartedNotification } from '@qqbot/contracts';
 
 /**
  * `subagent.finished` 载荷：一个进程内子代理运行结束（远程运行不会上报）。
@@ -139,18 +123,7 @@ export interface SubagentStartedNotification {
  * ContentBlock 数组）。DshLaneRunner 等待所属子代理结束并检查其状态，父代理
  * 把结果整理成面向用户的最终回复；这里的子代理正文只用于诊断，不独立投递。
  */
-export interface SubagentFinishedNotification {
-  provider: string;
-  /** 子代理 id（本地运行 = childSessionId） */
-  agentId: string;
-  parentSessionId: string;
-  childSessionId: string;
-  /** 部署映射后的运行结果（completed → ok；其余按 maxTokensAsSuccess 归并） */
-  status: 'ok' | 'error';
-  /** provider 上报的停止原因（completed / aborted / max-tokens / …） */
-  stopReason: string;
-  lastAssistantMessage?: readonly Record<string, unknown>[];
-}
+export type { SubagentFinishedNotification } from '@qqbot/contracts';
 
 /** 防御性解析：wire 数据不可信，形状不对时返回 undefined（调用方转 unknown 诊断）。 */
 function parseSubagentStarted(params: unknown): SubagentStartedNotification | undefined {
@@ -195,67 +168,24 @@ function parseSubagentFinished(params: unknown): SubagentFinishedNotification | 
 }
 
 /** 协议方法名 → 载荷形状 */
-export interface HarnessSdkRequestMap {
-  initialize: { params: InitializeParams; result: InitializeResult };
-  'session/prompt': { params: SessionPromptParams; result: SessionPromptResult };
-  shutdown: { params: undefined; result: Record<string, never> };
-}
+export type { HarnessSdkRequestMap } from '@qqbot/contracts';
 
-export type HarnessSdkMethod = keyof HarnessSdkRequestMap;
+export type { HarnessSdkMethod } from '@qqbot/contracts';
 
-export interface JsonRpcError {
-  code: number;
-  message: string;
-  data?: unknown;
-}
+export type { JsonRpcError } from '@qqbot/contracts';
 
-export class JsonRpcResponseError extends Error {
-  constructor(
-    readonly code: number,
-    message: string,
-    readonly data?: unknown
-  ) {
-    super(`JSON-RPC ${code}: ${message}`);
-    this.name = 'JsonRpcResponseError';
-  }
-}
+export { JsonRpcResponseError } from '@qqbot/contracts';
 
 /** stdout 出现非协议内容——属于致命错误，必须让上层看到 */
-export class ProtocolViolationError extends Error {
-  constructor(
-    message: string,
-    readonly rawLine: string
-  ) {
-    super(message);
-    this.name = 'ProtocolViolationError';
-  }
-}
+export { ProtocolViolationError } from '@qqbot/contracts';
 
 // ---------------------------------------------------------------------------
 // 事件类型（供上层订阅）
 // ---------------------------------------------------------------------------
 
-export interface HarnessSdkClientEvents {
-  'session.event': (notification: SessionEventNotification) => void;
-  'session.status': (notification: SessionStatusNotification) => void;
-  'subagent.started': (payload: SubagentStartedNotification) => void;
-  'subagent.finished': (payload: SubagentFinishedNotification) => void;
-  /** stdout 污染 / 无法解析的帧 */
-  violation: (error: ProtocolViolationError) => void;
-  invalid: (reason: string) => void;
-  /** 传输层收到无法归类的消息（未知通知），仅用于诊断 */
-  unknown: (frame: unknown) => void;
-  close: () => void;
-}
+export type { HarnessSdkClientEvents } from '@qqbot/contracts';
 
-export interface HarnessSdkClientOptions {
-  input: NodeJS.ReadableStream;
-  output: NodeJS.WritableStream;
-  /** 单次请求超时（毫秒）。默认 30s；initialize 可能更久，由调用方覆盖。 */
-  requestTimeoutMs?: number;
-  /** 非协议 stdout 的处理策略：throw 会让流报错，collect 只记录事件 */
-  onViolation?: 'throw' | 'collect';
-}
+export type { HarnessSdkClientOptions } from '@qqbot/contracts';
 
 interface PendingRequest {
   resolve: (value: unknown) => void;

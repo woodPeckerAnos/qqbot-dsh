@@ -1,3 +1,5 @@
+import { MAX_BLOCKS_PER_PROMPT } from '@qqbot/contracts';
+import type { BuildImageBlocksOptions, ImageBlocksResult } from '@qqbot/contracts';
 /**
  * 把消息里的图片片段变成 DSH 能吃的 image prompt block。
  *
@@ -21,73 +23,21 @@
  *   - 极长的截图按"模型对每张图只有 64 万像素预算"竖切成若干块，块内文字才
  *     真的读得清；切不完的部分在正文里明说"未读入"，而不是假装看到了。
  */
-
 import type {
   MediaBytes,
   MediaFetchOptions,
   MessageImagePart,
   RemoteMedia,
-} from '../core/connector.js';
-import type { Logger } from '../logger.js';
-import {
-  ADMIT_MAX_DIMENSION,
-  MAX_DECODE_PIXELS,
-  prepareImageForPrompt,
-  probeImagePreparer,
-} from './image.js';
-import type { PromptContentBlock, PromptImageMimeType } from './protocol.js';
+} from '@qqbot/contracts';
 
-export interface BuildImageBlocksOptions {
-  /** 单条消息最多取几张**源图**（超出部分只留文字说明） */
-  maxImages: number;
-  /** 单张图片内联进 prompt 的最大字节数（超限会先降采样再判） */
-  maxBytes: number;
-  /** 一张长图最多切成几块 */
-  maxTiles: number;
-  /** 单张图片下载超时（毫秒） */
-  timeoutMs: number;
-  /**
-   * 本次调用最多可往 prompt 里加几个 image block（缺省 {@link MAX_BLOCKS_PER_PROMPT}）。
-   *
-   * 存在的理由：张数上限是**整条 prompt** 的，而一轮 prompt 可能有多个来源
-   * （当前这条消息 + 滚窗上下文）。各自按 20 裁剪，两份加起来就会撞爆 runtime 的
-   * 上限，导致整条 prompt 被拒。所以预算是**共享的**，由 PromptPreparer
-   * 给上下文媒体传剩下的额度，两个 lane 复用同一份准备结果。
-   */
-  maxBlocks?: number;
-  /**
-   * 逐图标签（缺省「第 N 张图：」，单图不带标签）。
-   *
-   * 多来源时必须有区分度：滚窗来源用「上下文附图 #N」，失败注记与调用方写的
-   * 成功说明才能对上同一个编号。
-   */
-  indexLabel?: (index: number, total: number) => string;
-  /**
-   * 来源说明（缺省空串 = "当前这条消息"的口径），只用在"超出上限"这类**批量注记**里。
-   * 例：`群聊上下文` → 「（群聊上下文另有 1 张图片超出单条消息上限，未读入）」。
-   *
-   * 为什么值得单开一个参数：同一句话在"你刚发的图"和"群里别人的图"两种语境下
-   * 该说的对象完全不同，而这句话是模型转述给用户的依据。
-   */
-  sourceLabel?: string;
-  /** 平台侧取字节（官方需要带 access_token）。缺省时用普通 GET。 */
-  fetchMedia?: (media: RemoteMedia, options: MediaFetchOptions) => Promise<MediaBytes | undefined>;
-  logger: Logger;
-}
+import { ADMIT_MAX_DIMENSION, MAX_DECODE_PIXELS } from '@qqbot/contracts';
+import { prepareImageForPrompt, probeImagePreparer } from './image.js';
+import type { PromptContentBlock, PromptImageMimeType } from '@qqbot/contracts';
+import { fetchMediaResult } from '../media/fetch-result.js';
 
-export interface ImageBlocksResult {
-  /** 可直接拼进 session/prompt 的 image 块 */
-  blocks: PromptContentBlock[];
-  /** 未能送进模型的图片说明（调用方拼进 prompt 文本，让模型知道"这里原本有图"） */
-  notes: string[];
-  /**
-   * 成功内联的**源图**在本批 `images` 里的下标（升序）。
-   *
-   * 调用方据此写"哪几张真的进来了"的说明（滚窗来源必须说清"这张是谁发的那条
-   * 消息里的"）。只返回下标而不是计数：注记里的编号就是按这个下标编的。
-   */
-  inlinedIndexes: number[];
-}
+export type { BuildImageBlocksOptions } from '@qqbot/contracts';
+
+export type { ImageBlocksResult } from '@qqbot/contracts';
 
 /**
  * 下载阶段的硬上限，**与内联上限 `attachments.maxImageBytes` 是两件事**。
@@ -109,7 +59,7 @@ const MAX_IMAGE_DOWNLOAD_BYTES = 32 * 1024 * 1024;
  * 导出是为了让调用方算"剩下的额度"：一轮 prompt 里的多个来源（当前消息与滚窗
  * 上下文）共享这个上限，见 {@link BuildImageBlocksOptions.maxBlocks}。
  */
-export const MAX_BLOCKS_PER_PROMPT = 20;
+export { MAX_BLOCKS_PER_PROMPT } from '@qqbot/contracts';
 
 /**
  * 按字节魔数判断真实图片类型。
@@ -217,28 +167,21 @@ export async function buildImageBlocks(
       maxBytes: Math.max(maxBytes, MAX_IMAGE_DOWNLOAD_BYTES),
       timeoutMs,
     };
-    let bytes: MediaBytes | undefined;
-    // 没有可下载地址时只有平台侧 fetchMedia（动作回查）能拿到字节
-    if (media.url === undefined && fetchMedia === undefined) {
-      bytes = undefined;
-    } else {
-      try {
-        bytes =
-          fetchMedia !== undefined
-            ? await fetchMedia(media, fetchOptions)
-            : await defaultFetchMedia(media, fetchOptions);
-      } catch (error) {
+    const fetched = await fetchMediaResult(media, fetchOptions, {
+      fetchMedia,
+      fetchResult: options.fetchResult,
+      logger,
+    });
+    if (!fetched.ok) {
+      if (['upstream-failed', 'timeout'].includes(fetched.error.reason))
         logger.warn('下载图片失败', {
-          url: image.url ?? image.fileId,
-          error: error instanceof Error ? error.message : String(error),
+          error: fetched.error.code,
+          errorId: fetched.error.errorId,
         });
-      }
-    }
-
-    if (bytes === undefined) {
       notes.push(`（${label}读取失败，未读入）`);
       continue;
     }
+    const bytes = fetched.value;
     const mimeType = sniffImageMimeType(bytes.data);
     if (mimeType === undefined) {
       const declared = bytes.mimeType ?? image.mimeType ?? '未知格式';
@@ -317,26 +260,6 @@ export async function defaultFetchMedia(
   media: RemoteMedia,
   options: MediaFetchOptions
 ): Promise<MediaBytes | undefined> {
-  if (media.url === undefined) return undefined;
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, options.timeoutMs);
-  timer.unref?.();
-  try {
-    const response = await fetch(media.url, { signal: controller.signal });
-    if (!response.ok) return undefined;
-    const declaredLength = Number(response.headers.get('content-length') ?? '');
-    if (Number.isFinite(declaredLength) && declaredLength > options.maxBytes) return undefined;
-    const buffer = new Uint8Array(await response.arrayBuffer());
-    if (buffer.byteLength > options.maxBytes) return undefined;
-    return {
-      data: buffer,
-      ...(response.headers.get('content-type') !== null
-        ? { mimeType: response.headers.get('content-type')?.split(';')[0]?.trim() }
-        : {}),
-    };
-  } finally {
-    clearTimeout(timer);
-  }
+  const result = await fetchMediaResult(media, options);
+  return result.ok ? result.value : undefined;
 }
