@@ -239,6 +239,17 @@ export type assertModelApiConfig = (
   selectionKey?: string
 ) => void;
 /**
+ * 快 lane 固定请求 off。显式 models 目录中的所选模型必须声明 off 和至少一个
+ * 非 off 档位；显式 reasoningEfforts=false 或不含 off 的覆写同样拒绝。
+ * 未覆写能力的 modelOverrides、仅继承 DSH 目录及带外路由留给 DSH 校验。
+ * 校验合并 env 后的最终 provider/model，失败抛 ConfigError，不推断线上能力。
+ */
+export type assertFastLaneModelConfig = (
+  modelApi: ModelApiConfig,
+  selectedProvider: string,
+  selectedModel: string
+) => void;
+/**
  * 一条路由给"辅助调用"提供的东西：凭证引用 + chat-completions 端点。
  *
  * 判定客户端（pipeline/topic-judge.ts、proactive/judge/chat-client.ts）只会说

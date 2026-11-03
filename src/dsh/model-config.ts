@@ -890,6 +890,64 @@ export function assertModelApiConfig(
   }
 }
 
+function fastModelCapability(
+  provider: PiAiProviderConfig,
+  path: string,
+  selectedModel: string
+): { efforts: PiAiModelConfig['reasoningEfforts']; path: string } | undefined {
+  if (provider.models !== undefined) {
+    const index = provider.models.findIndex((entry) => entry.id === selectedModel);
+    if (index < 0)
+      throw new ConfigError(
+        `tasks.fastModel 选中的模型 ${JSON.stringify(selectedModel)} 不在 ${path}.models 中`,
+        ['检查 tasks.fastProvider / tasks.fastModel 及 BOT_FAST_PROVIDER / BOT_FAST_MODEL 的最终值']
+      );
+    return {
+      efforts: provider.models[index]?.reasoningEfforts,
+      path: `${path}.models[${index}].reasoningEfforts`,
+    };
+  }
+  const efforts = provider.modelOverrides?.[selectedModel]?.reasoningEfforts;
+  if (efforts === undefined) return; // 继承目录能力。
+  return { efforts, path: `${path}.modelOverrides.${selectedModel}.reasoningEfforts` };
+}
+
+function supportsFastOff(efforts: PiAiModelConfig['reasoningEfforts']): boolean {
+  return Boolean(
+    efforts &&
+    Object.hasOwn(efforts, 'off') &&
+    (efforts.off === null || (typeof efforts.off === 'string' && efforts.off.length > 0)) &&
+    Object.entries(efforts).some(
+      ([level, wire]) => level !== 'off' && typeof wire === 'string' && wire.length > 0
+    )
+  );
+}
+
+/** 校验最终快 lane 选择，不替代 DSH 的目录解析或推断网关线上能力。 */
+export function assertFastLaneModelConfig(
+  modelApi: ModelApiConfig,
+  selectedProvider: string,
+  selectedModel: string
+): void {
+  if (selectedProvider === DEEPSEEK_OFFICIAL_PROVIDER) return;
+  const provider = modelApi.providers[selectedProvider];
+  if (!provider) return; // 带外路由仍由 DSH 校验。
+  const capability = fastModelCapability(
+    provider,
+    `models.providers.${selectedProvider}`,
+    selectedModel
+  );
+  if (!capability || supportsFastOff(capability.efforts)) return;
+  throw new ConfigError(
+    `快 lane ${selectedProvider}/${selectedModel} 固定请求 reasoningEffort=off，${capability.path} 必须声明 off 和至少一个非 off 档位`,
+    [
+      '仅为已验证支持思考的模型声明真实档位；off: null 表示请求省略 reasoning 参数，不能保证网关默认关闭思考',
+      'reasoningEfforts: false 或仅声明 off 不能接受此请求；可改用支持关闭思考的独立 tasks.fastProvider / tasks.fastModel（如 deepseek-official / deepseek-flash）',
+      '仅覆写 DSH 目录模型容量时可用 modelOverrides 继承目录能力；修复步骤见 docs/CONFIG.md 的快 lane 模型能力说明',
+    ]
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 辅助调用（不经 DSH 的直调：话题判定 / 主动介入判定）的路由解析
 // ---------------------------------------------------------------------------

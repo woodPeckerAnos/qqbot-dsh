@@ -209,8 +209,8 @@ export class DshRuntime extends EventEmitter {
       options.logger.event('runtime.ready', { version: result.serverInfo.version, pid: child.pid });
       return result;
     } catch (error) {
-      await this.dispose().catch(() => {});
       this.errorId ??= options.logger.cause(error, 'runtime-initialize');
+      await this.dispose().catch(() => {});
       throw new LoggedError(
         this.errorId,
         `DSH runtime initialize 失败（errorId=${this.errorId}）`,
@@ -238,11 +238,12 @@ export class DshRuntime extends EventEmitter {
   }
 
   /**
-   * 优雅关闭：shutdown → 等待退出 → SIGTERM → 等待 → SIGKILL。
+   * 就绪后优雅关闭：shutdown → 等待退出 → SIGTERM → 等待 → SIGKILL。
+   * 未就绪进程直接 SIGTERM，保留信号退出宽限与 SIGKILL 兜底。
    * 可重复调用。
    */
   async dispose(): Promise<void> {
-    if (this._state === 'closed' && this.child?.exitCode !== null) return;
+    if (this._state === 'closed') return;
     if (this._state === 'closing') {
       await this.exitPromise;
       return;
@@ -254,28 +255,23 @@ export class DshRuntime extends EventEmitter {
     const { shutdownTimeoutMs, logger } = this.options;
 
     if (client !== undefined && wasReady) {
-      try {
-        await client.shutdown({ timeoutMs: shutdownTimeoutMs });
-      } catch (error) {
-        logger.debug('shutdown 请求未成功，转入信号关闭', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+      await this.requestShutdown(client);
     }
     client?.close();
 
-    if (child === undefined || child.exitCode !== null) {
+    if (child === undefined || this.hasExited()) {
       this._state = 'closed';
       return;
     }
 
-    await this.waitForExit(shutdownTimeoutMs);
-    if (child.exitCode === null) {
-      logger.warn('DSH runtime 未在超时内退出，发送 SIGTERM', { pid: child.pid });
+    if (wasReady) await this.waitForExit(shutdownTimeoutMs);
+    if (!this.hasExited()) {
+      if (wasReady) logger.warn('DSH runtime 未在超时内退出，发送 SIGTERM', { pid: child.pid });
+      else logger.debug('DSH runtime 未就绪，发送 SIGTERM', { pid: child.pid });
       child.kill('SIGTERM');
       await this.waitForExit(shutdownTimeoutMs);
     }
-    if (child.exitCode === null) {
+    if (!this.hasExited()) {
       logger.error('DSH runtime 忽略 SIGTERM，发送 SIGKILL', { pid: child.pid });
       child.kill('SIGKILL');
       await this.waitForExit(5_000);
@@ -283,9 +279,24 @@ export class DshRuntime extends EventEmitter {
     this._state = 'closed';
   }
 
+  private async requestShutdown(client: HarnessSdkClient): Promise<void> {
+    try {
+      await client.shutdown({ timeoutMs: this.options.shutdownTimeoutMs });
+    } catch (error) {
+      this.options.logger.debug('shutdown 请求未成功，转入信号关闭', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** 信号退出的 exitCode 仍为 null；每次调用都重新读取子进程状态。 */
+  private hasExited(): boolean {
+    const child = this.child;
+    return child === undefined || child.exitCode !== null || child.signalCode != null;
+  }
+
   private waitForExit(timeoutMs: number): Promise<void> {
-    if (this.child?.exitCode !== null && this.child?.exitCode !== undefined)
-      return Promise.resolve();
+    if (this.hasExited()) return Promise.resolve();
     const exit = this.exitPromise ?? Promise.resolve();
     return new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, timeoutMs);

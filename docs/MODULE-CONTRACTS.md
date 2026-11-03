@@ -688,6 +688,11 @@ export type assertModelApiConfig = (
   env: Env,
   selectionKey?: string
 ) => void;
+export type assertFastLaneModelConfig = (
+  modelApi: ModelApiConfig,
+  selectedProvider: string,
+  selectedModel: string
+) => void;
 export interface AuxRouteResolution {
   apiKeyEnv: string;
   baseURL?: string;
@@ -704,7 +709,7 @@ export type writeModelApiPatch = (modelApi: ModelApiConfig, stateDir: string) =>
 
 ### 3. 不变量
 
-有效配置在启动期固定，密钥只来自 env。
+有效配置在启动期固定，密钥只来自 env；显式快 lane 模型目录必须声明 off 与至少一个非 off 档位；未覆写的 DSH 目录能力留给 DSH 校验。
 
 ### 4. 前后条件
 
@@ -2901,7 +2906,7 @@ export type createTurnAccumulatorFactory = (sessionId: string) => TurnAccumulato
 
 ### 5. 错误契约
 
-协议/进程失败保留根因，初始化失败回收，租约取消不能命中新身份。跨模块结果使用 `Result<T>` / `ContractFailure`，稳定错误分类、重试语义和根因关联不替换既有记录字段。兼容入口的降级由消费者显式选择。
+协议/进程失败保留根因，初始化错误先记录再回收；未就绪进程直接 SIGTERM，租约取消不能命中新身份。跨模块结果使用 `Result<T>` / `ContractFailure`，稳定错误分类、重试语义和根因关联不替换既有记录字段。兼容入口的降级由消费者显式选择。
 
 ### 6. 副作用与能力
 

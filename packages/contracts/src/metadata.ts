@@ -17,7 +17,10 @@ export const modules = immutableConstant([
     dependencies: ['offpeak', 'observability', 'connectors', 'content', 'proactive', 'store'],
     capabilities: ['node:fs', 'node:path', 'yaml'],
     responsibility: '解析合并、校验、模型路由与 patch；不决定执行或发送',
-    invariants: ['有效配置在启动期固定，密钥只来自 env'],
+    invariants: [
+      '有效配置在启动期固定，密钥只来自 env',
+      '显式快 lane 模型目录必须声明 off 与至少一个非 off 档位；未覆写的 DSH 目录能力留给 DSH 校验',
+    ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
     errors: '格式或语义错误显式 ConfigError，禁止用默认值隐藏非法配置',
@@ -258,7 +261,8 @@ export const modules = immutableConstant([
     invariants: ['具体租约身份独占，busy/子代理只有池写，旧通知隔离'],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
-    errors: '协议/进程失败保留根因，初始化失败回收，租约取消不能命中新身份',
+    errors:
+      '协议/进程失败保留根因，初始化错误先记录再回收；未就绪进程直接 SIGTERM，租约取消不能命中新身份',
     concurrency:
       '同模块所有者协调写入；异步退订与关闭幂等，关闭后不创建新工作；事件按具体身份和幂等键至多一次结算',
     freshness: 'generation/sessionId/dshSeq 身份水位，idle/timeout 使用注入时钟',

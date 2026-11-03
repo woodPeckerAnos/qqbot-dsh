@@ -151,6 +151,30 @@ include:
 
 两个 lane 容量均至少 1，之和不得超过总硬上限；降低总上限时同步调整各 lane。排队、摄取与 runtime 初始化不计执行超时。快 lane 固定 `reasoningEffort=off`，只开放 Task 查询和取消；慢 lane 前台等待所有子代理。两 lane 模型路由与 dsh.provider 使用相同声明和凭证校验。自定义 `dsh.profilePatch` 后仍自动追加内置 `dsh-profile/lanes.patch.yml`，部署必须包含该文件和插件。
 
+### 快 lane 模型能力
+
+快 lane 的路由与模型以环境变量覆盖后的值为准。若所选模型来自显式 `models.providers.<路由>.models` 列表，启动期要求该模型声明 `reasoningEfforts.off` 和至少一个非 off 档位。`reasoningEfforts: false`、缺少 off 或只有 off 都不能接受固定的关闭思考请求。所选模型不在该列表时也在启动期拒绝。`modelOverrides` 未覆写能力、仅继承 DSH 内置目录或带外配置时仍由 DSH 校验；只覆盖目录模型容量可用 `modelOverrides` 避免重写能力。
+
+部署报告已验证 `arc-code/ark-code-latest` 可在 `config/local/models.yml` 的该模型条目中补充：
+
+```yaml
+reasoningEfforts:
+  off: null
+  high: high
+```
+
+`off: null` 表示支持 off、请求不发送 reasoning 参数；它依赖网关默认关闭思考，并不等同于线上明确下发禁用思考。不要给未验证的模型照抄 high。若网关默认思考不可控，可配置独立快路由：
+
+```yaml
+tasks:
+  fastProvider: deepseek-official
+  fastModel: deepseek-flash
+```
+
+独立快路由需要对应 `apiKeyEnv` 凭证（原生 DeepSeek 默认 `DEEPSEEK_API_KEY`），并使用该提供商计费。仅改 YAML 用 `docker compose restart qqbot`；更新本次代码需 `docker compose up -d --build`；改环境变量用 `docker compose up -d`。
+
+初始化失败会先记录带 Task/lane 身份的 `root.error` 和 errorId，再直接 SIGTERM 回收未就绪进程；只对信号退出保留 `dsh.shutdownTimeoutMs` 宽限，不再先空等一次该时限。根因详情不输出原始协议文本，按 errorId 关联 DSH 诊断和 Task 状态。Task 与投递失败语义不变。决策见 [ADR-004](adr/004-fast-lane-model-capability.md)。
+
 旧 `pool.maxConcurrentTurns`、平台 `progress*` / `turnTimeoutMs`、`onebot.maxRepliesPerMsg`、`hints.longTask`、`proactive.speakTimeoutMs` 仅保留配置解析兼容，生产路径不使用；请删除并迁移到 `tasks.*`。启动摘要在 `deprecated.ignored` 明示这些键。旧值仍做类型与范围校验，建议升级时移除。QQ 的 `maxRepliesPerMsg` 继续作为平台条数约束；OneBot 不按产物数扣主动预算，`proactive.sessionBudget` 的单位是 Task。
 
 上下文 generation 与回放边界在 `stateDir/task-sessions.json`；Task 状态持久化在 `stateDir/tasks.json`，队列在 `messages.json`，预算在 `task-budgets.json`，待发送附件在 `message-files/<Task ID>/`。终态记录及 Task 工作区到期清理，队列和必要附件独立保留。旧 `background-pending.json` 不导入新队列，升级前请检查和交付其待发内容；旧运行任务不会恢复。

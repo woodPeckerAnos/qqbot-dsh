@@ -44,6 +44,7 @@ export { DEFAULT_OFFPEAK_WINDOWS } from '../config.js';
 import {
   parseModelApiSection as parseModelApiSectionImplementation,
   assertModelApiConfig as assertModelApiConfigImplementation,
+  assertFastLaneModelConfig as assertFastLaneModelConfigImplementation,
   resolveAuxRoute as resolveAuxRouteImplementation,
   renderModelApiPatch as renderModelApiPatchImplementation,
   writeModelApiPatch as writeModelApiPatchImplementation,
@@ -52,6 +53,8 @@ export const parseModelApiSection: import('@qqbot/contracts').parseModelApiSecti
   parseModelApiSectionImplementation;
 export const assertModelApiConfig: import('@qqbot/contracts').assertModelApiConfig =
   assertModelApiConfigImplementation;
+export const assertFastLaneModelConfig: import('@qqbot/contracts').assertFastLaneModelConfig =
+  assertFastLaneModelConfigImplementation;
 export const resolveAuxRoute: import('@qqbot/contracts').resolveAuxRoute =
   resolveAuxRouteImplementation;
 export const renderModelApiPatch: import('@qqbot/contracts').renderModelApiPatch =

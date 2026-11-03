@@ -230,7 +230,7 @@
   },
   "src/dsh/process.ts": {
     "@typescript-eslint/no-unnecessary-condition": {
-      "count": 6
+      "count": 4
     },
     "complexity": {
       "count": 2

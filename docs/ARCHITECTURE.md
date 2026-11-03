@@ -26,6 +26,8 @@ Logger 子实例共享配置、预算与 stderr JSONL 缓冲。TaskLifeCycleMana
 
 快 lane 独立 runtime / session，thinking=false、reasoningEffort=off，仅可查询和取消 Task。慢 lane 自行判定长技能（包括深度推理）；普通问答正常返回 NO_REPLY；实际执行失败、超时和空结果必须产生失败产物。子代理前台等待，执行及子代理均终结后结算。
 
+快 lane 的最终 provider/model 在环境覆盖后校验：`models.providers.<路由>.models` 中显式列举的所选模型必须声明 `reasoningEfforts.off` 和至少一个非 off 档位，禁止以缺省值或 `false` 隐藏能力不匹配。`modelOverrides` 仅在显式覆写能力时校验；未覆写的 DSH 目录及带外路由由 DSH 握手校验。初始化根因先记录，再回收进程；未就绪进程直接 SIGTERM，保留信号宽限及 SIGKILL 兜底，不等待无法发出的 shutdown。见 [ADR-004](adr/004-fast-lane-model-capability.md)。
+
 两个 lane 终结才结算 Task。取消优先，否则任一失败为 failed，其余 completed。执行完成不等待投递；投递失败不改写执行状态。已入队产物取消后仍发送。/stop 取消命令到达时有 lane 正执行的 Task；/new 取消全部未完成 Task 并重置上下文。
 
 慢、延迟、主动和存活提醒引用输入时保存的原消息。引用目标与平台出口锚点独立。相同 Task 完全相同正文去重，附件单独保留。后来的话题或回答不撤销已授权的主动请求。

@@ -298,8 +298,12 @@ QQ 群聊被动窗口 5 分钟、单聊 60 分钟，条数及序号跨 Task、la
 
 ### 4.3 DSH runtime 起不来
 
-日志关键字 `DSH runtime initialize 失败`，后面会附上 **dsh stderr 末 15 行**——
-真正的原因通常就在那里（profile 组合失败、模型路由不可用等）。
+当前应用日志记录 `root.error`，初始化阶段的 `errorClass` 为
+`runtime-initialize`，并带 errorId 和 Task/lane 身份；先按该身份确认哪个 lane
+从未出现 `runtime.ready`。原始错误与 stderr 不写入应用日志。旧版曾在异常或
+Task 状态中保留原文，这属于历史实现，当前不能据此期待容器日志附带 stderr。
+初始化尚未创建 DSH 会话时，也不能假定存在对应会话日志；应结合生成的模型
+patch、最终路由选择和独立初始化探针排查。
 
 手工复现：
 
@@ -311,6 +315,30 @@ docker compose run --rm --entrypoint dsh qqbot --profile sdk \
 如果报 `entries did not activate` 或 `pending (waiting for service: ...)`：
 说明 patch 里 `disabled: true` 关掉了一个**服务提供者**。见
 `docs/ARCHITECTURE.md` 的「DSH profile 与 persona」 坑 2——只能关纯叶子行。
+
+#### 持续提示“任务执行失败”，但慢 lane 正常
+
+若不同 Task 都是 fast failed / slow completed，先检查快 lane 最终模型能力。
+DSH 0.1.5-rc.2 下，手写模型缺少 `reasoningEfforts` 时可能拒绝快 lane 固定的
+`reasoningEffort=off`，每个 Task 各投递一次失败产物。部署报告已验证
+`arc-code/ark-code-latest` 补 `{ off: null, high: high }` 可用；修复配置和关闭思考
+语义见 [CONFIG 的快 lane 模型能力](CONFIG.md#快-lane-模型能力)。当前启动校验会
+提前拒绝显式 models 列表中的不兼容选择，并提示准确配置路径。
+
+仅修 YAML 后执行 `docker compose restart qqbot`；更新本次代码需执行
+`docker compose up -d --build`。生成的 `/data/bot/model-api.patch.yml` 应保留
+该模型声明。发送一条有效测试消息后，确认两个 lane 都出现 `runtime.ready`，
+最近 Task 的 fast / slow 均为 completed，且没有新的 fast 初始化失败。
+默认状态目录下可只读检查最近记录：
+
+```sh
+docker compose exec qqbot node -e 'const {records}=require("/data/bot/tasks.json"); for (const t of records.slice(-3)) console.log(t.taskId, t.status, "fast="+t.lanes?.fast?.status, "slow="+t.lanes?.slow?.status)'
+docker compose exec qqbot node dist/health-probe.js
+```
+
+健康检查通过不能单独证明模型初始化成功，仍需上面的真实消息复验。未就绪
+进程现在直接 SIGTERM，不再先等待 15 秒 shutdown 宽限；就绪进程的优雅关闭
+及 Task 失败产物投递语义保持不变。
 
 ### 4.4 模型调用失败
 

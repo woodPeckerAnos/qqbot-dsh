@@ -56,7 +56,7 @@ export interface DshRuntimeOptions {
   requestTimeoutMs?: number;
   /** initialize 的等待超时（进程冷启动 + profile 组合，可能较慢） */
   startTimeoutMs: number;
-  /** shutdown 发出后等待进程退出的时间 */
+  /** 就绪进程的 shutdown / SIGTERM 退出宽限；未就绪进程直接 SIGTERM 后等待。 */
   shutdownTimeoutMs: number;
   logger: Logger;
   /** 测试注入用：替换 spawn */
@@ -94,7 +94,8 @@ export interface DshRuntime extends EventEmitter {
   /** 是否已就绪且可接受新提示 */
   get isReady(): boolean;
   /**
-   * 优雅关闭：shutdown → 等待退出 → SIGTERM → 等待 → SIGKILL。
+   * 就绪后优雅关闭：shutdown → 等待退出 → SIGTERM → 等待 → SIGKILL。
+   * 未就绪时直接 SIGTERM，保留信号退出宽限及 SIGKILL 兜底。
    * 可重复调用。
    */
   dispose(): Promise<void>;

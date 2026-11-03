@@ -26,7 +26,11 @@ import type { ConnectorName, Config } from '@qqbot/contracts';
  */
 import { Intent, DEFAULT_INTENTS } from '@qqbot/contracts';
 import { describeIntents } from './connectors/index.js';
-import { assertModelApiConfig, resolveAuxRoute } from './dsh/model-config.js';
+import {
+  assertModelApiConfig,
+  assertFastLaneModelConfig,
+  resolveAuxRoute,
+} from './dsh/model-config.js';
 import { DEEPSEEK_OFFICIAL_PROVIDER } from '@qqbot/contracts';
 import type { ModelApiConfig } from '@qqbot/contracts';
 import { QQ_OFFICIAL_PLATFORM } from '@qqbot/contracts';
@@ -780,14 +784,17 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   // settings 文档直接喂 llm-pi-ai），qqbot 不该对自己看不见的集合断言。
   // 一旦用户启用了本层，"选中的路由必须已声明"就该在启动期守住。
   const dshProvider = pickString(env, 'DSH_PROVIDER', dshFile.provider, DEEPSEEK_OFFICIAL_PROVIDER);
+  const dshModel = pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash');
   const taskFile = file.tasks ?? {};
   const fastProvider = pickString(env, 'BOT_FAST_PROVIDER', taskFile.fastProvider, dshProvider);
+  const fastModel = pickString(env, 'BOT_FAST_MODEL', taskFile.fastModel, dshModel);
   const slowProvider = pickString(env, 'BOT_SLOW_PROVIDER', taskFile.slowProvider, dshProvider);
   const modelApi: ModelApiConfig = file.models ?? { providers: {} };
   if (file.models !== undefined) {
     assertModelApiConfig(modelApi, dshProvider, env);
     assertModelApiConfig(modelApi, fastProvider, env, 'tasks.fastProvider');
     assertModelApiConfig(modelApi, slowProvider, env, 'tasks.slowProvider');
+    assertFastLaneModelConfig(modelApi, fastProvider, fastModel);
   }
 
   // --- 判定调用的路由解析（话题判定 + 主动介入判定共用同一端点与凭证） --------
@@ -1024,7 +1031,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     },
     dsh: {
       provider: dshProvider,
-      model: pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash'),
+      model: dshModel,
       profilePatch: pickString(
         env,
         'QQ_DSH_PROFILE_PATCH',
@@ -1068,19 +1075,9 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
         'tasks.slowTimeoutMs'
       ),
       fastProvider,
-      fastModel: pickString(
-        env,
-        'BOT_FAST_MODEL',
-        taskFile.fastModel,
-        pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash')
-      ),
+      fastModel,
       slowProvider,
-      slowModel: pickString(
-        env,
-        'BOT_SLOW_MODEL',
-        taskFile.slowModel,
-        pickString(env, 'DSH_MODEL', dshFile.model, 'deepseek-flash')
-      ),
+      slowModel: pickString(env, 'BOT_SLOW_MODEL', taskFile.slowModel, dshModel),
       fastRuntimes,
       slowRuntimes,
       maxPerSession: pickInt(
