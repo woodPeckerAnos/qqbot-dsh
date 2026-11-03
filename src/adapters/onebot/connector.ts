@@ -538,7 +538,7 @@ export class OnebotConnector implements BotConnector {
     try {
       payload = JSON.parse(text) as Record<string, unknown>;
     } catch {
-      this.options.logger.warn('OneBot 帧不是合法 JSON', { preview: text.slice(0, 200) });
+      this.options.logger.warn('OneBot 帧不是合法 JSON', { bytes: Buffer.byteLength(text) });
       return;
     }
 

@@ -248,8 +248,8 @@ export class QqGateway implements QqEventSource {
         if (this.state === 'ready' || this.state === 'resuming') finish();
       });
 
-      ws.addEventListener('error', (event) => {
-        this.options.logger.warn('网关 WebSocket 错误', { message: event.message });
+      ws.addEventListener('error', (_event) => {
+        this.options.logger.warn('网关 WebSocket 错误', { errorClass: 'websocket-error' });
         finish();
       });
 
@@ -269,7 +269,7 @@ export class QqGateway implements QqEventSource {
     try {
       payload = JSON.parse(text) as GatewayPayload;
     } catch {
-      this.options.logger.warn('网关下发内容不是合法 JSON', { preview: text.slice(0, 200) });
+      this.options.logger.warn('网关下发内容不是合法 JSON', { bytes: Buffer.byteLength(text) });
       return;
     }
     if (typeof payload.s === 'number') this.lastSeq = payload.s;
@@ -481,7 +481,7 @@ export class QqGateway implements QqEventSource {
 
     if (type === 'GROUP_ADD_ROBOT') {
       const groupOpenid = asString(d['group_openid']);
-      this.options.logger.info('机器人被拉入群', { groupOpenid, raw: d });
+      this.options.logger.info('机器人被拉入群', { groupOpenid });
       this.emit({
         kind: 'group-add-robot',
         at: this.now(),
@@ -496,7 +496,7 @@ export class QqGateway implements QqEventSource {
       // 单聊加好友。openid 字段是 `d.openid`，其余写法只作兼容回退。
       const userOpenid =
         asString(d['openid']) ?? asString(d['user_openid']) ?? asString(d['union_openid']);
-      this.options.logger.info('用户添加机器人为好友', { userOpenid, raw: d });
+      this.options.logger.info('用户添加机器人为好友', { userOpenid });
       this.emit({
         kind: 'c2c-friend-add',
         at: this.now(),

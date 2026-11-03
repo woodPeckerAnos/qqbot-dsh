@@ -18,7 +18,7 @@
  */
 
 import type { BotConnector, NormalizedMessage, ReplyPolicy } from '../../core/connector.js';
-import type { Logger } from '../../logger.js';
+import { traceSpan, type Logger, type TraceContext } from '../../logger.js';
 import type { Responder } from '../egress/responder.js';
 
 /**
@@ -26,6 +26,7 @@ import type { Responder } from '../egress/responder.js';
  * 由 Orchestrator 在管线入口一次性构建，stage 只读。
  */
 export interface MessageContext {
+  readonly trace?: TraceContext;
   readonly message: NormalizedMessage;
   readonly connector: BotConnector;
   readonly policy: ReplyPolicy;
@@ -37,6 +38,12 @@ export interface MessageContext {
 }
 
 export type IngressStage = (ctx: MessageContext, next: () => Promise<void>) => Promise<void>;
+
+/** 具体 stage 拥有短路原因；runner 不重复记录。 */
+export function logInputShortcut(ctx: MessageContext, stage: string, reason: string): void {
+  const logger = ctx.trace ? ctx.logger.withTrace(traceSpan(ctx.trace)) : ctx.logger;
+  logger.event('input.shortcut', { stage, reason });
+}
 
 /** 串行执行 stage 链，末端提交 SessionActor 短事务。 */
 export function runStages(

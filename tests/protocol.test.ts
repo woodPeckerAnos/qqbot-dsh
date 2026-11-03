@@ -176,12 +176,12 @@ describe('HarnessSdkClient', () => {
     client.close();
   });
 
-  it('形状不对的 subagent 通知走 unknown 诊断，不抛错', async () => {
+  it('形状不对的 subagent 通知走 invalid 诊断，不抛错', async () => {
     const { client, toClient } = makeClient();
     const started = vi.fn();
-    const unknown = vi.fn();
+    const invalid = vi.fn();
     client.on('subagent.started', started);
-    client.on('unknown', unknown);
+    client.on('invalid', invalid);
 
     toClient.write(
       `${JSON.stringify({ jsonrpc: '2.0', method: 'subagent.started', params: { parentSessionId: 'p1' } })}\n`
@@ -192,7 +192,7 @@ describe('HarnessSdkClient', () => {
     await settle();
 
     expect(started).not.toHaveBeenCalled();
-    expect(unknown).toHaveBeenCalledTimes(2);
+    expect(invalid).toHaveBeenCalledTimes(2);
     client.close();
   });
 

@@ -152,6 +152,8 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}, logger?: Logger)
 
   const baseLogger: Logger = logger ?? createNullLogger();
   const captureLogger: Logger = {
+    ...baseLogger,
+    withTrace: () => captureLogger,
     debug: baseLogger.debug.bind(baseLogger),
     info: baseLogger.info.bind(baseLogger),
     warn: (msg, fields) => {

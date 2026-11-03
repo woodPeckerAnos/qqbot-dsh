@@ -38,7 +38,7 @@ export class TaskControlBridge {
         ) {
           return { accepted: false, reason: '无权限或任务不存在' };
         }
-        const result = this.manager.cancel(taskId);
+        const result = this.manager.cancel(taskId, caller.input.trace);
         if (result.accepted) this.cancelTask(taskId);
         return {
           ...result,

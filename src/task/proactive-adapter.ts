@@ -4,7 +4,7 @@
  * 后来的话题翻篇不撤销已准入请求，也不把旧结果扣到新范围。
  */
 import type { BotConnector, NormalizedMessage } from '../core/connector.js';
-import type { Logger } from '../logger.js';
+import { createTrace, traceSpan, type TraceContext, type Logger } from '../logger.js';
 import type { MessageContext } from '../pipeline/ingress/types.js';
 import type { ProactiveComposeInput } from '../pipeline/proactive/contract.js';
 import type { SessionActor } from './session-actor.js';
@@ -19,6 +19,7 @@ export interface ProactiveBudgetScope {
   commit(ts: number): void;
 }
 export interface ProactiveTaskRequest {
+  trace?: TraceContext;
   input: ProactiveComposeInput;
   scope: ProactiveBudgetScope;
   reference?: NormalizedMessage;
@@ -38,28 +39,20 @@ export class ProactiveTaskAdapter {
       actor: SessionActor;
       connectors: ReadonlyMap<string, BotConnector>;
       logger: Logger;
-      context: (message: NormalizedMessage, connector: BotConnector) => MessageContext;
+      context: (
+        message: NormalizedMessage,
+        connector: BotConnector,
+        trace?: TraceContext
+      ) => MessageContext;
     }
   ) {}
   /** true 只表示双 lane Task 已准入；发言记账等待 DeliveryResult 成功。 */
   async submit(request: ProactiveTaskRequest): Promise<boolean> {
     const connector = this.options.connectors.get(request.input.target.platform);
     if (!connector) return false;
-    const message: NormalizedMessage = request.reference
-      ? structuredClone(request.reference)
-      : {
-          kind: 'group-message',
-          target: request.input.target,
-          eventId: '',
-          msgId: '',
-          senderId: 'proactive',
-          ts: Date.now(),
-          raw: {},
-          content: request.input.evidence ?? request.input.reason,
-        };
     try {
       const handle = await this.options.actor.submit(
-        this.options.context(message, connector),
+        this.inputContext(request, connector),
         {
           directive: request.input.directive,
           evidence: request.input.evidence,
@@ -76,10 +69,36 @@ export class ProactiveTaskAdapter {
         },
       });
       return true;
-    } catch (error) {
-      this.options.logger.warn('主动 Task 准入失败', { error: String(error) });
+    } catch {
       return false;
     }
+  }
+  private inputContext(request: ProactiveTaskRequest, connector: BotConnector): MessageContext {
+    const message: NormalizedMessage = request.reference
+      ? structuredClone(request.reference)
+      : {
+          kind: 'group-message',
+          target: request.input.target,
+          eventId: '',
+          msgId: '',
+          senderId: 'proactive',
+          ts: Date.now(),
+          raw: {},
+          content: request.input.evidence ?? request.input.reason,
+        };
+    const identity = {
+      sessionKey: message.target.key,
+      inputMessageId: message.msgId,
+      inputEventId: message.eventId,
+    };
+    const trace = request.trace ? traceSpan(request.trace, identity) : createTrace(identity);
+    const logger = this.options.logger.withTrace(trace);
+    logger.event('input.received', {
+      source: 'proactive',
+      contentLength: request.input.directive.length,
+      attachmentCount: 0,
+    });
+    return { ...this.options.context(message, connector, trace), trace, logger };
   }
   /** 输出协调器先调用此方法保存真实内容，再通知预算结算。 */
   delivered(candidate: Readonly<ReplyCandidate>, ts: number): void {

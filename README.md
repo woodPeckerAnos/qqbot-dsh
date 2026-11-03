@@ -61,6 +61,7 @@ docker compose logs -f
 - 行为参数在 `qqbot.yml` + `config/*.yml`（带注释，改完 `restart` 生效），密钥与个人标识只写在 `.env`；
 - 可选主动发言：`.env` 填 `BOT_LISTEN_GROUPS`（它同时决定被 @ 时的观察范围）与 `BOT_PROACTIVE_ENABLED`，默认先灰度观察；它会在什么情况下开口见 [SCENES.md](src/pipeline/proactive/interests/SCENES.md)；
 - 可选换 / 加模型提供商：在 `config/local/models.yml`（不进 git，机制见 [config/local/README.md](config/local/README.md)）的 `models:` 段声明路由，密钥以 `apiKeyEnv` 引用、值写进 `.env`（内联密钥启动期直接拒绝）；
+- 日志追踪与定向诊断在 `config/logging.yml`，用 `docker compose kill -s SIGHUP qqbot` 重载，步骤与指标见 [运行手册](docs/RUNBOOK.md)；
 - **完整步骤、框架选型、常见坑与调参：[docs/DEPLOY.md](docs/DEPLOY.md)**。
 
 ### 路线二：云服务部署（云主机一体化，无需外部电脑）
@@ -139,13 +140,14 @@ ESLint 的存量违规记录在 `eslint-suppressions.json`，`npm run lint` 只�
 
 **改了东西要怎么生效**（没有热更新，但只有改后端代码才需要重建镜像）：
 
-| 改动                                                    | 命令                           | 重建镜像 |
-| ------------------------------------------------------- | ------------------------------ | -------- |
-| `src/**` 后端代码                                       | `docker compose up -d --build` | 是       |
-| `.env`（密钥 / 开关 / 白名单）                          | `docker compose up -d`         | 否       |
-| `qqbot.yml`、`config/**`、`interests.yml`（挂载的配置） | `docker compose restart qqbot` | 否       |
-| 某个会话的规矩（工作区里的 `AGENTS.md`）                | 直接写文件，连重启都不用       | 否       |
-| 某个会话的人设风格（`/persona <名>` 命令）              | 群里发命令，下一条消息生效     | 否       |
+| 改动                                                    | 命令                                  | 重建镜像 |
+| ------------------------------------------------------- | ------------------------------------- | -------- |
+| `src/**` 后端代码                                       | `docker compose up -d --build`        | 是       |
+| `.env`（密钥 / 开关 / 白名单）                          | `docker compose up -d`                | 否       |
+| 日志设置（`config/logging.yml`、文件中的 `logLevel`）   | `docker compose kill -s SIGHUP qqbot` | 否       |
+| `qqbot.yml`、`config/**`、`interests.yml`（挂载的配置） | `docker compose restart qqbot`        | 否       |
+| 某个会话的规矩（工作区里的 `AGENTS.md`）                | 直接写文件，连重启都不用              | 否       |
+| 某个会话的人设风格（`/persona <名>` 命令）              | 群里发命令，下一条消息生效            | 否       |
 
 > `.env` 是**容器创建时**注入的：`restart` 不会重读它，所以那一行必须是 `up -d`。
 > **永远不需要 `docker compose down`**。想跳过镜像构建调试：用 `docker-compose.dev.yml`

@@ -76,6 +76,42 @@ export interface SessionEventNotification {
   event: SessionEventEnvelope;
 }
 
+export function parseSessionEvent(params: unknown): SessionEventNotification | undefined {
+  if (!plainObject(params)) return;
+  const event = params.event;
+  if (typeof params.sessionId !== 'string' || !params.sessionId || !plainObject(event)) return;
+  if (!validEnvelope(event)) return;
+  if (event.time !== undefined && (typeof event.time !== 'number' || !Number.isFinite(event.time)))
+    return;
+  return {
+    sessionId: params.sessionId,
+    event: { type: event.type, seq: event.seq, time: event.time, data: event.data },
+  };
+}
+function validEnvelope(
+  event: Record<string, unknown>
+): event is Record<string, unknown> & SessionEventEnvelope {
+  return (
+    typeof event.type === 'string' &&
+    !!event.type &&
+    typeof event.seq === 'number' &&
+    Number.isSafeInteger(event.seq) &&
+    event.seq >= 0 &&
+    plainObject(event.data)
+  );
+}
+function parseSessionStatus(params: unknown): SessionStatusNotification | undefined {
+  if (
+    !plainObject(params) ||
+    typeof params.sessionId !== 'string' ||
+    !['idle', 'running'].includes(params.status as string)
+  )
+    return;
+  return { sessionId: params.sessionId, status: params.status as 'idle' | 'running' };
+}
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 export interface SessionStatusNotification {
   sessionId: string;
   status: 'idle' | 'running';
@@ -206,6 +242,7 @@ export interface HarnessSdkClientEvents {
   'subagent.finished': (payload: SubagentFinishedNotification) => void;
   /** stdout 污染 / 无法解析的帧 */
   violation: (error: ProtocolViolationError) => void;
+  invalid: (reason: string) => void;
   /** 传输层收到无法归类的消息（未知通知），仅用于诊断 */
   unknown: (frame: unknown) => void;
   close: () => void;
@@ -378,6 +415,14 @@ export class HarnessSdkClient {
       return;
     }
 
+    this.handleFrame(frame);
+  }
+
+  private handleFrame(frame: Record<string, unknown>): void {
+    if (!plainObject(frame)) {
+      this.emitter.emit('invalid', 'frame');
+      return;
+    }
     const hasId = frame['id'] !== undefined && frame['id'] !== null;
     const hasMethod = typeof frame['method'] === 'string';
 
@@ -427,19 +472,27 @@ export class HarnessSdkClient {
   private handleNotification(method: string, params: unknown): void {
     switch (method) {
       case 'session.event': {
-        const payload = params as SessionEventNotification;
+        const payload = parseSessionEvent(params);
+        if (!payload) {
+          this.emitter.emit('invalid', 'session.event');
+          return;
+        }
         this.emitter.emit('session.event', payload);
         return;
       }
       case 'session.status': {
-        const payload = params as SessionStatusNotification;
+        const payload = parseSessionStatus(params);
+        if (!payload) {
+          this.emitter.emit('invalid', 'session.status');
+          return;
+        }
         this.emitter.emit('session.status', payload);
         return;
       }
       case 'subagent.started': {
         const payload = parseSubagentStarted(params);
         if (payload === undefined) {
-          this.emitter.emit('unknown', { method, params });
+          this.emitter.emit('invalid', method);
           return;
         }
         this.emitter.emit('subagent.started', payload);
@@ -448,7 +501,7 @@ export class HarnessSdkClient {
       case 'subagent.finished': {
         const payload = parseSubagentFinished(params);
         if (payload === undefined) {
-          this.emitter.emit('unknown', { method, params });
+          this.emitter.emit('invalid', method);
           return;
         }
         this.emitter.emit('subagent.finished', payload);

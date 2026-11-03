@@ -70,6 +70,8 @@ import {
   type OffpeakWindow,
 } from './offpeak/index.js';
 
+import { loggingSettings, type LoggingSettings } from './logger.js';
+
 export { ConfigError } from './config-error.js';
 
 export type ConnectorName = typeof QQ_OFFICIAL_PLATFORM | typeof ONEBOT_PLATFORM;
@@ -81,6 +83,7 @@ export type ConnectorName = typeof QQ_OFFICIAL_PLATFORM | typeof ONEBOT_PLATFORM
 export const DEFAULT_OFFPEAK_WINDOWS = '00:00-09:00,12:00-14:00,18:00-24:00';
 
 export interface Config {
+  logging: LoggingSettings;
   /** 启用的接入平台（BOT_CONNECTORS / connectors，逗号分隔） */
   connectors: ConnectorName[];
   /**
@@ -1829,6 +1832,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     hints: {
       longTask: buildLongTaskHintConfig(env, file.hints?.longTask),
     },
+    logging: resolveLoggingSettings(env, file),
     logLevel: pickEnum(
       env,
       'QQ_LOG_LEVEL',
@@ -1838,6 +1842,21 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       'logLevel'
     ),
   };
+}
+
+export function resolveLoggingSettings(
+  env: Record<string, string | undefined>,
+  file: FileConfig = {}
+): LoggingSettings {
+  const level = pickEnum(
+    env,
+    'QQ_LOG_LEVEL',
+    file.logLevel,
+    ['debug', 'info', 'warn', 'error'] as const,
+    'info',
+    'logLevel'
+  );
+  return loggingSettings({ ...file.logging, level });
 }
 
 /**

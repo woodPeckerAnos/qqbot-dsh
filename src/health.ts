@@ -15,12 +15,13 @@
 import { createServer, type Server } from 'node:http';
 
 import type { ConnectorHealth } from './core/connector.js';
-import type { Logger } from './logger.js';
+import type { Logger, LoggingSnapshot } from './logger.js';
 import type { SessionActor } from './task/session-actor.js';
 import type { MessageQueue } from './task/message-queue.js';
 import type { PipelineStatsSnapshot } from './pipeline/stats.js';
 
 export interface HealthSnapshot {
+  logging?: LoggingSnapshot;
   ok: boolean;
   uptimeMs: number;
   /** 平台标识 → 该连接器的健康状态 */
@@ -83,6 +84,7 @@ export function createHealthServer(options: HealthServerOptions): HealthServer {
             runtime: snapshot.runtime,
             tasks: snapshot.tasks,
             messages: snapshot.messages,
+            logging: snapshot.logging,
             proactive: snapshot.proactive,
             dispatcher: snapshot.dispatcher,
             lastEventAgeMs: snapshot.lastEventAgeMs,
@@ -269,6 +271,7 @@ export interface ProactiveHealthSnapshot {
 
 export function buildHealthSnapshot(input: {
   startedAt: number;
+  logging?: LoggingSnapshot;
   connectors: Record<string, ConnectorHealth>;
   runtime: { size: number; activeConversationKeys: string[]; activeSubagents: number };
   tasks: ReturnType<SessionActor['snapshot']>;
@@ -315,6 +318,8 @@ export function buildHealthSnapshot(input: {
     };
   }
 
+  if (input.logging?.sinkFailures) warnings.push('日志输出发生故障，请检查 stderr 出口与丢弃计数');
+  if (input.logging?.dropped) warnings.push('日志缓冲出现丢弃，请检查 logging 指标');
   // 就绪判据：至少一个连接器已建立事件通道。其余项只产生 warning，不改变 ok。
   // 这样"进程活着但一个事件来源都没有"会被如实报告为不健康。
   const ok = anyConnected;
@@ -326,6 +331,7 @@ export function buildHealthSnapshot(input: {
     runtime: input.runtime,
     tasks: input.tasks,
     messages: input.messages,
+    logging: input.logging,
     dispatcher: input.dispatcher,
     ...(input.proactive === undefined ? {} : { proactive: input.proactive }),
     ...(lastEventAt !== undefined ? { lastEventAgeMs: now - lastEventAt } : {}),

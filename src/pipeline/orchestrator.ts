@@ -11,7 +11,7 @@ import type {
   ReplyPolicy,
 } from '../core/connector.js';
 import { isAddressedMessage, isObservedMessage } from '../core/connector.js';
-import type { Logger } from '../logger.js';
+import { createTrace, type TraceContext, type Logger } from '../logger.js';
 import type { OffpeakSnapshot } from '../offpeak/index.js';
 import type { Responder } from './egress/responder.js';
 import { handleWelcomeEvent } from './ingress/welcome.js';
@@ -39,7 +39,8 @@ export interface OrchestratorDeps {
     message: NormalizedMessage,
     connector: BotConnector,
     policy: ReplyPolicy,
-    logger: Logger
+    logger: Logger,
+    trace?: TraceContext
   ) => Responder;
   /**
    * 主动介入层的入口（旁听消息的唯一去向）。
@@ -135,8 +136,22 @@ export class Orchestrator {
   // 用户消息入口：构建上下文，进入 Ingress 管线
   // -------------------------------------------------------------------------
 
+  private inputLogger(message: NormalizedMessage) {
+    const trace = createTrace({
+      sessionKey: message.target.key,
+      inputMessageId: message.msgId,
+      inputEventId: message.eventId,
+    });
+    const logger = this.deps.logger.withTrace(trace);
+    logger.event('input.received', {
+      source: 'user',
+      contentLength: message.content.length,
+      attachmentCount: message.parts?.filter((part) => part.type !== 'text').length ?? 0,
+    });
+    return { trace, logger };
+  }
   private async handleMessage(message: NormalizedMessage): Promise<void> {
-    const { logger } = this.deps;
+    const { trace, logger } = this.inputLogger(message);
     this.deps.stats.received += 1;
 
     const connector = this.deps.connectors.get(message.target.platform);
@@ -166,13 +181,14 @@ export class Orchestrator {
     });
 
     const ctx: MessageContext = {
+      trace,
       message,
       connector,
       policy,
       // 管理员判定：白名单条目是 `platform:senderId` 组合（见 BOT_ADMINS）
       isAdmin: this.deps.admins.includes(`${message.target.platform}:${message.senderId}`),
       logger: messageLogger,
-      responder: this.deps.createResponder(message, connector, policy, messageLogger),
+      responder: this.deps.createResponder(message, connector, policy, messageLogger, trace),
     };
 
     await runStages(this.deps.stages, ctx, () => this.deps.terminal(ctx));

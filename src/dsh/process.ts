@@ -14,7 +14,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Duplex } from 'node:stream';
 
-import type { Logger } from '../logger.js';
+import { LoggedError, type Logger } from '../logger.js';
 import {
   HarnessSdkClient,
   SDK_SERVER_INFO_NAME,
@@ -66,6 +66,8 @@ export interface DshRuntimeEvents {
   'subagent.started': (notification: SubagentStartedNotification) => void;
   'subagent.finished': (notification: SubagentFinishedNotification) => void;
   violation: (error: ProtocolViolationError) => void;
+  invalid: (reason: string) => void;
+  unknown: () => void;
   exit: (code: number | null, signal: NodeJS.Signals | null) => void;
 }
 
@@ -77,6 +79,10 @@ export class DshRuntime extends EventEmitter {
   private _state: DshRuntimeState = 'starting';
   private _serverInfo: InitializeResult['serverInfo'] | undefined;
   private stderrTail: string[] = [];
+  private errorId?: string;
+  get lastErrorId(): string | undefined {
+    return this.errorId;
+  }
   private exitPromise: Promise<void> | undefined;
   private resolveExit: (() => void) | undefined;
 
@@ -128,6 +134,7 @@ export class DshRuntime extends EventEmitter {
     });
 
     this.child = child;
+    options.logger.event('runtime.started', { pid: child.pid });
     if (options.taskControl) {
       const taskControl = options.taskControl;
       const control = child.stdio[3] as Duplex;
@@ -167,7 +174,7 @@ export class DshRuntime extends EventEmitter {
     });
 
     child.on('error', (error) => {
-      options.logger.error('DSH runtime 进程启动失败', { error: error.message, cwd: options.cwd });
+      this.errorId = options.logger.cause(error, 'runtime-spawn');
       this._state = 'failed';
       this.resolveExit?.();
     });
@@ -176,10 +183,10 @@ export class DshRuntime extends EventEmitter {
     child.stderr.on('data', (chunk: string) => {
       for (const line of chunk.split('\n')) {
         if (line.trim() === '') continue;
-        this.stderrTail.push(line);
+        this.stderrTail.push(line.slice(0, 1024));
         if (this.stderrTail.length > 80) this.stderrTail.shift();
         // DSH 的诊断输出走 stderr，降到 debug 避免刷屏，但保留在 tail 里供报错
-        options.logger.debug('dsh stderr', { line });
+        options.logger.event('runtime.stderr', { bytes: Buffer.byteLength(line), lines: 1 });
       }
     });
 
@@ -188,7 +195,10 @@ export class DshRuntime extends EventEmitter {
       if (this._state !== 'closing') {
         this._state = code === 0 ? 'closed' : 'failed';
         if (wasReady || code !== 0) {
-          options.logger.warn('DSH runtime 进程退出', { code, signal, cwd: options.cwd });
+          this.errorId ??= options.logger.cause(new Error('runtime-exit'), 'runtime-exit', {
+            code,
+            signal,
+          });
         }
       } else {
         this._state = 'closed';
@@ -209,8 +219,18 @@ export class DshRuntime extends EventEmitter {
     client.on('session.status', (n) => this.emit('session.status', n));
     client.on('subagent.started', (n) => this.emit('subagent.started', n));
     client.on('subagent.finished', (n) => this.emit('subagent.finished', n));
+    client.on('invalid', (reason) => {
+      options.logger.event('runtime.notification', { reason: 'invalid' });
+      this.emit('invalid', reason);
+    });
+    client.on('unknown', () => {
+      options.logger.event('runtime.notification', { reason: 'unknown' });
+      this.emit('unknown');
+    });
     client.on('violation', (error) => {
-      options.logger.error('DSH 协议通道被污染', { raw: error.rawLine.slice(0, 200) });
+      this.errorId ??= options.logger.cause(error, 'protocol-violation', {
+        bytes: Buffer.byteLength(error.rawLine),
+      });
       this.emit('violation', error);
     });
 
@@ -233,17 +253,14 @@ export class DshRuntime extends EventEmitter {
       }
       this._serverInfo = result.serverInfo;
       this._state = 'ready';
-      options.logger.debug('DSH runtime 就绪', {
-        serverInfo: result.serverInfo,
-        pid: child.pid,
-      });
+      options.logger.event('runtime.ready', { version: result.serverInfo.version, pid: child.pid });
       return result;
     } catch (error) {
       await this.dispose().catch(() => {});
-      const detail = this.stderrTail.slice(-15).join('\n');
-      throw new Error(
-        `DSH runtime initialize 失败：${error instanceof Error ? error.message : String(error)}` +
-          (detail ? `\n--- dsh stderr 末 15 行 ---\n${detail}` : ''),
+      this.errorId ??= options.logger.cause(error, 'runtime-initialize');
+      throw new LoggedError(
+        this.errorId,
+        `DSH runtime initialize 失败（errorId=${this.errorId}）`,
         { cause: error }
       );
     }

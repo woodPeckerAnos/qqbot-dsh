@@ -7,6 +7,7 @@ import type {
   OriginalMessageReference,
   OutgoingAttachment,
 } from '../core/connector.js';
+import type { TraceContext } from '../logger.js';
 import type { ObservationEntry } from '../store/window.js';
 
 export type Lane = 'fast' | 'slow';
@@ -14,14 +15,22 @@ export const LANES: readonly Lane[] = ['fast', 'slow'];
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type LaneStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 /** silent 仅表达正常的无需长技能；执行失败和取消必须保留各自结果类型。 */
-export type LaneResult =
+export type LaneResult = (
   | { kind: 'reply'; text: string; attachments?: OutgoingAttachment[] }
   | { kind: 'silent'; reason: 'no-long-skill' }
-  | { kind: 'failed'; text: string; error: string; attachments?: OutgoingAttachment[] }
-  | { kind: 'cancelled'; attachments?: OutgoingAttachment[] };
+  | {
+      kind: 'failed';
+      text: string;
+      error: string;
+      errorId?: string;
+      attachments?: OutgoingAttachment[];
+    }
+  | { kind: 'cancelled'; attachments?: OutgoingAttachment[] }
+) & { trace?: TraceContext };
 
 /** 准入时固定的输入；后续话题变化不改写旧 Task 的身份、上下文或授权。 */
 export interface TaskInput {
+  trace?: TraceContext;
   message: NormalizedMessage;
   /** 由 Ingress 身份白名单绑定，不能由模型提供。 */
   isAdmin: boolean;
@@ -46,6 +55,7 @@ export interface LaneEvent extends LaneExecution {
   type: string;
 }
 export interface LaneSnapshot {
+  trace?: TraceContext;
   status: LaneStatus;
   /** 模型执行开始；排队、媒体摄取和 runtime 初始化不计入执行时限。 */
   startedAt?: number;
@@ -74,6 +84,7 @@ export interface TaskHandle {
 }
 /** 可交付产物；一旦入队，后续 Task 取消或终结均不撤回它。 */
 export interface ReplyCandidate {
+  trace?: TraceContext;
   taskId: string;
   lane: Lane;
   /** 触发输入；队列可以另选合法发送锚点，不能替换 reference。 */

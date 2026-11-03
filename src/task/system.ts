@@ -9,7 +9,7 @@ import type { Config } from '../config.js';
 import type { BotConnector, NormalizedMessage } from '../core/connector.js';
 import { RuntimePool, type RuntimePoolOptions } from '../dsh/pool.js';
 import type { DocumentExtractor } from '../dsh/files.js';
-import type { Logger } from '../logger.js';
+import { createTrace, type TraceContext, type Logger } from '../logger.js';
 import type { PipelineStats } from '../pipeline/stats.js';
 import type { TopicJudge } from '../pipeline/topic-judge.js';
 import type { ConversationStore } from '../store/conversations.js';
@@ -177,13 +177,14 @@ export class TaskSystem {
       actor,
       connectors: options.connectors,
       logger,
-      context: (message, connector) => ({
+      context: (message, connector, trace) => ({
+        trace,
         message,
         connector,
         isAdmin: false,
         policy: connector.policy(message.target.kind),
         logger,
-        responder: new Responder({ message, queue: this.queue }),
+        responder: new Responder({ message, queue: this.queue, trace }),
       }),
     });
     // 必须先登记中断产物再改变执行状态，避免预留预算在失败消息入队前被释放。
@@ -193,6 +194,7 @@ export class TaskSystem {
       this.queue.enqueue(
         {
           taskId: task.taskId,
+          trace: task.input.trace,
           lane: 'slow',
           message: task.input.message,
           reference: task.input.reference,
@@ -234,18 +236,30 @@ export class TaskSystem {
       }
     }
   }
-  context(message: NormalizedMessage, isAdmin = false): MessageContext {
+  context(
+    message: NormalizedMessage,
+    isAdmin = false,
+    suppliedTrace?: TraceContext
+  ): MessageContext {
     const connector = this.options.connectors.get(message.target.platform);
     if (connector === undefined) {
       throw new Error(`未找到平台连接器：${message.target.platform}`);
     }
+    const trace =
+      suppliedTrace ??
+      createTrace({
+        sessionKey: message.target.key,
+        inputMessageId: message.msgId,
+        inputEventId: message.eventId,
+      });
     return {
+      trace,
       message,
       connector,
       isAdmin,
       policy: connector.policy(message.target.kind),
-      logger: this.options.logger,
-      responder: new Responder({ message, queue: this.queue }),
+      logger: this.options.logger.withTrace(trace),
+      responder: new Responder({ message, queue: this.queue, trace }),
     };
   }
   async close(): Promise<void> {

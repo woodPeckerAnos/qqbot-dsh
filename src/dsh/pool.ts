@@ -259,11 +259,15 @@ export class RuntimePool extends EventEmitter {
     overrides: Partial<DshRuntimeOptions>
   ): Promise<RuntimeEntry> {
     const { base, logger } = this.options;
+    const generation = randomUUID();
     const runtimeOptions: DshRuntimeOptions = {
       ...base,
       ...overrides,
       cwd: workspacePath,
-      logger: logger.child({ conversation: conversationKey }),
+      logger: (overrides.logger ?? logger).child({
+        conversation: conversationKey,
+        runtimeGeneration: generation,
+      }),
     };
     const factory =
       this.options.runtimeFactory ?? ((opts: DshRuntimeOptions) => new DshRuntime(opts));
@@ -273,7 +277,7 @@ export class RuntimePool extends EventEmitter {
     // 而事件可能在 start() 期间就到达，所以 handler 必须闭包引用同一个 entry。
     const at = this.now();
     const entry: RuntimeEntry = {
-      generation: randomUUID(),
+      generation,
       conversationKey,
       runtime,
       sessionId: (this.options.sessionIdFactory ?? stableSessionId)(conversationKey),
@@ -289,27 +293,14 @@ export class RuntimePool extends EventEmitter {
     // 子代理进出：维护 activeChildren（回收豁免的依据），并向上冒泡供统计/日志。
     runtime.on('subagent.started', (n: SubagentStartedNotification) => {
       entry.activeChildren.add(n.childSessionId);
-      this.options.logger.info('所属执行的子代理已启动', {
-        conversation: conversationKey,
-        child: n.childSessionId,
-        active: entry.activeChildren.size,
-      });
       this.emit('subagent.started', conversationKey, n);
     });
     runtime.on('subagent.finished', (n: SubagentFinishedNotification) => {
       entry.activeChildren.delete(n.childSessionId);
       if (!entry.busy && !entry.activeChildren.size) this.wakeWaiters();
-      this.options.logger.info('所属执行的子代理已结束', {
-        conversation: conversationKey,
-        child: n.childSessionId,
-        status: n.status,
-        stopReason: n.stopReason,
-        active: entry.activeChildren.size,
-      });
       this.emit('subagent.finished', conversationKey, n);
     });
     runtime.on('exit', (code, signal) => {
-      this.options.logger.warn('runtime 退出', { conversation: conversationKey, code, signal });
       this.emit('runtime.exit', conversationKey, code, signal);
     });
 

@@ -1,3 +1,4 @@
+import type { TraceContext } from '../../logger.js';
 import type { NormalizedMessage } from '../../core/connector.js';
 import type { MessageQueue } from '../../task/message-queue.js';
 
@@ -6,9 +7,16 @@ import type { MessageQueue } from '../../task/message-queue.js';
  * ingress 归属 ID 仅用于消息记账，不创建执行 Task、不消耗主动预算。
  */
 export class Responder {
-  constructor(private readonly options: { message: NormalizedMessage; queue: MessageQueue }) {}
+  constructor(
+    private readonly options: {
+      message: NormalizedMessage;
+      queue: MessageQueue;
+      trace?: TraceContext;
+    }
+  ) {}
   error(text: string): Promise<void> {
     this.options.queue.enqueue({
+      trace: this.options.trace,
       taskId: `ingress-${this.options.message.eventId}`,
       lane: 'fast',
       message: this.options.message,

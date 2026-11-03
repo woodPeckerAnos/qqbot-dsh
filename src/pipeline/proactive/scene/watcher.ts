@@ -53,7 +53,7 @@
  */
 
 import type { ConversationTarget, NormalizedMessage } from '../../../core/connector.js';
-import type { Logger } from '../../../logger.js';
+import { createTrace, traceSpan, type TraceContext, type Logger } from '../../../logger.js';
 import type { ProactiveTaskRequest } from '../../../task/proactive-adapter.js';
 import {
   matchesGroupAllowlist,
@@ -416,6 +416,7 @@ const RECENT_MATCH_MESSAGES = 5;
  *     于是灰度一周后账目必须闭合：`resolved+spent+stale+unchanged == created`。
  */
 interface WaitTicket {
+  readonly trace?: TraceContext;
   readonly convKey: string;
   /** 对象 id = 挂起问题 id */
   readonly targetId: string;
@@ -1063,6 +1064,11 @@ export class ProactiveWatcher {
       // 同一会话合并成一个定时器，到点时可能只有一部分票据到期
       if (ticket.dueAt > now) continue;
       byTarget.delete(targetId);
+      const wakeTrace = ticket.trace && traceSpan(ticket.trace);
+      if (wakeTrace)
+        this.deps.logger
+          .withTrace(wakeTrace)
+          .event('proactive.wait', { action: 'woken', targetId });
       if (!openIds.has(targetId)) {
         // 对象已关闭（问题被答 / 过期 / 话题翻篇）→ 这是一次"省下来的调用"
         this.metrics.waitTicket('stale', ticket.scene);
@@ -1075,7 +1081,7 @@ export class ProactiveWatcher {
         this.bumpWaitTicket('unchanged');
         continue;
       }
-      woken.push(ticket);
+      woken.push({ ...ticket, trace: wakeTrace });
     }
 
     // 过闸的票据交给重新判定（它们的终局在 evaluate / finishWaitWakeup 里收口）
@@ -1350,12 +1356,22 @@ export class ProactiveWatcher {
     candidates: readonly SceneCandidate[],
     wait?: { ticket: WaitTicket; pendingAtEval: readonly { id: string }[] }
   ): Promise<void> {
+    const trace = wait?.ticket.trace
+      ? traceSpan(wait.ticket.trace)
+      : createTrace({ sessionKey: convKey });
+    const logger = this.deps.logger.withTrace(trace);
+    logger.event('proactive.evaluation', { trigger, candidateCount: candidates.length });
     const state = this.states.for(convKey);
     const now = evidence.now;
 
     // ② LLM 层。未注入判定能力 = 只收集不判定（"只听不说"的部署形态）。
     const judge = this.deps.judge;
     if (judge === undefined) {
+      logger.withTrace(traceSpan(trace)).event('proactive.decision', {
+        action: 'silent',
+        reason: 'judge-unavailable',
+        trigger,
+      });
       this.counters.collectedOnly += 1;
       this.deps.logger.debug('主动介入：未配置判定能力，本次只收集', {
         conversation: convKey,
@@ -1393,6 +1409,9 @@ export class ProactiveWatcher {
       )}`,
     });
     if (verdicts === undefined) {
+      logger
+        .withTrace(traceSpan(trace))
+        .event('proactive.decision', { action: 'silent', reason: 'judge-failed', trigger });
       this.counters.judgeFailures += 1;
       this.metrics.judgeFailed(trigger);
       const failures = (this.judgeFailures.get(convKey) ?? 0) + 1;
@@ -1434,6 +1453,13 @@ export class ProactiveWatcher {
       this.policy
     );
 
+    const decisionTrace = traceSpan(trace);
+    logger.withTrace(decisionTrace).event('proactive.decision', {
+      action: decision.action,
+      reason: decision.reason,
+      scene: 'scene' in decision ? decision.scene : undefined,
+      trigger,
+    });
     // 唤醒后的重新判定：**任何结果都消耗票据**（同一对象不会再有第二次唤醒）。
     // 终局只有两种：判成立 → `resolved`；其余一律 `spent`（预算已用尽，静默）。
     // 注意"又给 yielding"也走 spent——让路预算在**建票据时**就已经扣掉了。
@@ -1469,12 +1495,27 @@ export class ProactiveWatcher {
       this.bump(this.counters.vetoed, 'wait');
       // "让路"这一支**不动 session**：模型此刻说的是"有人在答，过几十秒再看"，
       // 与"这个话题还要不要继续"是两件事；真要收口，重判那次会给 close。
-      this.createWaitTicket(convKey, target, decision.targetId, decision.reason, now, evaluatedAt);
+      this.createWaitTicket(
+        convKey,
+        target,
+        decision.targetId,
+        decision.reason,
+        now,
+        evaluatedAt,
+        decisionTrace
+      );
       return;
     }
 
     // ④ 投递：唯一出口（dryRun / 平台能力差异都在它内部处理）。
-    const spoken = await this.deliver(convKey, target, decision, now, sessionOutcome);
+    const spoken = await this.deliver(
+      convKey,
+      target,
+      decision,
+      now,
+      sessionOutcome,
+      decisionTrace
+    );
     // ⑤ session 的收口（唯一入口）：开 / 换话题重建 / 扣预算（**不减到 0 就关**）/
     //    按模型的建议收口。
     this.applySessionOutcome(convKey, now, decision.scene, spoken, sessionOutcome);
@@ -1492,7 +1533,8 @@ export class ProactiveWatcher {
     targetId: string,
     reason: WaitReason,
     now: number,
-    evaluatedAt: number
+    evaluatedAt: number,
+    trace?: TraceContext
   ): void {
     const state = this.states.for(convKey);
     const byTarget = this.waitTickets.get(convKey) ?? new Map<string, WaitTicket>();
@@ -1504,7 +1546,9 @@ export class ProactiveWatcher {
       return;
     }
     const waitYieldMs = effectiveWaitYieldMs(this.config.waitYieldMs);
+    const ticketTrace = trace && traceSpan(trace);
     byTarget.set(targetId, {
+      trace: ticketTrace,
       convKey,
       targetId,
       scene: 'scene-3',
@@ -1522,12 +1566,10 @@ export class ProactiveWatcher {
     this.bump(this.counters.waitTicketsCreatedByReason, reason);
     this.metrics.waitTicketCreated(reason, 'scene-3');
     this.armWaitYield(convKey, target);
-    this.deps.logger.debug('主动介入：让路（建 wait 票据）', {
-      conversation: convKey,
-      question: targetId,
-      reason,
-      waitYieldMs,
-    });
+    if (ticketTrace)
+      this.deps.logger
+        .withTrace(ticketTrace)
+        .event('proactive.wait', { action: 'created', targetId });
   }
 
   /**
@@ -1664,7 +1706,8 @@ export class ProactiveWatcher {
     target: ConversationTarget,
     decision: Extract<ProactiveDecision, { action: 'speak' }>,
     now: number,
-    sessionDirective: { restart: boolean; close: boolean } = { restart: false, close: false }
+    sessionDirective: { restart: boolean; close: boolean } = { restart: false, close: false },
+    trace?: TraceContext
   ): Promise<boolean> {
     const gist = decision.directive ?? decision.reason;
     if (this.deps.submitTask && !this.config.dryRun) {
@@ -1710,6 +1753,7 @@ export class ProactiveWatcher {
             raw: {},
           };
       const accepted = await this.deps.submitTask({
+        trace,
         input: {
           target,
           scene: decision.scene,

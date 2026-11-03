@@ -550,12 +550,6 @@
   },
   "src/task/message-queue.ts": {
     "complexity": {
-      "count": 3
-    },
-    "max-statements": {
-      "count": 2
-    },
-    "sonarjs/cognitive-complexity": {
       "count": 1
     }
   },

@@ -77,7 +77,7 @@ function classifyReason(kind: string | undefined): TurnOutcome['kind'] {
  * `observeStatus()`；当 `isSettled` 为真时取 `result()`。
  */
 export class TurnAccumulator {
-  private assistantTexts: string[] = [];
+  private assistantCount = 0;
   private accumulated = '';
   private turnEnd: TurnEndData | undefined;
   private sawRunning = false;
@@ -88,7 +88,7 @@ export class TurnAccumulator {
   constructor(readonly sessionId: string) {}
 
   get stepCount(): number {
-    return this.assistantTexts.length;
+    return this.assistantCount;
   }
 
   get toolsInvoked(): number {
@@ -111,7 +111,7 @@ export class TurnAccumulator {
     switch (event.type) {
       case 'assistant/message': {
         const text = extractAssistantText(event);
-        this.assistantTexts.push(text);
+        this.assistantCount++;
         if (text.trim() !== '') this.accumulated = text;
         return;
       }
@@ -124,7 +124,7 @@ export class TurnAccumulator {
         return;
       }
       default:
-        this.foreign.push(event);
+        if (this.foreign.length < 128) this.foreign.push(event);
     }
   }
 
@@ -150,10 +150,6 @@ export class TurnAccumulator {
    * 拼接它们没有意义；而多条非空文本里，最后一条才包含对用户的最终答复。
    */
   get finalText(): string {
-    for (let i = this.assistantTexts.length - 1; i >= 0; i -= 1) {
-      const text = this.assistantTexts[i];
-      if (text !== undefined && text.trim() !== '') return text.trim();
-    }
     return this.accumulated.trim();
   }
 

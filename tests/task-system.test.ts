@@ -7,7 +7,9 @@ import { loadConfig } from '../src/config.js';
 import { createDocumentExtractor } from '../src/dsh/document.js';
 import { OnebotConnector } from '../src/adapters/onebot/connector.js';
 import type { BotConnector, NormalizedMessage } from '../src/core/connector.js';
-import { createNullLogger } from '../src/logger.js';
+import { EventEmitter } from 'node:events';
+import { installLoggingReload } from '../src/logging/reload.js';
+import { createLogger, createNullLogger, createTrace, type Logger } from '../src/logger.js';
 import { PipelineStats } from '../src/pipeline/stats.js';
 import { Orchestrator } from '../src/pipeline/orchestrator.js';
 import type { TopicJudge } from '../src/pipeline/topic-judge.js';
@@ -64,6 +66,7 @@ async function harness(
     slowTimeoutMs?: number;
     clock?: ManualClock;
     topicJudge?: TopicJudge;
+    logger?: Logger;
   } = {}
 ) {
   const root = mkdtempSync(join(tmpdir(), 'task-system-'));
@@ -78,7 +81,8 @@ async function harness(
     DEEPSEEK_API_KEY: 'mock-key',
     BOT_LISTEN_GROUPS: 'ob11:g8888',
   });
-  const { clock, topicJudge, ...taskSettings } = overrides;
+  const { clock, topicJudge, logger: injectedLogger, ...taskSettings } = overrides;
+  const logger = injectedLogger ?? createNullLogger();
   Object.assign(config.tasks, taskSettings);
   config.dsh.profilePatch = join(root, 'profile.yml');
   const mock = new UnifiedOnebotMock();
@@ -142,7 +146,8 @@ async function harness(
     terminal: async (ctx) => {
       await system.actor.submit(ctx);
     },
-    createResponder: (m) => system.context(m).responder,
+    createResponder: (m, _connector, _policy, _logger, trace) =>
+      system.context(m, false, trace).responder,
     status: () => ({
       inFlight: system.actor.snapshot().unfinished,
       queued: system.actor.snapshot().slow.queued,
@@ -564,7 +569,8 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     const recovered = restart();
     const task = await recovered.manager.handle(interrupted.taskId).done;
     expect(task.status).toBe('failed');
-    expect(task.lanes.fast.result).toEqual({ kind: 'reply', text: '已经开始' });
+    expect(task.lanes.fast.result).toEqual(interrupted.lanes.fast.result);
+    expect(task.lanes.fast.result).toMatchObject({ kind: 'reply', text: '已经开始' });
     expect(task.lanes.slow.result).toMatchObject({ kind: 'failed', error: 'restart-interrupted' });
     await vi.waitFor(() => {
       expect(h.mock.sentTexts.filter((t) => t.includes('重启而中断'))).toHaveLength(1);
@@ -1069,4 +1075,397 @@ describe('独立消息投递', () => {
       expect.objectContaining({ msgId: 'next-anchor', seq: 2 }),
     ]);
   });
+});
+
+describe('Logger 全链路离线验收', () => {
+  function captured() {
+    const lines: string[] = [];
+    const logger = createLogger({
+      autoTick: false,
+      sink: (line) => {
+        lines.push(line);
+      },
+    });
+    return {
+      logger,
+      records: () => lines.map((line) => JSON.parse(line) as Record<string, unknown>),
+      lines,
+    };
+  }
+  it('同会话并发 Task、双 lane 与嵌套子代理分别归属原输入，产物与队列保留执行关联', async () => {
+    const log = captured();
+    const h = await harness({ logger: log.logger });
+    const first = await h.system.actor.submit(h.system.context(message('trace-1')));
+    const fast1 = await h.runtime('fast');
+    const slow1 = await h.runtime('slow');
+    const parent = slow1.prompts[0]!.sessionId;
+    slow1.emit('subagent.started', { parentSessionId: parent, childSessionId: 'child' });
+    slow1.emit('subagent.started', { parentSessionId: 'child', childSessionId: 'grandchild' });
+    slow1.event('step/start', { turn: 1, step: 1 }, 'grandchild');
+    slow1.event(
+      'assistant/message',
+      { message: { content: [{ type: 'text', text: 'CHILD_BODY' }] } },
+      'child'
+    );
+    fast1.finish('FAST_BODY_1');
+    const second = await h.system.actor.submit(h.system.context(message('trace-2')));
+    const fast2 = await h.runtime('fast', 1);
+    fast2.finish('FAST_BODY_2');
+    slow1.finish('SLOW_BODY_1');
+    slow1.emit('subagent.finished', {
+      parentSessionId: 'child',
+      childSessionId: 'grandchild',
+      status: 'ok',
+    });
+    slow1.emit('subagent.finished', {
+      parentSessionId: parent,
+      childSessionId: 'child',
+      status: 'ok',
+    });
+    slow1.emit('subagent.finished', {
+      parentSessionId: parent,
+      childSessionId: 'child',
+      status: 'error',
+    });
+    await first.done;
+    const slow2 = await h.runtime('slow', 1);
+    slow2.finish('NO_REPLY');
+    await second.done;
+    await vi.waitFor(() => {
+      expect(h.system.queue.snapshot().pending).toBe(0);
+    });
+    const task1 = h.system.manager.get(first.taskId)!;
+    const task2 = h.system.manager.get(second.taskId)!;
+    expect(task1.input.trace!.traceId).not.toBe(task2.input.trace!.traceId);
+    const records = log.records();
+    for (const task of [task1, task2]) {
+      const owned = records.filter((r) => r.taskId === task.taskId);
+      expect(owned.every((r) => r.traceId === task.input.trace!.traceId)).toBe(true);
+      expect(
+        owned
+          .filter((r) => r.event === 'execution.started')
+          .map((r) => r.lane)
+          .sort()
+      ).toEqual(['fast', 'slow']);
+      expect(owned.filter((r) => r.event === 'task.terminal')).toHaveLength(1);
+      expect(owned.filter((r) => r.event === 'execution.ended')).toHaveLength(2);
+      for (const execution of owned.filter((r) => r.event === 'execution.started')) {
+        expect(
+          owned.find(
+            (r) =>
+              r.event === 'task.lane' &&
+              r.status === 'queued' &&
+              r.spanId === execution.parentSpanId
+          )
+        ).toBeDefined();
+      }
+      for (const row of h.system.queue.messages(task.taskId)) {
+        expect(
+          owned.find((r) => r.event === 'artifact.prepared' && r.spanId === row.trace!.parentSpanId)
+        ).toBeDefined();
+        expect(row.trace).toMatchObject({
+          traceId: task.input.trace!.traceId,
+          executionId: task.lanes[row.candidate.lane].execution!.executionId,
+          messageId: row.id,
+        });
+      }
+    }
+    expect(records.filter((r) => r.event === 'agent.started')).toHaveLength(2);
+    expect(records.filter((r) => r.event === 'agent.ended')).toHaveLength(2);
+    expect(log.lines.join('')).not.toMatch(/FAST_BODY|SLOW_BODY|CHILD_BODY/);
+  });
+
+  it('Task 完成并清理后，延迟消息用新锚点发送仍使用旧 trace', async () => {
+    const log = captured();
+    const h = await harness({ logger: log.logger });
+    vi.spyOn(h.connector, 'policy').mockReturnValue({
+      ...h.connector.policy('group'),
+      passiveWindowMs: 1000,
+      maxRepliesPerMsg: 10,
+    });
+    const old = { ...message('expired'), ts: Date.now() - 10000 };
+    const handle = await h.system.actor.submit(h.system.context(old));
+    (await h.runtime('fast')).finish('delayed reply');
+    (await h.runtime('slow')).finish('NO_REPLY');
+    const task = await handle.done;
+    expect(h.system.queue.snapshot().pending).toBe(1);
+    h.system.manager.destroy(task.taskId);
+    h.system.output.forget(task.taskId);
+    h.system.queue.observe(message('new-anchor'));
+    await vi.waitFor(() => {
+      expect(h.system.queue.snapshot().sent).toBe(1);
+    });
+    const row = h.system.queue.messages(task.taskId)[0]!;
+    expect(row.anchor?.msgId).toBe('new-anchor');
+    expect(row.trace!.traceId).toBe(task.input.trace!.traceId);
+    const records = log.records();
+    const terminalIndex = records.findIndex((r) => r.event === 'task.terminal');
+    const attemptIndex = records.findIndex((r) => r.event === 'delivery.attempt');
+    expect(attemptIndex).toBeGreaterThan(terminalIndex);
+    expect(records[attemptIndex]).toMatchObject({
+      traceId: task.input.trace!.traceId,
+      anchorMessageId: 'new-anchor',
+      inputMessageId: 'expired',
+    });
+  });
+
+  it('追踪子会话与工具缓存超限只使汇总不完整，仍等待全部业务子代理并正常结算', async () => {
+    const log = captured();
+    const h = await harness({ logger: log.logger });
+    const handle = await h.system.actor.submit(h.system.context(message('trace-overflow')));
+    (await h.runtime('fast')).finish('fast');
+    const slow = await h.runtime('slow');
+    const parent = slow.prompts[0]!.sessionId;
+    for (let i = 0; i < 129; i++)
+      slow.emit('subagent.started', { parentSessionId: parent, childSessionId: `child-${i}` });
+    slow.emit('subagent.started', {
+      parentSessionId: 'child-128',
+      childSessionId: 'overflow-grandchild',
+    });
+    for (let i = 0; i < 257; i++) slow.event('tool/call', { name: 'shell', callId: `tool-${i}` });
+    slow.finish('completed');
+    for (let i = 0; i < 129; i++)
+      slow.emit('subagent.finished', {
+        parentSessionId: parent,
+        childSessionId: `child-${i}`,
+        status: 'ok',
+      });
+    expect(h.system.manager.get(handle.taskId)!.lanes.slow.status).toBe('running');
+    slow.emit('subagent.started', { parentSessionId: parent, childSessionId: 'child-0' });
+    slow.emit('subagent.finished', {
+      parentSessionId: parent,
+      childSessionId: 'child-0',
+      status: 'error',
+    });
+    slow.emit('subagent.finished', {
+      parentSessionId: 'child-128',
+      childSessionId: 'overflow-grandchild',
+      status: 'ok',
+    });
+    expect((await handle.done).status).toBe('completed');
+    const summary = log.records().find((r) => r.event === 'agent.summary' && r.lane === 'slow')!;
+    expect(summary).toMatchObject({ incomplete: true, subagents: 128, tools: 257 });
+    expect(summary.overflow).toBeGreaterThan(0);
+    expect(log.records().filter((r) => r.event === 'root.error')).toHaveLength(0);
+  });
+
+  it('共享媒体准备失败记录首个 lane 的 Task 关联，两个 lane 不重复摄取', async () => {
+    const log = captured();
+    const h = await harness({ logger: log.logger });
+    h.connector.fetchMedia = vi.fn(async () => {
+      throw new Error('PRIVATE_DOWNLOAD_BODY sk-abcdefghijk');
+    });
+    const m = message('media-trace');
+    m.parts = [
+      {
+        type: 'media',
+        mediaKind: 'file',
+        filename: 'input.txt',
+        url: 'https://example.test/input.txt',
+      },
+    ];
+    const handle = await h.system.actor.submit(h.system.context(m));
+    (await h.runtime('fast')).finish('fast');
+    (await h.runtime('slow')).finish('NO_REPLY');
+    const task = await handle.done;
+    expect(h.connector.fetchMedia).toHaveBeenCalledTimes(1);
+    const warning = log.records().find((r) => r.msg === '下载文件失败')!;
+    expect(warning).toMatchObject({ traceId: task.input.trace!.traceId, taskId: task.taskId });
+    expect(['fast', 'slow']).toContain(warning.lane);
+    expect(log.lines.join('')).not.toMatch(/PRIVATE_DOWNLOAD_BODY|sk-abcdefghijk/);
+  });
+
+  it('主动准入记录输入 span，Task 与投递沿用评估 trace', async () => {
+    const log = captured();
+    const h = await harness({ logger: log.logger });
+    log.logger.configure({ level: 'debug' });
+    const trace = createTrace({ sessionKey: 'ob11:g8888' });
+    log.logger
+      .withTrace(trace)
+      .event('proactive.evaluation', { trigger: 'test', candidateCount: 1 });
+    const accepted = await h.system.proactive.submit({
+      trace,
+      input: {
+        target: message().target,
+        scene: 'scene-2',
+        directive: '主动任务',
+        reason: 'triggered',
+      },
+      reference: message('proactive-trace'),
+      scope: { id: 'scope', limit: 1, reserve: vi.fn(), release: vi.fn(), commit: vi.fn() },
+      onSpoke: vi.fn(),
+    });
+    expect(accepted).toBe(true);
+    (await h.runtime('fast')).finish('reply');
+    (await h.runtime('slow')).finish('NO_REPLY');
+    const task = await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
+    const input = log
+      .records()
+      .find((r) => r.event === 'input.received' && r.source === 'proactive')!;
+    expect(input).toMatchObject({
+      traceId: trace.traceId,
+      parentSpanId: trace.spanId,
+      inputMessageId: 'proactive-trace',
+    });
+    expect(task.input.trace).toMatchObject({ traceId: trace.traceId, parentSpanId: input.spanId });
+    expect(
+      h.system.queue.messages(task.taskId).every((r) => r.trace!.traceId === trace.traceId)
+    ).toBe(true);
+  });
+
+  it('输入短路仅由具体 stage 记录原因，并延续原输入 span', async () => {
+    const log = captured();
+    log.logger.configure({ level: 'debug' });
+    const h = await harness({ logger: log.logger });
+    h.mock.input(1, 'running');
+    await h.runtime('fast');
+    await h.runtime('slow');
+    h.mock.input(1, 'running');
+    h.mock.input(2, '/stop', 123);
+    h.mock.input(3, '/stop', 999);
+    await vi.waitFor(() => {
+      expect(h.system.manager.list()[0]!.status).toBe('cancelled');
+    });
+    const records = log.records();
+    const shortcuts = records.filter((r) => r.event === 'input.shortcut');
+    expect(shortcuts.map((r) => [r.stage, r.reason])).toEqual([
+      ['dedupe', 'duplicate-event'],
+      ['session-command', 'permission-denied'],
+      ['session-command', 'command-stop'],
+    ]);
+    for (const shortcut of shortcuts)
+      expect(
+        records.find(
+          (r) =>
+            r.event === 'input.received' &&
+            r.traceId === shortcut.traceId &&
+            r.spanId === shortcut.parentSpanId
+        )
+      ).toBeDefined();
+    const command = records.find((r) => r.event === 'input.received' && r.inputMessageId === '3')!;
+    const response = h.system.queue.messages().find((r) => r.candidate.message.msgId === '3')!;
+    expect(response.trace!.traceId).toBe(command.traceId);
+  });
+
+  it('SIGHUP 和非法更新不重启 runtime、不取消 Task；随后仍能正常结算', async () => {
+    const log = captured();
+    const h = await harness({ logger: log.logger });
+    const handle = await h.system.actor.submit(h.system.context(message('reload')));
+    const fast = await h.runtime('fast'),
+      slow = await h.runtime('slow');
+    const source = new EventEmitter();
+    let valid = true;
+    const stop = installLoggingReload(source, log.logger, () => {
+      if (!valid) throw new Error('invalid');
+      return { ...h.config.logging, diagnosticSessionKeys: ['ob11:g8888'] };
+    });
+    source.emit('SIGHUP');
+    valid = false;
+    source.emit('SIGHUP');
+    expect(h.runtimes).toHaveLength(2);
+    expect(fast.disposed + slow.disposed).toBe(0);
+    expect(h.system.manager.get(handle.taskId)?.cancelAccepted).toBe(false);
+    fast.finish('completed');
+    slow.finish('NO_REPLY');
+    expect((await handle.done).status).toBe('completed');
+    stop();
+  });
+
+  it('输出断流不影响双 lane 和投递终态，根因不会递归记录自身故障', async () => {
+    const logger = createLogger({
+      autoTick: false,
+      sink: () => {
+        throw new Error('broken sink');
+      },
+    });
+    const h = await harness({ logger });
+    const handle = await h.system.actor.submit(h.system.context(message('sink-failure')));
+    (await h.runtime('fast')).finish('still deliver');
+    (await h.runtime('slow')).finish('NO_REPLY');
+    expect((await handle.done).status).toBe('completed');
+    await vi.waitFor(() => {
+      expect(h.system.queue.snapshot().sent).toBe(1);
+    });
+    expect(logger.snapshot().sinkFailures).toBeGreaterThan(0);
+    expect(logger.snapshot().dropped).toBeGreaterThan(0);
+  });
+
+  it('管理员取消事件关联命令输入与目标 Task；旧 runtime 通知不重复终态', async () => {
+    const log = captured();
+    const h = await harness({ logger: log.logger });
+    h.mock.input(1, 'running');
+    const fast = await h.runtime('fast'),
+      slow = await h.runtime('slow');
+    h.mock.input(2, '/stop', 999);
+    await vi.waitFor(() => {
+      expect(h.system.manager.list()[0]!.status).toBe('cancelled');
+    });
+    fast.finish('late');
+    slow.finish('late');
+    const records = log.records();
+    const command = records.find((r) => r.event === 'input.received' && r.inputMessageId === '2')!;
+    const cancel = records.find((r) => r.event === 'task.cancel')!;
+    expect(cancel).toMatchObject({
+      initiatorTraceId: command.traceId,
+      initiatorSpanId: command.spanId,
+    });
+    expect(cancel.traceId).not.toBe(command.traceId);
+    expect(records.filter((r) => r.event === 'task.terminal')).toHaveLength(1);
+  });
+});
+
+it('旧 Task 和消息按 taskId 派生一致 trace，重复恢复不再记录终态和根因', () => {
+  const root = mkdtempSync(join(tmpdir(), 'logging-recovery-'));
+  cleanups.push(async () => rm(root, { recursive: true, force: true }));
+  const taskStore = new TaskStore<TaskSnapshot>(join(root, 'tasks.json'));
+  const messageStore = new TaskStore<QueuedMessage>(join(root, 'messages.json'));
+  taskStore.save([
+    {
+      taskId: 'legacy-task',
+      input: input(),
+      createdAt: 1,
+      creationSequence: 1,
+      status: 'pending',
+      cancelAccepted: false,
+      lanes: { fast: { status: 'queued' }, slow: { status: 'queued' } },
+    },
+  ]);
+  messageStore.save([
+    {
+      id: 'legacy-message',
+      candidate: {
+        taskId: 'legacy-task',
+        lane: 'fast',
+        message: message(),
+        text: 'PRIVATE_OLD_BODY',
+        kind: 'final',
+      },
+      status: 'sending',
+      createdAt: 1,
+    },
+  ]);
+  const records: Record<string, unknown>[] = [];
+  const logger = createLogger({
+    autoTick: false,
+    sink: (line) => {
+      records.push(JSON.parse(line));
+    },
+  });
+  const manager = new TaskLifeCycleManager({ store: taskStore, logger });
+  manager.recover();
+  const queue = new MessageQueue({ store: messageStore, connectors: new Map(), logger });
+  const trace = manager.get('legacy-task')!.input.trace!;
+  expect(queue.messages()[0]!.trace!.traceId).toBe(trace.traceId);
+  expect(trace.historicalTraceMissing).toBe(true);
+  expect(records.every((r) => r.traceId === trace.traceId)).toBe(true);
+  const count = records.length;
+  new TaskLifeCycleManager({ store: taskStore, logger }).recover();
+  const restarted = new MessageQueue({ store: messageStore, connectors: new Map(), logger });
+  expect(records).toHaveLength(count);
+  expect(records.filter((r) => r.event === 'task.terminal')).toHaveLength(1);
+  expect(records.filter((r) => r.event === 'delivery.terminal')).toHaveLength(1);
+  expect(records.filter((r) => r.event === 'root.error')).toHaveLength(1);
+  expect(JSON.stringify(records)).not.toContain('PRIVATE_OLD_BODY');
+  queue.close();
+  restarted.close();
 });

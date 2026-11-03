@@ -5,13 +5,15 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { BotConnector, NormalizedMessage, ReplyContext } from '../core/connector.js';
-import type { Logger } from '../logger.js';
+import { traceSpan, legacyTrace, type TraceContext, type Logger } from '../logger.js';
 import type { TaskStore } from '../store/tasks.js';
 import { SYSTEM_CLOCK, type TaskClock } from './clock.js';
 import { readonlySnapshot, type DeliveryResult, type ReplyCandidate } from './types.js';
 
 /** 发送前持久化 sending 和锚点；重启时该状态代表结果未知，禁止自动重发。 */
 export interface QueuedMessage {
+  trace?: TraceContext;
+  errorId?: string;
   id: string;
   candidate: ReplyCandidate;
   status: 'pending' | 'sending' | 'sent' | 'failed' | 'discarded';
@@ -37,6 +39,7 @@ export class MessageQueue {
   >();
   private readonly clock: TaskClock;
   private closed = false;
+  private readonly noticesToLog = new Set<string>();
   constructor(
     private readonly options: {
       connectors: ReadonlyMap<string, BotConnector>;
@@ -52,24 +55,48 @@ export class MessageQueue {
     }
   ) {
     this.clock = options.clock ?? SYSTEM_CLOCK;
-    for (const record of options.store?.load() ?? []) {
+    this.restore(options.store?.load() ?? []);
+  }
+  private restore(records: QueuedMessage[]): void {
+    for (const record of records) {
+      record.trace ??=
+        record.candidate.trace ??
+        traceSpan(
+          legacyTrace(record.candidate.taskId, record.candidate.message.target.key),
+          { messageId: record.id, lane: record.candidate.lane },
+          () => `${record.id}:delivery`
+        );
+      record.candidate.trace = record.trace;
       this.records.set(record.id, record);
       if (record.anchor) {
         const key = this.anchorKey(record.candidate.message, record.anchor.msgId);
         this.sequences.set(key, Math.max(this.sequences.get(key) ?? 0, record.anchor.seq));
       }
     }
+    this.recoverDelivery();
+  }
+  private recoverDelivery(): void {
+    const recovered: QueuedMessage[] = [];
     // 发送中消息的远端结果无法确认，恢复为失败并补一条通知，不重发原消息。
     for (const record of this.records.values())
       if (record.status === 'sending') {
         record.status = 'failed';
         record.error = '服务重启，发送结果无法确认';
+        record.errorId ??= this.log(record).cause(new Error('restart'), 'delivery-restart-unknown');
+        recovered.push(record);
         record.finishedAt = this.clock.now();
       }
     for (const record of [...this.records.values()])
       if (record.status === 'failed' && !record.candidate.notification && !record.failureNoticeId)
         this.failureNotice(record);
     this.persist();
+    for (const record of recovered)
+      this.log(record).event('delivery.terminal', {
+        status: record.status,
+        errorId: record.errorId,
+        errorClass: 'restart-unknown',
+        recovered: true,
+      });
   }
   onDelivery(
     fn: (result: DeliveryResult, candidate: Readonly<ReplyCandidate>) => void
@@ -90,12 +117,7 @@ export class MessageQueue {
   enqueue(candidate: ReplyCandidate, id: string = randomUUID()): string {
     if (this.closed) throw new Error('消息队列已关闭');
     if (this.records.has(id)) return id;
-    const record: QueuedMessage = {
-      id,
-      candidate: structuredClone(candidate),
-      status: 'pending',
-      createdAt: this.clock.now(),
-    };
+    const record = this.newRecord(candidate, id);
     if (candidate.immediateOnly && !this.route(candidate, false)) {
       record.status = 'discarded';
       record.finishedAt = this.clock.now();
@@ -107,9 +129,33 @@ export class MessageQueue {
       this.records.delete(id);
       throw error;
     }
+    this.logEnqueued(record);
     if (record.status === 'discarded') this.publish(record);
     this.wake();
     return id;
+  }
+  private newRecord(candidate: ReplyCandidate, id: string): QueuedMessage {
+    const trace = traceSpan(
+      candidate.trace ?? legacyTrace(candidate.taskId, candidate.message.target.key),
+      { messageId: id, lane: candidate.lane }
+    );
+    const record: QueuedMessage = {
+      trace,
+      id,
+      candidate: structuredClone({ ...candidate, trace }),
+      status: 'pending',
+      createdAt: this.clock.now(),
+    };
+    return record;
+  }
+  private logEnqueued(record: QueuedMessage): void {
+    const c = record.candidate;
+    this.log(record).event('delivery.enqueued', {
+      kind: c.kind,
+      contentLength: c.text.length,
+      attachmentCount: c.attachment ? 1 : 0,
+      notification: !!c.notification,
+    });
   }
   canSend(candidate: ReplyCandidate): boolean {
     return !!this.route(candidate, false);
@@ -192,40 +238,46 @@ export class MessageQueue {
       const channel = this.channel(record.candidate);
       if (this.sending.has(channel)) {
         if (record.candidate.immediateOnly) {
-          record.status = 'discarded';
-          record.finishedAt = this.clock.now();
-          this.persist();
-          this.publish(record);
+          this.discard(record);
         }
         continue;
       }
       const route = this.route(record.candidate, true);
       if (!route) {
         if (record.candidate.immediateOnly) {
-          record.status = 'discarded';
-          record.finishedAt = this.clock.now();
-          this.persist();
-          this.publish(record);
+          this.discard(record);
         }
         continue;
       }
-      record.status = 'sending';
-      record.attemptedAt = this.clock.now();
-      if (
-        record.candidate.quote === false &&
-        this.clock.now() - record.candidate.message.ts >= 30_000
-      )
-        record.candidate.quote = true;
-      if (route.context.msgId)
-        record.anchor = { msgId: route.context.msgId, seq: route.context.seq };
-      // 必须先记录尝试再调用平台，崩溃后才能识别结果未知的消息。
-      this.persist();
-      this.sending.add(channel);
-      void this.send(record, route).finally(() => {
-        this.sending.delete(channel);
-        this.wake();
-      });
+      this.attempt(record, route, channel);
     }
+  }
+  private discard(record: QueuedMessage): void {
+    record.status = 'discarded';
+    record.finishedAt = this.clock.now();
+    this.persist();
+    this.publish(record);
+  }
+  private attempt(record: QueuedMessage, route: Route, channel: string): void {
+    record.status = 'sending';
+    record.attemptedAt = this.clock.now();
+    if (
+      record.candidate.quote === false &&
+      this.clock.now() - record.candidate.message.ts >= 30_000
+    )
+      record.candidate.quote = true;
+    if (route.context.msgId) record.anchor = { msgId: route.context.msgId, seq: route.context.seq };
+    // 必须先记录尝试再调用平台，崩溃后才能识别结果未知的消息。
+    this.persist();
+    this.log(record).event('delivery.attempt', {
+      anchorMessageId: route.context.msgId,
+      seq: route.context.seq,
+    });
+    this.sending.add(channel);
+    void this.send(record, route).finally(() => {
+      this.sending.delete(channel);
+      this.wake();
+    });
   }
   /** 一次调用，无重试循环；超时后即使远端迟到成功，也不重新结算本消息。 */
   private async send(record: QueuedMessage, route: Route): Promise<void> {
@@ -256,20 +308,19 @@ export class MessageQueue {
       record.status = 'sent';
       record.finishedAt = this.clock.now();
     } catch (error) {
-      record.status = 'failed';
-      record.error = error instanceof Error ? error.message : String(error);
-      record.finishedAt = this.clock.now();
-      this.options.logger.warn('消息发送失败，不重试', {
-        messageId: record.id,
-        taskId: record.candidate.taskId,
-        error: record.error,
-      });
-      if (!record.candidate.notification) this.failureNotice(record);
+      this.fail(record, error);
     } finally {
       if (timer) this.clock.clearTimeout(timer);
     }
     this.persist();
     this.publish(record);
+  }
+  private fail(record: QueuedMessage, error: unknown): void {
+    record.status = 'failed';
+    record.error = error instanceof Error ? error.message : String(error);
+    record.finishedAt = this.clock.now();
+    record.errorId = this.log(record).cause(error, 'delivery-send-failed');
+    if (!record.candidate.notification) this.failureNotice(record);
   }
   /** 通知有固定 ID 且带 notification 标记，保证只生成一次、失败不递归。 */
   private failureNotice(record: QueuedMessage): void {
@@ -281,10 +332,15 @@ export class MessageQueue {
     if (c.attachment) name = `附件「${c.attachment.fileName}」`;
     else if (c.kind === 'progress') name = '存活提醒';
     else name = c.text.slice(0, 30);
+    const trace = traceSpan(record.trace ?? legacyTrace(c.taskId), { messageId: id });
+    this.noticesToLog.add(id);
     this.records.set(id, {
       id,
+      trace,
+      errorId: record.errorId,
       candidate: {
         ...c,
+        trace,
         attachment: undefined,
         text: `发送 ${name} 消息失败。`,
         notification: true,
@@ -298,6 +354,12 @@ export class MessageQueue {
   private publish(record: QueuedMessage): void {
     if (record.status !== 'sent' && record.status !== 'failed' && record.status !== 'discarded')
       return;
+    this.log(record).event('delivery.terminal', {
+      status: record.status,
+      durationMs: (record.finishedAt ?? this.clock.now()) - record.createdAt,
+      errorId: record.errorId,
+      errorClass: record.status === 'failed' ? 'delivery-failed' : undefined,
+    });
     const result: DeliveryResult = {
       messageId: record.id,
       taskId: record.candidate.taskId,
@@ -314,7 +376,22 @@ export class MessageQueue {
       }
     }
   }
+  private log(record: QueuedMessage): Logger {
+    return this.options.logger.withTrace(
+      record.trace ?? legacyTrace(record.candidate.taskId, record.candidate.message.target.key)
+    );
+  }
   private persist(): void {
     this.options.store?.save([...this.records.values()]);
+    for (const id of this.noticesToLog) {
+      const notice = this.records.get(id);
+      if (notice) this.logEnqueued(notice);
+      if (notice)
+        this.log(notice).event('delivery.notice', {
+          sourceMessageId: id.slice(0, -15),
+          errorId: notice.errorId,
+        });
+    }
+    this.noticesToLog.clear();
   }
 }

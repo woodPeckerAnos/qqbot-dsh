@@ -13,11 +13,12 @@ import type {
   SubagentStartedNotification,
   SubagentFinishedNotification,
 } from '../dsh/protocol.js';
+import { AgentTraceObserver } from '../dsh/agent-trace.js';
 import { TurnAccumulator } from '../dsh/turns.js';
 import { scanOutbox } from '../pipeline/egress/outbox.js';
 import type { MessageContext } from '../pipeline/ingress/types.js';
 import type { Config } from '../config.js';
-import type { Logger } from '../logger.js';
+import { traceSpan, legacyTrace, type Logger } from '../logger.js';
 import { SYSTEM_CLOCK, type TaskClock } from './clock.js';
 import type { TaskLifeCycleManager } from './lifecycle.js';
 import type { PromptPreparer } from './prompt-preparer.js';
@@ -57,11 +58,20 @@ export class DshLaneRunner implements LaneRunner {
   ): Promise<LaneResult> {
     const { preparer, manager, config } = this.options;
     const pool = this.options.pools[lane];
+    let logger = this.options.logger.withTrace(
+      task.lanes[lane].trace ?? task.input.trace ?? legacyTrace(task.taskId)
+    );
+    let observer: AgentTraceObserver | undefined;
+    let executionId: string | undefined;
     let lease: RuntimeEntry | undefined;
     let result: LaneResult;
     const disposers: (() => void)[] = [];
     try {
-      const prepared = await preparer.prepare(task, context);
+      const prepared = await preparer.prepare(task, {
+        ...context,
+        trace: task.lanes[lane].trace,
+        logger,
+      });
       if (signal.aborted) return { kind: 'cancelled' };
       const workspace = join(preparer.workspace(task), lane);
       await mkdir(workspace, { recursive: true });
@@ -69,14 +79,21 @@ export class DshLaneRunner implements LaneRunner {
         join(preparer.workspace(task), 'AGENTS.md'),
         join(workspace, 'AGENTS.md')
       ).catch(() => {});
-      const executionId = randomUUID();
+      executionId = randomUUID();
       const sessionId = `task-${task.taskId}-${lane}-${executionId}`;
+      logger = this.options.logger.withTrace(
+        traceSpan(task.lanes[lane].trace ?? task.input.trace ?? legacyTrace(task.taskId), {
+          executionId,
+          dshSessionId: sessionId,
+        })
+      );
       const control = this.options.control.bind(task);
       // 隔离键包含 Task 和 lane，fd 3 控制请求还必须匹配本次唯一 sessionId。
       const acquiring = pool.acquireLease(
         `${task.input.message.target.key}:${lane}:${task.taskId}`,
         workspace,
         {
+          logger,
           env: { QQBOT_TASK_CHANNEL: '1', QQBOT_LANE: lane },
           taskControl: (request) => {
             if (signal.aborted || request.sessionId !== sessionId)
@@ -114,9 +131,22 @@ export class DshLaneRunner implements LaneRunner {
       if (signal.aborted) return { kind: 'cancelled' };
       const execution = { executionId, sessionId, runtimeGeneration: lease.generation };
       if (!manager.start(task.taskId, lane, execution)) return { kind: 'cancelled' };
+      const trace = manager.get(task.taskId)?.lanes[lane].trace ?? legacyTrace(task.taskId);
+      logger = this.options.logger.withTrace(trace);
+      logger.event('execution.started');
+      const executionStartedAt = this.clock.now();
+      observer = new AgentTraceObserver({
+        trace,
+        logger,
+        deferBudgetRelease: true,
+        isCurrent: () => manager.matches(task.taskId, lane, execution),
+        now: () => this.clock.now(),
+      });
+      const tracing = observer;
       const runtime = lease.runtime;
       const accumulator = new TurnAccumulator(sessionId);
       const children = new Set<string>();
+      const childParents = new Map<string, string>();
       let businessCalls = 0;
       let childFailed = false;
       let lastSeq = -1;
@@ -165,6 +195,7 @@ export class DshLaneRunner implements LaneRunner {
         else finish({ kind: 'reply', text });
       };
       const event = (notification: SessionEventNotification) => {
+        tracing.observe(notification);
         if (
           settled ||
           notification.sessionId !== sessionId ||
@@ -173,13 +204,17 @@ export class DshLaneRunner implements LaneRunner {
         )
           return;
         lastSeq = notification.event.seq;
-        this.options.onEvent?.({
-          taskId: task.taskId,
-          sessionKey: task.input.message.target.key,
-          lane,
-          ...execution,
-          type: notification.event.type,
-        });
+        try {
+          this.options.onEvent?.({
+            taskId: task.taskId,
+            sessionKey: task.input.message.target.key,
+            lane,
+            ...execution,
+            type: notification.event.type,
+          });
+        } catch (error) {
+          logger.cause(error, 'lane-observer-failed');
+        }
         if (notification.event.type === 'tool/call') {
           const data = notification.event.data as { name?: string; call?: { name?: string } };
           if (!['query_tasks', 'cancel_task'].includes(data.name ?? data.call?.name ?? ''))
@@ -199,11 +234,24 @@ export class DshLaneRunner implements LaneRunner {
         check();
       };
       const started = (n: SubagentStartedNotification) => {
-        if (n.parentSessionId === sessionId || children.has(n.parentSessionId))
+        tracing.started(n);
+        if (settled || !manager.matches(task.taskId, lane, execution)) return;
+        if (
+          !childParents.has(n.childSessionId) &&
+          (n.parentSessionId === sessionId || children.has(n.parentSessionId))
+        ) {
+          childParents.set(n.childSessionId, n.parentSessionId);
           children.add(n.childSessionId);
+        }
       };
       const finished = (n: SubagentFinishedNotification) => {
-        if (children.delete(n.childSessionId)) {
+        tracing.finished(n);
+        if (
+          !settled &&
+          manager.matches(task.taskId, lane, execution) &&
+          childParents.get(n.childSessionId) === n.parentSessionId &&
+          children.delete(n.childSessionId)
+        ) {
           childFailed ||= n.status === 'error';
           check();
         }
@@ -212,8 +260,31 @@ export class DshLaneRunner implements LaneRunner {
         finish({ kind: 'cancelled' });
       };
       const exit = () => {
-        finish({ kind: 'failed', text: '任务运行进程退出，执行中断。', error: 'runtime-exit' });
+        finish({
+          kind: 'failed',
+          text: '任务运行进程退出，执行中断。',
+          error: 'runtime-exit',
+          errorId: runtime.lastErrorId,
+        });
       };
+      const invalid = () => {
+        tracing.invalid();
+      };
+      const unknown = () => {
+        tracing.unknown();
+      };
+      const violation = (error: unknown) => {
+        if (settled) return;
+        finish({
+          kind: 'failed',
+          text: '任务协议异常，执行已停止。',
+          error: 'protocol-violation',
+          errorId: runtime.lastErrorId ?? logger.cause(error, 'protocol-violation'),
+        });
+      };
+      runtime.on('invalid', invalid);
+      runtime.on('unknown', unknown);
+      runtime.on('violation', violation);
       runtime.on('session.event', event);
       runtime.on('session.status', status);
       runtime.on('subagent.started', started);
@@ -221,6 +292,9 @@ export class DshLaneRunner implements LaneRunner {
       runtime.on('exit', exit);
       signal.addEventListener('abort', abort, { once: true });
       disposers.push(() => {
+        runtime.off('invalid', invalid);
+        runtime.off('unknown', unknown);
+        runtime.off('violation', violation);
         runtime.off('session.event', event);
         runtime.off('session.status', status);
         runtime.off('subagent.started', started);
@@ -250,10 +324,27 @@ export class DshLaneRunner implements LaneRunner {
       ];
       // 监听器、身份和计时器先于派发，连同步 mock 事件也不会漏收或串属。
       void runtime.prompt(sessionId, blocks).catch((error: unknown) => {
-        finish({ kind: 'failed', text: '任务派发失败，请稍后重新提交。', error: String(error) });
+        if (settled) return;
+        finish({
+          kind: 'failed',
+          text: '任务派发失败，请稍后重新提交。',
+          error: 'prompt-failed',
+          errorId: logger.cause(error, 'prompt-failed'),
+        });
       });
       result = await done;
+      if (result.kind === 'failed' && !result.errorId)
+        result = { ...result, errorId: logger.cause(new Error(result.error), result.error) };
+      logger.event('execution.ended', {
+        resultKind: result.kind,
+        durationMs: this.clock.now() - executionStartedAt,
+        ...(result.kind === 'failed' ? { errorId: result.errorId, errorClass: result.error } : {}),
+      });
+      tracing.close();
       manager.endExecution(task.taskId, lane);
+      const artifactStartedAt = this.clock.now();
+      const artifactTrace = traceSpan(trace);
+      logger = this.options.logger.withTrace(artifactTrace);
       disposers.forEach((fn) => {
         fn();
       });
@@ -264,7 +355,7 @@ export class DshLaneRunner implements LaneRunner {
         const outbox = await scanOutbox(join(workspace, config.media.outboxDir), {
           maxFileBytes: config.media.maxFileBytes,
           imageExtensions: config.media.imageExtensions,
-          logger: this.options.logger,
+          logger,
         });
         if (outbox.oversize.length || outbox.skipped.length) {
           const text = `部分交付物无法发送：${[...outbox.oversize, ...outbox.skipped].join('、')}。`;
@@ -285,16 +376,32 @@ export class DshLaneRunner implements LaneRunner {
           else result = { ...result, attachments: outbox.attachments };
         }
       }
+      if (result.kind === 'failed' && !result.errorId)
+        result = { ...result, errorId: logger.cause(new Error(result.error), result.error) };
+      result = { ...result, trace: artifactTrace };
+      logger.event('artifact.prepared', {
+        resultKind: result.kind,
+        contentLength: 'text' in result ? result.text.length : 0,
+        attachmentCount: 'attachments' in result ? (result.attachments?.length ?? 0) : 0,
+        durationMs: this.clock.now() - artifactStartedAt,
+      });
       return result;
     } catch (error) {
       return signal.aborted
         ? { kind: 'cancelled' }
-        : { kind: 'failed', text: '任务执行失败，请稍后重新提交。', error: String(error) };
+        : {
+            kind: 'failed',
+            text: '任务执行失败，请稍后重新提交。',
+            error: 'lane-failed',
+            errorId: logger.cause(error, 'lane-failed'),
+          };
     } finally {
+      observer?.close();
       disposers.forEach((fn) => {
         fn();
       });
       if (lease) await pool.drop(lease);
+      if (executionId) logger.finishExecution(executionId);
     }
   }
 }

@@ -4,7 +4,15 @@
  * runtime 终止、产物发送和文件清理由其他模块执行。
  */
 import { randomUUID } from 'node:crypto';
-import type { Logger } from '../logger.js';
+import {
+  createTrace,
+  createNullLogger,
+  traceSpan,
+  legacyTrace,
+  errorClass,
+  type Logger,
+  type TraceContext,
+} from '../logger.js';
 import { TaskStore } from '../store/tasks.js';
 import {
   LANES,
@@ -39,6 +47,13 @@ export class TaskLifeCycleManager {
     } = {}
   ) {
     for (const task of options.store?.load() ?? []) {
+      task.input.trace ??= legacyTrace(task.taskId, task.input.message.target.key);
+      for (const lane of LANES)
+        task.lanes[lane].trace ??= traceSpan(
+          task.input.trace,
+          { lane },
+          () => `${task.taskId}:${lane}:legacy`
+        );
       task.creationSequence ??= this.nextSequence + 1;
       this.nextSequence = Math.max(this.nextSequence, task.creationSequence);
       this.tasks.set(task.taskId, task);
@@ -70,13 +85,26 @@ export class TaskLifeCycleManager {
     if (this.tasks.has(taskId)) throw new Error('Task ID 已存在');
     const task: TaskSnapshot = {
       taskId,
-      input: structuredClone(input),
+      input: structuredClone({
+        ...input,
+        trace: traceSpan(
+          input.trace ??
+            createTrace({
+              sessionKey: input.message.target.key,
+              inputMessageId: input.message.msgId,
+              inputEventId: input.message.eventId,
+            }),
+          { taskId }
+        ),
+      }),
       createdAt: this.now(),
       creationSequence: ++this.nextSequence,
       status: 'pending',
       cancelAccepted: false,
       lanes: { fast: { status: 'queued' }, slow: { status: 'queued' } },
     };
+    for (const lane of LANES)
+      task.lanes[lane].trace = traceSpan(task.input.trace ?? legacyTrace(taskId), { lane });
     const completion = this.completion(taskId);
     this.tasks.set(taskId, task);
     try {
@@ -86,6 +114,7 @@ export class TaskLifeCycleManager {
       this.completions.delete(taskId);
       throw error;
     }
+    this.logAdmission(task);
     this.publish(task);
     return { taskId, done: completion.done };
   }
@@ -111,15 +140,19 @@ export class TaskLifeCycleManager {
   start(taskId: string, lane: Lane, execution?: LaneExecution): boolean {
     const task = this.tasks.get(taskId);
     if (!task || task.cancelAccepted || task.lanes[lane].status !== 'queued') return false;
-    task.lanes[lane] = { status: 'running', startedAt: this.now(), execution };
+    task.lanes[lane] = { ...task.lanes[lane], status: 'running', startedAt: this.now(), execution };
+    if (execution) task.lanes[lane].trace = this.executionTrace(task, lane, execution);
     task.status = 'running';
-    this.commit(task);
+    this.commit(task, () => {
+      this.log(task, lane).event('task.lane', { status: 'running' });
+    });
     return true;
   }
   bindExecution(taskId: string, lane: Lane, execution: LaneExecution): boolean {
     const task = this.tasks.get(taskId);
     if (!task || task.cancelAccepted || task.lanes[lane].status !== 'running') return false;
     task.lanes[lane].execution = { ...execution };
+    task.lanes[lane].trace = this.executionTrace(task, lane, execution);
     this.commit(task);
     return true;
   }
@@ -137,7 +170,12 @@ export class TaskLifeCycleManager {
   /** 区分执行结束与产物收尾，供 /stop 和存活提醒判断实际执行是否仍在继续。 */
   endExecution(taskId: string, lane: Lane): void {
     const task = this.tasks.get(taskId);
-    if (!task || task.lanes[lane].status !== 'running') return;
+    if (
+      !task ||
+      task.lanes[lane].status !== 'running' ||
+      task.lanes[lane].executionEndedAt !== undefined
+    )
+      return;
     task.lanes[lane].executionEndedAt = this.now();
     this.commit(task);
   }
@@ -157,19 +195,30 @@ export class TaskLifeCycleManager {
       else task.status = 'completed';
       task.endedAt = this.now();
     }
-    this.commit(task);
+    this.commit(task, () => {
+      this.logLane(task, lane, result);
+    });
     if (isTaskTerminal(task)) {
       this.completions.get(taskId)?.resolve(readonlySnapshot(task));
       this.completions.delete(taskId);
     }
   }
   /** 只记录接受取消；Actor / 调度器随后终止剩余执行并提交各 lane 的结果。 */
-  cancel(taskId: string): { accepted: boolean; task?: Readonly<TaskSnapshot> } {
+  cancel(
+    taskId: string,
+    initiator?: TraceContext
+  ): { accepted: boolean; task?: Readonly<TaskSnapshot> } {
     const task = this.tasks.get(taskId);
     if (!task || isTaskTerminal(task))
       return { accepted: false, task: task && readonlySnapshot(task) };
+    if (task.cancelAccepted) return { accepted: true, task: readonlySnapshot(task) };
     task.cancelAccepted = true;
     this.commit(task);
+    this.log(task).event('task.cancel', {
+      initiatorTraceId: initiator?.traceId,
+      initiatorSpanId: initiator?.spanId,
+      initiatorTaskId: initiator?.taskId,
+    });
     return { accepted: true, task: readonlySnapshot(task) };
   }
   /** 冷启动不重跑执行；保留已终结 lane，仅将未完成 lane 标为中断失败。 */
@@ -218,8 +267,32 @@ export class TaskLifeCycleManager {
     }
     return value;
   }
-  private commit(task: TaskSnapshot): void {
+  private logAdmission(task: TaskSnapshot): void {
+    this.log(task).event('task.created', {
+      source: task.input.source,
+      generation: task.input.generation,
+    });
+    for (const lane of LANES) this.log(task, lane).event('task.lane', { status: 'queued' });
+  }
+  private logLane(task: TaskSnapshot, lane: Lane, result: LaneResult): void {
+    const fields =
+      result.kind === 'failed'
+        ? { errorId: result.errorId, errorClass: errorClass(result.error) }
+        : {};
+    this.log(task, lane).event('task.lane', {
+      status: task.lanes[lane].status,
+      resultKind: result.kind,
+      ...fields,
+    });
+    if (isTaskTerminal(task))
+      this.log(task).event('task.terminal', {
+        status: task.status,
+        durationMs: this.now() - task.createdAt,
+      });
+  }
+  private commit(task: TaskSnapshot, record?: () => void): void {
     this.persist();
+    record?.();
     this.publish(task);
   }
   private publish(task: TaskSnapshot): void {
@@ -233,6 +306,18 @@ export class TaskLifeCycleManager {
         });
       }
     }
+  }
+  private executionTrace(task: TaskSnapshot, lane: Lane, execution: LaneExecution): TraceContext {
+    return traceSpan(task.lanes[lane].trace ?? task.input.trace ?? legacyTrace(task.taskId), {
+      executionId: execution.executionId,
+      runtimeGeneration: execution.runtimeGeneration,
+      dshSessionId: execution.sessionId,
+    });
+  }
+  private log(task: TaskSnapshot, lane?: Lane): Logger {
+    return (this.options.logger ?? createNullLogger()).withTrace(
+      (lane && task.lanes[lane].trace) || task.input.trace || legacyTrace(task.taskId)
+    );
   }
   private persist(): void {
     this.options.store?.save([...this.tasks.values()]);

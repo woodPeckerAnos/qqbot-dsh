@@ -21,13 +21,20 @@
 
 import { join } from 'node:path';
 
-import { loadConfig, describeConfig, ConfigError, type Config } from './config.js';
+import {
+  resolveLoggingSettings,
+  loadConfig,
+  describeConfig,
+  ConfigError,
+  type Config,
+} from './config.js';
 import { loadConfigFile } from './config-file.js';
 import { QqOfficialConnector } from './adapters/qq-official/connector.js';
 import { QQ_OFFICIAL_PLATFORM } from './adapters/qq-official/gateway.js';
 import { TokenError } from './adapters/qq-official/token.js';
 import { OnebotConnector } from './adapters/onebot/connector.js';
 import type { BotConnector } from './core/connector.js';
+import { installLoggingReload } from './logging/reload.js';
 import { createLogger } from './logger.js';
 import { CN_HOLIDAYS_2026, OffpeakGate } from './offpeak/index.js';
 import { TaskSystem } from './task/system.js';
@@ -145,6 +152,20 @@ function buildConnector(
   });
 }
 
+async function finishShutdown(
+  stopReload: () => void,
+  health: HealthServer,
+  logger: ReturnType<typeof createLogger>,
+  stats: unknown,
+  exitCode: number
+): Promise<void> {
+  stopReload();
+  await health.stop();
+  logger.info('已退出', { stats });
+  await logger.flush();
+  process.exit(exitCode);
+}
+
 async function main(): Promise<void> {
   let config: Config;
   let configFile: string | undefined;
@@ -169,7 +190,10 @@ async function main(): Promise<void> {
     throw error;
   }
 
-  const logger = createLogger({ level: config.logLevel });
+  const logger = createLogger({ settings: config.logging });
+  const stopLoggingReload = installLoggingReload(process, logger, () =>
+    resolveLoggingSettings(process.env, loadConfigFile(process.env).config)
+  );
   const startedAt = Date.now();
 
   logger.info('启动 qqbot-dsh', {
@@ -394,66 +418,55 @@ async function main(): Promise<void> {
       interests,
       logger: logger.child({ component: 'proactive-watcher' }),
       metrics: {
-        evaluated: (trigger) => {
+        evaluated: (_trigger) => {
           stats.proactiveEvaluated += 1;
           stats.proactiveJudgeCalls += 1;
-          logger.debug('主动介入评估', { trigger });
         },
         judgeFailed: () => {
           stats.proactiveJudgeFailures += 1;
         },
-        judgeSuspended: (conversation) => {
+        judgeSuspended: (_conversation) => {
           stats.proactiveSuspended += 1;
-          logger.warn('主动介入暂停评估（判定连续失败）', { conversation });
         },
-        vetoed: (reason, scene) => {
+        vetoed: (_reason, _scene) => {
           stats.proactiveVetoed += 1;
-          logger.debug('主动介入被否决', { reason, scene });
         },
-        spoke: (scene, dryRun) => {
+        spoke: (_scene, dryRun) => {
           if (dryRun) stats.proactiveWouldSend += 1;
           else {
             stats.proactiveSpoke += 1;
           }
-          logger.info(dryRun ? '主动介入（dryRun：本应发言）' : '主动介入已发言', { scene });
         },
-        deliveryDegraded: (reason, scene) => {
+        deliveryDegraded: (_reason, _scene) => {
           stats.proactiveDegraded += 1;
-          logger.debug('主动介入投递降级', { reason, scene });
         },
         // wait 票据：每张票据只有一个终局，四个计数之和 == created（账目闭合）。
         // 这四个数是"wait 到底有没有价值"的唯一答案来源：
         // `resolved` 长期为 0 → 正确答案可能是把 `yielding` 也按 silent 处理。
-        waitTicket: (terminal, scene) => {
+        waitTicket: (terminal, _scene) => {
           stats.proactiveWaitTickets[terminal] = (stats.proactiveWaitTickets[terminal] ?? 0) + 1;
-          logger.debug('主动介入 wait 票据终局', { terminal, scene });
         },
-        waitTicketCreated: (reason, scene) => {
+        waitTicketCreated: (reason, _scene) => {
           stats.proactiveWaitTicketCreated += 1;
           stats.proactiveWaitTicketCreatedByReason[reason] =
             (stats.proactiveWaitTicketCreatedByReason[reason] ?? 0) + 1;
-          logger.debug('主动介入 wait 票据建立', { reason, scene });
         },
-        waitDeclined: (reason, scene) => {
+        waitDeclined: (reason, _scene) => {
           stats.proactiveWaitDeclined[reason] = (stats.proactiveWaitDeclined[reason] ?? 0) + 1;
-          logger.debug('主动介入：模型想等但被按下', { reason, scene });
         },
-        waitInvalidTarget: (scene) => {
+        waitInvalidTarget: (_scene) => {
           stats.proactiveWaitInvalidTarget += 1;
-          logger.debug('主动介入：模型引用了不存在的挂起问题', { scene });
         },
         // 话题 session：账目**必须闭合**（`opened === closed === Σ closedBy`）。
         // `spokeInSession` 的分布是"预算 2 到底对不对"的唯一答案来源。
-        sessionOpened: (scene) => {
+        sessionOpened: (_scene) => {
           stats.proactiveSessionOpened += 1;
-          logger.debug('主动介入：开启话题 session', { scene });
         },
         sessionClosed: (cause, speaks) => {
           stats.proactiveSessionClosed += 1;
           stats.proactiveSessionClosedBy[cause] = (stats.proactiveSessionClosedBy[cause] ?? 0) + 1;
           stats.proactiveSpokeInSession[String(speaks)] =
             (stats.proactiveSpokeInSession[String(speaks)] ?? 0) + 1;
-          logger.debug('主动介入：话题 session 关闭', { cause, speaks });
         },
       },
     });
@@ -560,7 +573,8 @@ async function main(): Promise<void> {
         await ctx.responder.error(error instanceof Error ? error.message : '任务准入失败。');
       }
     },
-    createResponder: (message) => new Responder({ message, queue: taskSystem.queue }),
+    createResponder: (message, _connector, _policy, _logger, trace) =>
+      new Responder({ message, queue: taskSystem.queue, trace }),
     // 旁听消息的去向：唯一入口是 watcher（未启用时留 undefined →
     // orchestrator 只计 skipped 计数）
     ...(proactive === undefined
@@ -631,6 +645,7 @@ async function main(): Promise<void> {
         },
         tasks: taskSystem.actor.snapshot(),
         messages: taskSystem.queue.snapshot(),
+        logging: logger.snapshot(),
         dispatcher: orchestrator.snapshotStats(),
         ...(proactiveHealth === undefined ? {} : { proactive: proactiveHealth() }),
       }),
@@ -668,10 +683,7 @@ async function main(): Promise<void> {
     await taskSystem.close();
 
     // 4. 关健康检查
-    await health.stop();
-
-    logger.info('已退出', { stats });
-    process.exit(exitCode);
+    await finishShutdown(stopLoggingReload, health, logger, stats, exitCode);
   };
 
   process.on('SIGTERM', () => void shutdown('SIGTERM'));

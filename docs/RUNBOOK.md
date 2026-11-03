@@ -2,6 +2,16 @@
 
 按"症状"组织的排查流程。每条都给出：**先看什么 → 常见原因 → 怎么修**。
 
+日志为 stderr JSONL，保留 level/time/msg 并增加 schemaVersion/event/component、instanceId 和追踪字段。按 traceId 查看一次输入或主动评估的全链路，按 taskId 区分同会话并发任务，按 lane/executionId/runtimeGeneration 区分执行；messageId 为队列消息 ID。`task.terminal` 表示执行已结束，`delivery.terminal` 才表示投递终结，中间可能仍在等待新出口。取消事件同时保留目标 trace 与 initiatorTraceId；恢复历史记录标记 historicalTraceMissing。
+
+日志只记录元数据。正文、工具参数/结果和 stderr 原文在 DSH 会话日志中排查；用 dshSessionId 在 DSH_HOME/sessions 中定位，dshSeq 可定位对应事件。不要通过容器日志寻找正文预览。重复错误只看首个 `root.error` 的 errorId，上层状态事件引用它。
+
+当前 DSH 的存储布局为 `DSH_HOME/sessions/<工作区编码>/<会话 ID 编码>/session.v*.jsonl.zstd`，默认使用 Zstandard 压缩；用 DSH 的 session persistence 读取接口查看逻辑事件，未压缩配置则保存 `.jsonl`。父子代理分别保存自己的会话记录和序号，不能把子代理 dshSeq 当成父会话序号。
+
+需要 agent 步骤诊断时，在 `config/logging.yml` 的 diagnosticTraceIds 或 diagnosticSessionKeys 填入目标，再运行 `docker compose kill -s SIGHUP qqbot`。无需重启 runtime 或取消 Task。默认 10 分钟到期，最多 30 分钟、8 个目标；全局 debug 也不会自动打开 agent 明细。每次执行父子共用 100 条，超额及重复信息在 agent.summary/logging.suppressed 中汇总，诊断仍只含元数据。清空目标后再次 SIGHUP 可立即关闭。
+
+`/metrics.logging` 暴露 emitted、deduplicated、aggregated、truncated、dropped、sinkFailures、queuedBytes、固定分类 droppedByCategory 和 diagnostics。queuedBytes 不应超过配置缓冲；持续 dropped/sinkFailures 时检查 stderr 出口和容器日志驱动，健康检查 warnings 也会提示。单条最多 8 KiB，缓冲默认最多 1 MiB，背压时优先丢诊断。退出最多等待 2 秒 flush；Docker 仍沿用 `20m × 5` 轮转。
+
 ---
 
 ## 0. 三十秒分诊

@@ -170,7 +170,8 @@ export class PromptPreparer {
     workspacePath: string,
     windowEntries: readonly ObservationEntry[]
   ): Promise<PreparedPrompt> {
-    const { config, logger } = this.deps;
+    const { config } = this.deps;
+    const { logger } = ctx;
     const { enabled, maxImages, maxImageBytes, maxImageTiles, downloadTimeoutMs } =
       config.attachments;
     const images = messageImageParts(ctx.message);

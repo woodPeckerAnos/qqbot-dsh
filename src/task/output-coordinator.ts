@@ -5,6 +5,7 @@
  */
 import { copyFile, mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+import { traceSpan, legacyTrace } from '../logger.js';
 import { randomUUID } from 'node:crypto';
 import { normalizeWhitespace, stripControlChars } from '../pipeline/markdown.js';
 import { segmentText } from '../pipeline/egress/chunk.js';
@@ -76,7 +77,18 @@ export class SessionOutputCoordinator {
       lane === 'slow' ||
       task.input.source === 'proactive' ||
       this.clock.now() - task.createdAt >= 30_000;
+    const current = this.options.manager.get(task.taskId);
+    const trace =
+      result.trace ??
+      traceSpan(
+        current?.lanes[lane].trace ??
+          task.lanes[lane].trace ??
+          task.input.trace ??
+          legacyTrace(task.taskId),
+        { lane }
+      );
     const base = {
+      trace,
       taskId: task.taskId,
       lane,
       message: task.input.message,
@@ -204,6 +216,7 @@ export class SessionOutputCoordinator {
           )
             return;
           const candidate: ReplyCandidate = {
+            trace: current.lanes.slow.trace ?? current.input.trace ?? legacyTrace(task.taskId),
             taskId: task.taskId,
             lane: 'slow',
             message: task.input.message,

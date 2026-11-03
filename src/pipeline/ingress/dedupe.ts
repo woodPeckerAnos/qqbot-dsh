@@ -9,14 +9,14 @@
 
 import type { SeenStore } from '../../store/seen.js';
 import type { PipelineStats } from '../stats.js';
-import type { IngressStage } from './types.js';
+import { logInputShortcut, type IngressStage } from './types.js';
 
 export function createDedupeStage(deps: { seen: SeenStore; stats: PipelineStats }): IngressStage {
   return async (ctx, next) => {
     const eventKey = ctx.message.eventId !== '' ? ctx.message.eventId : ctx.message.msgId;
     if (!deps.seen.claim(eventKey)) {
       deps.stats.deduplicated += 1;
-      ctx.logger.debug('丢弃重复事件', { eventId: eventKey });
+      logInputShortcut(ctx, 'dedupe', 'duplicate-event');
       return;
     }
     await next();

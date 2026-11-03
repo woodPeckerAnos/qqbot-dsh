@@ -265,7 +265,18 @@ export interface MediaFileConfig {
 }
 
 /** 配置文件里允许出现的全部内容（每项都可选）。 */
+export interface LoggingFileConfig {
+  maxRecordBytes?: number;
+  maxQueuedBytes?: number;
+  agentDetailLimit?: number;
+  dedupeWindowMs?: number;
+  diagnosticTraceIds?: string[];
+  diagnosticSessionKeys?: string[];
+  diagnosticTtlMs?: number;
+  flushTimeoutMs?: number;
+}
 export interface FileConfig {
+  logging?: LoggingFileConfig;
   connectors?: string[];
   qqOfficial?: QqOfficialFileConfig;
   onebot?: OnebotFileConfig;
@@ -469,6 +480,16 @@ const MEDIA_SPEC: SectionSpec = {
   outboxDir: 'string',
 };
 
+const LOGGING_SPEC: SectionSpec = {
+  maxRecordBytes: 'int',
+  maxQueuedBytes: 'int',
+  agentDetailLimit: 'int',
+  dedupeWindowMs: 'int',
+  diagnosticTraceIds: 'stringList',
+  diagnosticSessionKeys: 'stringList',
+  diagnosticTtlMs: 'int',
+  flushTimeoutMs: 'int',
+};
 const TOP_SCALARS: SectionSpec = {
   connectors: 'stringList',
   logLevel: 'string',
@@ -486,6 +507,7 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'offpeak', field: 'offpeak', spec: OFFPEAK_SPEC },
   { yamlKey: 'attachments', field: 'attachments', spec: ATTACHMENTS_SPEC },
   { yamlKey: 'media', field: 'media', spec: MEDIA_SPEC },
+  { yamlKey: 'logging', field: 'logging', spec: LOGGING_SPEC },
   { yamlKey: 'health', field: 'health', spec: HEALTH_SPEC },
   { yamlKey: 'proactive', field: 'proactive', spec: PROACTIVE_SPEC },
   { yamlKey: 'observation', field: 'observation', spec: OBSERVATION_SPEC },

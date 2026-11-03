@@ -33,6 +33,7 @@
 #
 # 生效方式
 #   - 改本文件或 config/**：docker compose restart qqbot（不需要重建镜像）。
+#   - 日志设置例外：docker compose kill -s SIGHUP qqbot，只应用 logging / logLevel。
 #   - 首次从旧版单文件配置升级：docker compose up -d 一次，让 ./config 挂载生效。
 #   - 不要删掉宿主上的 config/ 目录；模块缺失会启动失败，而不是悄悄用默认值。
 #
@@ -47,6 +48,9 @@ include:
   # --- 运行时 ----------------------------------------------------------------
   # dsh 进程与超时 / 并发池 / 存储路径 / 健康检查端口 / 日志级别
   - config/runtime.yml
+
+  # --- 核心日志（SIGHUP 重读；只应用日志设置）--------------------------------
+  - config/logging.yml
 
   # --- 富媒体 ----------------------------------------------------------------
   # attachments（图片/引用/转发/文件入站）与 media（agent 产物出站）

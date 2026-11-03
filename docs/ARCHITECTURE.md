@@ -1,5 +1,11 @@
 # SessionActor 与双 lane
 
+核心 Logger 已以显式只读 TraceContext 贯通输入、Task、双 lane、DSH 父子执行、产物和独立投递队列；日志只含元数据。状态写入权与调度不变，设计见 [ADR-002](adr/002-logging-tracing.md)。
+
+每次启动生成 instanceId，每个输入或主动评估生成 traceId。Task、lane、执行、子代理、产物和消息分别有 span；队列独立持久化 trace，Task 结束或清理后仍能关联投递，新的发送锚点不改写原输入。执行终态与投递终态分别记录。wait 票据保留触发 span，取消事件关联发起命令和目标 Task。
+
+Logger 子实例共享配置、预算与 stderr JSONL 缓冲。TaskLifeCycleManager 与 MessageQueue 在状态持久化后记录事件，DshLaneRunner 记录执行与产物，独立 AgentTraceObserver 只消费实时通知、按每个 DSH 会话水位去重并在执行结束释放有界缓存。RuntimePool 只保留资源事件，DshRuntime 记录首次进程/协议根因，状态事件引用 errorId。日志配置可用 SIGHUP 重载，其他配置仍需原来的生效流程。
+
 当前运行架构：接入、归一化、去重、命令、输入判定 → SessionActor → TaskLifeCycleManager → 两个独立 LaneScheduler → SessionOutputCoordinator → MessageQueue → 连接器。唯一入口 `src/main.ts` 已完成装配，验收记录见 [任务状态](TASK-STATUS.md)。
 
 每个有效输入和主动请求恰好创建一个 Task，原子准入两个 lane。同 Session 每个 lane 串行，lane 之间独立推进。Actor 只协调短事务；长执行、媒体整理和上传不占 Actor 锁。上下文在输入时固定，话题切换只影响后续 generation。

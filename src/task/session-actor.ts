@@ -4,6 +4,7 @@
  * 取消请求先记入管理器，再交给调度器；已入队产物由消息队列继续处理。
  */
 import { randomUUID } from 'node:crypto';
+import { createTrace, traceSpan, type TraceContext } from '../logger.js';
 import type { MessageContext } from '../pipeline/ingress/types.js';
 import type { TaskLifeCycleManager } from './lifecycle.js';
 import type { PromptPreparer } from './prompt-preparer.js';
@@ -48,7 +49,19 @@ export class SessionActor {
     proactive?: TaskInput['proactive'],
     budgetLimit?: number
   ): Promise<TaskHandle> {
-    context = { ...context, message: structuredClone(context.message) };
+    const trace =
+      context.trace ??
+      createTrace({
+        sessionKey: context.message.target.key,
+        inputMessageId: context.message.msgId,
+        inputEventId: context.message.eventId,
+      });
+    context = {
+      ...context,
+      trace,
+      logger: context.logger.withTrace(trace),
+      message: structuredClone(context.message),
+    };
     const key = context.message.target.key;
     const triggerGeneration = this.generations.get(key) ?? { generation: 1, sinceTs: 0 };
     const frozenProactive = proactive
@@ -72,6 +85,10 @@ export class SessionActor {
       const verdict = proactive
         ? { related: true, mentionsChatRecord: false }
         : await this.options.preparer.judge(context.message, captured);
+      context.logger.withTrace(traceSpan(trace)).event('input.decision', {
+        related: verdict.related,
+        mentionsChatRecord: verdict.mentionsChatRecord,
+      });
       // 判定期间 /new 可以推进 generation，不能用判定前的旧值覆盖它。
       let current = this.generations.get(key) ?? generation;
       if (!verdict.related && current === generation) {
@@ -82,6 +99,7 @@ export class SessionActor {
         this.persistSessions();
       }
       const input: TaskInput = {
+        trace,
         message: context.message,
         isAdmin: context.isAdmin,
         source: proactive ? 'proactive' : 'user',
@@ -148,13 +166,16 @@ export class SessionActor {
         this.options.preparer.release(id);
       });
       return handle;
+    } catch (error) {
+      context.logger.event('input.rejected', { reason: 'admission-failed' });
+      throw error;
     } finally {
       release();
       if (this.inputs.get(key) === gate) this.inputs.delete(key);
     }
   }
-  cancel(taskId: string): boolean {
-    const { accepted } = this.options.manager.cancel(taskId);
+  cancel(taskId: string, initiator?: TraceContext): boolean {
+    const { accepted } = this.options.manager.cancel(taskId, initiator);
     if (accepted) this.cancelExecution(taskId);
     return accepted;
   }
@@ -163,7 +184,7 @@ export class SessionActor {
     for (const lane of LANES) this.options.schedulers[lane].cancel(taskId);
   }
   /** /stop 仅选择命令到达时有模型执行的 Task，保留其他排队 Task。 */
-  stop(sessionKey: string): number {
+  stop(sessionKey: string, initiator?: TraceContext): number {
     const tasks = this.options.manager
       .list(sessionKey)
       .filter(
@@ -173,11 +194,11 @@ export class SessionActor {
             (l) => t.lanes[l].status === 'running' && t.lanes[l].executionEndedAt === undefined
           )
       );
-    tasks.forEach((t) => this.cancel(t.taskId));
+    tasks.forEach((t) => this.cancel(t.taskId, initiator));
     return tasks.length;
   }
   /** /new 清空未完成执行并持久化新回放边界；已完成 Task 的消息继续投递。 */
-  reset(sessionKey: string): number {
+  reset(sessionKey: string, initiator?: TraceContext): number {
     const previous = this.generations.get(sessionKey);
     this.generations.set(sessionKey, {
       generation: (previous?.generation ?? 1) + 1,
@@ -185,7 +206,7 @@ export class SessionActor {
     });
     this.persistSessions();
     const tasks = this.options.manager.list(sessionKey).filter((t) => !isTaskTerminal(t));
-    tasks.forEach((t) => this.cancel(t.taskId));
+    tasks.forEach((t) => this.cancel(t.taskId, initiator));
     return tasks.length;
   }
   snapshot() {

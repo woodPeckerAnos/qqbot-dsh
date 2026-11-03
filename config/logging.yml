@@ -1,0 +1,11 @@
+# stderr JSONL 核心日志。级别沿用 config/runtime.yml 的 logLevel / QQ_LOG_LEVEL。
+# 修改后 docker compose kill -s SIGHUP qqbot，仅应用日志设置。
+logging:
+  maxRecordBytes: 8192 # 单条最多 8 KiB（含换行），只能收紧
+  maxQueuedBytes: 1048576 # 根 logger 共享缓冲最多 1 MiB
+  agentDetailLimit: 100 # 同一 execution 的父子代理共用，重载不重置
+  dedupeWindowMs: 60000 # 同类诊断首次记录，其余汇总
+  diagnosticTraceIds: [] # 与 sessionKey 目标合计最多 8 个
+  diagnosticSessionKeys: [] # 例如 ob11:g123；仅填写排障所需会话
+  diagnosticTtlMs: 600000 # 从成功应用计时，默认 10 分钟，最大 30 分钟
+  flushTimeoutMs: 2000 # 退出最多等待 2 秒

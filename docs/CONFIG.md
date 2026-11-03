@@ -19,6 +19,7 @@
 | `qqbot.yml`                  | 入口：include 清单、加载/合并规则、模块开关说明                           | ✅         |
 | `config/connectors.yml`      | `connectors` / `qq-official`（含 `c2c`）/ `onebot`                        | ✅         |
 | `config/runtime.yml`         | `dsh` / `pool` 硬上限 / `tasks` 双 lane / `paths` / `health` / `logLevel` | ✅         |
+| `config/logging.yml`         | `logging` 记录/缓冲预算、agent 诊断目标、有效期与 flush                   | ✅         |
 | `config/media.yml`           | `attachments`（含 `forward`、`files`）/ `media`                           | ✅         |
 | `config/interaction.yml`     | `personas` / `topic` / `observation`                                      | ✅         |
 | `config/proactive.yml`       | `proactive` 主动发言全部参数                                              | ✅         |
@@ -36,6 +37,10 @@
 
 > 历史设计文档（`*PLAN.md` / `*REQUIREMENT.md`）里提到的 `qqbot.yml` 指拆分前的
 > 单文件形态；现行配置位置以本表为准。
+
+日志配置可用 `docker compose kill -s SIGHUP qqbot` 重载。重载会重新读取 include 图，只应用日志设置；其他配置仍按原流程生效。非法重载保留旧值，记录 `logging.reload_failed`。级别继续由顶层 `logLevel` / `QQ_LOG_LEVEL` 控制，默认 info，env 优先。
+
+`logging` 默认单条 8192 字节、共享待写缓冲 1048576 字节、每 execution 父子共用 100 条 agent 明细、重复诊断窗口 60000 毫秒，均可收紧。`diagnosticTraceIds` 与 `diagnosticSessionKeys` 合计最多 8 个目标；命中目标可局部打开 debug，agent 明细必须命中目标。`diagnosticTtlMs` 默认 600000、上限 1800000，从成功应用时开始计时，到期自动停用。重载不会重置执行的明细额度，结束释放预算；`flushTimeoutMs` 默认及上限为 2000。缓冲正在占用时不能缩小到当前占用以下，该次重载保留旧配置。
 
 ## 3. 加载规则
 

@@ -25,7 +25,7 @@ import {
   type OffpeakGate,
 } from '../../offpeak/index.js';
 import type { PipelineStats } from '../stats.js';
-import type { IngressStage, MessageContext } from './types.js';
+import { logInputShortcut, type IngressStage, type MessageContext } from './types.js';
 
 export class OffpeakCommandRouter {
   constructor(
@@ -52,11 +52,7 @@ export class OffpeakCommandRouter {
     const { message, logger, responder } = ctx;
 
     if (commandNeedsAdmin(command) && !ctx.isAdmin) {
-      logger.warn('非管理员尝试变更谷时段闸，已拒绝', {
-        senderId: message.senderId,
-        platform: message.target.platform,
-        action: command.action,
-      });
+      logInputShortcut(ctx, 'offpeak-command', 'permission-denied');
       await responder
         .error('无权限：/offpeak 的变更操作仅限管理员（BOT_ADMINS 白名单）。')
         .catch(() => {});
@@ -64,6 +60,7 @@ export class OffpeakCommandRouter {
     }
 
     this.deps.stats.adminCommands += 1;
+    logInputShortcut(ctx, 'offpeak-command', `command-${command.action}`);
 
     switch (command.action) {
       case 'whoami': {

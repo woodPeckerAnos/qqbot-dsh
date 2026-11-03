@@ -23,7 +23,7 @@ import type {
   ProactiveResult,
   ReplyPolicy,
 } from '../src/core/connector.js';
-import { createNullLogger } from '../src/logger.js';
+import { createLogger, createNullLogger, type Logger } from '../src/logger.js';
 import type { SceneVerdict, WaitReason } from '../src/pipeline/proactive/contract.js';
 import { ProactiveSpeaker } from '../src/pipeline/proactive/deliver/speaker.js';
 import type {
@@ -113,7 +113,10 @@ function ledgerClosed(snapshot: ReturnType<ProactiveWatcher['snapshot']>): boole
   return t.created === t.resolved + t.spent + t.stale + t.unchanged + t.pending;
 }
 
-function setup(overrides: Partial<ProactiveWatcherConfig> = {}): Harness {
+function setup(
+  overrides: Partial<ProactiveWatcherConfig> = {},
+  logger: Logger = createNullLogger()
+): Harness {
   let clock = START;
   const timers: Array<{ at: number; fn: () => void; cancelled: boolean }> = [];
   const judgeCalls: ProactiveJudgeInput[] = [];
@@ -177,7 +180,7 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}): Harness {
     connectorFor: () => connector,
     enabled: true,
     dryRun: false,
-    logger: createNullLogger(),
+    logger,
   });
 
   const watcher = new ProactiveWatcher({
@@ -191,7 +194,7 @@ function setup(overrides: Partial<ProactiveWatcherConfig> = {}): Harness {
     speaker,
     judge,
     windows: windowsFor([GROUP_KEY]),
-    logger: createNullLogger(),
+    logger,
     now: () => clock,
     schedule: (fn, delayMs) => {
       const timer = { at: clock + delayMs, fn, cancelled: false };
@@ -839,4 +842,35 @@ describe('指标：账目必须闭合', () => {
     expect(wakeupCall?.evidence.waitWakeup?.targetId).toBe(id);
     expect(wakeupCall?.evidence.waitWakeup?.yieldedForMs).toBeGreaterThanOrEqual(45_000);
   });
+});
+
+it('wait 票据保存触发 trace，定时唤醒与重判属于后续 span', async () => {
+  const records: Record<string, unknown>[] = [];
+  const logger = createLogger({
+    autoTick: false,
+    level: 'debug',
+    sink: (line) => {
+      records.push(JSON.parse(line));
+    },
+  });
+  const h = setup({ questionProbeMs: 1000, waitYieldMs: 45000 }, logger);
+  await armYieldingTicket(h, { waitYieldMs: 1000 });
+  const created = records.find((r) => r.event === 'proactive.wait' && r.action === 'created')!;
+  expect(created).toBeDefined();
+  h.advanceSilently(1000);
+  h.observe('u3', '顺便聊聊最近的天气');
+  await h.settle();
+  h.setPlan({ scene3: 'satisfied' });
+  h.advance(45000);
+  await h.settle();
+  const woken = records.find((r) => r.event === 'proactive.wait' && r.action === 'woken')!;
+  expect(woken).toBeDefined();
+  expect(woken.traceId).toBe(created.traceId);
+  expect(woken.spanId).not.toBe(created.spanId);
+  const rejudged = records.find(
+    (r) => r.event === 'proactive.evaluation' && r.trigger === 'wait-wakeup'
+  )!;
+  expect(rejudged.traceId).toBe(created.traceId);
+  expect(woken.parentSpanId).toBe(created.spanId);
+  expect(rejudged.parentSpanId).toBe(woken.spanId);
 });

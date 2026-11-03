@@ -15,7 +15,7 @@
 
 import type { PersonaStore } from '../../store/personas.js';
 import type { PipelineStats } from '../stats.js';
-import type { IngressStage } from './types.js';
+import { logInputShortcut, type IngressStage } from './types.js';
 
 export type PersonaCommand = { kind: 'list' } | { kind: 'set'; name: string } | { kind: 'clear' };
 
@@ -50,10 +50,7 @@ export class PersonaCommandRouter {
         return;
       }
       if (!ctx.isAdmin) {
-        ctx.logger.warn('非管理员尝试人设切换命令，已拒绝', {
-          senderId: ctx.message.senderId,
-          platform: ctx.message.target.platform,
-        });
+        logInputShortcut(ctx, 'persona-command', 'permission-denied');
         await ctx.responder
           .error('无权限：/persona 仅限管理员（BOT_ADMINS 白名单）。')
           .catch(() => {});
@@ -65,6 +62,7 @@ export class PersonaCommandRouter {
       const { personas } = this.deps;
 
       if (command.kind === 'list') {
+        logInputShortcut(ctx, 'persona-command', 'command-list');
         const presets = personas.listPresets();
         const current = personas.current(key);
         const lines = [
@@ -79,6 +77,7 @@ export class PersonaCommandRouter {
       }
 
       if (command.kind === 'clear') {
+        logInputShortcut(ctx, 'persona-command', 'command-clear');
         const { hadSelection } = personas.clear(key);
         await ctx.responder
           .error(hadSelection ? '已恢复默认人设，下一条消息生效。' : '本会话本来就是默认人设。')
@@ -88,11 +87,13 @@ export class PersonaCommandRouter {
 
       const result = personas.apply(key, command.name);
       if (result.ok) {
+        logInputShortcut(ctx, 'persona-command', 'command-set');
         await ctx.responder
           .error(`已切换到人设「${result.name}」，下一条消息生效。`)
           .catch(() => {});
         return;
       }
+      logInputShortcut(ctx, 'persona-command', 'invalid-persona');
       const presets = personas.listPresets();
       await ctx.responder
         .error(

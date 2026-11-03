@@ -12,7 +12,7 @@
 import type { Config } from '../../config.js';
 import { evaluateGate, renderGateNotice, type OffpeakGate } from '../../offpeak/index.js';
 import type { PipelineStats } from '../stats.js';
-import type { IngressStage } from './types.js';
+import { logInputShortcut, type IngressStage } from './types.js';
 
 export function createOffpeakGateStage(deps: {
   gate: OffpeakGate;
@@ -31,10 +31,7 @@ export function createOffpeakGateStage(deps: {
     });
     if (decision.gated) {
       deps.stats.gatedOffpeak += 1;
-      ctx.logger.info('谷时段闸拦截：当前为正价时段，未调用 API', {
-        senderId: ctx.message.senderId,
-        offpeak: deps.gate.snapshot(),
-      });
+      logInputShortcut(ctx, 'offpeak-gate', decision.reason);
       await ctx.responder.error(renderGateNotice(deps.gate.effective())).catch(() => {});
       return;
     }
