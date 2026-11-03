@@ -3,7 +3,7 @@
  *
  * 这里有一个必须讲清楚的设计点：**每次 runtime 重建都会铸一个新的 sessionId**。
  *
- * 原因是实测得到的结论（见 docs/DESIGN.md 2.3）：DSH 的 `session/prompt` 没有
+ * 原因是实测得到的结论（见 docs/ARCHITECTURE.md 的「平台前提」）：DSH 的 `session/prompt` 没有
  * resume 语义，复用旧 sessionId 不会恢复历史，反而会让 DSH 的持久化把新会话
  * 追加到旧日志上，产生"看着是同一个会话、实际没有上下文"的误导状态。
  *

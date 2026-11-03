@@ -26,7 +26,7 @@ FROM node:24-bookworm-slim AS runtime
 # bubblewrap 是关键：DSH 的 workspace-write 沙箱在 Linux 上依赖它。
 # 缺了它，bash 工具在 workspace-write 下无法执行，DSH 会请求提权到
 # danger-full-access，A 方案的"工作区边界"就名存实亡。
-# 见 docs/DESIGN.md 第 6 节与 scripts/verify-sandbox.mjs。
+# 见 docs/ARCHITECTURE.md 的「安全边界」与 scripts/verify-sandbox.mjs。
 #
 # poppler-utils 提供 pdftotext：用户发来的 PDF 要抽正文（见 dsh/document.ts）。
 # 刻意走系统包而不是 npm 的纯 JS PDF 库——部署形态只有 Docker，且 poppler 对

@@ -79,7 +79,7 @@ docker compose logs -f
 
 ## 它特别处理了什么
 
-QQ 机器人的约束比看起来紧得多。挑五条最有代表性的（完整清单见 [DESIGN](docs/DESIGN.md)）：
+QQ 机器人的约束比看起来紧得多。挑五条最有代表性的（完整清单见 [ARCHITECTURE](docs/ARCHITECTURE.md)）：
 
 | 平台约束                                                                | 处理方式                                                                                             |
 | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
@@ -102,7 +102,7 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 ```
 
 `SANDBOX-EFFECTIVE` = 边界有效；`DEGRADED` = 已降级（处置见 [DEPLOY 第 5 节](docs/DEPLOY.md)）。
-残余风险（agent 可执行任意代码并出网、API Key 在容器内可见）见 [DESIGN 6.4](docs/DESIGN.md)。
+残余风险（agent 可执行任意代码并出网、API Key 在容器内可见）见 [ARCHITECTURE 安全边界](docs/ARCHITECTURE.md)。
 
 ---
 
@@ -114,8 +114,7 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 | [docs/CLOUD-DEPLOY.md](docs/CLOUD-DEPLOY.md)                                        | **云服务部署手册**：资源建议、NapCat 同机编排、加密迁移、备份与回滚、上线验证清单 |
 | [docs/CONFIG.md](docs/CONFIG.md)                                                    | 配置模块手册（怎么加模块、怎么排查）                                              |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) / [模块契约](docs/MODULE-CONTRACTS.md) | 当前 Task、双 lane、出口与资源所有权                                              |
-| [决策与路线](docs/DECISIONS.md) / [验收状态](docs/TASK-STATUS.md)                   | ADR、迁移和验证证据                                                               |
-| [docs/DESIGN.md](docs/DESIGN.md)                                                    | 历史设计；整轮锁、后台派发和周期进度已被 ADR-001 取代                             |
+| [docs/adr/](docs/adr/)                                                              | 关键决策与取舍记录（只追加）                                                      |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md)                                                  | 排障手册：按症状组织的排查流程（主动发言见 §5）                                   |
 | [docs/LINTING.md](docs/LINTING.md)                                                  | 代码格式、ESLint 规则边界与存量基线、提交前检查                                   |
 | [SCENES.md](src/pipeline/proactive/interests/SCENES.md)                             | 主动介入场景的自然语言真相源：什么情况下会说、典型对话、红线                      |
@@ -185,4 +184,4 @@ docs/                      方案设计 / 本地部署 / 云部署 / 排障 / �
 
 依赖 [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)（MIT）。
 QQ 协议实现依据**实况官方文档**（<https://bot.q.qq.com/wiki/develop/api-v2/>），
-不使用已停更的 `tencent-connect/bot-docs` 作为依据——详见 [DESIGN 第 9 节](docs/DESIGN.md)。
+不使用已停更的 `tencent-connect/bot-docs` 作为依据——详见 [ARCHITECTURE 来源](docs/ARCHITECTURE.md)。

@@ -6,7 +6,7 @@
  * `assistant/message` 会有多条，中间那些通常只有工具调用没有文本。规则必须精确，
  * 否则会出现"回复了中间那句'我来看看'而不是最终答案"这类 bug。
  *
- * 归并规则（依据 docs/DESIGN.md 5.2）：
+ * 归并规则：
  *   1. 本轮 = 从 session.status 变 running 后开始；
  *   2. 累积所有 assistant/message 的文本块；
  *   3. 记下 turn/end 的 reason；

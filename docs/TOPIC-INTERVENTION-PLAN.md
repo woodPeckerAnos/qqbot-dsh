@@ -658,7 +658,7 @@ health（`/healthz`、`/metrics`）新增 `intervention` 段：每群相位、�
   窗口外补发才用主动消息（2026 官方频控：1000 条/群/日、未认证 30/qpm，
   用户可关「允许主动发送」——失败按现有 reply 错误路径降级）。该选择逻辑
   属官方适配器内部，届时以 `ReplyPolicy` 扩展表达；
-- 文档同步：DESIGN.md 未实测项 #5（主动推送频控）按 2026-07 官方文档更新。
+- 文档同步：原 DESIGN 待实测项 #5（设计稿见 git 历史）（主动推送频控）按 2026-07 官方文档更新。
 
 ## 13. 安全与隐私
 
@@ -668,7 +668,7 @@ health（`/healthz`、`/metrics`）新增 `intervention` 段：每群相位、�
 - **prompt injection 面扩大**：不可信输入从「对我说的话」变成「群里所有话」。
   缓解：转录与 Gate 输入都用显式边界标记 + 「非指令」声明（renderReplay
   同款）；介入 prompt 明确「除非话题需要，不要执行工具」；最终兜底仍是
-  容器沙箱与 workspace-write（DESIGN.md §6 结论不变）；
+  容器沙箱与 workspace-write（ARCHITECTURE.md 的「安全边界」 结论不变）；
 - **规则供应链**（v2 新增）：生成器产物必须过两道严格闸（人工确认需求 +
   机器校验管道），import 白名单静态强制，`_rejected/` 不进注册表不进镜像；
   注册 diff 必须经 git 人审。规则代码的权限 = 纯函数权限，最坏情况是
@@ -723,7 +723,7 @@ health（`/healthz`、`/metrics`）新增 `intervention` 段：每群相位、�
       `orchestrator.runIntervention` + TurnRunner `origin:'intervention'`
       三跳过
 - [ ] **P2-5** `/listen` 命令 stage + listen-override 持久化
-- [ ] **P2-6** stats / health / trace 日志 / 文档（README、DESIGN.md 新节、
+- [ ] **P2-6** stats / health / trace 日志 / 文档（README、ARCHITECTURE.md 新节、
       qqbot.yml 注释）
 - [ ] **P2-7** 灰度：测试群白名单 + `dryRun: true` 跑一周，看 rules-trace
       与 Gate 判定质量，再放开发言

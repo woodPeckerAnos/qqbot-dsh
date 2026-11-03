@@ -26,7 +26,7 @@
 | 停止     | SIGTERM → 先停连接器 → 等未完成 Task（最多 30s）→ 取消剩余执行并逐级关闭 DSH runtime（15s）                                                                                           |
 | 健康     | `/healthz`：**至少一个接入连接器已建立事件通道**才 200；`/metrics`：JSON 计数。容器 HEALTHCHECK 用 `node dist/health-probe.js`                                                        |
 | 加固     | 只读根文件系统、`/tmp` tmpfs、`cap_drop: ALL`、`no-new-privileges`、非 root uid 10001、2 CPU / 2GB / 512 pids                                                                         |
-| CI       | GitHub Actions：类型检查 + 默认离线测试 + 构建镜像 + 入口快速失败 + 沙箱能力检查；当前验收见 [任务状态](TASK-STATUS.md)                                                               |
+| CI       | GitHub Actions：类型检查 + 默认离线测试 + 构建镜像 + 入口快速失败 + 沙箱能力检查                                                                                                      |
 
 叠加 `docker-compose.napcat.yml` 后多一个独立 sidecar：
 
@@ -42,7 +42,7 @@
 
 - `npm run typecheck`：通过
 - `npm test`：42 个文件 / 804 项通过，40 项真实端口用例默认跳过
-- `npm run test:integration`：3 个文件 / 104 项本地 OneBot mock 回路通过；双 lane 验收详见 [任务状态](TASK-STATUS.md)
+- `npm run test:integration`：3 个文件 / 104 项本地 OneBot mock 回路通过；双 lane 验收见 [ADR-001](adr/001-session-task-lanes.md)
 - `npm ci --dry-run --no-audit --no-fund`：退出码 0，锁文件与 `package.json` 一致
 - 代理空值语义：直接调用 `@deepseek-ai/dsh-http-proxy`，`HTTPS_PROXY=""`
   解析为直连（`proxied:false`），非空才走代理

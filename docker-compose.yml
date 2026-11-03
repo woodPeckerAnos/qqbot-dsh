@@ -5,7 +5,7 @@
 #   docker compose up -d --build
 #   docker compose logs -f
 #
-# 安全模型（详见 docs/DESIGN.md 第 6 节）：
+# 安全模型（详见 docs/ARCHITECTURE.md 的「安全边界」）：
 #   agent 在容器内拥有 workspace-write 权限，工作区之外由沙箱挡住；
 #   容器本身是第二道边界——只读根文件系统、能力收敛、资源上限。
 # ============================================================================

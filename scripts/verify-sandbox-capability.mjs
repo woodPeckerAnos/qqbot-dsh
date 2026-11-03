@@ -3,7 +3,7 @@
  *
  * 这是 A 方案（workspace-write + 自动审批桩）能否真正成立的地基。
  *
- * 为什么必须单独检测：实测发现（见 docs/DESIGN.md 6.2），当宿主没有可用的沙箱
+ * 为什么必须单独检测：实测发现（见 docs/ARCHITECTURE.md 的「安全边界」），当宿主没有可用的沙箱
  * 后端时，DSH 在 workspace-write 下连 `cat` 都跑不了，会主动请求提权到
  * danger-full-access；审批桩放行后**实际权限就等于完全访问**，
  * 于是 workspace-write 只是一句口号。

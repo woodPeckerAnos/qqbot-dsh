@@ -2,7 +2,7 @@
  * 对话记录：每个会话（群聊/单聊）一个只追加的 JSONL 文件。
  *
  * 存在的唯一理由：**DSH 的会话历史在进程重启后不会自动恢复**（见
- * docs/DESIGN.md 2.3 的源码核对）。所以"重启不失忆"必须由我们自己兜，
+ * docs/ARCHITECTURE.md 的「平台前提」 的源码核对）。所以"重启不失忆"必须由我们自己兜，
  * 而这个文件就是那份记忆。
  *
  * 为什么用 JSONL 而不是 SQLite：
@@ -98,7 +98,7 @@ export class ConversationStore {
  *   3. 长度截断，避免一条超长历史把 prompt 撑爆。
  *
  * 这只能降低、不能消除 prompt injection 风险——安全性最终靠容器边界
- * （见 docs/DESIGN.md 第 6 节）。
+ * （见 docs/ARCHITECTURE.md 的「安全边界」）。
  */
 export function renderReplay(turns: readonly ConversationTurn[], maxChars = 6000): string {
   if (turns.length === 0) return '';

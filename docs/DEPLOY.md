@@ -46,7 +46,7 @@
 到 <https://platform.deepseek.com/> 创建 API Key。
 
 **强烈建议给这个 Key 设置消费上限**：agent 拥有容器内执行命令的能力，被 prompt
-injection 影响时理论上可以读写并外发该 Key（见 `docs/DESIGN.md` 第 6.4 节）。
+injection 影响时理论上可以读写并外发该 Key（见 `docs/ARCHITECTURE.md` 的「安全边界」）。
 
 ---
 
@@ -101,7 +101,7 @@ docker compose logs -f qqbot
 ### 3.1 社区框架接入（OneBot，免审核）
 
 官方不对个人开发者开放审核时，用 NapCat 或 LLBot（LuckyLilliaBot，原 LLOneBot）
-等 OneBot v11 实现接入（设计细节见 [DESIGN.md 第 10 节](DESIGN.md)）。
+等 OneBot v11 实现接入（设计细节见 [ARCHITECTURE 接入与连接器](ARCHITECTURE.md)）。
 
 **推荐拓扑：框架原生跑在宿主 macOS，bot 留在 Docker。** 有头形态（拉起/注入真实
 QQ 客户端）需要图形会话，进容器基本走不通：官方 FAQ 明确说 macOS 上用 Docker

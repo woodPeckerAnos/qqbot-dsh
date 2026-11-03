@@ -8,4 +8,4 @@
 
 后果：允许同 Task 的两个不同结论；不增加模型整理调用。发送可以在执行结束后等待出口，已尝试消息不会自动重发。冷启动将未完成 Task 标为中断失败，形成一次失败结果。
 
-验收：见 [模块契约](../MODULE-CONTRACTS.md)、[验收记录](../TASK-STATUS.md) 与 `tests/task-system.test.ts`。唯一入口已替换，旧整轮锁、后台自发结果协调、周期进度仅作为 `tests/legacy/` 的历史回归夹具保留，不参与生产装配。
+验收：见 [模块契约](../MODULE-CONTRACTS.md) 与 `tests/task-system.test.ts`。唯一入口已替换，旧整轮锁、后台自发结果协调、周期进度仅作为 `tests/legacy/` 的历史回归夹具保留，不参与生产装配。

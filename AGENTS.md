@@ -6,4 +6,4 @@
 执行状态只由 TaskLifeCycleManager 写入，消息投递状态只由 MessageQueue 写入。
 验证使用注入 DSH、连接器和时钟的离线 mock；真实 WebSocket 为独立集成检查。
 
-决策与进度见 [索引](docs/DECISIONS.md) 和 [任务状态](docs/TASK-STATUS.md)。
+决策见 [ADR](docs/adr/)。

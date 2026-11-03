@@ -291,7 +291,7 @@ export class TurnRunner {
       this.activeTurns.set(conversationKey, accumulator);
       // 用户轮次接管该会话：若此刻恰有一个"自发轮次"在跑（后台任务总结与用户
       // 新消息撞在一起的罕见竞态），丢弃它——两者会并进同一个 running 相位，
-      // 父代理对用户问题的最终答复才是本轮要交付的内容（见 DESIGN 13.4）。
+      // 父代理对用户问题的最终答复才是本轮要交付的内容（旧后台托管设计，已由 ADR-001 取代）。
       if (this.spontaneousTurns.delete(conversationKey)) {
         logger.debug('用户轮次开始，丢弃进行中的自发轮次累积器');
       }

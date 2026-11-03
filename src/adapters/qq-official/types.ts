@@ -4,7 +4,7 @@
  * 只声明本 MVP 真正用到的部分：鉴权、网关生命周期、群 @ 消息 / 单聊消息事件、发消息。
  * 未核实的字段一律标 `unknown` 而不是猜类型——猜错类型比没有类型更危险。
  *
- * 依据：docs/DESIGN.md 第 9 节列出的实况文档；旧仓库
+ * 依据：docs/ARCHITECTURE.md 的「来源」列出的实况文档；旧仓库
  * (github.com/tencent-connect/bot-docs) 已废弃，不作为依据。
  */
 

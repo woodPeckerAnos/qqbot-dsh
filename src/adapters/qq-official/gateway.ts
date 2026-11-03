@@ -11,7 +11,7 @@
  *                             │                                            ▼
  *                          reconnecting ◄──── resume 失败/4006 ──── resuming
  *
- * 关键协议点（依据实况文档，见 docs/DESIGN.md 第 9 节）：
+ * 关键协议点（依据实况文档，见 docs/ARCHITECTURE.md 的「来源」）：
  *   - op10 Hello 给 `heartbeat_interval`（毫秒），客户端按它发 op1 心跳；
  *   - op1 心跳的 `d` 是**最后收到的 seq**，首次为 null；服务端回 op11 ack；
  *   - op2 Identify 的 token 是 `QQBot <access_token>`，shard 不分区时用 [0,1]；

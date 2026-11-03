@@ -117,7 +117,7 @@ docker compose run --rm --entrypoint dsh qqbot --profile sdk \
 ```
 
 配置文件语法错误会在这里明确报出来。注意 `!!js` 的写法约束（见
-`docs/DESIGN.md` 4.2），改 patch 时最容易踩。
+`docs/ARCHITECTURE.md` 的「DSH profile 与 persona」），改 patch 时最容易踩。
 
 ---
 
@@ -310,7 +310,7 @@ docker compose run --rm --entrypoint dsh qqbot --profile sdk \
 
 如果报 `entries did not activate` 或 `pending (waiting for service: ...)`：
 说明 patch 里 `disabled: true` 关掉了一个**服务提供者**。见
-`docs/DESIGN.md` 4.2 坑 2——只能关纯叶子行。
+`docs/ARCHITECTURE.md` 的「DSH profile 与 persona」 坑 2——只能关纯叶子行。
 
 ### 4.4 模型调用失败
 
@@ -372,7 +372,7 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 | ------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | "看看刚才那个聊天记录"但 bot 说看不到 | `windowForwardsExpanded` = 0                                   | 先看那轮日志里有没有"按需展开上下文里的聊天记录"：没有就是**判定没判成**（判据刻意窄，拿不准一律不展开；`topic.enabled=false` 或没配 `DEEPSEEK_API_KEY` 时整条通路关闭） |
 | 判成了但没读到                        | `windowForwardsFailed` 增长 + 日志"上下文里的聊天记录未能展开" | 回查失败（消息过期 / 框架不支持 `get_forward_msg`）或转发展开被关（`BOT_ATTACHMENT_FORWARD_ENABLED=false`）。prompt 里已如实告诉模型"这条记录没读出来"，不会让它猜       |
-| @ 消息**自带**的记录没展开            | `forwardsExpanded` 不变 + 日志"回查转发消息失败"               | 那是另一条路径（@ 消息里的转发在归一化后立刻展开），见上面几张表与 DESIGN §11.6                                                                                          |
+| @ 消息**自带**的记录没展开            | `forwardsExpanded` 不变 + 日志"回查转发消息失败"               | 那是另一条路径（@ 消息里的转发在归一化后立刻展开），见上面几张表与 docs/ARCHITECTURE.md 的「富媒体」                                                                     |
 
 按平台排除：
 
@@ -526,7 +526,7 @@ curl -s localhost:8080/health | jq .proactive
 ## 6. 重启后"失忆"
 
 预期行为是：**DSH 会话是新建的，上下文由对话记录回放恢复。**
-（原因见 `docs/DESIGN.md` 2.3——DSH 的 `session/prompt` 没有 resume 语义。）
+（原因见 `docs/ARCHITECTURE.md` 的「平台前提」——DSH 的 `session/prompt` 没有 resume 语义。）
 
 检查回放是否生效：
 

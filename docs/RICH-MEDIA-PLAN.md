@@ -5,7 +5,7 @@
 > **平时文本保底 1 条、生死二选一时附件优先**；官方按 **media 不可携带文本**
 > 假设设计（实测后可升级为图文合并）；实施顺序 **消息模型 + OneBot 先行，官方紧随**。
 >
-> 实现期对本文档的两处偏差（均已落实到 DESIGN.md §12）：
+> 实现期对本文档的两处偏差（均已落实到 ARCHITECTURE.md 的「富媒体」）：
 >
 > 1. OneBot 侧**没有**做"text+image 合并成一条消息"：编排层的账本语义是
 >    "一次 reply() = 一条消息"，而附件需要逐个隔离失败；OneBot 配额足够宽
@@ -235,7 +235,7 @@ onebot:
 2. **OneBot 适配器**：image 段合并 + upload_group_file/private_file。
    端到端可验证（本地起 NapCat 即可）。`onebot.fileTransport` 配置。
 3. **官方适配器**：`uploadGroupFile/uploadUserFile` + `renderMediaMessage`。
-4. **profile 指令 + 文档**：persona 约定、RUNBOOK 部署注意、DESIGN.md 补一节。
+4. **profile 指令 + 文档**：persona 约定、RUNBOOK 部署注意、ARCHITECTURE.md 补一节。
 
 ## 10. 待实测清单与开放问题
 

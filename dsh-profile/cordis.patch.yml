@@ -61,7 +61,7 @@
 # list-agents）：长任务后台托管与"自然语言停止"完全建立在它们之上——
 # subagent（continuable 后台模式）派发、interrupt_agent 停止、list_agents 查询、
 # send_message 续聊。桥接层依赖 subagent.started/finished 通知做进程回收豁免
-# （见 docs/DESIGN.md 第 13 节）。tool-jobs 关掉不影响它们：continuable 模式
+# （见 docs/continuable 子代理（见 DSH 文档））。tool-jobs 关掉不影响它们：continuable 模式
 # 的后台子代理不经过 job 工具面。
 - id: tool-jobs
   disabled: true

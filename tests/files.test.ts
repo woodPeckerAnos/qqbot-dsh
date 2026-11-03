@@ -242,7 +242,7 @@ describe('inbox 落盘', () => {
     const outside = tempWorkspace();
     const { mkdirSync: mk, symlinkSync } = await import('node:fs');
     mk(outside, { recursive: true });
-    // 模拟 agent 把 inbox 换成指向 /data/bot 的链接（威胁模型见 DESIGN §6.4）
+    // 模拟 agent 把 inbox 换成指向 /data/bot 的链接（威胁模型见 docs/ARCHITECTURE.md 的「安全边界」）
     writeFileSync(join(outside, 'sessions.json'), 'important');
     symlinkSync(outside, join(workspace, 'inbox'));
 

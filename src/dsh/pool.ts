@@ -78,7 +78,7 @@ export interface RuntimePoolEvents {
 /**
  * 为一个会话生成稳定的 sessionId。
  *
- * 注意：进程重启后**不会**因为这个 id 相同而恢复上下文（见 DESIGN 2.3）。
+ * 注意：进程重启后**不会**因为这个 id 相同而恢复上下文（见 docs/ARCHITECTURE.md 的「平台前提」）。
  * 用稳定 id 只是为了让 DSH 的会话日志目录可读、便于排查。
  *
  * 做字符净化：单聊的会话键形如 `c2c:<openid>`，冒号等字符可能出现在 DSH 的

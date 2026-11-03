@@ -24,7 +24,7 @@
  *   命令的工作。
  *
  * 真正的安全边界因此落在容器上：只读根文件系统、cap_drop、资源上限、出网白名单。
- * 详见 docs/DESIGN.md 第 6 节。
+ * 详见 docs/ARCHITECTURE.md 的「安全边界」。
  *
  * 该文件以相对路径被 cordis.patch.yml 引用（dsh-app-boot 会把相对 name 解析成
  * 相对 patch 文件的 file:// URL），因此不需要装进 profile 的 node_modules。
