@@ -20,6 +20,8 @@ Logger 子实例共享配置、预算与 stderr JSONL 缓冲。TaskLifeCycleMana
 
 ## Task 与双 lane
 
+应答链路的离线回归与真实模型语义 benchmark 见 [验收说明](SESSION-BENCHMARK.md) 和 [ADR-005](adr/005-session-response-benchmark.md)。承接、增量交付与矛盾检测是目标评测标准；当前出口仍只保证完全相同正文去重，尚无近似重复或终局否认冲突的语义保证。
+
 当前运行架构：接入、归一化、去重、命令、输入判定 → SessionActor → TaskLifeCycleManager → 两个独立 LaneScheduler → SessionOutputCoordinator → MessageQueue → 连接器。唯一入口 `src/main.ts` 已完成装配。
 
 每个有效输入和主动请求恰好创建一个 Task，原子准入两个 lane。同 Session 每个 lane 串行，lane 之间独立推进。Actor 只协调短事务；长执行、媒体整理和上传不占 Actor 锁。上下文在输入时固定，话题切换只影响后续 generation。

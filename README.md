@@ -128,12 +128,16 @@ npm run typecheck
 npm run lint             # ESLint（类型感知；存量债务基线见 docs/LINTING.md）
 npm run format:check     # Prettier 只读校验
 npm test                 # 离线 mock；含本地文件/子进程桩，不请求真实模型
+npm run bench:session    # 离线应答 benchmark，输出 JSON/Markdown 基线
+npm run bench:session:live # 显式真实 DSH + 独立裁判，需要配置与凭证
 npm run test:integration # 独立 localhost WebSocket 回路，无已部署客户端
 npm run build
 npm run contracts:check  # 边界、兼容、覆盖与生成契约漂移
 npm run smoke:contracts  # 12 模块、36 个公共入口离线示例
 npm run check            # 类型、契约、lint、格式、测试、冒烟与 Docker 包解析
 ```
+
+应答 benchmark 的场景、裁判配置、基线比较与严格门禁见 [验收说明](docs/SESSION-BENCHMARK.md)。近似重复及终局否认冲突仍属于已知语义缺口；benchmark 不修改生产提示词或出口策略。
 
 格式由 Prettier 统一（`npm run format` 写入）；提交时 husky 会跑 `lint-staged`。
 ESLint 的存量违规记录在 `eslint-suppressions.json`，`npm run lint` 只拦新增违规，

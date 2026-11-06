@@ -1,0 +1,6 @@
+{
+  "endpoint": "https://api.example.com/v1/chat/completions",
+  "model": "independent-judge-model",
+  "apiKeyEnv": "SESSION_BENCH_JUDGE_API_KEY",
+  "timeoutMs": 60000
+}
