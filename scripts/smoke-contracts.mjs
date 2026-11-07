@@ -298,9 +298,13 @@ const runners = {
       reference: taskInputDouble().reference,
       text: example.input.text,
       kind: 'final',
+      ...(example.input.record
+        ? { record: { nodes: [{ type: 'text', text: example.input.text }] } }
+        : {}),
     };
     try {
-      queue.enqueue(candidate, 'fixture-delivery');
+      if (example.input.record) queue.enqueueGroup([{ candidate, id: 'fixture-delivery' }]);
+      else queue.enqueue(candidate, 'fixture-delivery');
       if (example.input.duplicate) queue.enqueue(candidate, 'fixture-delivery');
       await flushMicrotasks();
       const snapshot = queue.snapshot();
@@ -318,6 +322,7 @@ const runners = {
         failed: snapshot.failed,
         attempts: attempts.length,
         referenceMessageId: attempts[0]?.reference?.messageId,
+        ...(example.input.record ? { recordNodes: attempts[0]?.record?.nodes.length } : {}),
       };
     } finally {
       queue.close();

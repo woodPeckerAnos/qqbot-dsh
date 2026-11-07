@@ -1,4 +1,5 @@
 import type { DeepReadonly } from '../readonly.js';
+import type { ReplyPolicy } from '../core/connector.js';
 import type { TaskBudget } from './budget.js';
 import type { TaskClock } from './clock.js';
 import type { TaskLifeCycleManagerV2 } from './lifecycle-v2.js';
@@ -24,6 +25,8 @@ export type createSessionOutputCoordinatorFactoryV2 = (options: {
   budget: TaskBudget;
   filesDir: string;
   maxChars: (task: DeepReadonly<TaskSnapshotV2>) => number;
+  policy?: (task: DeepReadonly<TaskSnapshotV2>) => ReplyPolicy;
+  maxFileBytes?: number;
   clock?: TaskClock;
   reminderMs?: number;
   onDelivered?: (candidate: DeepReadonly<ReplyCandidate>, ts: number) => void;

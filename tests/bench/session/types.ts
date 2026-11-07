@@ -5,6 +5,21 @@ import type {
   OriginalMessageReference,
 } from '@qqbot/contracts';
 import type { Harness } from './harness.js';
+import type { ProbeAction } from './onebot-probe.js';
+
+export interface OutputDeliveryEvidence {
+  version: number;
+  inputHash: string;
+  externalMessages: number;
+  targetMessages: number;
+  internalNodes: number;
+  actions: ProbeAction[];
+  bodyComplete: boolean;
+  filesComplete: boolean;
+  displayPass: boolean;
+  preparationMs: number;
+  lastDeliveryMs: number;
+}
 
 export type Status = 'pass' | 'fail' | 'inconclusive';
 export interface AssertionResult {
@@ -89,6 +104,7 @@ export interface ExecutionEvidence {
   parentEndedAt?: number;
 }
 export interface RunRecord {
+  outputDelivery?: OutputDeliveryEvidence;
   caseId: string;
   caseVersion: number;
   title: string;

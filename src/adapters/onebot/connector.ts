@@ -42,8 +42,8 @@ import type {
   ReplyPolicy,
 } from '@qqbot/contracts';
 import { flattenParts } from '../../content/index.js';
-
 import { normalizeWhitespace, stripControlChars, toPlainText } from '../../content/index.js';
+
 import {
   normalizeOneBotEvent,
   onebotC2cTarget,
@@ -89,6 +89,7 @@ const FORWARD_CACHE_TTL_MS = 5 * 60_000;
  * 而超大的响应重复利用的概率本来就低——超过就不缓存，本次照常返回。
  */
 const FORWARD_CACHE_MAX_ENTRY_BYTES = 256 * 1024;
+const RECORD_MAX_PAYLOAD_BYTES = 100 * 1024 * 1024;
 
 /**
  * 一条消息的转发读取预算。
@@ -169,7 +170,16 @@ export class OnebotConnector implements BotConnector {
   }
 
   policy(_kind: ConversationKind): ReplyPolicy {
-    return this.options.replyPolicy;
+    return {
+      ...this.options.replyPolicy,
+      record: { maxPayloadBytes: this.recordLimit(), videoExtensions: ['mp4'] },
+    };
+  }
+  private recordLimit(): number {
+    return Math.min(
+      RECORD_MAX_PAYLOAD_BYTES,
+      this.options.replyPolicy.record?.maxPayloadBytes ?? RECORD_MAX_PAYLOAD_BYTES
+    );
   }
 
   async start(): Promise<void> {
@@ -307,17 +317,19 @@ export class OnebotConnector implements BotConnector {
   async reply(ctx: ReplyContext, out: OutgoingMessage): Promise<void> {
     ctx.signal?.throwIfAborted();
     const session = this.pickSession(ctx.target.key);
+    if (out.record) {
+      await this.sendRecord(session, ctx, out.record);
+      return;
+    }
     const attachments = out.attachments ?? [];
 
-    // 附件与文本分条发送（Responder 保证一次 reply 要么纯文本、要么一个附件；
-    // 这里的文本分支兜底"两者都有"的防御场景）。
-    // OneBot 其实支持 text+image 混合消息段，合并能省消息条数，但编排层的
-    // 账本语义是"一次 reply = 一条消息"，且附件需要逐个隔离失败——
-    // OneBot 配额足够宽（默认 10），分条没有实际代价。
-    const text = normalizeWhitespace(stripControlChars(toPlainText(out.text)));
+    // Task records use the branch above. Legacy callers still send text/attachments separately.
+    const text = out.preserveText
+      ? out.text
+      : normalizeWhitespace(stripControlChars(toPlainText(out.text)));
     // 无附件时保持旧行为（哪怕空文本也发，交给平台判定）；有附件时空文本不再发。
     if (text !== '' || attachments.length === 0) {
-      await this.sendText(session, ctx, text, out.reference?.messageId);
+      await this.sendText(session, ctx, text, out.reference?.messageId, out.mention);
     }
     for (const attachment of attachments) {
       await this.sendAttachment(session, ctx, attachment);
@@ -363,10 +375,12 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     ctx: ReplyContext,
     text: string,
-    quoteMessageId?: string
+    quoteMessageId?: string,
+    mention?: string
   ): Promise<void> {
     const message = [
       ...(quoteMessageId ? [{ type: 'reply', data: { id: quoteMessageId } }] : []),
+      ...(mention && ctx.target.kind === 'group' ? [{ type: 'at', data: { qq: mention } }] : []),
       { type: 'text', data: { text } },
     ];
     const data =
@@ -388,6 +402,35 @@ export class OnebotConnector implements BotConnector {
     });
   }
 
+  private async sendRecord(
+    session: Session,
+    ctx: ReplyContext,
+    record: NonNullable<OutgoingMessage['record']>
+  ): Promise<void> {
+    if (!record.nodes.length) throw new Error('聊天记录没有可发送的节点');
+    const messages = [];
+    for (const node of record.nodes) {
+      const content =
+        node.type === 'text'
+          ? [{ type: 'text', data: { text: node.text } }]
+          : [{ type: node.type, data: { file: await this.encodeAttachment(node.attachment) } }];
+      messages.push({
+        type: 'node',
+        data: { user_id: String(session.selfId ?? 0), nickname: '助手', content },
+      });
+    }
+    ctx.signal?.throwIfAborted();
+    await this.callAction(
+      session,
+      ctx.target.kind === 'c2c' ? 'send_private_forward_msg' : 'send_group_forward_msg',
+      ctx.target.kind === 'c2c'
+        ? { user_id: Number(ctx.target.id), messages }
+        : { group_id: Number(ctx.target.id), messages },
+      undefined,
+      this.recordLimit()
+    );
+  }
+
   /**
    * 发一个附件：图片走消息段（客户端内联展示），其余走群/私聊文件上传动作。
    *
@@ -402,8 +445,8 @@ export class OnebotConnector implements BotConnector {
     const file = await this.encodeAttachment(attachment);
     // A queue timeout can occur during encoding, before the first platform action.
     ctx.signal?.throwIfAborted();
-    if (attachment.kind === 'image') {
-      const message = [{ type: 'image', data: { file } }];
+    if (attachment.kind === 'image' || /\.mp4$/i.test(attachment.fileName)) {
+      const message = [{ type: attachment.kind === 'image' ? 'image' : 'video', data: { file } }];
       const data =
         ctx.target.kind === 'c2c'
           ? await this.callAction(session, 'send_private_msg', {
@@ -986,12 +1029,18 @@ export class OnebotConnector implements BotConnector {
     session: Session,
     action: string,
     params: Record<string, unknown>,
-    timeoutMs?: number
+    timeoutMs?: number,
+    maxPayloadBytes?: number
   ): Promise<unknown> {
     if (session.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new OnebotActionError('连接不可用（非 OPEN 状态）'));
     }
     const echo = randomUUID();
+    const payload = JSON.stringify({ action, params, echo });
+    if (maxPayloadBytes !== undefined && Buffer.byteLength(payload, 'utf8') > maxPayloadBytes)
+      throw new Error(
+        `聊天记录序列化载荷超过 ${maxPayloadBytes / (1024 * 1024)} MiB，未发送；正文和附件均未截断`
+      );
     return new Promise((resolve, reject) => {
       const timer = setTimeout(
         () => {
@@ -1002,7 +1051,7 @@ export class OnebotConnector implements BotConnector {
       );
       timer.unref?.();
       this.pending.set(echo, { session, resolve, reject, timer });
-      session.socket.send(JSON.stringify({ action, params, echo }), (error) => {
+      session.socket.send(payload, (error) => {
         if (error !== undefined && error !== null) {
           clearTimeout(timer);
           this.pending.delete(echo);

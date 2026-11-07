@@ -17,6 +17,7 @@ export class MemoryConnector implements BotConnector {
   connected = true;
   official = false;
   maxChars = 2000;
+  recordCapable = false;
   actions: PlatformAction[] = [];
   fetches = 0;
   private receivedCount = 0;
@@ -57,6 +58,9 @@ export class MemoryConnector implements BotConnector {
     const quota = kind === 'group' ? 5 : 4;
     const window = kind === 'group' ? 300000 : 3600000;
     return {
+      ...(this.recordCapable && !this.official
+        ? { record: { maxPayloadBytes: 100 * 1024 * 1024, videoExtensions: ['mp4'] } }
+        : {}),
       maxChars: this.maxChars,
       maxRepliesPerMsg: this.official ? quota : 10000,
       passiveWindowMs: this.official ? window : Infinity,

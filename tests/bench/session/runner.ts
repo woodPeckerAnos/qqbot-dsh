@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { isTaskTerminal } from '../../../src/task/index.js';
 import { Harness, liveConfig, fileHash, hash } from './harness.js';
 import { offlineCases, mixedCases } from './offline-cases.js';
+import { outputCases } from './output-cases.js';
 import { liveCases, LIGHT_IDS } from './live-cases.js';
 import {
   createJudge,
@@ -27,7 +28,8 @@ import type { Config } from '@qqbot/contracts';
 import type { ReasoningEvidence } from './types.js';
 
 export function selectCases(options: BenchmarkOptions) {
-  const pool = options.mode === 'live' ? liveCases : [...offlineCases, ...mixedCases];
+  const pool =
+    options.mode === 'live' ? liveCases : [...offlineCases, ...mixedCases, ...outputCases];
   if (options.cases.length) {
     for (const filter of options.cases)
       if (!pool.some((c) => c.id === filter || c.group === filter))
@@ -133,6 +135,7 @@ async function collectCase(
   const judgingMs = Date.now() - judgeStarted;
   await h.close();
   const resources = {
+    outputProbeListeners: h.outputProbeListeners,
     runtimes: h.system.pools.fast.size + h.system.pools.slow.size,
     subagents: h.system.pools.fast.activeSubagents() + h.system.pools.slow.activeSubagents(),
     timers: h.timers,
@@ -148,6 +151,7 @@ async function collectCase(
     resources
   );
   const record: RunRecord = {
+    outputDelivery: h.outputDelivery,
     caseId: c.id,
     caseVersion: c.version,
     title: c.title,

@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": { "noEmit": true, "rootDir": "../.." },
-  "include": ["./**/*.ts", "../session-benchmark.test.ts"],
+  "include": ["./**/*.ts", "../session-benchmark.test.ts", "../output-delivery.test.ts"],
   "exclude": []
 }

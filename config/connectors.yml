@@ -60,10 +60,11 @@ onebot:
   autoAcceptFriend: true
   # 收到拉群邀请时自动同意。默认关闭：被拉进陌生群 = 把 agent 暴露给陌生人。
   autoAcceptGroupInvite: false
+  # 现行 Task 正文超过此阈值时用短引用/提及 + 一条消息记录；记录内保持完整正文。
   maxChars: 1500
   # OneBot 无平台条数额度；主动业务预算统一按 Task 结算。
   # 附件字节怎么传给框架（环境变量 ONEBOT_FILE_TRANSPORT）：
   #   base64（默认）：文件内容编码进 WS 帧，跨容器部署也能用；
   #   path          ：只传绝对路径，要求 bot 与框架同机同文件系统（省 33% 体积）。
-  # 注意 ws 库的 maxPayload 默认 100MiB，与 media.maxFileMB 联动。
+  # 单文件和 ZIP 沿用 media.maxFileMB；消息记录发送前另检完整序列化帧 ≤100 MiB。
   fileTransport: base64

@@ -17,7 +17,7 @@
  *   - reply() → action 帧出去 → echo 对回响应；
  *   - 鉴权失败直接 401，不进入 WS 层。
  */
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 const socketDescribe = process.env.BOT_TEST_INTEGRATION === '1' ? describe : describe.skip;
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -473,6 +473,100 @@ socketDescribe('OneBot 反向 WS 回路', () => {
     connector = undefined;
     for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true });
   });
+  it.each(
+    (['group', 'c2c'] as const).flatMap((kind) =>
+      (['base64', 'path'] as const).map((fileTransport) => ({ kind, fileTransport }))
+    )
+  )(
+    '合并转发 $kind / $fileTransport：真实 WS 只发一帧，节点平铺且 echo 落定',
+    async ({ kind, fileTransport }) => {
+      const { connector: c } = makeConnector(0, { fileTransport });
+      connector = c;
+      await c.start();
+      const address = (
+        c as unknown as { server: { address: () => { port: number } } }
+      ).server.address();
+      const ws = await connectClient(address.port);
+      clients.push(ws);
+      await vi.waitFor(() => {
+        expect(c.health().detail?.clients).toContainEqual(
+          expect.objectContaining({ selfId: 10000 })
+        );
+      });
+      const root = await mkdtemp(join(tmpdir(), 'onebot-record-'));
+      tempDirs.push(root);
+      const absPath = join(root, 'clip.mp4');
+      await writeFile(absPath, 'media-bytes');
+      const target = kind === 'group' ? onebotGroupTarget(8888) : onebotC2cTarget(12345);
+      let frames = 0;
+      ws.on('message', () => {
+        frames++;
+      });
+      const frame = new Promise<{
+        action: string;
+        echo: string;
+        params: {
+          messages: {
+            type: string;
+            data: {
+              user_id: string;
+              content: { type: string; data: { file?: string; text?: string } }[];
+            };
+          }[];
+        };
+      }>((resolve) => {
+        ws.once('message', (data) => {
+          resolve(JSON.parse(String(data)));
+        });
+      });
+      const text = '中文👩‍💻\n```ts\nconst n = 42;\n```';
+      const delivery = c.reply(
+        { target, seq: 0, kind: 'final' },
+        {
+          text,
+          record: {
+            nodes: [
+              { type: 'text', text },
+              {
+                type: 'video',
+                attachment: { kind: 'file', absPath, fileName: 'clip.mp4', sizeBytes: 11 },
+              },
+            ],
+          },
+        }
+      );
+      const action = await frame;
+      expect(action.action).toBe(
+        kind === 'group' ? 'send_group_forward_msg' : 'send_private_forward_msg'
+      );
+      expect(
+        action.params.messages.map((node) => [
+          node.type,
+          node.data.user_id,
+          node.data.content.length,
+        ])
+      ).toEqual([
+        ['node', '10000', 1],
+        ['node', '10000', 1],
+      ]);
+      expect(action.params.messages[0]?.data.content[0]?.data.text).toBe(text);
+      expect(action.params.messages[1]?.data.content[0]).toEqual({
+        type: 'video',
+        data: {
+          file:
+            fileTransport === 'path'
+              ? absPath
+              : `base64://${Buffer.from('media-bytes').toString('base64')}`,
+        },
+      });
+      ws.send(
+        JSON.stringify({ status: 'ok', retcode: 0, echo: action.echo, data: { message_id: 100 } })
+      );
+      await delivery;
+      expect(frames).toBe(1);
+      expect(c.policy(kind).record?.maxPayloadBytes).toBe(100 * 1024 * 1024);
+    }
+  );
 
   it('事件归一化进来，reply 以 action 帧发回同一条连接', async () => {
     const { connector: c, events } = makeConnector(0);

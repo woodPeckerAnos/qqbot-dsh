@@ -62,7 +62,7 @@ import { RuntimeEvidence } from './runtime-evidence.js';
 import { sanitize } from './report.js';
 import { BenchmarkRuntime } from './mock-runtime.js';
 import { MemoryConnector } from './connector.js';
-import type { AssertionResult, InputStep } from './types.js';
+import type { AssertionResult, InputStep, OutputDeliveryEvidence } from './types.js';
 
 export async function until(predicate: () => boolean, timeoutMs = 10000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -98,6 +98,8 @@ export interface HarnessSettings {
 }
 
 export class Harness {
+  outputDelivery?: OutputDeliveryEvidence;
+  outputProbeListeners = 0;
   readonly connector = new MemoryConnector();
   readonly clock = new BenchmarkClock();
   readonly realtimeClock = new RealtimeClock();
@@ -311,6 +313,8 @@ export class Harness {
       reminderMs: config.tasks.reminderMs,
       filesDir: join(paths.stateDir, 'message-files'),
       maxChars: () => this.connector.maxChars,
+      policy: (task) => this.connector.policy(task.input.message.target.kind),
+      maxFileBytes: config.media.maxFileBytes,
       onDelivered: (c, ts) => {
         conversations.appendResult(c.message.target.key, {
           role: 'assistant',

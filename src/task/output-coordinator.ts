@@ -6,6 +6,8 @@ import type { DeepReadonly } from '@qqbot/contracts';
  */
 import { copyFile, mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+import { originalSlices, prepareRecordDelivery } from '../delivery/record.js';
+import type { ReplyPolicy } from '@qqbot/contracts';
 import { traceSpan, legacyTrace } from '../observability/index.js';
 import { createHash } from 'node:crypto';
 import { normalizeWhitespace, stripControlChars } from '../content/index.js';
@@ -38,7 +40,8 @@ function deliveredBodyCounts(rows: DeepReadonly<QueuedMessage[]>, lane: Lane): M
       candidate.attachment
     )
       continue;
-    counts.set(candidate.text, (counts.get(candidate.text) ?? 0) + 1);
+    for (const part of candidate.body.segments ?? [{ text: candidate.text }])
+      counts.set(part.text, (counts.get(part.text) ?? 0) + 1);
   }
   return counts;
 }
@@ -62,6 +65,8 @@ export class SessionOutputCoordinator {
       budget: TaskBudget;
       filesDir: string;
       maxChars: (task: DeepReadonly<TaskSnapshot>) => number;
+      policy?: (task: DeepReadonly<TaskSnapshot>) => ReplyPolicy;
+      maxFileBytes?: number;
       clock?: TaskClock;
       reminderMs?: number;
       onDelivered?: (candidate: DeepReadonly<ReplyCandidate>, ts: number) => void;
@@ -87,6 +92,19 @@ export class SessionOutputCoordinator {
     resultId?: string
   ): Promise<void> {
     if (result.kind === 'silent') return;
+    const policy = this.options.policy?.(task);
+    if (policy?.record) {
+      await this.acceptRecordCapable(task, lane, result, policy, resultId);
+      return;
+    }
+    await this.acceptLegacy(task, lane, result, resultId);
+  }
+  private async acceptLegacy(
+    task: DeepReadonly<TaskSnapshot>,
+    lane: Lane,
+    result: Exclude<LaneResult, { kind: 'silent' }>,
+    resultId?: string
+  ): Promise<void> {
     const text =
       result.kind === 'reply' || result.kind === 'failed'
         ? normalizeWhitespace(stripControlChars(result.text)).trim()
@@ -167,6 +185,66 @@ export class SessionOutputCoordinator {
       );
     }
   }
+  private async acceptRecordCapable(
+    task: DeepReadonly<TaskSnapshot>,
+    lane: Lane,
+    result: Exclude<LaneResult, { kind: 'silent' }>,
+    policy: ReplyPolicy,
+    resultId?: string
+  ): Promise<void> {
+    const text = result.kind === 'reply' || result.kind === 'failed' ? result.text.trim() : '';
+    const bodyId = `${task.taskId}:${lane}:body:${resultId ?? createHash('sha256').update(text).digest('hex')}`;
+    // Stable original slices are chosen before deduplication or wrapping. Never repair fences or drop separators.
+    const delivered = deliveredBodyCounts(this.options.queue.messages(task.taskId), lane);
+    const parts = originalSlices(text, policy.maxChars)
+      .map((text, index) => ({ text, index }))
+      .filter((part) => !consumeDeliveredBody(delivered, part.text));
+    const body = parts.map((part) => part.text).join('');
+    const attachments = result.attachments ?? [];
+    if (!body && !attachments.length) return;
+    const groupId = `${bodyId}:delivery`;
+    if (
+      this.options.queue
+        .messages(task.taskId)
+        .some((row) => row.candidate.delivery?.groupId === groupId)
+    )
+      return;
+    const base = this.recordBase(task, lane, result);
+    const candidates = await prepareRecordDelivery(base, bodyId, parts, attachments, {
+      filesDir: this.options.filesDir,
+      maxFileBytes: this.options.maxFileBytes,
+      policy,
+    });
+    const entries = candidates.map((candidate, index) => ({
+      candidate: { ...candidate, delivery: { groupId, index } },
+      id: `${groupId}:${index}`,
+    }));
+    if (this.options.queue.enqueueGroup) this.options.queue.enqueueGroup(entries);
+    else entries.forEach(({ candidate, id }) => this.options.queue.enqueue(candidate, id));
+  }
+  private recordBase(
+    task: DeepReadonly<TaskSnapshot>,
+    lane: Lane,
+    result: LaneResult
+  ): ReplyCandidate {
+    return {
+      trace: result.trace ?? task.lanes[lane].trace ?? task.input.trace ?? legacyTrace(task.taskId),
+      taskId: task.taskId,
+      lane,
+      message: task.input.message,
+      reference: task.input.reference,
+      quote:
+        lane === 'slow' ||
+        task.input.source === 'proactive' ||
+        this.clock.now() - task.createdAt >= 30_000,
+      mention:
+        task.input.source === 'user' && task.input.message.target.kind === 'group'
+          ? task.input.reference.senderId
+          : undefined,
+      text: '',
+      kind: result.kind === 'failed' ? 'error' : 'final',
+    };
+  }
   /** 任一送达即可提交；释放则必须同时满足执行结束与所有消息均终结未成功。 */
   reconcile(taskId: string): void {
     const task = this.options.manager.get(taskId);
@@ -204,13 +282,7 @@ export class SessionOutputCoordinator {
     if (result.status === 'sent' && deliveredAt !== undefined) {
       // 先保存实际送达内容，再触发预算回调，主动 adapter 才能记录真实发言。
       this.options.onDelivered?.(candidate, deliveredAt);
-      if (
-        candidate.lane === 'fast' &&
-        candidate.kind === 'final' &&
-        !candidate.notification &&
-        !candidate.attachment &&
-        candidate.text
-      ) {
+      if (isFastBody(candidate)) {
         if (!this.fastSent.has(candidate.taskId)) this.fastSent.set(candidate.taskId, deliveredAt);
         const task = this.options.manager.get(candidate.taskId);
         if (task) this.scheduleReminder(task);
@@ -266,4 +338,15 @@ export class SessionOutputCoordinator {
       )
     );
   }
+}
+
+function isFastBody(candidate: DeepReadonly<ReplyCandidate>): boolean {
+  return (
+    candidate.lane === 'fast' &&
+    candidate.kind === 'final' &&
+    !candidate.notification &&
+    !!candidate.body &&
+    !candidate.attachment &&
+    !!candidate.text
+  );
 }

@@ -98,6 +98,27 @@ export function markdown(report: BenchmarkReport) {
     );
   }
   lines.push('', '## 耗时与资源', '', '```json', JSON.stringify(report.metrics, null, 2), '```');
+  const output = report.records.filter((r) => r.outputDelivery);
+  if (output.length) {
+    lines.push(
+      '',
+      '## 输出交付',
+      '',
+      '| 场景 | 外部/目标 | 记录节点 | 正文完整 | 文件完整 | 准备ms | 末条ms |',
+      '| --- | ---: | ---: | --- | --- | ---: | ---: |'
+    );
+    for (const r of output) {
+      const d = r.outputDelivery!;
+      lines.push(
+        `| ${r.caseId} | ${d.externalMessages}/${d.targetMessages} | ${d.internalNodes} | ${d.bodyComplete} | ${d.filesComplete} | ${d.preparationMs.toFixed(2)} | ${d.lastDeliveryMs} |`,
+        '',
+        '```json',
+        JSON.stringify({ actions: d.actions, resources: r.resources }, null, 2),
+        '```',
+        ''
+      );
+    }
+  }
   if (report.comparison)
     lines.push('', '## 基线比较', '', '```json', JSON.stringify(report.comparison, null, 2), '```');
   lines.push('', '## 失败与未完成证据', '');
@@ -170,7 +191,22 @@ export async function compare(report: BenchmarkReport, path: string) {
     (r) => !old.records.some((b) => b.caseId === r.caseId && b.caseVersion === r.caseVersion)
   );
   if (changed.length) throw new Error('baseline-scenario-version-mismatch');
+  const delivery = report.records
+    .filter((r) => r.outputDelivery)
+    .map((r) => {
+      const b = old.records.find(
+        (b) =>
+          b.caseId === r.caseId &&
+          b.caseVersion === r.caseVersion &&
+          b.seed === r.seed &&
+          b.repetition === r.repetition
+      );
+      if (!b?.outputDelivery || b.outputDelivery.inputHash !== r.outputDelivery!.inputHash)
+        throw new Error('baseline-output-input-mismatch');
+      return { caseId: r.caseId, previous: b.outputDelivery, current: r.outputDelivery };
+    });
   return {
+    outputDelivery: delivery,
     baseline: path,
     previous: metrics(old.records.filter((r) => report.records.some((b) => b.caseId === r.caseId))),
     current: report.metrics,

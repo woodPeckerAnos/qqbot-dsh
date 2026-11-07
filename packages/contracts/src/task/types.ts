@@ -12,6 +12,7 @@ import type {
   NormalizedMessage,
   OriginalMessageReference,
   OutgoingAttachment,
+  OutgoingRecord,
 } from '../core/connector.js';
 import type { TraceContext } from '../logger.js';
 import type { ObservationEntry } from '../store/window.js';
@@ -100,7 +101,18 @@ export interface ReplyCandidate {
   quote?: boolean;
   text: string;
   /** Original body marker excludes attachment descriptions, reminders and notices. */
-  body?: { id: string; index: number };
+  body?: {
+    id: string;
+    index: number;
+    /** Original slices in order; nodeIndex maps each slice to the flat record. */
+    segments?: readonly { index: number; text: string; nodeIndex?: number }[];
+  };
+  record?: OutgoingRecord;
+  mention?: string;
+  /** Group members are attempted in index order; unrelated Task text can progress. */
+  delivery?: { groupId: string; index: number };
+  /** Preparation errors settle in MessageQueue without calling the platform. */
+  preparationError?: string;
   attachment?: OutgoingAttachment;
   kind: 'final' | 'error' | 'progress';
   /** 发送失败通知标记，阻止通知失败时递归创建新通知。 */

@@ -24,6 +24,10 @@ Logger 子实例共享配置、预算与 stderr JSONL 缓冲。TaskLifeCycleMana
 
 当前运行架构：接入、归一化、去重、命令、输入判定 → SessionActor → TaskLifeCycleManager → 两个独立 LaneScheduler → SessionOutputCoordinator → MessageQueue → 连接器。唯一入口 `src/main.ts` 已完成装配。
 
+现行 OneBot 出口按 [ADR-007](adr/007-output-record-delivery.md) 归并输出：短正文直接发送；超过平台 maxChars 的正文用短提示和一条记录；多图片/MP4 视频按正文、媒体顺序放在同一平铺记录；普通多文件或混合附件全部进入一个 ZIP。长正文加 ZIP 共三条。单附件保留原文件，官方 QQ 保留既有方式。历史 Responder 的 ZIP 分支不是现行 Task 的出口实现。
+
+原始正文分段在去重前固定，记录保存分段到节点的映射；提示不属于原正文。成功记录展开用于快慢协作，历史保存完整正文。独立文件副本先准备，完整交付组一次持久化，再由 MessageQueue 按序尝试。文本、记录、附件通道独立，新 Task 的快正文不等待记录上传。记录完整序列化帧上限为 100 MiB；单文件和 ZIP 沿用 maxFileBytes，超限明确失败、不截断、不拆记录、不删 ZIP 条目。每组最多一个失败通知，未知结果不重发。
+
 每个有效输入和主动请求恰好创建一个 Task，原子准入两个 lane。同 Session 每个 lane 串行，lane 之间独立推进。Actor 只协调短事务；长执行、媒体整理和上传不占 Actor 锁。上下文在输入时固定，话题切换只影响后续 generation。
 
 快 lane 独立 runtime / session，thinking=false、reasoningEffort=off，仅可查询和取消 Task；长任务简短承接，不因工具限制否认整个 agent 的能力、不提前宣称完成。慢 lane 自行判定长技能（包括深度推理），基于实际成功送达正文只交付新增部分，结论反转明确回指并纠正。无增量允许 NO_REPLY（包括成功工具执行后）；失败、超时、空结果和需要说明的附件必须反馈。子代理前台等待，执行及子代理均终结后结算。

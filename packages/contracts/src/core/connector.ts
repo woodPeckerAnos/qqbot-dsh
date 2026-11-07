@@ -426,6 +426,13 @@ export interface OutgoingAttachment {
   sizeBytes: number;
 }
 
+/** A flat record; each media occupies its own node. Legacy attachment kinds stay intact. */
+export type OutgoingRecordNode =
+  { type: 'text'; text: string } | { type: 'image' | 'video'; attachment: OutgoingAttachment };
+export interface OutgoingRecord {
+  nodes: readonly OutgoingRecordNode[];
+}
+
 /**
  * 编排层给出的回复内容。text 是 agent 原始输出（可能是 Markdown）。
  *
@@ -437,6 +444,11 @@ export interface OutgoingMessage {
   text: string;
   attachments?: readonly OutgoingAttachment[];
   reference?: OriginalMessageReference;
+  record?: OutgoingRecord;
+  /** Explicit user identity from the triggering input, never inferred from model text. */
+  mention?: string;
+  /** Task original-body transport keeps literal Markdown and emoji; legacy callers retain their rendering. */
+  preserveText?: boolean;
 }
 
 /** 引用目标是输入时的事实，不等同于平台被动回复的发送锚点。 */
@@ -476,6 +488,8 @@ export interface ReplyContext {
  *     turnTimeoutMs 可以放宽到任务真正需要的时长。
  */
 export interface ReplyPolicy {
+  /** Optional flat record support; absent keeps the legacy delivery behavior. */
+  record?: { maxPayloadBytes: number; videoExtensions: readonly string[] };
   /** 单条消息最大字符数（分段依据） */
   maxChars: number;
   /** 针对一个平台发送锚点的最大消息条数，所有 lane、附件和通知共享 */

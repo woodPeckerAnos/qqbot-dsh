@@ -18,6 +18,7 @@ export interface LaneRunnerV2 {
   ): Promise<LaneResultV2>;
 }
 export interface DshLaneRunnerV2 {
+  /** Successful NO_REPLY with artifacts becomes a bodyless reply on record-capable platforms. */
   run(
     task: DeepReadonly<TaskSnapshotV2>,
     lane: Lane,

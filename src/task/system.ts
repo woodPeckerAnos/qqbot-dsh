@@ -137,6 +137,12 @@ export class TaskSystem {
       clock: options.clock,
       reminderMs: config.tasks.reminderMs,
       filesDir: join(paths.stateDir, 'message-files'),
+      maxFileBytes: config.media.maxFileBytes,
+      policy: (task) => {
+        const connector = options.connectors.get(task.input.message.target.platform);
+        if (connector === undefined) throw new Error('Task 所属平台没有连接器');
+        return connector.policy(task.input.message.target.kind);
+      },
       maxChars: (task) => {
         const connector = options.connectors.get(task.input.message.target.platform);
         if (connector === undefined) throw new Error('Task 所属平台没有连接器');

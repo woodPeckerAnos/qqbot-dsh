@@ -139,6 +139,8 @@ npm run check            # 类型、契约、lint、格式、测试、冒烟与 
 
 应答 benchmark 的场景、裁判配置、基线比较与严格门禁见 [验收说明](docs/SESSION-BENCHMARK.md)。快慢协作要求增量和明确纠错；真实模型效果单列 live benchmark，离线正向协作回归与坏样本校准分别保留。
 
+OneBot 的长文和多媒体使用一条平铺消息记录，普通多文件及混合附件合为一个 ZIP。输出交付的真实适配器离线动作比较可运行 `npm run bench:session -- --cases 输出交付 --strict`，官方 QQ 保留既有交付方式。
+
 格式由 Prettier 统一（`npm run format` 写入）；提交时 husky 会跑 `lint-staged`。
 ESLint 的存量违规记录在 `eslint-suppressions.json`，`npm run lint` 只拦新增违规，
 基线的审阅与收紧方式见 [docs/LINTING.md](docs/LINTING.md)。

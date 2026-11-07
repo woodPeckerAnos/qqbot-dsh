@@ -147,6 +147,23 @@ export class MessageQueue {
     };
     return record;
   }
+  enqueueGroup(entries: readonly { id: string; candidate: ReplyCandidate }[]): readonly string[] {
+    if (this.closed) throw new Error('消息队列已关闭');
+    const next = new Map(this.records);
+    const added: QueuedMessage[] = [];
+    for (const { id, candidate } of entries) {
+      if (next.has(id)) continue;
+      const record = this.newRecord(candidate, id);
+      next.set(id, record);
+      added.push(record);
+    }
+    this.commit(next);
+    added.forEach((record) => {
+      this.logEnqueued(record);
+    });
+    this.wake();
+    return entries.map((entry) => entry.id);
+  }
   private logEnqueued(record: QueuedMessage): void {
     const c = record.candidate;
     this.log(record).event('delivery.enqueued', {
@@ -235,12 +252,26 @@ export class MessageQueue {
   }
   private channel(candidate: ReplyCandidate): string {
     // 上传与附件传输独立于短正文；平台 seq 仍由同一个队列同步分配。
-    return `${candidate.message.target.key}:${candidate.attachment ? 'attachment' : 'text'}`;
+    let kind = 'text';
+    if (candidate.attachment) kind = 'attachment';
+    if (candidate.record) kind = 'record';
+    return `${candidate.message.target.key}:${kind}`;
+  }
+  private hasEarlierDelivery(candidate: ReplyCandidate): boolean {
+    const group = candidate.delivery;
+    if (!group) return false;
+    return [...this.records.values()].some(
+      (other) =>
+        other.candidate.delivery?.groupId === group.groupId &&
+        other.candidate.delivery.index < group.index &&
+        (other.status === 'pending' || other.status === 'sending')
+    );
   }
   private pump(): void {
     if (this.closed) return;
     for (const record of this.records.values()) {
       if (record.status !== 'pending') continue;
+      if (this.hasEarlierDelivery(record.candidate)) continue;
       const channel = this.channel(record.candidate);
       if (this.sending.has(channel)) {
         if (record.candidate.immediateOnly) {
@@ -250,13 +281,14 @@ export class MessageQueue {
       }
       const route = this.route(record.candidate, false);
       if (!route) {
-        if (record.candidate.immediateOnly) {
-          this.discard(record);
-        }
+        this.discardImmediate(record);
         continue;
       }
       this.attempt(record, route, channel);
     }
+  }
+  private discardImmediate(record: QueuedMessage): void {
+    if (record.candidate.immediateOnly) this.discard(record);
   }
   private discard(record: QueuedMessage): void {
     const next = { ...record, status: 'discarded' as const, finishedAt: this.clock.now() };
@@ -302,6 +334,7 @@ export class MessageQueue {
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      if (record.candidate.preparationError) throw new Error(record.candidate.preparationError);
       const work = Promise.resolve().then(() =>
         this.options.transport
           ? this.options.transport(route.connector, context, structuredClone(record.candidate))
@@ -309,6 +342,9 @@ export class MessageQueue {
               context,
               structuredClone({
                 text: record.candidate.text,
+                record: record.candidate.record,
+                mention: record.candidate.mention,
+                preserveText: record.candidate.body?.segments !== undefined,
                 reference:
                   record.candidate.quote === false ? undefined : record.candidate.reference,
                 ...(record.candidate.attachment
@@ -365,11 +401,12 @@ export class MessageQueue {
   }
   /** 通知有固定 ID 且带 notification 标记，保证只生成一次、失败不递归。 */
   private failureNotice(record: QueuedMessage): QueuedMessage {
-    const id = `${record.id}:failure-notice`;
+    const id = `${record.candidate.delivery?.groupId ?? record.id}:failure-notice`;
     record.failureNoticeId = id;
     const c = record.candidate;
     let name: string;
     if (c.attachment) name = `附件「${c.attachment.fileName}」`;
+    else if (c.record) name = '聊天记录';
     else if (c.kind === 'progress') name = '存活提醒';
     else name = c.text.slice(0, 30);
     const trace = traceSpan(
@@ -385,8 +422,11 @@ export class MessageQueue {
         ...c,
         trace,
         attachment: undefined,
+        record: undefined,
+        delivery: undefined,
+        preparationError: undefined,
         body: undefined,
-        text: `发送 ${name} 消息失败。`,
+        text: `发送 ${name} 消息失败。${c.record || c.preparationError ? (record.error ?? '') : ''}`,
         notification: true,
         immediateOnly: c.immediateOnly,
         kind: 'error',

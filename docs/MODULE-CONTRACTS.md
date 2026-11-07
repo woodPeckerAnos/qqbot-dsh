@@ -1702,10 +1702,25 @@ export interface OutgoingAttachment {
   fileName: string;
   sizeBytes: number;
 }
+export type OutgoingRecordNode =
+  | {
+      type: 'text';
+      text: string;
+    }
+  | {
+      type: 'image' | 'video';
+      attachment: OutgoingAttachment;
+    };
+export interface OutgoingRecord {
+  nodes: readonly OutgoingRecordNode[];
+}
 export interface OutgoingMessage {
   text: string;
   attachments?: readonly OutgoingAttachment[];
   reference?: OriginalMessageReference;
+  record?: OutgoingRecord;
+  mention?: string;
+  preserveText?: boolean;
 }
 export interface OriginalMessageReference {
   messageId?: string;
@@ -1723,6 +1738,10 @@ export interface ReplyContext {
   signal?: AbortSignal;
 }
 export interface ReplyPolicy {
+  record?: {
+    maxPayloadBytes: number;
+    videoExtensions: readonly string[];
+  };
   maxChars: number;
   maxRepliesPerMsg: number;
   progressMax: number;
@@ -1735,7 +1754,7 @@ export interface ReplyPolicy {
 
 ### 3. 不变量
 
-消息与会话命名空间隔离，平台发送单次且引用保留原类型。
+消息与会话命名空间隔离，平台发送单次且引用保留原类型；OneBot 平铺记录每媒体一个节点，群/私使用对应 forward 动作；完整序列化载荷至多 100 MiB，超限显式失败不截断。
 
 ### 4. 前后条件
 
@@ -3408,7 +3427,19 @@ export interface ReplyCandidate {
   body?: {
     id: string;
     index: number;
+    segments?: readonly {
+      index: number;
+      text: string;
+      nodeIndex?: number;
+    }[];
   };
+  record?: OutgoingRecord;
+  mention?: string;
+  delivery?: {
+    groupId: string;
+    index: number;
+  };
+  preparationError?: string;
   attachment?: OutgoingAttachment;
   kind: 'final' | 'error' | 'progress';
   notification?: boolean;
@@ -3701,7 +3732,7 @@ export interface TaskHandleV2 {
 
 ### 3. 不变量
 
-每输入一个 Task，双 lane 终结，短事务无整轮锁，预算守恒；慢结束钩子保持 running 等待同 Task 快执行和原始正文终结；lane、Task ID、outbox 和工作区路径仅用于内部协作，用户回复以处理进度和实际交付物描述衔接；prompt 区分历史背景与当前 Task 输入；其他 Task 未完成承诺不触发当前执行接管旧任务或生成旧附件。
+每输入一个 Task，双 lane 终结，短事务无整轮锁，预算守恒；慢结束钩子保持 running 等待同 Task 快执行和原始正文终结；lane、Task ID、outbox 和工作区路径仅用于内部协作，用户回复以处理进度和实际交付物描述衔接；prompt 区分历史背景与当前 Task 输入；其他 Task 未完成承诺不触发当前执行接管旧任务或生成旧附件；record 能力下成功 NO_REPLY 带附件转为无正文 reply 并交付，旧平台继续要求说明；失败和空结果不能冒充成功交付。
 
 持久化写入能力：`tasks` → `TaskStateWriter`（`src/task/lifecycle.ts`）；`task-budgets` → `BudgetStateWriter`（`src/task/budget.ts`）；`task-sessions` → `SessionStateWriter`（`src/task/session-actor.ts`）。
 
@@ -3835,6 +3866,12 @@ export interface MessageQueue {
   ): () => void;
   observe(message: NormalizedMessage): void;
   enqueue(candidate: ReplyCandidate, id?: string): string;
+  enqueueGroup?(
+    entries: readonly {
+      id: string;
+      candidate: ReplyCandidate;
+    }[]
+  ): readonly string[];
   canSend(candidate: ReplyCandidate): boolean;
   messages(taskId?: string): DeepReadonly<QueuedMessage[]>;
   taskDelivery(taskId: string): DeepReadonly<{
@@ -3903,6 +3940,8 @@ export type createSessionOutputCoordinatorFactoryV2 = (options: {
   budget: TaskBudget;
   filesDir: string;
   maxChars: (task: DeepReadonly<TaskSnapshotV2>) => number;
+  policy?: (task: DeepReadonly<TaskSnapshotV2>) => ReplyPolicy;
+  maxFileBytes?: number;
   clock?: TaskClock;
   reminderMs?: number;
   onDelivered?: (candidate: DeepReadonly<ReplyCandidate>, ts: number) => void;
@@ -3912,7 +3951,7 @@ export type createSessionOutputCoordinatorFactoryV2 = (options: {
 
 ### 3. 不变量
 
-MessageQueue 唯一写者，发送前持久化，失败通知一次，附件独立；跨 lane 去重只依据成功送达正文，入队 ID 区分 lane。
+MessageQueue 唯一写者，发送前持久化，失败通知一次，附件独立；跨 lane 去重只依据成功送达正文，入队 ID 区分 lane；记录与原正文分段映射独立保存，短提示无正文标记；每最终交付至多一条记录，ZIP 保留全部条目且遵守 maxFileBytes；交付组一次持久化后按序尝试，落盘失败无半组；文本/记录/附件通道独立，新 Task 快正文可推进；准备错误由队列结算，每组最多一个失败通知。
 
 持久化写入能力：`messages` → `MessageStateWriter`（`src/task/message-queue.ts`）。
 
@@ -3955,13 +3994,15 @@ v1 只增不改；破坏性签名先添加新版本，迁移生产消费者后�
   "input": {
     "text": "交付结果",
     "duplicate": false,
-    "failSend": false
+    "failSend": false,
+    "record": true
   },
   "expected": {
     "sent": 1,
     "failed": 0,
     "attempts": 1,
-    "referenceMessageId": "original-message"
+    "referenceMessageId": "original-message",
+    "recordNodes": 1
   }
 }
 ```

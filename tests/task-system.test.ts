@@ -287,6 +287,7 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     const action = h.mock.actions.find((a) => JSON.stringify(a.params).includes('报告完成'))!;
     expect(action.params.message).toEqual([
       { type: 'reply', data: { id: '1' } },
+      { type: 'at', data: { qq: '123' } },
       { type: 'text', data: { text: '报告完成' } },
     ]);
   });
@@ -662,8 +663,11 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     slow.finish('制作完成');
     await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
     await vi.waitFor(() => {
-      expect(h.system.queue.messages().filter((r) => r.status === 'sent')).toHaveLength(4);
+      expect(h.system.queue.messages().filter((r) => r.status === 'sent')).toHaveLength(3);
     });
+    expect(h.mock.sentTexts).toEqual(['开始制作', '制作完成']);
+    expect(h.system.queue.messages().filter((r) => r.candidate.attachment)).toHaveLength(1);
+    expect(h.system.queue.messages().every((r) => r.candidate.mention === undefined)).toBe(true);
     expect(reserve).toHaveBeenCalledTimes(1);
     expect(commit).toHaveBeenCalledTimes(1);
     expect(onSpoke).toHaveBeenCalledTimes(1);

@@ -193,8 +193,14 @@ export const contractExamples = immutableConstant([
     id: 'delivery.normal',
     module: 'delivery',
     kind: 'normal',
-    input: { text: '交付结果', duplicate: false, failSend: false },
-    expected: { sent: 1, failed: 0, attempts: 1, referenceMessageId: 'original-message' },
+    input: { text: '交付结果', duplicate: false, failSend: false, record: true },
+    expected: {
+      sent: 1,
+      failed: 0,
+      attempts: 1,
+      referenceMessageId: 'original-message',
+      recordNodes: 1,
+    },
   },
   {
     id: 'delivery.edge',

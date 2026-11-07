@@ -74,12 +74,18 @@ export class TaskCooperation implements CooperationContract {
           !row.candidate.notification &&
           !row.candidate.attachment
       )
-      .map((row) => ({
-        messageId: row.id,
-        text: row.candidate.text,
-        status: row.status,
-        error: row.error,
-      }));
+      .flatMap((row) =>
+        (
+          row.candidate.body?.segments ?? [
+            { text: row.candidate.text, index: row.candidate.body?.index ?? 0 },
+          ]
+        ).map((part) => ({
+          messageId: row.id,
+          text: part.text,
+          status: row.status,
+          error: row.error,
+        }))
+      );
     const fastStatus = fast?.status ?? 'cancelled';
     const ready =
       (!fast || isLaneTerminal(fast)) &&

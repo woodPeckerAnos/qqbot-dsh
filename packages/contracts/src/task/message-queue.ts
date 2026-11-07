@@ -34,6 +34,8 @@ export interface MessageQueue {
   observe(message: NormalizedMessage): void;
   /** 先落盘再唤醒发送；固定 ID 供恢复产物幂等入队。 */
   enqueue(candidate: ReplyCandidate, id?: string): string;
+  /** Atomically persist a prepared delivery group; a failed save leaves no partial group or platform action. */
+  enqueueGroup?(entries: readonly { id: string; candidate: ReplyCandidate }[]): readonly string[];
   canSend(candidate: ReplyCandidate): boolean;
   messages(taskId?: string): DeepReadonly<QueuedMessage[]>;
   /** 给预算结算聚合所有产物，正文、附件、提醒和失败通知都属于同一 Task。 */

@@ -413,12 +413,18 @@ export class DshLaneRunner implements LaneRunner {
           };
         } else if (outbox.attachments.length) {
           if (result.kind === 'silent')
-            result = {
-              kind: 'failed',
-              text: '任务产生了交付物但没有说明结果。',
-              error: 'silent-with-deliverables',
-              attachments: outbox.attachments,
-            };
+            result = context.connector.policy(task.input.message.target.kind).record
+              ? {
+                  kind: 'reply',
+                  text: '',
+                  attachments: outbox.attachments,
+                }
+              : {
+                  kind: 'failed',
+                  text: '任务产生了交付物但没有说明结果。',
+                  error: 'silent-with-deliverables',
+                  attachments: outbox.attachments,
+                };
           else result = { ...result, attachments: outbox.attachments };
         }
       }

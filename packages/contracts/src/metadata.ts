@@ -115,7 +115,10 @@ export const modules = immutableConstant([
       'WebSocket',
     ],
     responsibility: '平台归一化、鉴权、收发、出口与生命周期；不编排 Task',
-    invariants: ['消息与会话命名空间隔离，平台发送单次且引用保留原类型'],
+    invariants: [
+      '消息与会话命名空间隔离，平台发送单次且引用保留原类型',
+      'OneBot 平铺记录每媒体一个节点，群/私使用对应 forward 动作；完整序列化载荷至多 100 MiB，超限显式失败不截断',
+    ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
     errors: '媒体获取失败降级；发送已尝试不重试，超时结果不确定',
@@ -312,6 +315,7 @@ export const modules = immutableConstant([
       '每输入一个 Task，双 lane 终结，短事务无整轮锁，预算守恒；慢结束钩子保持 running 等待同 Task 快执行和原始正文终结',
       'lane、Task ID、outbox 和工作区路径仅用于内部协作，用户回复以处理进度和实际交付物描述衔接',
       'prompt 区分历史背景与当前 Task 输入；其他 Task 未完成承诺不触发当前执行接管旧任务或生成旧附件',
+      'record 能力下成功 NO_REPLY 带附件转为无正文 reply 并交付，旧平台继续要求说明；失败和空结果不能冒充成功交付',
     ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
@@ -345,6 +349,7 @@ export const modules = immutableConstant([
     entry: 'src/delivery/index.ts',
     files: [
       'src/delivery/index.ts',
+      'src/delivery/record.ts',
       'src/pipeline/egress/responder.ts',
       'src/task/message-queue.ts',
       'src/task/output-coordinator.ts',
@@ -354,6 +359,8 @@ export const modules = immutableConstant([
     responsibility: '队列、产物、正文去重、原引用与提醒；不写执行状态',
     invariants: [
       'MessageQueue 唯一写者，发送前持久化，失败通知一次，附件独立；跨 lane 去重只依据成功送达正文，入队 ID 区分 lane',
+      '记录与原正文分段映射独立保存，短提示无正文标记；每最终交付至多一条记录，ZIP 保留全部条目且遵守 maxFileBytes',
+      '交付组一次持久化后按序尝试，落盘失败无半组；文本/记录/附件通道独立，新 Task 快正文可推进；准备错误由队列结算，每组最多一个失败通知',
     ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
