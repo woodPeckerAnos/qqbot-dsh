@@ -1,7 +1,7 @@
 import type {
-  RuntimePool,
+  RuntimePoolV2 as RuntimePool,
   MessageQueue,
-  SessionOutputCoordinatorV2 as SessionOutputCoordinator,
+  SessionOutputCoordinatorV3 as SessionOutputCoordinator,
 } from '@qqbot/contracts';
 /**
  * Task 架构装配与资源生命周期：独立状态存储、双 runtime 池、控制桥和出口回调。
@@ -12,8 +12,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Config } from '@qqbot/contracts';
 import type { BotConnector, NormalizedMessage } from '@qqbot/contracts';
-import { createRuntimePool } from '../runtime/index.js';
-import type { RuntimePoolOptions } from '@qqbot/contracts';
+import { createRuntimePoolV2, createRuntimeExecutionGate } from '../runtime/index.js';
+import type { RuntimePoolOptionsV2 as RuntimePoolOptions } from '@qqbot/contracts';
 import type { DocumentExtractor } from '@qqbot/contracts';
 import { createTrace } from '../observability/index.js';
 import type { TraceContext, Logger } from '@qqbot/contracts';
@@ -31,17 +31,17 @@ import type { BudgetRecord } from '@qqbot/contracts';
 import { createMessageQueue } from '../delivery/index.js';
 import type { QueuedMessage } from '@qqbot/contracts';
 import { PromptPreparer } from './prompt-preparer.js';
-import { createSessionOutputCoordinatorV2 } from '../delivery/index.js';
+import { createSessionOutputCoordinatorV3 } from '../delivery/index.js';
 import { LaneScheduler } from './lane-scheduler.js';
 import { TaskControlBridge } from './control-bridge.js';
 import { DshLaneRunner } from './dsh-lane-runner.js';
-import type { LaneRunnerV2 as LaneRunner } from '@qqbot/contracts';
+import type { LaneRunnerV3 as LaneRunner } from '@qqbot/contracts';
 import { SessionActor } from './session-actor.js';
 import { TaskCooperation } from './cooperation.js';
-import type { SessionContextState } from '@qqbot/contracts';
+import type { SessionContextStateV3 as SessionContextState } from '@qqbot/contracts';
 import { ProactiveTaskAdapter } from './proactive-adapter.js';
 import type { TaskClock } from '@qqbot/contracts';
-import type { Lane, TaskSnapshotV2 as TaskSnapshot } from '@qqbot/contracts';
+import type { Lane, TaskSnapshotV3 as TaskSnapshot } from '@qqbot/contracts';
 
 export class TaskSystem {
   readonly manager: TaskLifeCycleManager;
@@ -100,12 +100,15 @@ export class TaskSystem {
     });
     this.cooperation = new TaskCooperation(this.manager, this.queue);
     const preparer = (this.preparer = new PromptPreparer(options));
+    const executionGate = createRuntimeExecutionGate(config.pool.maxRuntimes);
     this.pools =
       options.pools ??
       (Object.fromEntries(
         (['fast', 'slow'] as const).map((lane) => [
           lane,
-          createRuntimePool({
+          createRuntimePoolV2({
+            executionGate,
+            now: clock ? () => clock.now() : undefined,
             maxRuntimes: config.tasks[lane === 'fast' ? 'fastRuntimes' : 'slowRuntimes'],
             runtimeIdleMs: config.pool.runtimeIdleMs,
             base: {
@@ -130,7 +133,7 @@ export class TaskSystem {
     const control = new TaskControlBridge(this.manager, (id) => {
       this.actor.cancelExecution(id);
     });
-    this.output = createSessionOutputCoordinatorV2({
+    this.output = createSessionOutputCoordinatorV3({
       manager: this.manager,
       budget: this.budget,
       queue: this.queue,
@@ -207,6 +210,10 @@ export class TaskSystem {
         }),
       },
       clock: options.clock,
+      resetLanes: (key, epoch) => {
+        for (const lane of ['fast', 'slow'] as const)
+          this.pools[lane].reset(`${key}:${lane}`, epoch);
+      },
       sessions: createStateWriter<SessionContextState, 'task-sessions'>(
         'task-sessions',
         join(paths.stateDir, 'task-sessions.json')
@@ -314,11 +321,13 @@ export class TaskSystem {
   }
   async close(): Promise<void> {
     clearInterval(this.maintenance);
-    this.actor.close();
+    try {
+      this.actor.close();
+    } catch (error) {
+      this.options.logger.cause(error, 'shutdown-state-persistence');
+    }
     await Promise.allSettled(Object.values(this.pools).map((pool) => pool.disposeAll()));
-    await Promise.allSettled(
-      this.manager.list().map((task) => this.manager.handle(task.taskId).done)
-    );
+    await this.actor.whenIdle();
     this.output.close();
     this.cooperation.close();
     this.queue.close();

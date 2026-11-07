@@ -5,7 +5,8 @@ import type {
   RuntimePoolOptions,
 } from '@qqbot/contracts';
 /**
- * 按调用方隔离键管理 DSH runtime 租约，带硬上限、LRU 和空闲回收。
+ * 历史 v1 兼容池：带驻留硬上限、LRU 和空闲回收。
+ * 生产常驻 lane 使用 persistent-pool.ts 的 RuntimePoolV2（ADR-009）。
  *
  * 为什么必须隔离进程：DSH 的 `initialize.cwd` 是进程级的，同进程内
  * 所有会话共用同一个 cwd（见 dsh-sdk-jsonrpc-server 的 `HarnessSdkJsonRpcServer.cwd`）。

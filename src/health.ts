@@ -23,7 +23,7 @@ import { createServer, type Server } from 'node:http';
 
 import type { ConnectorHealth } from '@qqbot/contracts';
 import type { LoggingSnapshot } from '@qqbot/contracts';
-import type { SessionActorV2 as SessionActor } from '@qqbot/contracts';
+import type { SessionActorV3 as SessionActor } from '@qqbot/contracts';
 import type { MessageQueue } from '@qqbot/contracts';
 import type { PipelineStatsSnapshot } from '@qqbot/contracts';
 
@@ -133,7 +133,14 @@ export function buildHealthSnapshot(input: {
   startedAt: number;
   logging?: LoggingSnapshot;
   connectors: Record<string, ConnectorHealth>;
-  runtime: { size: number; activeConversationKeys: string[]; activeSubagents: number };
+  runtime: {
+    size: number;
+    resident?: number;
+    running?: number;
+    queued?: number;
+    activeConversationKeys: string[];
+    activeSubagents: number;
+  };
   tasks: ReturnType<SessionActor['snapshot']>;
   messages: ReturnType<MessageQueue['snapshot']>;
   dispatcher: PipelineStatsSnapshot;

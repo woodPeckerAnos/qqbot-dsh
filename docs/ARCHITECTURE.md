@@ -1,10 +1,12 @@
 # 现行架构
 
+常驻会话 lane 的资源与重置边界见 [ADR-009](adr/009-persistent-session-lanes.md)。群与单聊按 `(target.key, lane)` 拥有 DSH 进程、根 session 和稳定工作区；Task 是每次有效输入及其结果的单元。正常结束只释放占用、监听与计时器，不空闲回收、不 LRU。历史按 Task 创建并关闭 runtime 的实现见 ADR-001 及旧 git 版本。
+
 判定恢复与提醒意图见 [ADR-008](adr/008-judgment-recovery-reply-attention.md)。话题判定显式 reasoning_effort=none（32/48 token），主动瞬时失败至多三次请求，共享总超时及并发名额；watcher 单次记最终失败，连续三次冷却五分钟，到期仅在有效触发有候选时放行一个试探。所有入口含 wait 共用闸门，继续旁听。提示列出完整 q:<id> 及唤醒等待时间，按同一快照验证并复核实时台账，禁止补猜引用。健康快照提供分类、重试和会话熔断状态。
 
 主动 Task 快 lane 成功且至少一段原始正文存在、全部 sent 时，出口省略慢错误正文，保留真实失败状态、附件及必需说明；其他情况及用户 Task 继续反馈。工具结果的 toolCallId 与 source.callId 核对，追踪缺失不作为业务工具未收口依据。普通回复所有长度均不自动 @，保留原引用；首行内部标记 [REPLY_ATTENTION:strong] 由 runner 移除并转成意图，只提及真实原作者一次，附件与后续分段不重复提及。下文通用慢失败反馈规则适用这一明确例外，ADR-007 自动提及决策属历史。
 
-交互式架构图：[SessionActor 与双 lane 任务编排](diagrams/session-actor-lanes.html)（源：[candidate](diagrams/session-actor-lanes.architecture.json)）。
+历史交互式架构图（调度路径仍适用，资源生命周期以 ADR-009 为准）：[SessionActor 与双 lane 任务编排](diagrams/session-actor-lanes.html)（源：[candidate](diagrams/session-actor-lanes.architecture.json)）。
 
 核心 Logger 已以显式只读 TraceContext 贯通输入、Task、双 lane、DSH 父子执行、产物和独立投递队列；日志只含元数据。状态写入权与调度不变，设计见 [ADR-002](adr/002-logging-tracing.md)。
 
@@ -36,30 +38,34 @@ Logger 子实例共享配置、预算与 stderr JSONL 缓冲。TaskLifeCycleMana
 
 快 lane 独立 runtime / session，thinking=false、reasoningEffort=off，仅可查询和取消 Task；长任务简短承接，不因工具限制否认整个 agent 的能力、不提前宣称完成。慢 lane 自行判定长技能（包括深度推理），基于实际成功送达正文只交付新增部分，结论反转明确回指并纠正。无增量允许 NO_REPLY（包括成功工具执行后）；失败、超时、空结果和需要说明的附件必须反馈。子代理前台等待，执行及子代理均终结后结算。
 
-TaskSystem 提供只读协作快照，保留快 lane 执行状态、原始正文分段顺序、投递异常与成功送达内容。fd 3 消息绑定 Task/execution/runtime generation/sessionId，只向对应慢根 agent 同步 `agent.inject()`，下一 step 消费。`agent/turn-stopping` 直接等待快执行和其原始正文投递终态，未消费最新快照时继续同一 turn 完成衔接。等待保留 runtime、session、调度名额及 running 状态，计入 slowTimeoutMs；沿用 /stop 和存活提醒。取消、超时、通道关闭、服务关闭均释放等待资源；真正结束后才 endExecution。
+TaskSystem 提供只读协作快照，保留快 lane 执行状态、原始正文分段顺序、投递异常与成功送达内容。fd 3 每轮先绑定并确认 Task/execution/runtime generation/sessionId/sessionEpoch；控制目标使用独立 targetTaskId，消息绑定当前执行，只向对应慢根 agent 同步 `agent.inject()`，下一 step 消费。`agent/turn-stopping` 直接等待快执行和其原始正文投递终态，未消费最新快照时继续同一 turn 完成衔接。等待保留 runtime、session、调度名额及 running 状态，计入 slowTimeoutMs；沿用 /stop 和存活提醒。取消、超时、通道关闭、服务关闭均释放等待资源；协作快照只在当前 prompt 的 user/message 提交后注入，绑定时不唤醒根。匹配 prompt 回执 messageId 所属 user/message、turn/end 与递增 seq 后，再通过 fd 3 确认根及子代理静止，才 endExecution、扫描当轮交付物和解绑。/stop 与超时先请求 agent.cancel，沿用 shutdown timeout 等待静止；收敛失败销毁受影响 lane。
 
 快 lane 的最终 provider/model 在环境覆盖后校验：`models.providers.<路由>.models` 中显式列举的所选模型必须声明 `reasoningEfforts.off` 和至少一个非 off 档位，禁止以缺省值或 `false` 隐藏能力不匹配。`modelOverrides` 仅在显式覆写能力时校验；未覆写的 DSH 目录及带外路由由 DSH 握手校验。初始化根因先记录，再回收进程；未就绪进程直接 SIGTERM，保留信号宽限及 SIGKILL 兜底，不等待无法发出的 shutdown。见 [ADR-004](adr/004-fast-lane-model-capability.md)。
 
 两个 lane 终结才结算 Task。取消优先，否则任一失败为 failed，其余 completed。慢产物经衔接闸门入队后不等待自身投递；投递失败不改写执行状态。快原始正文 pending 时慢执行继续等待合法出口。已入队产物取消后仍发送。/stop 取消命令到达时有 lane 正执行的 Task（含结束钩子等待）；/new 取消全部未完成 Task 并重置上下文。
 
-慢、延迟、主动和存活提醒引用输入时保存的原消息。引用目标与平台出口锚点独立。跨 lane 精确分段去重只依据成功送达的原始正文，入队幂等 ID 区分 lane；未送达的快答案不吞掉慢答案。附件独立保留，提醒、附件说明和失败通知不冒充原始正文。后来的话题或回答不撤销已授权的主动请求。受影响接口使用 v2，v1 声明和兼容基线保留。
+慢、延迟、主动和存活提醒引用输入时保存的原消息。引用目标与平台出口锚点独立。跨 lane 精确分段去重只依据成功送达的原始正文，入队幂等 ID 区分 lane；未送达的快答案不吞掉慢答案。附件独立保留，提醒、附件说明和失败通知不冒充原始正文。后来的话题或回答不撤销已授权的主动请求。受影响接口使用 Task V3、RuntimePoolV2；v1/v2 声明和 v1 兼容基线保留。
 
 主动预算按 Task 预留一个单位，首次任意消息成功送达提交一次，静默或所有投递失败释放。范围绑定触发时的话题。队列先持久化再尝试发送；失败或超时不重试，只生成一次不递归失败通知。重启不恢复执行、不重发已尝试但结果未知的消息。
 
-默认快 30 秒、慢 30 分钟（排队不计时），runtime 总上限 8、各 lane 4；Session 未完成 Task 32、全局 128，终态保留 7 天。待发消息及文件独立保存。快送达且慢开始后等 5 分钟，慢仍执行才发最多一次存活提醒；无即时合法出口放弃。
+默认快 30 秒、慢 30 分钟（排队不计时），执行并发合计上限 8、各 lane 4，驻留数量不受上限限制；Session 未完成 Task 32、全局 128，终态保留 7 天。待发消息及文件独立保存。快送达且慢开始后等 5 分钟，慢仍执行才发最多一次存活提醒；无即时合法出口放弃。
+
+服务关闭等待调度执行与资源收尾，状态保存失败不以 Task.done 阻塞关闭；未完成记录在重启时中断。SessionActor 独立持久化 sessionEpoch 与 resetSinceTs。自动话题 generation 只改变观察范围与当前输入提示，不淘汰 DSH session；/new 与 /reset 先保存新 epoch，再取消全部未完成 Task 并淘汰双 lane。新执行等待所属旧资源关闭，其他会话继续推进。旧 Task 缺 epoch 时按 1 读取，旧会话 sinceTs 是初始冷回放边界。
+
+稳定 cwd 为 `<session>/lanes/<lane>`；当轮工作和 outbox 在其下 `tasks/<taskId>`。输入在 `<session>/tasks/<taskId>` 摄取一次，提示提供完整输入路径。只扫描当前 Task 的 outbox；到期删除输入及两条 lane 下的 Task 目录，保留 lane 工作区与队列独立附件副本。健康信息分别记录 resident、running、queued。
 
 ## 平台前提
 
 - **DSH 协议自研**：`@deepseek-ai/dsh-sdk-client` 未发布，桥接层直接实现 NDJSON JSON-RPC：3 个方法（`initialize` / `session/prompt` / `shutdown`）与 4 个通知（`session.event` / `session.status` / `subagent.started` / `subagent.finished`）。`session/prompt` 只返回入队回执，结果只能从事件流取；`initialize` 校验 `serverInfo.name` 以发现协议漂移。
 - **被动回复窗口**：群聊 5 分钟 / 5 次，单聊 60 分钟 / 4 次，这是全系统最硬的约束。配额按会话类型取（`QQ_MAX_REPLIES_PER_MSG` / `QQ_C2C_MAX_REPLIES_PER_MSG`）；单轮超时故意沿用群聊保守上限（<295s），因为"超时提示发不出去"比"任务跑得不够久"更难排查。
-- **没有 resume**：`session/prompt` 走 `agents.create()` 而不是 `open()`，重启后同一 `sessionId` 也是空上下文。"重启不失忆"只能由桥接层的对话记录与冷启动回放兜底。
+- **没有 resume**：`session/prompt` 首次创建根 agent，此后同一进程内按 sessionId 复用，原生上下文跨 Task 连续。进程重启没有 resume；新 generation 与新 sessionId 冷启动一次回放有限历史。"重启不失忆"只能由桥接层的对话记录与冷启动回放兜底。
 
 ## DSH profile 与 persona
 
 - 不新建 bundle，在 `sdk` profile 上打 patch：`dsh --profile sdk --patch dsh-profile/cordis.patch.yml`。首次运行自动初始化 `$DSH_HOME/profiles/sdk`，镜像不预置 profile。
 - patch 五件事：覆盖 persona（群助手 + 输出纪律）、钉死 `approval.policy = ask` 并挂 auto-approve 桩、钉死 `sandbox-policy.mode = workspace-write`、只 `disabled` 掉纯叶子 `tool-jobs`、插入本地插件。
 - 两个实测坑：`!!js` 的值会被 `eval`，表达式必须写在一行，换行用 `String.fromCharCode(10)`；不能 `disabled` 提供服务器的行，否则依赖方永远 pending（boot 报 "entries did not activate"）。
-- `/persona <名>` 把预设写进该会话工作区 `AGENTS.md` 的标记区块，DSH 每步探测 mtime，下一个 turn 生效，不重建 runtime。预设只放风格与口径，身份、安全与派发纪律在 `personaPrefix`。
+- `/persona <名>` 把预设写进该会话工作区 `AGENTS.md` 的标记区块，runner 每轮将会话规则同步到 lane 工作区，DSH 每步探测 mtime，下一个 turn 生效，不重建 runtime。预设只放风格与口径，身份、安全与派发纪律在 `personaPrefix`。
 
 ## 安全边界
 

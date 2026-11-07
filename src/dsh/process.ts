@@ -19,6 +19,8 @@ import { LoggedError } from '@qqbot/contracts';
 import { HarnessSdkClient } from './protocol.js';
 import { SDK_SERVER_INFO_NAME } from '@qqbot/contracts';
 import type { InitializeResult, PromptContentBlock, SessionPromptResult } from '@qqbot/contracts';
+import { ExecutionChannel } from './execution-channel.js';
+import type { ExecutionBinding, ExecutionHandlers, ExecutionAck } from '@qqbot/contracts';
 
 export type { DshRuntimeOptions } from '@qqbot/contracts';
 
@@ -29,7 +31,7 @@ export type { DshRuntimeState } from '@qqbot/contracts';
 export class DshRuntime extends EventEmitter {
   private client: HarnessSdkClient | undefined;
   private child: ChildProcessWithoutNullStreams | undefined;
-  private taskChannel?: Duplex;
+  private taskChannel?: ExecutionChannel;
   private _state: DshRuntimeState = 'starting';
   private _serverInfo: InitializeResult['serverInfo'] | undefined;
   private stderrTail: string[] = [];
@@ -85,68 +87,16 @@ export class DshRuntime extends EventEmitter {
         ...options.env,
       },
       stdio:
-        options.taskControl || options.taskCooperation
+        options.taskControl || options.taskCooperation || options.env?.QQBOT_TASK_CHANNEL
           ? ['pipe', 'pipe', 'pipe', 'pipe']
           : ['pipe', 'pipe', 'pipe'],
     });
 
     this.child = child;
     options.logger.event('runtime.started', { pid: child.pid });
-    if (options.taskControl || options.taskCooperation) {
-      const control = child.stdio[3] as Duplex;
-      this.taskChannel = control;
-      const channelAbort = new AbortController();
-      const close = () => {
-        if (channelAbort.signal.aborted) return;
-        channelAbort.abort();
+    if (options.taskControl || options.taskCooperation || options.env?.QQBOT_TASK_CHANNEL) {
+      this.taskChannel = new ExecutionChannel(child.stdio[3] as Duplex, options, () => {
         this.emit('task.channel.closed');
-      };
-      control.on('close', close);
-      let buffer = '';
-      control.setEncoding('utf8');
-      control.on('data', (chunk: string) => {
-        buffer += chunk;
-        if (buffer.length > 65536) {
-          control.destroy();
-          return;
-        }
-        let newline: number;
-        while ((newline = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, newline);
-          buffer = buffer.slice(newline + 1);
-          try {
-            const request = JSON.parse(line) as {
-              id: string;
-              action: string;
-              taskId?: string;
-              sessionId?: string;
-              executionId: string;
-              runtimeGeneration: string;
-            };
-            const work = request.action.startsWith('cooperation-')
-              ? options.taskCooperation?.(
-                  request as import('@qqbot/contracts').TaskCooperationRequest,
-                  channelAbort.signal
-                )
-              : options.taskControl?.(request);
-            void Promise.resolve(work).then(
-              (value) => {
-                if (!control.destroyed)
-                  control.write(JSON.stringify({ id: request.id, value }) + '\n');
-              },
-              (error: unknown) => {
-                if (!control.destroyed)
-                  control.write(JSON.stringify({ id: request.id, error: String(error) }) + '\n');
-              }
-            );
-          } catch (error) {
-            options.logger.warn('Task 控制请求失败', { error: String(error) });
-          }
-        }
-      });
-      control.on('error', (error) => {
-        close();
-        options.logger.warn('Task 控制通道关闭', { error: error.message });
       });
     }
 
@@ -248,8 +198,23 @@ export class DshRuntime extends EventEmitter {
   }
 
   notifyTaskCooperation(update: import('@qqbot/contracts').TaskCooperationUpdate): void {
-    if (this.taskChannel && !this.taskChannel.destroyed)
-      this.taskChannel.write(JSON.stringify(update) + '\n');
+    this.taskChannel?.push(update);
+  }
+  bindExecution(binding: ExecutionBinding, handlers: ExecutionHandlers): Promise<ExecutionAck> {
+    return this.channel().bind(binding, handlers);
+  }
+  unbindExecution(binding: ExecutionBinding): Promise<ExecutionAck> {
+    return this.channel().unbind(binding);
+  }
+  cancelExecution(binding: ExecutionBinding): Promise<ExecutionAck> {
+    return this.channel().cancel(binding);
+  }
+  quiesceExecution(binding: ExecutionBinding): Promise<ExecutionAck> {
+    return this.channel().quiesce(binding);
+  }
+  private channel(): ExecutionChannel {
+    if (!this.taskChannel) throw new Error('执行绑定通道不可用');
+    return this.taskChannel;
   }
   onTaskChannelClose(listener: () => void): () => void {
     this.on('task.channel.closed', listener);
@@ -282,7 +247,7 @@ export class DshRuntime extends EventEmitter {
    * 可重复调用。
    */
   async dispose(): Promise<void> {
-    this.taskChannel?.destroy();
+    this.taskChannel?.dispose();
     if (this._state === 'closed') return;
     if (this._state === 'closing') {
       await this.exitPromise;

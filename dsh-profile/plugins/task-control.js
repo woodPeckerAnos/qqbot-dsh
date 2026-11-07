@@ -13,13 +13,25 @@ export function apply(ctx) {
   if (!process.env.QQBOT_TASK_CHANNEL) return;
   const socket = new Socket({ fd: 3, readable: true, writable: true });
   const pending = new Map();
-  const binding = {
-    taskId: process.env.QQBOT_TASK_ID,
-    executionId: process.env.QQBOT_EXECUTION_ID,
-    runtimeGeneration: process.env.QQBOT_RUNTIME_GENERATION,
-    sessionId: process.env.QQBOT_ROOT_SESSION_ID,
-  };
+  const binding = {};
   let cooperation;
+  const execution = installExecutionBindings(ctx, {
+    bind: (identity) => {
+      closePending();
+      Object.keys(binding).forEach((key) => Reflect.deleteProperty(binding, key));
+      Object.assign(binding, identity);
+      cooperation?.bind(identity);
+    },
+    unbind: () => {
+      closePending();
+      cooperation?.reset();
+      Object.keys(binding).forEach((key) => Reflect.deleteProperty(binding, key));
+    },
+  });
+  const closePending = () => {
+    for (const item of pending.values()) item.reject(new Error('执行身份已变更'));
+    pending.clear();
+  };
   let buffer = '';
   socket.setEncoding('utf8');
   socket.on('data', (chunk) => {
@@ -30,7 +42,22 @@ export function apply(ctx) {
       buffer = buffer.slice(at + 1);
       try {
         const response = JSON.parse(line);
-        if (response.type === 'cooperation') cooperation?.receive(response);
+        if (response.type === 'execution') {
+          void execution.handle(response).then(
+            (value) =>
+              socket.write(
+                JSON.stringify({ type: 'execution-response', id: response.id, value }) + '\n'
+              ),
+            (error) =>
+              socket.write(
+                JSON.stringify({
+                  type: 'execution-response',
+                  id: response.id,
+                  error: String(error),
+                }) + '\n'
+              )
+          );
+        } else if (response.type === 'cooperation') cooperation?.receive(response);
         else if (response.error) pending.get(response.id)?.reject(new Error(response.error));
         else pending.get(response.id)?.resolve(response.value);
       } catch {
@@ -49,7 +76,12 @@ export function apply(ctx) {
   // 每次请求拥有自己的超时与取消监听，成功、失败及通道关闭都走同一清理路径。
   const call = (action, taskId, exec) =>
     new Promise((resolve, reject) => {
-      if (exec.signal?.aborted || socket.destroyed) {
+      if (
+        !binding.executionId ||
+        exec.signal?.aborted ||
+        socket.destroyed ||
+        exec.agent?.session?.id !== binding.sessionId
+      ) {
         reject(new Error('Task 控制已取消或关闭'));
         return;
       }
@@ -81,7 +113,7 @@ export function apply(ctx) {
           id,
           ...binding,
           action,
-          taskId: action.startsWith('cooperation-') ? binding.taskId : taskId,
+          targetTaskId: action.startsWith('cooperation-') ? undefined : taskId,
           sessionId: exec.agent?.session?.id,
         }) + '\n',
         (error) => {
@@ -97,20 +129,84 @@ export function apply(ctx) {
   });
 }
 
+/** The lane owns one root; live children are drained before a lease can change. */
+export function installExecutionBindings(ctx, hooks) {
+  const agents = new Map();
+  let binding;
+  let changing = false;
+  ctx.on('agent/created', ({ agent }) => agents.set(agent.session.id, agent));
+  ctx.on('agent/disposed', ({ agent }) => agents.delete(agent.session.id));
+  const matches = (candidate) =>
+    binding &&
+    ['taskId', 'executionId', 'runtimeGeneration', 'sessionId', 'sessionEpoch'].every(
+      (key) => candidate?.[key] === binding[key]
+    );
+  const drain = async (cancel) => {
+    for (;;) {
+      const current = [...agents.values()];
+      if (cancel) current.forEach((agent) => agent.cancel({ kind: 'user' }));
+      await Promise.all(current.map((agent) => agent.whenIdle()));
+      if ([...agents.values()].every((agent) => agent.status === 'idle')) return;
+    }
+  };
+  return {
+    handle: async (request) => {
+      if (changing) throw new Error('执行绑定正在变更');
+      changing = true;
+      try {
+        const identity = request.binding;
+        if (request.action === 'bind') {
+          if (
+            binding ||
+            !['taskId', 'executionId', 'runtimeGeneration', 'sessionId'].every(
+              (key) => typeof identity?.[key] === 'string'
+            ) ||
+            !Number.isSafeInteger(identity.sessionEpoch) ||
+            identity.sessionEpoch < 1 ||
+            (process.env.QQBOT_RUNTIME_GENERATION &&
+              identity.runtimeGeneration !== process.env.QQBOT_RUNTIME_GENERATION)
+          )
+            throw new Error('执行绑定无效');
+          await drain(false);
+          binding = Object.freeze({ ...identity });
+          hooks.bind(binding);
+        } else {
+          if (!matches(identity)) throw new Error('旧执行绑定');
+          if (!['cancel', 'quiesce', 'unbind'].includes(request.action))
+            throw new Error('未知执行操作');
+          if (request.action === 'cancel') hooks.unbind();
+          await drain(request.action === 'cancel');
+          if (request.action === 'unbind') {
+            hooks.unbind();
+            binding = undefined;
+          }
+        }
+        return { binding: identity, idle: true };
+      } finally {
+        changing = false;
+      }
+    },
+  };
+}
+
 /** All updates are scoped to the trusted slow root; children never receive them. */
 export function installLaneCooperation(ctx, call, binding) {
   let agent;
+  const roots = new Map();
   let latest;
   let injected = 0;
   let consumed = 0;
+  let promptStarted = false;
   let closed = false;
   const messages = new Map();
   const matches = (candidate) =>
     ['taskId', 'executionId', 'runtimeGeneration', 'sessionId'].every(
       (key) => candidate?.[key] === binding[key] && typeof binding[key] === 'string'
-    );
+    ) &&
+    Number.isSafeInteger(binding.sessionEpoch) &&
+    candidate?.sessionEpoch === binding.sessionEpoch;
   const injectLatest = () => {
-    if (closed || !agent || !latest || latest.revision <= injected) return;
+    if (closed || !promptStarted || !agent || !latest || latest.revision <= injected) return;
     const id = randomUUID();
     const text = `同 Task 快慢协作快照：${JSON.stringify(latest)}\n只依据 delivered 中成功送达的原始正文衔接：没有增量时仅返回 NO_REPLY；有增量时仅交付新增部分；反转结论时明确回指并纠正。未送达或失败的正文仍需答复。成功工具执行可以无增量静默，失败、空结果和需要说明的附件必须反馈。不要把快 lane 工具限制当成整个 agent 能力限制。本快照和本次执行仅属于当前 Task；历史中其他 Task 的未完成承诺由原 Task 继续处理，不得补做旧任务或为旧任务生成附件。`;
     messages.set(id, latest.revision);
@@ -135,6 +231,7 @@ export function installLaneCooperation(ctx, call, binding) {
   };
   ctx.on('agent/created', ({ agent: created }) => {
     if (closed || created.session.id !== binding.sessionId) return;
+    roots.set(created.session.id, created);
     agent = created;
     injectLatest();
     void call('cooperation-read', binding.taskId, { agent }).then(update, () => {});
@@ -142,6 +239,10 @@ export function installLaneCooperation(ctx, call, binding) {
   // A committed user/message proves next-step consumption; pre-step admission can still abort.
   ctx.on('session/event', (session, event) => {
     if (closed || session.id !== binding.sessionId || event.type !== 'user/message') return;
+    if (event.data.source?.kind === 'user') {
+      promptStarted = true;
+      injectLatest();
+    }
     const revision = messages.get(event.data.id);
     if (revision !== undefined) {
       consumed = Math.max(consumed, revision);
@@ -149,14 +250,30 @@ export function installLaneCooperation(ctx, call, binding) {
     }
   });
   ctx.on('agent/turn-stopping', async ({ agent: stopping, signal }) => {
-    if (closed || stopping !== agent || stopping.session.id !== binding.sessionId) return;
+    if (closed || !promptStarted || stopping !== agent || stopping.session.id !== binding.sessionId)
+      return;
     const snapshot = await call('cooperation-wait', binding.taskId, { agent, signal });
     if (closed || signal.aborted) return;
     update(snapshot);
     if (!latest?.ready) throw new Error('协作等待没有返回终态快照');
     if (consumed < latest.revision) injectLatest();
   });
+  const reset = () => {
+    agent = undefined;
+    latest = undefined;
+    injected = consumed = 0;
+    promptStarted = false;
+    messages.clear();
+  };
   return {
+    bind: (identity) => {
+      reset();
+      closed = false;
+      Object.assign(binding, identity);
+      agent = roots.get(identity.sessionId);
+      if (agent) void call('cooperation-read', binding.taskId, { agent }).then(update, () => {});
+    },
+    reset,
     receive: (message) => {
       if (matches(message.binding)) update(message.snapshot);
     },

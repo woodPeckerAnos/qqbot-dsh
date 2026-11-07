@@ -30,3 +30,12 @@ export {
 import { extractAssistantText as extractAssistantTextImplementation } from '../dsh/turns.js';
 export const extractAssistantText: import('@qqbot/contracts').extractAssistantText =
   extractAssistantTextImplementation;
+
+import { PersistentRuntimePool, ExecutionGate } from '../dsh/persistent-pool.js';
+export const createRuntimePoolV2: import('@qqbot/contracts').createRuntimePoolFactoryV2 = (
+  ...args
+) => new PersistentRuntimePool(...args);
+export const createRuntimeExecutionGate: import('@qqbot/contracts').createRuntimeExecutionGateFactory =
+  (...args) => new ExecutionGate(...args);
+export const createDshRuntimeV2: import('@qqbot/contracts').createDshRuntimeFactoryV2 = (...args) =>
+  new DshRuntime(...args);

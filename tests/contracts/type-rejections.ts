@@ -3,21 +3,23 @@ import {
   type DeepReadonly,
   type RuntimeLease,
   type StateReader,
-  type TaskSnapshotV2 as TaskSnapshot,
+  type TaskSnapshotV3 as TaskSnapshot,
 } from '@qqbot/contracts';
-import { createTaskLifeCycleManagerV2 } from '../../src/task/index.js';
+import { createTaskLifeCycleManagerV3 } from '../../src/task/index.js';
 import { createPipelineStats } from '../../src/observability/index.js';
 import { createRuntimePool } from '../../src/runtime/index.js';
 
 /** Compile-only consumer: each expected error must remain an actual TypeScript rejection. */
 export function verifyTaskSnapshots(
   task: DeepReadonly<TaskSnapshot>,
-  manager: ReturnType<typeof createTaskLifeCycleManagerV2>
+  manager: ReturnType<typeof createTaskLifeCycleManagerV3>
 ): void {
   // @ts-expect-error Task execution state belongs to its lifecycle owner.
   task.lanes.fast.status = 'completed';
   // @ts-expect-error An input's generation is immutable after admission.
   task.input.generation = 2;
+  // @ts-expect-error Explicit reset ownership cannot be changed by a Task consumer.
+  task.input.sessionEpoch = 2;
   // @ts-expect-error Reference ownership includes nested original-message fields.
   task.input.reference.messageId = 'replacement';
   // @ts-expect-error Consumers cannot append to the captured observation window.
@@ -33,9 +35,26 @@ export function verifyTaskSnapshots(
   }
 }
 
+export function verifyPersistentLease(lease: import('@qqbot/contracts').RuntimeLeaseV2): void {
+  // @ts-expect-error Runtime generation is owned by the resident pool.
+  lease.generation = 'replacement';
+  // @ts-expect-error The pool owns the event watermark.
+  lease.seq = 100;
+  // @ts-expect-error A lane lease does not grant process teardown capability.
+  lease.runtime.dispose();
+}
+
+export function verifyPersistentRuntimeInjection(
+  options: import('@qqbot/contracts').RuntimePoolOptionsV2,
+  legacy: import('@qqbot/contracts').DshRuntime
+): void {
+  // @ts-expect-error A resident lane requires execution binding and cancellation capabilities.
+  options.runtimeFactory = () => legacy;
+}
+
 export function verifyDelivery(
   queue: import('@qqbot/contracts').MessageQueue,
-  actor: import('@qqbot/contracts').SessionActorV2,
+  actor: import('@qqbot/contracts').SessionActorV3,
   observer: import('@qqbot/contracts').AgentTraceObserver
 ): void {
   // @ts-expect-error The public message list is immutable, including its array.

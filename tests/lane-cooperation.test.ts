@@ -166,6 +166,7 @@ describe('双 lane 协作（离线 DSH、连接器与时钟）', () => {
       const t = await h.submit({ text: '等待出口' });
       const fast = await h.runtime(t.taskId, 'fast'),
         slow = await h.runtime(t.taskId, 'slow');
+      const listenersBefore = slow.listenerCount('session.event');
       fast.finish('待发');
       slow.finish('结果');
       await until(() => h.task(t.taskId).lanes.fast.status === 'completed');
@@ -177,12 +178,14 @@ describe('双 lane 协作（离线 DSH、连接器与时钟）', () => {
       expect(h.task(t.taskId).status).toBe(
         action === 'stop' || action === 'shutdown' ? 'cancelled' : 'failed'
       );
-      expect(slow.disposed).toBe(1);
-      expect(slow.listenerCount('session.event')).toBe(0);
+      const retained = action === 'stop' || action === 'timeout';
+      expect(slow.disposed).toBe(retained ? 0 : 1);
+      expect(slow.listenerCount('session.event')).toBe(retained ? listenersBefore - 1 : 0);
+      expect(h.system.pools.slow.health().running).toBe(0);
       expect(slow.listenerCount('task.channel.closed')).toBe(0);
       expect(slow.cooperation!.inbox).toHaveLength(0);
       expect(h.clock.pending).toBe(0);
-      expect(h.system.pools.slow.size).toBe(0);
+      expect(h.system.pools.slow.size).toBe(retained ? 1 : 0);
       expect(
         h.system.queue
           .messages(t.taskId)
@@ -257,6 +260,10 @@ it('插件拒绝错 Task/execution/generation/session 及子代理更新，已�
     plugin.receive({ binding: { ...binding, [key]: 'other' }, snapshot });
   expect(injected).toEqual([]);
   hooks['agent/created']!({ agent: root });
+  hooks['session/event']!(root.session, {
+    type: 'user/message',
+    data: { id: 'current-prompt', source: { kind: 'user' } },
+  });
   await Promise.resolve();
   expect(injected).toHaveLength(1);
   hooks['session/event']!(root.session, { type: 'user/message', data: injected[0]! });

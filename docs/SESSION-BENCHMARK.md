@@ -2,6 +2,14 @@
 
 决策见 [ADR-005](adr/005-session-response-benchmark.md)。这里描述 benchmark 内部契约与目标验收；生产现状仍以 [架构](ARCHITECTURE.md) 和生成的 [模块契约](MODULE-CONTRACTS.md) 为准。
 
+## 常驻 lane 离线验收（ADR-009）
+
+本分支生产使用 Task V3 与 RuntimePoolV2。夹具按执行绑定和 prompt 记录识别 Task，不能由 cwd 或启动环境推断当前执行。常驻池测试与 Task 回归覆盖多轮相同 runtime/sessionId、不同 executionId、超过四个会话保活且执行额度受限、话题保留 session、显式 epoch 重置、初始化迟到租约、旧控制/turn/seq 隔离、根与子代理取消收敛、确认超时重建、冷回放、规则同步和仅当前附件目录扫描。原有执行、投递、预算及快慢协作验收继续保留。
+
+执行 npm run check 完成离线验证；关闭前常驻数量可大于并发上限，关闭后资源必须清零。真实 DSH 与真实 WebSocket 为独立后续验证，不计入此离线结论。
+
+本轮验证分支的 `npm run check` 全部通过：60 个测试文件、1234 项测试、36 个契约冒烟，以及类型、模块边界、兼容、契约覆盖、生成漂移、lint、格式和 Docker 包解析。44 项 WebSocket 集成用例按离线模式跳过。新增保存故障回归验证旧 epoch 记录迁移、重置先保存后取消、保存新 epoch 失败保留旧资源、取消保存失败仍停止执行，以及 prompt 回执关联保存失败收尾；关闭不因终态保存失败而悬挂。安装的 DSH profile 初始化检查不请求模型，不能代替真实 DSH 执行验收。
+
 ## 运行与配置
 
 `npm run bench:session` 运行全部离线场景和固定种子混合负载；`npm test` 同样执行离线验收。`npm run bench:session:live` 显式调用真实 DSH 与独立语义裁判。独立 Vitest 配置只匹配 `session.bench.ts`，在线入口不匹配 `*.test.ts`。
@@ -69,6 +77,8 @@ L14 v2 额外检查新短问的慢 lane 静默且无旧任务附件。该语义�
 ## 验收记录
 
 具体执行结果见生成报告，在线未实际运行不得标为通过。原有核心测试保留，完成 typecheck、contracts:check、lint、format:check、完整离线测试及契约冒烟。真实 WebSocket 用 `npm run test:integration` 单列。
+
+以下报告为 ADR-009 改造之前的历史验收，不能作为本分支常驻 lane 的真实执行或 WebSocket 结论。
 
 2026-11-06：`npm run check` 通过，54 个测试文件、1082 项通过，40 项独立 WebSocket 用例按离线模式跳过，36 个契约冒烟通过。原有 Task 核心 70 项保留，新增 benchmark 验收 44 项。离线 [基线 JSON](../tmp/session-baseline/report.json) / [Markdown](../tmp/session-baseline/report.md) 含 27 个样本、354 个 Task，运行断言全部通过，O02/O03 如实记录严重语义失败，关闭资源计数均为零。带基线比较的 [严格模式报告](../tmp/session-strict/report.md) 对两项已知问题返回非零。
 

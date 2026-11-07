@@ -2,7 +2,7 @@ import { readonlySnapshot, isLaneTerminal } from '@qqbot/contracts';
 import type {
   TaskCooperation as CooperationContract,
   TaskCooperationSnapshot,
-  TaskLifeCycleManagerV2,
+  TaskLifeCycleManagerV3,
   MessageQueue,
   DeepReadonly,
   DshRuntimeOptions,
@@ -15,7 +15,7 @@ export function bindCooperationRequest(
   cooperation: CooperationContract | undefined,
   binding: Omit<TaskCooperationBinding, 'runtimeGeneration'>,
   currentLease: () => RuntimeLease | undefined,
-  manager: TaskLifeCycleManagerV2,
+  manager: TaskLifeCycleManagerV3,
   signal: AbortSignal,
   completed: AbortSignal
 ): DshRuntimeOptions['taskCooperation'] {
@@ -50,7 +50,7 @@ export class TaskCooperation implements CooperationContract {
   private closed = false;
   private readonly closeAbort = new AbortController();
   constructor(
-    private readonly manager: TaskLifeCycleManagerV2,
+    private readonly manager: TaskLifeCycleManagerV3,
     private readonly queue: MessageQueue
   ) {
     this.unsubscribe = [

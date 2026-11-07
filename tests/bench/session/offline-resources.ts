@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import type { TaskHandleV2 as TaskHandle, Lane } from '@qqbot/contracts';
+import type { TaskHandleV3 as TaskHandle, Lane } from '@qqbot/contracts';
 import { isTaskTerminal } from '../../../src/task/index.js';
 import { until } from './harness.js';
 import type { Harness } from './harness.js';
@@ -124,8 +124,12 @@ export const remainingCases: Definition[] = [
         b = (await h.input({ text: '文件B', media: 'file', mediaUrl: 'memory://B' }))!;
       await h.artifact(a, 'artifact-A');
       (await h.runtime(a.taskId, 'fast')).finish('承接A');
-      const promptA = (await h.runtime(a.taskId, 'fast')).prompts[0]!.blocks;
-      const promptB = (await h.runtime(b.taskId, 'fast')).prompts[0]!.blocks;
+      const promptA = (await h.runtime(a.taskId, 'fast')).prompts.find(
+        (p) => p.binding?.taskId === a.taskId
+      )!.blocks;
+      const promptB = (await h.runtime(b.taskId, 'fast')).prompts.find(
+        (p) => p.binding?.taskId === b.taskId
+      )!.blocks;
       const textA = JSON.stringify(promptA),
         textB = JSON.stringify(promptB);
       h.check(
@@ -395,8 +399,14 @@ async function load(h: Harness, kind: number) {
     );
   const finished = new Set<string>();
   for (let rounds = 0; finished.size < count * 2 && rounds < count * 4; rounds++) {
-    await until(() => h.runtimes.some((r) => r.prompts.length && !finished.has(r.options.cwd)));
-    const active = h.runtimes.filter((r) => r.prompts.length && !finished.has(r.options.cwd)),
+    await until(() =>
+      h.runtimes.some(
+        (r) => r.prompts.length && !finished.has(r.prompts.at(-1)!.binding!.executionId)
+      )
+    );
+    const active = h.runtimes.filter(
+        (r) => r.prompts.length && !finished.has(r.prompts.at(-1)!.binding!.executionId)
+      ),
       snapshot = h.system.actor.snapshot();
     h.check(
       'load-capacity',
@@ -405,10 +415,10 @@ async function load(h: Harness, kind: number) {
     );
     active.sort(() => rng() - 0.5);
     for (const r of active) {
-      const taskId = r.options.cwd.split('/').at(-2)!,
+      const taskId = r.prompts.at(-1)!.binding!.taskId,
         lane = r.options.env!.QQBOT_LANE as Lane;
       order[lane].push(taskId);
-      finished.add(r.options.cwd);
+      finished.add(r.prompts.at(-1)!.binding!.executionId);
       const slowText = kind === 2 && rng() > 0.5 ? `increment-${taskId}` : 'NO_REPLY';
       r.finish(lane === 'fast' ? `fast-${taskId}` : slowText);
     }
@@ -444,9 +454,9 @@ async function batchedLoad(h: Harness) {
     order: Record<Lane, string[]> = { fast: [], slow: [] };
   const handles: TaskHandle[] = [];
   const settle = (r: Harness['runtimes'][number]) => {
-    const id = r.options.cwd.split('/').at(-2)!,
+    const id = r.prompts.at(-1)!.binding!.taskId,
       lane = r.options.env!.QQBOT_LANE as Lane;
-    completed.add(r.options.cwd);
+    completed.add(r.prompts.at(-1)!.binding!.executionId);
     order[lane].push(id);
     r.finish(lane === 'fast' ? `fast-${id}` : 'NO_REPLY');
   };
@@ -459,7 +469,7 @@ async function batchedLoad(h: Harness) {
           (r) =>
             r.prompts.length &&
             r.options.env?.QQBOT_LANE === 'fast' &&
-            !completed.has(r.options.cwd)
+            !completed.has(r.prompts.at(-1)!.binding!.executionId)
         )
       );
       h.runtimes
@@ -467,7 +477,7 @@ async function batchedLoad(h: Harness) {
           (r) =>
             r.prompts.length &&
             r.options.env?.QQBOT_LANE === 'fast' &&
-            !completed.has(r.options.cwd)
+            !completed.has(r.prompts.at(-1)!.binding!.executionId)
         )
         .forEach(settle);
       await new Promise<void>((r) => setImmediate(r));
@@ -475,7 +485,9 @@ async function batchedLoad(h: Harness) {
     await until(() =>
       h.runtimes.some(
         (r) =>
-          r.prompts.length && r.options.env?.QQBOT_LANE === 'slow' && !completed.has(r.options.cwd)
+          r.prompts.length &&
+          r.options.env?.QQBOT_LANE === 'slow' &&
+          !completed.has(r.prompts.at(-1)!.binding!.executionId)
       )
     );
     await h.idle();
@@ -487,13 +499,21 @@ async function batchedLoad(h: Harness) {
     );
     const active = h.runtimes.filter(
       (r) =>
-        r.prompts.length && r.options.env?.QQBOT_LANE === 'slow' && !completed.has(r.options.cwd)
+        r.prompts.length &&
+        r.options.env?.QQBOT_LANE === 'slow' &&
+        !completed.has(r.prompts.at(-1)!.binding!.executionId)
     );
     if (active.length) settle(active[Math.floor(rng() * active.length)]!);
   }
   while (completed.size < handles.length * 2) {
-    await until(() => h.runtimes.some((r) => r.prompts.length && !completed.has(r.options.cwd)));
-    h.runtimes.filter((r) => r.prompts.length && !completed.has(r.options.cwd)).forEach(settle);
+    await until(() =>
+      h.runtimes.some(
+        (r) => r.prompts.length && !completed.has(r.prompts.at(-1)!.binding!.executionId)
+      )
+    );
+    h.runtimes
+      .filter((r) => r.prompts.length && !completed.has(r.prompts.at(-1)!.binding!.executionId))
+      .forEach(settle);
     h.check(
       'batch-capacity',
       h.system.actor.snapshot().slow.running <= 2 && h.system.actor.snapshot().unfinished <= 128

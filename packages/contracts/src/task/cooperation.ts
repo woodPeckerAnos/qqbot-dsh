@@ -3,6 +3,7 @@ import type { LaneExecution, LaneStatus } from './types.js';
 
 export interface TaskCooperationBinding extends LaneExecution {
   readonly taskId: string;
+  readonly sessionEpoch?: number;
 }
 export interface TaskCooperationBody {
   readonly messageId: string;
@@ -29,7 +30,7 @@ export interface TaskCooperation {
   wait(taskId: string, signal: AbortSignal): Promise<DeepReadonly<TaskCooperationSnapshot>>;
 }
 export type createTaskCooperationFactory = (
-  manager: import('./lifecycle-v2.js').TaskLifeCycleManagerV2,
+  manager: import('./lifecycle-v3.js').TaskLifeCycleManagerV3,
   queue: import('./message-queue.js').MessageQueue
 ) => TaskCooperationController;
 export interface TaskCooperationController extends TaskCooperation {

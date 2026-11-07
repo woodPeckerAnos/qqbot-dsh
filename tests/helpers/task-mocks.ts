@@ -1,7 +1,7 @@
 import { CooperationDriver } from './cooperation-driver.js';
 import { EventEmitter } from 'node:events';
 import type WebSocket from 'ws';
-import type { DshRuntime, DshRuntimeOptions } from '../../src/dsh/process.js';
+import type { DshRuntimeV2 as DshRuntime, DshRuntimeOptions } from '@qqbot/contracts';
 import type { PromptContentBlock } from '../../src/dsh/protocol.js';
 import type { TaskClock } from '../../src/task/clock.js';
 
@@ -35,9 +35,46 @@ export class ManualClock implements TaskClock {
 export class MockDshRuntime extends EventEmitter {
   ready = false;
   disposed = 0;
-  prompts: { sessionId: string; blocks: PromptContentBlock[] }[] = [];
+  prompts: {
+    sessionId: string;
+    blocks: PromptContentBlock[];
+    binding?: import('@qqbot/contracts').ExecutionBinding;
+    messageId: string;
+  }[] = [];
   seq = 0;
   cooperation?: CooperationDriver;
+  binding?: import('@qqbot/contracts').ExecutionBinding;
+  handlers?: import('@qqbot/contracts').ExecutionHandlers;
+  readonly bindings: import('@qqbot/contracts').ExecutionBinding[] = [];
+  turn = 0;
+  idle = true;
+  convergenceGate?: Promise<void>;
+  async bindExecution(
+    binding: import('@qqbot/contracts').ExecutionBinding,
+    handlers: import('@qqbot/contracts').ExecutionHandlers
+  ) {
+    this.binding = { ...binding };
+    this.handlers = handlers;
+    this.bindings.push(binding);
+    if (handlers.cooperation) this.cooperation = new CooperationDriver(binding, handlers);
+    return { binding, idle: true };
+  }
+  async unbindExecution(binding: import('@qqbot/contracts').ExecutionBinding) {
+    this.cooperation?.close();
+    this.binding = undefined;
+    this.handlers = undefined;
+    return { binding, idle: true };
+  }
+  async quiesceExecution(binding: import('@qqbot/contracts').ExecutionBinding) {
+    await this.convergenceGate;
+    return { binding, idle: this.idle };
+  }
+  async cancelExecution(binding: import('@qqbot/contracts').ExecutionBinding) {
+    this.cooperation?.close();
+    await this.convergenceGate;
+    this.idle = true;
+    return { binding, idle: true };
+  }
   constructor(readonly options: DshRuntimeOptions) {
     super();
   }
@@ -52,22 +89,35 @@ export class MockDshRuntime extends EventEmitter {
     return { serverInfo: { name: 'deepseek-harness-sdk-runtime', version: 'mock' } };
   }
   async prompt(sessionId: string, blocks: PromptContentBlock[]) {
-    this.prompts.push({ sessionId, blocks });
+    const messageId = `mock-prompt-${this.prompts.length + 1}`;
+    this.prompts.push({ sessionId, blocks, binding: this.binding, messageId });
+    this.idle = false;
     this.emit('session.status', { sessionId, status: 'running' });
-    if (this.options.taskCooperation)
-      this.cooperation = new CooperationDriver(this.options, sessionId);
-    return { messageId: 'mock-prompt' };
+    this.turn++;
+    this.event('turn/start', { turn: this.turn }, sessionId);
+    this.event('user/message', { id: messageId }, sessionId);
+    this.cooperation?.begin(messageId);
+    return { messageId };
   }
-  event(type: string, data: Record<string, unknown>, sessionId = this.prompts[0]!.sessionId) {
-    this.emit('session.event', { sessionId, event: { type, seq: this.seq++, data } });
+  event(
+    type: string,
+    data: Record<string, unknown>,
+    sessionId = this.prompts.at(-1)!.sessionId,
+    seq = this.seq++
+  ) {
+    if (type === 'turn/end' && data.turn === undefined) data = { ...data, turn: this.turn };
+    this.emit('session.event', { sessionId, event: { type, seq, data } });
   }
   finish(text: string, reason = 'completed') {
+    const sessionId = this.prompts.at(-1)!.sessionId;
+    const turn = this.turn;
     this.event('assistant/message', { message: { content: [{ type: 'text', text }] } });
     const end = (answer: string) => {
       if (answer !== text)
         this.event('assistant/message', { message: { content: [{ type: 'text', text: answer }] } });
-      this.event('turn/end', { turn: 1, reason: { kind: reason } });
-      this.emit('session.status', { sessionId: this.prompts[0]!.sessionId, status: 'idle' });
+      this.event('turn/end', { turn, reason: { kind: reason } });
+      this.idle = true;
+      this.emit('session.status', { sessionId, status: 'idle' });
     };
     if (this.cooperation && reason === 'completed')
       void this.cooperation.stop(text).then(end, () => {});

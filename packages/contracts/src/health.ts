@@ -43,6 +43,9 @@ interface HealthSnapshotValue {
   >;
   runtime: {
     size: number;
+    resident?: number;
+    running?: number;
+    queued?: number;
     activeConversationKeys: string[];
     activeSubagents: number;
   };
@@ -223,6 +226,9 @@ export type buildHealthSnapshot = (input: {
   connectors: Record<string, ConnectorHealth>;
   runtime: {
     size: number;
+    resident?: number;
+    running?: number;
+    queued?: number;
     activeConversationKeys: string[];
     activeSubagents: number;
   };

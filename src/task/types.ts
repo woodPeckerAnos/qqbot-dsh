@@ -1,8 +1,8 @@
-/** Compatibility path; production uses v2 values while v1 remains in contracts. */
+/** Compatibility path; production uses V3 snapshots while v1/v2 remain in contracts. */
 export * from '@qqbot/contracts/task/types';
 export type {
-  LaneResultV2 as LaneResult,
-  LaneSnapshotV2 as LaneSnapshot,
-  TaskSnapshotV2 as TaskSnapshot,
-  TaskHandleV2 as TaskHandle,
+  LaneResultV3 as LaneResult,
+  LaneSnapshotV3 as LaneSnapshot,
+  TaskSnapshotV3 as TaskSnapshot,
+  TaskHandleV3 as TaskHandle,
 } from '@qqbot/contracts';

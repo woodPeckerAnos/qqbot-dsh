@@ -1,8 +1,8 @@
 import type { DeepReadonly } from '@qqbot/contracts';
 /**
  * 固定 Task 输入并复用媒体摄取、聊天记录回查和文件解析结果。
- * capture 在准入时复制窗口与回放；prepare 按 Task 缓存 Promise，两个 lane
- * 共用一次 IO 和统计。输入文件位于 Task 工作区，最终交付目录再按 lane 隔离。
+ * capture 在准入时复制窗口与回放；回放仅由冷启动 runner 注入。prepare 按 Task 缓存 Promise，两个 lane
+ * 共用一次 IO 和统计。输入位于 Task 目录，交付位于常驻 lane 下的当轮 Task 目录。
  */
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
@@ -25,7 +25,7 @@ import { collectWindowMedia, latestPendingRecord, renderWindowBlock } from '../s
 import type { MessageContext } from '@qqbot/contracts';
 import type { PipelineStats } from '@qqbot/contracts';
 import type { TopicJudge } from '@qqbot/contracts';
-import type { TaskSnapshotV2 as TaskSnapshot, TaskInput } from '@qqbot/contracts';
+import type { TaskSnapshotV3 as TaskSnapshot, TaskInput } from '@qqbot/contracts';
 import type { TaskClock } from '@qqbot/contracts';
 interface PreparedPrompt {
   blocks: PromptContentBlock[];
@@ -133,6 +133,22 @@ export class PromptPreparer {
     if (existsSync(rules)) writeFileSync(join(directory, 'AGENTS.md'), readFileSync(rules));
     return directory;
   }
+  /** Stable lane cwd; rules are refreshed even while the process stays resident. */
+  laneWorkspace(task: DeepReadonly<TaskSnapshot>, lane: import('@qqbot/contracts').Lane): string {
+    const sessionDir = workspacePathFor(this.deps.paths, task.input.message.target.key);
+    const directory = join(sessionDir, 'lanes', lane);
+    mkdirSync(directory, { recursive: true });
+    const rules = join(sessionDir, 'AGENTS.md');
+    if (existsSync(rules)) writeFileSync(join(directory, 'AGENTS.md'), readFileSync(rules));
+    else if (existsSync(join(directory, 'AGENTS.md')))
+      writeFileSync(join(directory, 'AGENTS.md'), '');
+    return directory;
+  }
+  taskWorkspace(task: DeepReadonly<TaskSnapshot>, lane: import('@qqbot/contracts').Lane): string {
+    const directory = join(this.laneWorkspace(task, lane), 'tasks', task.taskId);
+    mkdirSync(directory, { recursive: true });
+    return directory;
+  }
   /** Promise 本身缓存；并行 lane 不重复下载，失败也由两个 lane 各自显式收尾。 */
   prepare(task: DeepReadonly<TaskSnapshot>, ctx: MessageContext): Promise<PreparedPrompt> {
     let promise = this.prepared.get(task.taskId);
@@ -154,6 +170,17 @@ export class PromptPreparer {
       join(workspacePathFor(this.deps.paths, task.input.message.target.key), 'tasks', task.taskId),
       { recursive: true, force: true }
     );
+    for (const lane of ['fast', 'slow'])
+      await rm(
+        join(
+          workspacePathFor(this.deps.paths, task.input.message.target.key),
+          'lanes',
+          lane,
+          'tasks',
+          task.taskId
+        ),
+        { recursive: true, force: true }
+      );
   }
   private async build(
     task: DeepReadonly<TaskSnapshot>,
@@ -172,9 +199,7 @@ export class PromptPreparer {
     const current = proactive
       ? `（系统主动 Task，已在触发时授权；按保存的依据与原引用执行，不因为后来话题翻篇或问题已答而撤销。）\n任务：${proactive.directive}\n触发依据：${proactive.evidence ?? ''}`
       : `[${task.input.message.username ?? task.input.message.senderId}] ${task.input.message.content}`;
-    const background = [renderWindowBlock(context.window), recordText, context.replay]
-      .filter(Boolean)
-      .join('\n\n');
+    const background = [renderWindowBlock(context.window), recordText].filter(Boolean).join('\n\n');
     const text = [
       background &&
         `【历史与观察背景：仅用于理解本次输入。其他 Task 的未完成承诺由原 Task 继续处理，本次不得自行接管。】\n${background}\n【背景结束】`,
@@ -311,6 +336,7 @@ export class PromptPreparer {
       } else {
         const result = await buildImageBlocks(images, {
           maxImages,
+          maxBlocks: MAX_BLOCKS_PER_PROMPT - 2,
           maxBytes: maxImageBytes,
           maxTiles: maxImageTiles,
           timeoutMs: downloadTimeoutMs,
@@ -351,7 +377,7 @@ export class PromptPreparer {
             maxImages: windowMedia.images.length,
             maxBytes: maxImageBytes,
             maxTiles: maxImageTiles,
-            maxBlocks: MAX_BLOCKS_PER_PROMPT - blocks.length,
+            maxBlocks: MAX_BLOCKS_PER_PROMPT - 2 - blocks.length,
             timeoutMs: downloadTimeoutMs,
             // 编号必须与下面的送达说明对得上（「上下文附图 #N」）
             indexLabel: (index, count) =>
@@ -397,7 +423,10 @@ export class PromptPreparer {
       }
     }
 
-    const finalText = notes.length > 0 ? `${text}\n${notes.join('\n')}` : text;
+    const finalText =
+      notes.length > 0
+        ? `${text}\n${notes.map((note) => note.replace(`原文已保存到 ${config.attachments.files.inboxDir}/`, `原文已保存到 ${join(workspacePath, config.attachments.files.inboxDir)}/`).replace(`完整原文：${config.attachments.files.inboxDir}/`, `完整原文：${join(workspacePath, config.attachments.files.inboxDir)}/`)).join('\n')}`
+        : text;
     return {
       blocks: [{ type: 'text', text: finalText }, ...blocks],
       totalImages: total,

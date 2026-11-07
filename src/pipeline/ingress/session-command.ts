@@ -1,4 +1,4 @@
-import type { SessionActorV2 as SessionActor } from '@qqbot/contracts';
+import type { SessionActorV3 as SessionActor } from '@qqbot/contracts';
 import type { PipelineStats } from '@qqbot/contracts';
 import { logInputShortcut } from './types.js';
 import type { IngressStage } from '@qqbot/contracts';

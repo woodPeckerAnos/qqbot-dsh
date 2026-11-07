@@ -14,15 +14,15 @@ import {
   errorClass,
 } from '../observability/index.js';
 import type { Logger, TraceContext } from '@qqbot/contracts';
-import type { TaskStateWriterV2 as TaskStateWriter } from '@qqbot/contracts';
+import type { TaskStateWriterV3 as TaskStateWriter } from '@qqbot/contracts';
 import { LANES, isLaneTerminal, isTaskTerminal, readonlySnapshot } from '@qqbot/contracts';
 import type {
   Lane,
-  LaneExecution,
-  LaneResultV2 as LaneResult,
-  TaskHandleV2 as TaskHandle,
-  TaskInput,
-  TaskSnapshotV2 as TaskSnapshot,
+  LaneExecutionV3 as LaneExecution,
+  LaneResultV3 as LaneResult,
+  TaskHandleV3 as TaskHandle,
+  TaskInputV3 as TaskInput,
+  TaskSnapshotV3 as TaskSnapshot,
 } from '@qqbot/contracts';
 
 export { TaskAdmissionError } from '@qqbot/contracts';
@@ -46,6 +46,7 @@ export class TaskLifeCycleManager {
     } = {}
   ) {
     for (const task of structuredClone(options.store?.load() ?? [])) {
+      task.input = upgradeInput(task.input);
       task.input.trace ??= legacyTrace(task.taskId, task.input.message.target.key);
       for (const lane of LANES)
         task.lanes[lane].trace ??= traceSpan(
@@ -89,6 +90,7 @@ export class TaskLifeCycleManager {
       taskId,
       input: structuredClone({
         ...input,
+        ...upgradeInput(input),
         trace: traceSpan(
           input.trace ??
             createTrace(
@@ -201,9 +203,7 @@ export class TaskLifeCycleManager {
     if (result.kind === 'failed') state.status = 'failed';
     else if (result.kind === 'cancelled') state.status = 'cancelled';
     if (LANES.every((l) => isLaneTerminal(task.lanes[l]))) {
-      if (task.cancelAccepted) task.status = 'cancelled';
-      else if (LANES.some((l) => task.lanes[l].status === 'failed')) task.status = 'failed';
-      else task.status = 'completed';
+      task.status = terminalStatus(task);
       task.endedAt = this.now();
     }
     this.commit(task, () => {
@@ -353,4 +353,19 @@ export class TaskLifeCycleManager {
     this.options.store?.save(structuredClone([...next.values()]));
     for (const task of expired) this.tasks.delete(task.taskId);
   }
+}
+
+function terminalStatus(task: TaskSnapshot): TaskSnapshot['status'] {
+  if (task.cancelAccepted || LANES.some((l) => task.lanes[l].status === 'cancelled'))
+    return 'cancelled';
+  return LANES.some((l) => task.lanes[l].status === 'failed') ? 'failed' : 'completed';
+}
+
+function upgradeInput(input: import('@qqbot/contracts').TaskInput & Partial<TaskInput>): TaskInput {
+  return {
+    ...input,
+    sessionEpoch: input.sessionEpoch ?? 1,
+    sessionReplay: input.sessionReplay ?? input.context.replay,
+    topicChanged: input.topicChanged ?? false,
+  };
 }

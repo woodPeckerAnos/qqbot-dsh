@@ -64,3 +64,14 @@ export interface TaskStateWriterV2 extends StateWriter<
 > {
   readonly domain?: 'tasks';
 }
+
+export interface TaskStateWriterV3 extends StateWriter<
+  import('./task/types-v3.js').TaskSnapshotV3
+> {
+  readonly domain?: 'tasks';
+}
+export interface SessionStateWriterV3 extends StateWriter<
+  import('./task/session-actor-v3.js').SessionContextStateV3
+> {
+  readonly domain?: 'task-sessions';
+}

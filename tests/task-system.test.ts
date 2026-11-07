@@ -163,12 +163,14 @@ async function harness(
     void orchestrator.handleEvent(e);
   });
   const runtime = async (lane: Lane, index = 0) => {
+    const executions = () =>
+      runtimes.flatMap((r) =>
+        r.options.env?.QQBOT_LANE === lane ? r.prompts.map((prompt) => ({ r, prompt })) : []
+      );
     await vi.waitFor(() => {
-      expect(
-        runtimes.filter((r) => r.options.env?.QQBOT_LANE === lane && r.prompts.length).length
-      ).toBeGreaterThan(index);
+      expect(executions().length).toBeGreaterThan(index);
     });
-    return runtimes.filter((r) => r.options.env?.QQBOT_LANE === lane && r.prompts.length)[index]!;
+    return executions()[index]!.r;
   };
   cleanups.push(async () => {
     await system.close();
@@ -191,6 +193,212 @@ async function harness(
 }
 
 describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端口）', () => {
+  it('prompt 回执关联保存失败收尾所属 lane，没有悬挂执行或异步拒绝', async () => {
+    const h = await harness();
+    const bind = h.system.manager.bindExecution.bind(h.system.manager);
+    vi.spyOn(h.system.manager, 'bindExecution').mockImplementation((taskId, lane, execution) => {
+      if (lane === 'fast') throw new Error('injected-receipt-save-failure');
+      return bind(taskId, lane, execution);
+    });
+    h.mock.input(1, '回执保存故障');
+    const fast = await h.runtime('fast');
+    (await h.runtime('slow')).finish('NO_REPLY');
+    const result = await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
+    expect(result.lanes.fast.result).toMatchObject({
+      kind: 'failed',
+      error: 'Error: injected-receipt-save-failure',
+    });
+    expect(fast.disposed).toBe(1);
+    expect(h.system.pools.fast.size).toBe(0);
+    expect(h.system.pools.slow.size).toBe(1);
+    await h.system.actor.whenIdle();
+    expect(h.system.actor.snapshot().fast.running + h.system.actor.snapshot().slow.running).toBe(0);
+  });
+
+  it('服务关闭等待运行资源收敛，状态保存失败不阻塞关闭或重跑执行', async () => {
+    const h = await harness();
+    h.mock.input(1, '保存故障期间关闭');
+    await h.runtime('fast');
+    await h.runtime('slow');
+    vi.spyOn(h.system.manager, 'cancel').mockImplementation(() => {
+      throw new Error('cancel-save-failed');
+    });
+    vi.spyOn(h.system.manager, 'finish').mockImplementation(() => {
+      throw new Error('finish-save-failed');
+    });
+    await h.system.close();
+    expect(h.system.actor.snapshot().fast.running + h.system.actor.snapshot().slow.running).toBe(0);
+    expect(h.system.pools.fast.size + h.system.pools.slow.size).toBe(0);
+    expect(h.runtimes).toHaveLength(2);
+  });
+  it('多个 Task 保留双 lane，自动换话题不重置；仅冷启动回放并刷新规则', async () => {
+    const h = await harness({
+      topicJudge: async () => ({ related: false, mentionsChatRecord: false }),
+    });
+    h.conversations.append('ob11:g8888', {
+      role: 'user',
+      speaker: 'old',
+      text: '冷启动历史资料',
+      ts: Date.now() - 1,
+    });
+    const seen: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      h.mock.input(100 + i, `新话题${i}`);
+      const fast = await h.runtime('fast', i),
+        slow = await h.runtime('slow', i);
+      const task = h.system.manager.list()[i]!;
+      expect(task.input.sessionEpoch).toBe(1);
+      expect(task.input.topicChanged).toBe(true);
+      const text = JSON.stringify(fast.prompts[i]!.blocks);
+      expect(text.includes('【冷启动有限历史')).toBe(i === 0);
+      if (i === 0) {
+        expect(text).toContain('冷启动历史资料');
+        await writeFile(join(dirname(dirname(fast.options.cwd)), 'AGENTS.md'), '下一轮人设规则');
+      } else
+        expect(await readFile(join(fast.options.cwd, 'AGENTS.md'), 'utf8')).toBe('下一轮人设规则');
+      seen.push(fast.binding!.executionId);
+      fast.finish(`答复${i}`);
+      slow.finish('NO_REPLY');
+      await h.system.manager.handle(task.taskId).done;
+      expect(h.system.pools.fast.size + h.system.pools.slow.size).toBe(2);
+      expect(h.system.pools.fast.health().running + h.system.pools.slow.health().running).toBe(0);
+      expect(fast.listenerCount('session.status')).toBe(0);
+    }
+    expect(new Set(seen).size).toBe(3);
+    expect(h.runtimes).toHaveLength(2);
+    for (const r of h.runtimes) {
+      expect(new Set(r.prompts.map((p) => p.sessionId)).size).toBe(1);
+      expect(r.disposed).toBe(0);
+    }
+  });
+  it('超过四个会话全部保活，双 lane 执行各不超过四', async () => {
+    const h = await harness();
+    const handles = [];
+    for (let i = 0; i < 7; i++) {
+      const m = {
+        ...message(`s${i}`),
+        target: { ...message().target, key: `ob11:g${9000 + i}`, id: String(9000 + i) },
+      };
+      handles.push(await h.system.actor.submit(h.system.context(m)));
+    }
+    const completed = new Set<string>();
+    while (completed.size < 14) {
+      await vi.waitFor(() => {
+        expect(
+          h.runtimes.some(
+            (r) =>
+              r.binding &&
+              r.prompts.some((p) => p.binding?.executionId === r.binding!.executionId) &&
+              !completed.has(r.binding.executionId)
+          )
+        ).toBe(true);
+      });
+      expect(h.system.actor.snapshot().fast.running).toBeLessThanOrEqual(4);
+      expect(h.system.actor.snapshot().slow.running).toBeLessThanOrEqual(4);
+      for (const r of h.runtimes)
+        if (
+          r.binding &&
+          r.prompts.some((p) => p.binding?.executionId === r.binding!.executionId) &&
+          !completed.has(r.binding.executionId)
+        ) {
+          completed.add(r.binding.executionId);
+          r.finish('NO_REPLY');
+        }
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await Promise.all(handles.map((handle) => handle.done));
+    expect(h.runtimes).toHaveLength(14);
+    expect(h.runtimes.every((r) => r.isReady && r.disposed === 0)).toBe(true);
+  });
+  it('/stop 收敛后保留 session，旧控制身份不能进入下一 Task；/new 空闲时淘汰双 lane', async () => {
+    const h = await harness();
+    h.mock.input(1, '停止旧执行');
+    const oldFast = await h.runtime('fast'),
+      oldSlow = await h.runtime('slow');
+    const oldBinding = oldFast.binding!;
+    const first = h.system.manager.list()[0]!;
+    h.system.actor.stop(first.input.message.target.key);
+    await h.system.manager.handle(first.taskId).done;
+    h.mock.input(2, '后续输入');
+    expect(await h.runtime('fast', 1)).toBe(oldFast);
+    expect(await h.runtime('slow', 1)).toBe(oldSlow);
+    expect(oldFast.handlers!.control({ ...oldBinding, action: 'query' })).toMatchObject({
+      accepted: false,
+    });
+    expect(oldFast.binding!.executionId).not.toBe(oldBinding.executionId);
+    oldFast.finish('后续答复');
+    oldSlow.finish('NO_REPLY');
+    await h.system.manager.handle(h.system.manager.list()[1]!.taskId).done;
+    h.system.actor.reset(first.input.message.target.key);
+    await vi.waitFor(() => {
+      expect(h.system.pools.fast.size + h.system.pools.slow.size).toBe(0);
+    });
+    h.mock.input(3, '全新上下文');
+    const nextFast = await h.runtime('fast', 2),
+      nextSlow = await h.runtime('slow', 2);
+    expect(nextFast).not.toBe(oldFast);
+    expect(nextSlow).not.toBe(oldSlow);
+    expect(h.system.manager.list()[2]!.input.sessionEpoch).toBe(2);
+    nextFast.finish('新答复');
+    nextSlow.finish('NO_REPLY');
+  });
+  it('匹配 turn 结束后仍等待静止确认；旧 turn 与 seq 不结算新 Task', async () => {
+    const h = await harness();
+    h.mock.input(1, '第一轮');
+    const fast = await h.runtime('fast'),
+      slow = await h.runtime('slow');
+    fast.finish('第一轮答复');
+    slow.finish('NO_REPLY');
+    await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
+    const oldTurn = fast.turn,
+      oldSeq = fast.seq - 1;
+    h.mock.input(2, '第二轮');
+    await h.runtime('fast', 1);
+    await h.runtime('slow', 1);
+    fast.event(
+      'assistant/message',
+      { message: { content: [{ type: 'text', text: '旧seq答复' }] } },
+      fast.prompts[0]!.sessionId,
+      oldSeq
+    );
+    fast.event('turn/end', { turn: oldTurn, reason: { kind: 'error' } });
+    let quiet!: () => void;
+    fast.convergenceGate = new Promise((resolve) => {
+      quiet = resolve;
+    });
+    fast.finish('第二轮答复');
+    slow.finish('NO_REPLY');
+    await new Promise((resolve) => setImmediate(resolve));
+    const task = h.system.manager.list()[1]!;
+    expect(task.lanes.fast.executionEndedAt).toBeUndefined();
+    expect(task.lanes.fast.status).toBe('running');
+    quiet();
+    await h.system.manager.handle(task.taskId).done;
+    expect(h.system.manager.get(task.taskId)!.lanes.fast.result).toMatchObject({
+      kind: 'reply',
+      text: '第二轮答复',
+    });
+  });
+  it('取消收敛超时只关闭受影响 lane，下一轮故障重建', async () => {
+    const clock = new ManualClock();
+    const h = await harness({ clock });
+    h.mock.input(1, '子代理不停止');
+    const fast = await h.runtime('fast'),
+      slow = await h.runtime('slow');
+    slow.convergenceGate = new Promise(() => {});
+    h.system.actor.stop('ob11:g8888');
+    await new Promise((resolve) => setImmediate(resolve));
+    clock.advance(h.config.dsh.runtimeShutdownTimeoutMs + 1);
+    await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
+    expect(fast.disposed).toBe(0);
+    expect(slow.disposed).toBe(1);
+    h.mock.input(2, '重建慢 lane');
+    expect(await h.runtime('fast', 1)).toBe(fast);
+    const rebuilt = await h.runtime('slow', 1);
+    expect(rebuilt).not.toBe(slow);
+    fast.finish('已恢复');
+    rebuilt.finish('NO_REPLY');
+  });
   it('预算保存故障后维护循环只补结算，平台消息与结算通知各一次', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const h = await harness();
@@ -471,7 +679,7 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     const f = await h.runtime('fast'),
       s = await h.runtime('slow');
     f.finish('A 开始');
-    const outbox = join(s.options.cwd, 'outbox');
+    const outbox = join(s.options.cwd, 'tasks', s.prompts.at(-1)!.binding!.taskId, 'outbox');
     await import('node:fs/promises').then((fs) => fs.mkdir(outbox, { recursive: true }));
     await writeFile(join(outbox, 'A.txt'), 'Task A 内容');
     s.finish('A 完成');
@@ -657,8 +865,13 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     });
     (await h.runtime('fast')).finish('开始制作');
     const slow = await h.runtime('slow');
-    await mkdir(join(slow.options.cwd, 'outbox'), { recursive: true });
-    await writeFile(join(slow.options.cwd, 'outbox', '报告.txt'), '报告');
+    await mkdir(join(slow.options.cwd, 'tasks', slow.prompts.at(-1)!.binding!.taskId, 'outbox'), {
+      recursive: true,
+    });
+    await writeFile(
+      join(slow.options.cwd, 'tasks', slow.prompts.at(-1)!.binding!.taskId, 'outbox', '报告.txt'),
+      '报告'
+    );
     slow.finish('制作完成');
     await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
     await vi.waitFor(() => {
@@ -679,8 +892,13 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     const fast = await h.runtime('fast'),
       slow = await h.runtime('slow');
     await h.connector.stop();
-    await mkdir(join(slow.options.cwd, 'outbox'), { recursive: true });
-    await writeFile(join(slow.options.cwd, 'outbox', 'report.txt'), '可靠内容');
+    await mkdir(join(slow.options.cwd, 'tasks', slow.prompts.at(-1)!.binding!.taskId, 'outbox'), {
+      recursive: true,
+    });
+    await writeFile(
+      join(slow.options.cwd, 'tasks', slow.prompts.at(-1)!.binding!.taskId, 'outbox', 'report.txt'),
+      '可靠内容'
+    );
     fast.finish('NO_REPLY');
     slow.finish('完成');
     await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
@@ -689,7 +907,10 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     clock.advance(h.config.tasks.retentionMs + 1);
     await h.system.prune();
     expect(h.system.manager.list()).toEqual([]);
-    await expect(access(dirname(slow.options.cwd))).rejects.toThrow();
+    await expect(
+      access(join(slow.options.cwd, 'tasks', slow.prompts.at(-1)!.binding!.taskId))
+    ).rejects.toThrow();
+    await expect(access(slow.options.cwd)).resolves.toBeUndefined();
     expect(await readFile(attachment.absPath, 'utf8')).toBe('可靠内容');
     await h.connector.start();
     h.system.queue.wake();

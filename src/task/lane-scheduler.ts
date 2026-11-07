@@ -5,7 +5,7 @@ import type { DeepReadonly } from '@qqbot/contracts';
  * 调度器拥有 AbortController 和运行名额，Task 状态通过 settle 交回管理器。
  * run 包含所属执行的产物收尾；finally 后才允许同 Session 的下一项开始。
  */
-import type { LaneResultV2 as LaneResult, TaskSnapshotV2 as TaskSnapshot } from '@qqbot/contracts';
+import type { LaneResultV3 as LaneResult, TaskSnapshotV3 as TaskSnapshot } from '@qqbot/contracts';
 
 interface Job {
   task: DeepReadonly<TaskSnapshot>;
@@ -17,6 +17,7 @@ export class LaneScheduler {
   private readonly running = new Map<string, { taskId: string; controller: AbortController }>();
   private readonly settlements = new Map<string, { job: Job; result: LaneResult }>();
   private closed = false;
+  private readonly idleWaiters = new Set<() => void>();
   constructor(
     private readonly capacity = 4,
     private readonly onSettlementError?: (error: unknown, taskId: string) => void
@@ -66,6 +67,23 @@ export class LaneScheduler {
     this.running.forEach((r) => {
       r.controller.abort();
     });
+    this.notifyIdle();
+  }
+  whenIdle(): Promise<void> {
+    if (this.isIdle()) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.idleWaiters.add(resolve);
+    });
+  }
+  private isIdle(): boolean {
+    return (
+      this.running.size === 0 && [...this.queues.values()].every((queue) => queue.length === 0)
+    );
+  }
+  private notifyIdle(): void {
+    if (!this.isIdle()) return;
+    for (const resolve of this.idleWaiters) resolve();
+    this.idleWaiters.clear();
   }
   private pump(): void {
     this.flushSettlements();
@@ -99,6 +117,7 @@ export class LaneScheduler {
             this.queues.set(key, remaining);
           }
           this.pump();
+          this.notifyIdle();
         });
     }
   }

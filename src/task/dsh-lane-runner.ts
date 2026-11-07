@@ -1,15 +1,17 @@
 import { failure } from '@qqbot/contracts';
 import type { DeepReadonly } from '@qqbot/contracts';
-import type { AgentTraceObserver, LaneRunnerV2 as LaneRunner } from '@qqbot/contracts';
+import type { AgentTraceObserver, LaneRunnerV3 as LaneRunner } from '@qqbot/contracts';
 /**
  * 一个 lane 的 DSH 执行边界：取得独占 runtime 租约、注册执行身份与事件监听，
- * 再派发 prompt。父执行及所属子代理全部结束后，停止具体进程并收集交付物。
+ * 再派发 prompt。匹配 turn 且根与子代理确认静止后收集当轮交付物，保留常驻进程。
  * 超时、取消和异常均在 finally 释放监听器与租约，不借用其他执行的 runtime。
  */
 import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { RuntimeLease, RuntimePool } from '@qqbot/contracts';
+import type {
+  RuntimeLeaseV2 as RuntimeLease,
+  RuntimePoolV2 as RuntimePool,
+} from '@qqbot/contracts';
 import type {
   SessionEventNotification,
   SessionStatusNotification,
@@ -25,16 +27,17 @@ import { traceSpan, legacyTrace } from '../observability/index.js';
 import type { Logger } from '@qqbot/contracts';
 import { SYSTEM_CLOCK } from '@qqbot/contracts';
 import type { TaskClock } from '@qqbot/contracts';
-import type { TaskLifeCycleManagerV2 as TaskLifeCycleManager } from '@qqbot/contracts';
-import type { PromptPreparerV2 as PromptPreparer } from '@qqbot/contracts';
-import type { TaskControlBridgeV2 as TaskControlBridge } from '@qqbot/contracts';
+import type { TaskLifeCycleManagerV3 as TaskLifeCycleManager } from '@qqbot/contracts';
+import type { PromptPreparerV3 as PromptPreparer } from '@qqbot/contracts';
+import type { TaskControlBridgeV3 as TaskControlBridge } from '@qqbot/contracts';
 import type {
   Lane,
   LaneEvent,
-  LaneResultV2 as LaneResult,
-  TaskSnapshotV2 as TaskSnapshot,
+  LaneResultV3 as LaneResult,
+  TaskSnapshotV3 as TaskSnapshot,
 } from '@qqbot/contracts';
 import { BusinessOutcome } from './business-outcome.js';
+import { PromptCorrelation } from './prompt-correlation.js';
 import { bindCooperationRequest } from './cooperation.js';
 
 function silentResult(lane: Lane, failureReason: BusinessOutcome['failureReason']): LaneResult {
@@ -52,7 +55,7 @@ function silentResult(lane: Lane, failureReason: BusinessOutcome['failureReason'
 }
 
 /** 调度器只依赖此接口，验收可替换 DSH，不需要真实模型或已部署客户端。 */
-export type { LaneRunnerV2 as LaneRunner } from '@qqbot/contracts';
+export type { LaneRunnerV3 as LaneRunner } from '@qqbot/contracts';
 export class DshLaneRunner implements LaneRunner {
   private readonly clock: TaskClock;
   constructor(
@@ -85,6 +88,9 @@ export class DshLaneRunner implements LaneRunner {
     let executionId: string | undefined;
     let lease: RuntimeLease | undefined;
     let result: LaneResult;
+    let reusable = false;
+    let bound = false;
+    let binding: import('@qqbot/contracts').ExecutionBinding | undefined;
     const disposers: (() => void)[] = [];
     const cooperationAbort = new AbortController();
     try {
@@ -93,56 +99,20 @@ export class DshLaneRunner implements LaneRunner {
         trace: task.lanes[lane].trace,
         logger,
       });
-      if (signal.aborted) return { kind: 'cancelled' };
-      const workspace = join(preparer.workspace(task), lane);
-      await mkdir(workspace, { recursive: true });
-      await copyFile(
-        join(preparer.workspace(task), 'AGENTS.md'),
-        join(workspace, 'AGENTS.md')
-      ).catch(() => {});
+      if (isAborted(signal)) return { kind: 'cancelled' };
+      const workspace = preparer.laneWorkspace(task, lane);
+      const taskWorkspace = preparer.taskWorkspace(task, lane);
       executionId = randomUUID();
-      const sessionId = `task-${task.taskId}-${lane}-${executionId}`;
-      logger = this.options.logger.withTrace(
-        traceSpan(task.lanes[lane].trace ?? task.input.trace ?? legacyTrace(task.taskId), {
-          executionId,
-          dshSessionId: sessionId,
-        })
-      );
       const control = this.options.control.bind(task);
-      // 隔离键包含 Task 和 lane，fd 3 控制请求还必须匹配本次唯一 sessionId。
       const acquiring = pool.acquireLease(
-        `${task.input.message.target.key}:${lane}:${task.taskId}`,
+        `${task.input.message.target.key}:${lane}`,
         workspace,
         {
           logger,
-          env: {
-            QQBOT_TASK_CHANNEL: '1',
-            QQBOT_LANE: lane,
-            QQBOT_TASK_ID: task.taskId,
-            QQBOT_EXECUTION_ID: executionId,
-            QQBOT_ROOT_SESSION_ID: sessionId,
-          },
-          taskCooperation:
-            lane === 'slow'
-              ? bindCooperationRequest(
-                  this.options.cooperation,
-                  { taskId: task.taskId, executionId, sessionId },
-                  () => lease,
-                  manager,
-                  signal,
-                  cooperationAbort.signal
-                )
-              : undefined,
-          taskControl: (request) => {
-            if (signal.aborted || request.sessionId !== sessionId)
-              return { accepted: false, reason: '执行身份已失效' };
-            if (request.action === 'query') return control.query(request.taskId);
-            if (request.action === 'cancel' && typeof request.taskId === 'string')
-              return control.cancel(request.taskId);
-            return { accepted: false, reason: '未知控制操作' };
-          },
+          env: { QQBOT_TASK_CHANNEL: '1', QQBOT_LANE: lane },
         },
-        signal
+        signal,
+        task.input.sessionEpoch
       );
       lease = await new Promise<RuntimeLease>((resolveLease, reject) => {
         const aborted = () => {
@@ -153,7 +123,7 @@ export class DshLaneRunner implements LaneRunner {
           async (entry) => {
             signal.removeEventListener('abort', aborted);
             // 取消可能先于初始化完成；迟到的租约仍由本次等待者负责销毁。
-            if (signal.aborted) {
+            if (isAborted(signal)) {
               await pool.drop(entry);
               reject(new Error('runtime 租约已取消'));
             } else resolveLease(entry);
@@ -163,11 +133,45 @@ export class DshLaneRunner implements LaneRunner {
             reject(error instanceof Error ? error : new Error(String(error)));
           }
         );
-        if (signal.aborted) aborted();
+        if (isAborted(signal)) aborted();
       });
-      if (signal.aborted) return { kind: 'cancelled' };
+      if (isAborted(signal)) return { kind: 'cancelled' };
+      const activeLease = lease;
+      const sessionId = lease.sessionId;
       const execution = { executionId, sessionId, runtimeGeneration: lease.generation };
       if (!manager.start(task.taskId, lane, execution)) return { kind: 'cancelled' };
+      binding = { taskId: task.taskId, sessionEpoch: task.input.sessionEpoch, ...execution };
+      await lease.runtime.bindExecution(binding, {
+        control: (request) => {
+          if (
+            signal.aborted ||
+            !binding ||
+            !Object.entries(binding).every(
+              ([key, value]) =>
+                request[key as keyof import('@qqbot/contracts').ExecutionBinding] === value
+            ) ||
+            !pool.snapshot(activeLease) ||
+            !manager.matches(task.taskId, lane, execution)
+          )
+            return { accepted: false, reason: '执行身份已失效' };
+          if (request.action === 'query') return control.query(request.targetTaskId);
+          if (request.targetTaskId) return control.cancel(request.targetTaskId);
+          return { accepted: false, reason: '未知控制操作' };
+        },
+        cooperation:
+          lane === 'slow'
+            ? bindCooperationRequest(
+                this.options.cooperation,
+                { taskId: task.taskId, executionId, sessionId },
+                () => lease,
+                manager,
+                signal,
+                cooperationAbort.signal
+              )
+            : undefined,
+      });
+      bound = true;
+      if (isAborted(signal)) return { kind: 'cancelled' };
       const trace = manager.get(task.taskId)?.lanes[lane].trace ?? legacyTrace(task.taskId);
       logger = this.options.logger.withTrace(trace);
       logger.event('execution.started');
@@ -182,7 +186,11 @@ export class DshLaneRunner implements LaneRunner {
       const tracing = observer;
       const runtime = lease.runtime;
       if (lane === 'slow' && this.options.cooperation) {
-        const binding = { taskId: task.taskId, ...execution };
+        const binding = {
+          taskId: task.taskId,
+          sessionEpoch: task.input.sessionEpoch,
+          ...execution,
+        };
         disposers.push(
           this.options.cooperation.subscribe(task.taskId, (snapshot) => {
             if (
@@ -199,7 +207,14 @@ export class DshLaneRunner implements LaneRunner {
       const childParents = new Map<string, string>();
       const business = new BusinessOutcome();
       let childFailed = false;
-      let lastSeq = -1;
+      const correlation = new PromptCorrelation(activeLease, (messageId, turn) => {
+        manager.bindExecution(task.taskId, lane, {
+          ...execution,
+          promptMessageId: messageId,
+          turn,
+        });
+      });
+      let protocolHealthy = true;
       let resolve!: (result: LaneResult) => void;
       const done = new Promise<LaneResult>((r) => {
         resolve = r;
@@ -214,15 +229,12 @@ export class DshLaneRunner implements LaneRunner {
       };
       // 父 turn/end 不代表所属子代理都结束，避免提前结算慢 lane。
       const check = () => {
-        if (!accumulator.isSettled || children.size) return;
+        if (correlation.turn === undefined || !accumulator.isSettled || children.size) return;
         const outcome = accumulator.result();
         if (outcome.kind !== 'completed' || childFailed) {
           finish({
             kind: 'failed',
-            text:
-              replyAttention(outcome.text).text && replyAttention(outcome.text).text !== 'NO_REPLY'
-                ? `任务执行失败：${replyAttention(outcome.text).text}`
-                : '任务执行失败，请稍后重新提交。',
+            text: failedText(outcome.text),
             error: childFailed ? 'subagent-failed' : outcome.reason,
           });
           return;
@@ -240,30 +252,36 @@ export class DshLaneRunner implements LaneRunner {
           });
         else finish({ kind: 'reply', text, attention: final.attention });
       };
-      const event = (notification: SessionEventNotification) => {
+      const consume = (notification: SessionEventNotification) => {
+        const fact = notification.event;
+        if (settled || !manager.matches(task.taskId, lane, execution)) return;
         tracing.observe(notification);
-        if (
-          settled ||
-          notification.sessionId !== sessionId ||
-          !manager.matches(task.taskId, lane, execution) ||
-          notification.event.seq <= lastSeq
-        )
-          return;
-        lastSeq = notification.event.seq;
         try {
           this.options.onEvent?.({
             taskId: task.taskId,
             sessionKey: task.input.message.target.key,
             lane,
             ...execution,
-            type: notification.event.type,
+            type: fact.type,
           });
         } catch (error) {
           logger.cause(error, 'lane-observer-failed');
         }
-        business.observe(notification.event);
-        accumulator.observe(notification.event);
+        business.observe(fact);
+        accumulator.observe(fact);
         check();
+      };
+      const failCorrelation = (error: unknown) => {
+        protocolHealthy = false;
+        finish({ kind: 'failed', text: '任务事件无法关联，执行已停止。', error: String(error) });
+      };
+      const event = (notification: SessionEventNotification) => {
+        if (settled) return;
+        try {
+          correlation.observe(notification).forEach(consume);
+        } catch (error) {
+          failCorrelation(error);
+        }
       };
       const status = (notification: SessionStatusNotification) => {
         if (
@@ -302,6 +320,7 @@ export class DshLaneRunner implements LaneRunner {
         finish({ kind: 'cancelled' });
       };
       const exit = () => {
+        protocolHealthy = false;
         finish({
           kind: 'failed',
           text: '任务运行进程退出，执行中断。',
@@ -316,6 +335,7 @@ export class DshLaneRunner implements LaneRunner {
         tracing.unknown();
       };
       const violation = (error: unknown) => {
+        protocolHealthy = false;
         if (settled) return;
         finish({
           kind: 'failed',
@@ -333,12 +353,12 @@ export class DshLaneRunner implements LaneRunner {
       runtime.on('subagent.finished', finished);
       runtime.on('exit', exit);
       const channelClosed = () => {
-        if (lane === 'slow' && this.options.cooperation)
-          finish({
-            kind: 'failed',
-            text: '协作通道关闭，任务已停止。',
-            error: 'cooperation-channel-closed',
-          });
+        protocolHealthy = false;
+        finish({
+          kind: 'failed',
+          text: '协作通道关闭，任务已停止。',
+          error: 'cooperation-channel-closed',
+        });
       };
       disposers.push(runtime.onTaskChannelClose?.(channelClosed) ?? (() => {}));
       signal.addEventListener('abort', abort, { once: true });
@@ -369,20 +389,32 @@ export class DshLaneRunner implements LaneRunner {
       const blocks = [
         {
           type: 'text' as const,
-          text: `${instruction}\nTask ID：${task.taskId}\n只处理标明的当前 Task 输入。历史与观察仅作背景，其他 Task 的未完成承诺由原执行继续处理，不因旧承诺接管旧任务或生成旧附件；当前输入明确要求重做或追加时才按本次指令执行。\n普通回复不要 @。只有明确需要强烈定向提醒时，才可在最终正文首行单独写 [REPLY_ATTENTION:strong]；这是内部标记，提醒对象只能是当前 Task 的原消息作者。\n最终交付物仅放在 ${join(workspace, config.media.outboxDir)}，临时文件不放那里。`,
+          text: `${instruction}\nTask ID：${task.taskId}\n只处理标明的当前 Task 输入。历史与观察仅作背景，其他 Task 的未完成承诺由原执行继续处理，不因旧承诺接管旧任务或生成旧附件；当前输入明确要求重做或追加时才按本次指令执行。\n普通回复不要 @。只有明确需要强烈定向提醒时，才可在最终正文首行单独写 [REPLY_ATTENTION:strong]；这是内部标记，提醒对象只能是当前 Task 的原消息作者。\n最终交付物仅放在 ${join(taskWorkspace, config.media.outboxDir)}，临时文件不放那里。${!lease.replayed && task.input.sessionReplay ? `\n【冷启动有限历史：仅作背景，不接管旧 Task】\n${task.input.sessionReplay}` : ''}\n会话话题 generation：${task.input.generation}。${task.input.topicChanged ? '当前输入开始新话题；原生历史只作背景，按当前输入执行。' : '延续当前输入话题。'} 输入文件目录：${preparer.workspace(task)}。当轮工作目录：${taskWorkspace}。`,
         },
         ...prepared.blocks,
       ];
       // 监听器、身份和计时器先于派发，连同步 mock 事件也不会漏收或串属。
-      void runtime.prompt(sessionId, blocks).catch((error: unknown) => {
-        if (settled) return;
-        finish({
-          kind: 'failed',
-          text: '任务派发失败，请稍后重新提交。',
-          error: 'prompt-failed',
-          errorId: logger.cause(error, 'prompt-failed'),
-        });
-      });
+      const prompting = runtime.prompt(sessionId, blocks);
+      pool.markReplayed(lease);
+      void prompting.then(
+        (ack) => {
+          try {
+            correlation.receipt(ack.messageId).forEach(consume);
+          } catch (error) {
+            failCorrelation(error);
+          }
+        },
+        (error: unknown) => {
+          if (settled) return;
+          protocolHealthy = false;
+          finish({
+            kind: 'failed',
+            text: '任务派发失败，请稍后重新提交。',
+            error: 'prompt-failed',
+            errorId: logger.cause(error, 'prompt-failed'),
+          });
+        }
+      );
       result = await done;
       if (result.kind === 'failed' && !result.errorId)
         result = { ...result, errorId: logger.cause(new Error(result.error), result.error) };
@@ -391,6 +423,23 @@ export class DshLaneRunner implements LaneRunner {
         durationMs: this.clock.now() - executionStartedAt,
         ...(result.kind === 'failed' ? { errorId: result.errorId, errorClass: result.error } : {}),
       });
+      // Cancellation is acknowledged only after root and all descendants stop.
+      if (protocolHealthy) {
+        try {
+          await this.withGrace(
+            result.kind === 'cancelled' ||
+              (result.kind === 'failed' && result.error === 'lane-timeout')
+              ? runtime.cancelExecution(binding)
+              : runtime.quiesceExecution(binding)
+          );
+          await this.withGrace(runtime.unbindExecution(binding));
+          bound = false;
+          reusable = true;
+        } catch (error) {
+          logger.cause(error, 'execution-convergence');
+        }
+      }
+      if (!reusable) await pool.drop(lease);
       tracing.close();
       manager.endExecution(task.taskId, lane);
       const artifactStartedAt = this.clock.now();
@@ -400,49 +449,9 @@ export class DshLaneRunner implements LaneRunner {
         fn();
       });
       disposers.length = 0;
-      // 先停止具体进程再扫描交付物，避免收尾期间仍有工具或子代理写文件。
-      await pool.drop(lease);
-      if (config.media.enabled && lane === 'slow') {
-        const outbox = await scanOutbox(join(workspace, config.media.outboxDir), {
-          maxFileBytes: config.media.maxFileBytes,
-          imageExtensions: config.media.imageExtensions,
-          logger,
-        });
-        if (outbox.oversize.length || outbox.skipped.length) {
-          const text = `部分交付物无法发送：${[...outbox.oversize, ...outbox.skipped].join('、')}。`;
-          result =
-            result.kind === 'failed'
-              ? {
-                  ...result,
-                  text: `${result.text}\n${text}`,
-                  requiredExplanation: text,
-                  attachments: outbox.attachments,
-                }
-              : {
-                  kind: 'failed',
-                  text,
-                  error: 'invalid-deliverable',
-                  requiredExplanation: text,
-                  attachments: outbox.attachments,
-                };
-        } else if (outbox.attachments.length) {
-          if (result.kind === 'silent')
-            result = context.connector.policy(task.input.message.target.kind).record
-              ? {
-                  kind: 'reply',
-                  text: '',
-                  attachments: outbox.attachments,
-                }
-              : {
-                  kind: 'failed',
-                  text: '任务产生了交付物但没有说明结果。',
-                  error: 'silent-with-deliverables',
-                  requiredExplanation: '任务产生了交付物但没有说明结果。',
-                  attachments: outbox.attachments,
-                };
-          else result = { ...result, attachments: outbox.attachments };
-        }
-      }
+      // 已确认执行静止或关闭异常进程；只扫描当前 Task 的交付物。
+      if (config.media.enabled && lane === 'slow')
+        result = await this.collectArtifacts(task, taskWorkspace, context, logger, result);
       if (result.kind === 'failed' && !result.errorId)
         result = { ...result, errorId: logger.cause(new Error(result.error), result.error) };
       if (result.kind === 'failed')
@@ -478,9 +487,101 @@ export class DshLaneRunner implements LaneRunner {
       disposers.forEach((fn) => {
         fn();
       });
-      if (lease) await pool.drop(lease);
+      if (lease) await this.releaseLease(pool, lease, bound ? binding : undefined, reusable);
       if (executionId) logger.finishExecution(executionId);
     }
+  }
+  private async releaseLease(
+    pool: RuntimePool,
+    lease: RuntimeLease,
+    binding: import('@qqbot/contracts').ExecutionBinding | undefined,
+    reusable: boolean
+  ): Promise<void> {
+    if (binding) {
+      try {
+        await this.withGrace(lease.runtime.cancelExecution(binding));
+        await this.withGrace(lease.runtime.unbindExecution(binding));
+        reusable = true;
+      } catch {
+        reusable = false;
+      }
+    }
+    if (!reusable) {
+      await pool.drop(lease);
+      return;
+    }
+    try {
+      pool.release(lease);
+    } catch {
+      await pool.drop(lease);
+    }
+  }
+  private async collectArtifacts(
+    task: DeepReadonly<TaskSnapshot>,
+    taskWorkspace: string,
+    context: MessageContext,
+    logger: Logger,
+    result: LaneResult
+  ): Promise<LaneResult> {
+    const { config } = this.options;
+    const outbox = await scanOutbox(join(taskWorkspace, config.media.outboxDir), {
+      maxFileBytes: config.media.maxFileBytes,
+      imageExtensions: config.media.imageExtensions,
+      logger,
+    });
+    if (outbox.oversize.length || outbox.skipped.length) {
+      const text = `部分交付物无法发送：${[...outbox.oversize, ...outbox.skipped].join('、')}。`;
+      result =
+        result.kind === 'failed'
+          ? {
+              ...result,
+              text: `${result.text}\n${text}`,
+              requiredExplanation: text,
+              attachments: outbox.attachments,
+            }
+          : {
+              kind: 'failed',
+              text,
+              error: 'invalid-deliverable',
+              requiredExplanation: text,
+              attachments: outbox.attachments,
+            };
+    } else if (outbox.attachments.length) {
+      if (result.kind === 'silent')
+        result = context.connector.policy(task.input.message.target.kind).record
+          ? {
+              kind: 'reply',
+              text: '',
+              attachments: outbox.attachments,
+            }
+          : {
+              kind: 'failed',
+              text: '任务产生了交付物但没有说明结果。',
+              error: 'silent-with-deliverables',
+              requiredExplanation: '任务产生了交付物但没有说明结果。',
+              attachments: outbox.attachments,
+            };
+      else result = { ...result, attachments: outbox.attachments };
+    }
+
+    return result;
+  }
+  private withGrace<T>(work: Promise<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = this.clock.setTimeout(() => {
+        reject(new Error('执行取消收敛超时'));
+      }, this.options.config.dsh.runtimeShutdownTimeoutMs);
+      void work.then(
+        (value) => {
+          this.clock.clearTimeout(timer);
+          resolve(value);
+        },
+        (error: unknown) => {
+          this.clock.clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      );
+    });
   }
 }
 
@@ -492,4 +593,12 @@ function replyAttention(raw: string): { text: string; attention?: 'strong' } {
     text: trimmed.replace(/\[REPLY_ATTENTION:strong\]/g, '').trim(),
     attention: strong ? 'strong' : undefined,
   };
+}
+
+function isAborted(signal: AbortSignal): boolean {
+  return signal.aborted;
+}
+function failedText(raw: string): string {
+  const text = replyAttention(raw).text;
+  return text && text !== 'NO_REPLY' ? `任务执行失败：${text}` : '任务执行失败，请稍后重新提交。';
 }

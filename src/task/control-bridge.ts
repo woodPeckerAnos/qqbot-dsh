@@ -4,8 +4,8 @@ import type { DeepReadonly } from '@qqbot/contracts';
  * 查询限本 Session，取消还要求目标先于调用者创建；普通成员限本人旧 Task。
  * 接受取消后调用 Actor 的执行取消接缝，已入队消息保留。
  */
-import type { TaskLifeCycleManagerV2 as TaskLifeCycleManager } from '@qqbot/contracts';
-import type { TaskSnapshotV2 as TaskSnapshot } from '@qqbot/contracts';
+import type { TaskLifeCycleManagerV3 as TaskLifeCycleManager } from '@qqbot/contracts';
+import type { TaskSnapshotV3 as TaskSnapshot } from '@qqbot/contracts';
 export class TaskControlBridge {
   constructor(
     private readonly manager: TaskLifeCycleManager,

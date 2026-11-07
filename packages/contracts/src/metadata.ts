@@ -240,12 +240,14 @@ export const modules = immutableConstant([
   {
     id: 'runtime',
     title: 'Runtime',
-    version: '1.0.0',
+    version: '2.0.0',
     owner: '项目维护者',
     entry: 'src/runtime/index.ts',
     files: [
       'src/dsh/agent-trace.ts',
       'src/dsh/pool.ts',
+      'src/dsh/persistent-pool.ts',
+      'src/dsh/execution-channel.ts',
       'src/dsh/process.ts',
       'src/dsh/protocol.ts',
       'src/dsh/turns.ts',
@@ -261,14 +263,18 @@ export const modules = immutableConstant([
       '@deepseek-ai/dsh-session',
     ],
     responsibility: 'DSH 协议、进程、只读租约池、累积与事件观察；不投递平台消息',
-    invariants: ['具体租约身份独占，busy/子代理只有池写，旧通知隔离'],
+    invariants: [
+      'RuntimePoolV2 按 target.key/lane 常驻，无空闲回收或 LRU；配置限制执行并发，驻留无限',
+      '单轮完整执行绑定独占；旧租约、epoch、回执 messageId、turn 与 seq 隔离；busy/子代理只有池写',
+    ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
     errors:
-      '协议/进程失败保留根因，初始化错误先记录再回收；未就绪进程直接 SIGTERM，租约取消不能命中新身份',
+      '协议/进程失败保留根因，初始化错误先记录再回收；未就绪进程直接 SIGTERM，租约取消不能命中新身份；prompt 回执关联保存失败终止所属执行并收尾',
     concurrency:
       '同模块所有者协调写入；异步退订与关闭幂等，关闭后不创建新工作；事件按具体身份和幂等键至多一次结算',
-    freshness: 'generation/sessionId/dshSeq 身份水位，idle/timeout 使用注入时钟',
+    freshness:
+      'generation/sessionId/prompt messageId/turn/dshSeq 身份水位；取消确认根与子代理静止后释放，超时只销毁所属 lane',
     compatibility:
       'v1 只增不改；破坏性签名先添加新版本，迁移生产消费者后删除旧入口；既有记录与平台字段兼容',
     examples: [
@@ -289,7 +295,7 @@ export const modules = immutableConstant([
   {
     id: 'task',
     title: 'Task',
-    version: '2.0.0',
+    version: '3.0.0',
     owner: '项目维护者',
     entry: 'src/task/index.ts',
     files: [
@@ -304,6 +310,7 @@ export const modules = immutableConstant([
       'src/task/lifecycle.ts',
       'src/task/proactive-adapter.ts',
       'src/task/prompt-preparer.ts',
+      'src/task/prompt-correlation.ts',
       'src/task/session-actor.ts',
       'src/task/system.ts',
       'src/task/types.ts',
@@ -312,6 +319,8 @@ export const modules = immutableConstant([
     capabilities: ['node:crypto', 'node:fs', 'node:fs/promises', 'node:path', 'node:url'],
     responsibility: 'Actor、执行状态、lane、预算、控制、输入准备及装配；不写投递状态',
     invariants: [
+      'sessionEpoch 仅由显式重置推进，先保存再取消与淘汰旧双 lane；话题 generation 不销毁资源',
+      '冷启动仅回放一次，规则每轮同步；当前 Task outbox 独立扫描，到期清理不删除常驻 lane',
       '每输入一个 Task，双 lane 终结，短事务无整轮锁，预算守恒；慢结束钩子保持 running 等待同 Task 快执行和原始正文终结',
       'lane、Task ID、outbox 和工作区路径仅用于内部协作，用户回复以处理进度和实际交付物描述衔接',
       'prompt 区分历史背景与当前 Task 输入；其他 Task 未完成承诺不触发当前执行接管旧任务或生成旧附件',
@@ -345,7 +354,7 @@ export const modules = immutableConstant([
   {
     id: 'delivery',
     title: '投递',
-    version: '2.0.0',
+    version: '3.0.0',
     owner: '项目维护者',
     entry: 'src/delivery/index.ts',
     files: [

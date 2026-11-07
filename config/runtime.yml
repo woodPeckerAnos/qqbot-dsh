@@ -24,9 +24,9 @@ dsh:
 
 # --- 运行时池 ----------------------------------------------------------------
 pool:
-  # 双 lane 合计硬上限（至少 2），各 lane 容量之和不得超过它
+  # 双 lane 合计执行并发上限（至少 2），各 lane 执行额度之和不得超过它；不限制驻留数量
   maxRuntimes: 8
-  # 空闲 runtime 回收时间（毫秒），回收后该会话下次提问会重建会话并回放历史
+  # 兼容旧 RuntimePool 的空闲回收时间；生产 RuntimePoolV2 常驻 lane 不使用此键
   runtimeIdleMs: 1800000
   # 冷启动回放的历史轮数
   replayTurns: 12
@@ -34,6 +34,7 @@ pool:
 # 每个有效输入和主动请求同时进入两个 lane；同 Session 每个 lane 串行。
 # 排队和输入摄取不计入模型执行时限。快 lane 固定关闭 thinking。
 tasks:
+  # 执行并发，各会话 lane 在结束后保留进程和原生 session
   fastRuntimes: 4
   slowRuntimes: 4
   fastTimeoutMs: 30000

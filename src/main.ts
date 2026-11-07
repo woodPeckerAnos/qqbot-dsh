@@ -35,7 +35,7 @@ import { installLoggingReload } from './observability/index.js';
 import { createLogger } from './observability/index.js';
 import { CN_HOLIDAYS_2026 } from '@qqbot/contracts';
 import { createOffpeakGate } from './offpeak/index.js';
-import { createTaskSystemV2 } from './task/index.js';
+import { createTaskSystemV3 } from './task/index.js';
 import { createDocumentExtractor } from './media/index.js';
 import { writeModelApiPatch } from './config/index.js';
 import { createResponder } from './delivery/index.js';
@@ -304,7 +304,7 @@ async function main(): Promise<void> {
     logger: logger.child({ component: 'offpeak' }),
   });
 
-  const taskSystem = createTaskSystemV2({
+  const taskSystem = createTaskSystemV3({
     config,
     logger: logger.child({ component: 'tasks' }),
     paths,
@@ -642,6 +642,10 @@ async function main(): Promise<void> {
         ),
         runtime: {
           size: taskSystem.pools.fast.size + taskSystem.pools.slow.size,
+          resident: taskSystem.pools.fast.size + taskSystem.pools.slow.size,
+          running:
+            taskSystem.actor.snapshot().fast.running + taskSystem.actor.snapshot().slow.running,
+          queued: taskSystem.actor.snapshot().fast.queued + taskSystem.actor.snapshot().slow.queued,
           activeConversationKeys: [
             ...taskSystem.pools.fast.activeConversationKeys(),
             ...taskSystem.pools.slow.activeConversationKeys(),

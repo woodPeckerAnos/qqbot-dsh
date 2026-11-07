@@ -1,4 +1,8 @@
-import type { DshRuntime, DshRuntimeOptions, SessionEventNotification } from '@qqbot/contracts';
+import type {
+  DshRuntimeV2 as DshRuntime,
+  DshRuntimeOptions,
+  SessionEventNotification,
+} from '@qqbot/contracts';
 import type { ReasoningEvidence, ExecutionEvidence } from './types.js';
 import { extractAssistantText } from '../../../src/runtime/index.js';
 
@@ -11,8 +15,8 @@ export class RuntimeEvidence {
   attach(runtime: DshRuntime, options: DshRuntimeOptions, now: () => number): DshRuntime {
     const taskId = options.cwd.split('/').at(-2) ?? '',
       lane = options.env?.QQBOT_LANE ?? '';
-    const reasoning: ReasoningEvidence = { taskId, lane, appeared: false, events: 0, tokens: 0 };
-    const execution: ExecutionEvidence = {
+    let reasoning: ReasoningEvidence = { taskId, lane, appeared: false, events: 0, tokens: 0 };
+    let execution: ExecutionEvidence = {
       taskId,
       lane,
       modelFinalText: '',
@@ -86,6 +90,44 @@ export class RuntimeEvidence {
       const result = await start();
       this.versions.add(result.serverInfo.version ?? 'unknown');
       return result;
+    };
+    const bind = runtime.bindExecution.bind(runtime),
+      unbind = runtime.unbindExecution.bind(runtime);
+    let firstBinding = true;
+    runtime.bindExecution = (binding, handlers) => {
+      if (!firstBinding) {
+        reasoning = { taskId: binding.taskId, lane, appeared: false, events: 0, tokens: 0 };
+        execution = {
+          taskId: binding.taskId,
+          lane,
+          modelFinalText: '',
+          toolCalls: 0,
+          toolErrors: 0,
+          childrenStarted: 0,
+          childrenFinished: 0,
+          childFailures: 0,
+        };
+        this.reasoning.push(reasoning);
+        this.executions.push(execution);
+      } else {
+        reasoning.taskId = execution.taskId = binding.taskId;
+        firstBinding = false;
+      }
+      if (closed) this.activeObservers++;
+      closed = false;
+      sequences.clear();
+      children.clear();
+      finished.clear();
+      parents.clear();
+      return bind(binding, handlers);
+    };
+    runtime.unbindExecution = async (binding) => {
+      const ack = await unbind(binding);
+      if (!closed) {
+        closed = true;
+        this.activeObservers--;
+      }
+      return ack;
     };
     runtime.prompt = (sessionId, blocks) => {
       parent = sessionId;

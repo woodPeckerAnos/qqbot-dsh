@@ -1,6 +1,6 @@
 import type {
   DeepReadonly,
-  TaskSnapshotV2 as TaskSnapshot,
+  TaskSnapshotV3 as TaskSnapshot,
   QueuedMessage,
   OriginalMessageReference,
 } from '@qqbot/contracts';

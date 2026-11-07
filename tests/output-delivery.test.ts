@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { readFile, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { OutgoingAttachment, QueuedMessage, TaskSnapshotV2 } from '@qqbot/contracts';
+import type { OutgoingAttachment, QueuedMessage, TaskSnapshotV3 } from '@qqbot/contracts';
 import { createTaskCooperation } from '../src/task/index.js';
 import { createMessageQueue } from '../src/delivery/index.js';
 import { createNullLogger } from '../src/observability/index.js';
@@ -270,7 +270,7 @@ describe('记录、队列与正文所有权', () => {
     const { h, probe } = await harness();
     const t = await h.submit({ text: '原问题', sender: '10001' });
     await h.finish(t, 'NO_REPLY', 'NO_REPLY');
-    const task = structuredClone(h.task(t.taskId)) as TaskSnapshotV2;
+    const task = structuredClone(h.task(t.taskId)) as TaskSnapshotV3;
     task.input.reference.messageId = undefined;
     task.input.message.msgId = '';
     await h.system.output.accept(task, 'slow', { kind: 'reply', text: long }, 'missing-id');

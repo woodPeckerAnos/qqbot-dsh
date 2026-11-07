@@ -14,19 +14,19 @@
 
 ## 2. 文件地图
 
-| 文件                         | 内容                                                                      | 提交到 git |
-| ---------------------------- | ------------------------------------------------------------------------- | ---------- |
-| `qqbot.yml`                  | 入口：include 清单、加载/合并规则、模块开关说明                           | ✅         |
-| `config/connectors.yml`      | `connectors` / `qq-official`（含 `c2c`）/ `onebot`                        | ✅         |
-| `config/runtime.yml`         | `dsh` / `pool` 硬上限 / `tasks` 双 lane / `paths` / `health` / `logLevel` | ✅         |
-| `config/logging.yml`         | `logging` 记录/缓冲预算、agent 诊断目标、有效期与 flush                   | ✅         |
-| `config/media.yml`           | `attachments`（含 `forward`、`files`）/ `media`                           | ✅         |
-| `config/interaction.yml`     | `personas` / `topic` / `observation`                                      | ✅         |
-| `config/proactive.yml`       | `proactive` 主动发言全部参数                                              | ✅         |
-| `config/offpeak.yml`         | `offpeak` 谷时段闸                                                        | ✅         |
-| `config/local/models.yml`    | 本机模型路由与 `dsh.provider`/`dsh.model`                                 | ❌         |
-| `config/local/overrides.yml` | 其他本机覆盖                                                              | ❌         |
-| `config/local/README.md`     | 本机配置说明                                                              | ✅         |
+| 文件                         | 内容                                                                            | 提交到 git |
+| ---------------------------- | ------------------------------------------------------------------------------- | ---------- |
+| `qqbot.yml`                  | 入口：include 清单、加载/合并规则、模块开关说明                                 | ✅         |
+| `config/connectors.yml`      | `connectors` / `qq-official`（含 `c2c`）/ `onebot`                              | ✅         |
+| `config/runtime.yml`         | `dsh` / `pool` 执行并发上限 / `tasks` 双 lane / `paths` / `health` / `logLevel` | ✅         |
+| `config/logging.yml`         | `logging` 记录/缓冲预算、agent 诊断目标、有效期与 flush                         | ✅         |
+| `config/media.yml`           | `attachments`（含 `forward`、`files`）/ `media`                                 | ✅         |
+| `config/interaction.yml`     | `personas` / `topic` / `observation`                                            | ✅         |
+| `config/proactive.yml`       | `proactive` 主动发言全部参数                                                    | ✅         |
+| `config/offpeak.yml`         | `offpeak` 谷时段闸                                                              | ✅         |
+| `config/local/models.yml`    | 本机模型路由与 `dsh.provider`/`dsh.model`                                       | ❌         |
+| `config/local/overrides.yml` | 其他本机覆盖                                                                    | ❌         |
+| `config/local/README.md`     | 本机配置说明                                                                    | ✅         |
 
 > 仓库当前**不随附** `models.yml` / `overrides.yml` 或 `*.example.yml` 模板。
 > 两个文件都不存在时使用代码内置默认；需要本机差异时按本文键名自行创建。
@@ -149,7 +149,7 @@ include:
 | `tasks.reminderMs`                      | 300000（最小 5 分钟） | `BOT_TASK_REMINDER_MS`                        |
 | `pool.maxRuntimes`                      | 8（至少 2）           | `QQ_MAX_RUNTIMES`                             |
 
-两个 lane 容量均至少 1，之和不得超过总硬上限；降低总上限时同步调整各 lane。排队、摄取与 runtime 初始化不计执行超时。快 lane 固定 `reasoningEffort=off`，只开放 Task 查询和取消；慢 lane 前台等待所有子代理。两 lane 模型路由与 dsh.provider 使用相同声明和凭证校验。自定义 `dsh.profilePatch` 后仍自动追加内置 `dsh-profile/lanes.patch.yml`，部署必须包含该文件和插件。
+两个 lane 执行并发均至少 1，之和不得超过 pool.maxRuntimes 合计并发上限；这些键不限制常驻进程数量；降低总上限时同步调整各 lane。排队、摄取与 runtime 初始化不计执行超时。快 lane 固定 `reasoningEffort=off`，只开放 Task 查询和取消；慢 lane 前台等待所有子代理。两 lane 模型路由与 dsh.provider 使用相同声明和凭证校验。自定义 `dsh.profilePatch` 后仍自动追加内置 `dsh-profile/lanes.patch.yml`，部署必须包含该文件和插件。
 
 ### 快 lane 模型能力
 
@@ -177,4 +177,4 @@ tasks:
 
 旧 `pool.maxConcurrentTurns`、平台 `progress*` / `turnTimeoutMs`、`onebot.maxRepliesPerMsg`、`hints.longTask`、`proactive.speakTimeoutMs` 仅保留配置解析兼容，生产路径不使用；请删除并迁移到 `tasks.*`。启动摘要在 `deprecated.ignored` 明示这些键。旧值仍做类型与范围校验，建议升级时移除。QQ 的 `maxRepliesPerMsg` 继续作为平台条数约束；OneBot 不按产物数扣主动预算，`proactive.sessionBudget` 的单位是 Task。
 
-上下文 generation 与回放边界在 `stateDir/task-sessions.json`；Task 状态持久化在 `stateDir/tasks.json`，队列在 `messages.json`，预算在 `task-budgets.json`，待发送附件在 `message-files/<Task ID>/`。终态记录及 Task 工作区到期清理，队列和必要附件独立保留。旧 `background-pending.json` 不导入新队列，升级前请检查和交付其待发内容；旧运行任务不会恢复。
+话题 generation、显式重置 sessionEpoch 与 resetSinceTs 在 `stateDir/task-sessions.json`；Task 状态持久化在 `stateDir/tasks.json`，队列在 `messages.json`，预算在 `task-budgets.json`，待发送附件在 `message-files/<Task ID>/`。旧记录缺 epoch 按 1 读取，旧 sinceTs 作为初始冷回放边界。pool.runtimeIdleMs 保留兼容键，生产常驻 lane 不做空闲回收或 LRU。稳定工作区为 `<session>/lanes/<lane>`，当轮目录为其下 `tasks/<taskId>`，输入在 `<session>/tasks/<taskId>`。终态记录及这三处 Task 目录到期清理，常驻 lane 保留，队列和必要附件独立保留。旧 `background-pending.json` 不导入新队列，升级前请检查和交付其待发内容；旧运行任务不会恢复。

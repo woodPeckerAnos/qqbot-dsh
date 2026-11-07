@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { contractExamples } from '../packages/contracts/dist/examples.js';
@@ -87,6 +88,9 @@ function taskInputDouble() {
     isAdmin: false,
     source: 'user',
     generation: 0,
+    sessionEpoch: 1,
+    sessionReplay: '',
+    topicChanged: false,
     reference: {
       messageId: 'original-message',
       senderId: 'fixture-user',
@@ -231,11 +235,16 @@ const runners = {
         text: accumulator.finalText,
       };
     const protocol = await protocolLoop(example.input.sessionId);
-    return { ...protocol, settled: accumulator.isSettled, result: accumulator.result() };
+    return {
+      ...protocol,
+      ...(await residentLoop()),
+      settled: accumulator.isSettled,
+      result: accumulator.result(),
+    };
   },
   async task(example) {
     let notifications = 0;
-    const manager = task.createTaskLifeCycleManagerV2({
+    const manager = task.createTaskLifeCycleManagerV3({
       now: () => example.input.now,
       logger: loggerDouble(),
       ...(example.input.failWrite
@@ -275,6 +284,7 @@ const runners = {
     const snapshot = manager.get(handle.taskId);
     return {
       status: snapshot.status,
+      sessionEpoch: snapshot.input.sessionEpoch,
       fast: snapshot.lanes.fast.status,
       slow: snapshot.lanes.slow.status,
       done,
@@ -442,6 +452,67 @@ const runners = {
     };
   },
 };
+
+async function residentLoop() {
+  const pool = runtime.createRuntimePoolV2({
+    maxRuntimes: 1,
+    runtimeIdleMs: 1,
+    logger: loggerDouble(),
+    base: {
+      bin: 'fixture',
+      profilePatch: 'fixture',
+      dshHome: '/fixture',
+      provider: 'fixture',
+      model: 'fixture',
+      startTimeoutMs: 1000,
+      shutdownTimeoutMs: 1000,
+    },
+    runtimeFactory() {
+      const mock = Object.assign(new EventEmitter(), {
+        isReady: false,
+        state: 'ready',
+        async bindExecution(binding) {
+          return { binding, idle: true };
+        },
+        async unbindExecution(binding) {
+          return { binding, idle: true };
+        },
+        async cancelExecution(binding) {
+          return { binding, idle: true };
+        },
+        async quiesceExecution(binding) {
+          return { binding, idle: true };
+        },
+        notifyTaskCooperation() {},
+        async start() {
+          mock.isReady = true;
+          return { serverInfo: { name: runtime.SDK_SERVER_INFO_NAME } };
+        },
+        async dispose() {
+          mock.isReady = false;
+        },
+      });
+      return mock;
+    },
+  });
+  try {
+    const first = await pool.acquireLease('fixture:fast', '/fixture');
+    pool.markReplayed(first);
+    pool.release(first);
+    const second = await pool.acquireLease('fixture:fast', '/fixture');
+    const result = {
+      resident: pool.size,
+      reusedSession: first.sessionId === second.sessionId,
+      distinctLeases: first.leaseId !== second.leaseId,
+      replayedOnce: second.replayed,
+    };
+    pool.release(first);
+    pool.release(second);
+    return result;
+  } finally {
+    await pool.disposeAll();
+  }
+}
 
 async function protocolLoop(sessionId) {
   const input = new PassThrough();

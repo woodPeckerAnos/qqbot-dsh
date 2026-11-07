@@ -15,16 +15,16 @@ import { segmentText } from '../content/index.js';
 import type { TaskBudget } from '@qqbot/contracts';
 import { SYSTEM_CLOCK } from '@qqbot/contracts';
 import type { TaskClock } from '@qqbot/contracts';
-import type { TaskLifeCycleManagerV2 as TaskLifeCycleManager } from '@qqbot/contracts';
+import type { TaskLifeCycleManagerV3 as TaskLifeCycleManager } from '@qqbot/contracts';
 import type { MessageQueue } from '@qqbot/contracts';
 import { isTaskTerminal } from '@qqbot/contracts';
 import type {
   DeliveryResult,
   Lane,
-  LaneResultV2 as LaneResult,
+  LaneResultV3 as LaneResult,
   ReplyCandidate,
   QueuedMessage,
-  TaskSnapshotV2 as TaskSnapshot,
+  TaskSnapshotV3 as TaskSnapshot,
 } from '@qqbot/contracts';
 
 /** Match each successfully delivered occurrence once, preserving repeated segments. */

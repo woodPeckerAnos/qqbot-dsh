@@ -6,38 +6,38 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type {
   Config,
   Lane,
-  TaskSnapshotV2 as TaskSnapshot,
+  TaskSnapshotV3 as TaskSnapshot,
   DeepReadonly,
   StateWriter,
   TopicJudge,
-  TaskHandleV2 as TaskHandle,
+  TaskHandleV3 as TaskHandle,
   QueuedMessage,
   BudgetRecord,
-  SessionContextState,
-  DshRuntime,
+  SessionContextStateV3 as SessionContextState,
+  DshRuntimeV2 as DshRuntime,
   DshRuntimeOptions,
-  TaskSystemV2 as TaskSystem,
+  TaskSystemV3 as TaskSystem,
   NormalizedMessage,
-  LaneRunnerV2 as LaneRunner,
-  SessionActorV2 as SessionActor,
+  LaneRunnerV3 as LaneRunner,
+  SessionActorV3 as SessionActor,
 } from '@qqbot/contracts';
 import { loadConfig, loadConfigFile, writeModelApiPatch } from '../../../src/config/index.js';
-import { createRuntimePool, createDshRuntime } from '../../../src/runtime/index.js';
+import { createRuntimePoolV2, createDshRuntimeV2 } from '../../../src/runtime/index.js';
 import {
-  createTaskLifeCycleManagerV2,
+  createTaskLifeCycleManagerV3,
   createTaskBudget,
-  createPromptPreparerV2,
-  createTaskControlBridgeV2,
-  createDshLaneRunnerV2,
-  createSessionActorV2,
-  createLaneSchedulerV2,
-  createTaskSystemV2,
+  createPromptPreparerV3,
+  createTaskControlBridgeV3,
+  createDshLaneRunnerV3,
+  createSessionActorV3,
+  createLaneSchedulerV3,
+  createTaskSystemV3,
   createTaskCooperation,
   isTaskTerminal,
 } from '../../../src/task/index.js';
 import {
   createMessageQueue,
-  createSessionOutputCoordinatorV2,
+  createSessionOutputCoordinatorV3,
   createResponder,
 } from '../../../src/delivery/index.js';
 import {
@@ -123,8 +123,8 @@ export class Harness {
     TaskSystem,
     'manager' | 'budget' | 'queue' | 'output' | 'actor' | 'pools' | 'close' | 'context'
   >;
-  preparer!: ReturnType<typeof createPromptPreparerV2>;
-  control!: ReturnType<typeof createTaskControlBridgeV2>;
+  preparer!: ReturnType<typeof createPromptPreparerV3>;
+  control!: ReturnType<typeof createTaskControlBridgeV3>;
   stores!: {
     tasks: FaultWriter<TaskSnapshot>;
     messages: FaultWriter<QueuedMessage>;
@@ -132,7 +132,7 @@ export class Harness {
     sessions: FaultWriter<SessionContextState>;
   };
   private actor: SessionActor | undefined;
-  private dependencies!: Parameters<typeof createTaskSystemV2>[0];
+  private dependencies!: Parameters<typeof createTaskSystemV3>[0];
   private serial = 0;
   private inputWork = Promise.resolve();
   private cleanupGates: (() => void)[] = [];
@@ -189,7 +189,7 @@ export class Harness {
     const modelPatch =
       this.mode === 'live' ? writeModelApiPatch(this.config.modelApi, paths.stateDir) : undefined;
     if (this.mode === 'live') {
-      this.system = createTaskSystemV2({
+      this.system = createTaskSystemV3({
         ...common,
         clock: this.realtimeClock,
         modelPatches: modelPatch ? [modelPatch] : [],
@@ -199,7 +199,7 @@ export class Harness {
           : undefined,
       });
     } else {
-      this.preparer = createPromptPreparerV2({
+      this.preparer = createPromptPreparerV3({
         ...common,
         clock: this.clock,
         topicJudge: (i) => this.topicJudge(i),
@@ -258,9 +258,9 @@ export class Harness {
     };
     await this.connector.start();
   }
-  private assembleOffline(common: Parameters<typeof createTaskSystemV2>[0]) {
+  private assembleOffline(common: Parameters<typeof createTaskSystemV3>[0]) {
     const { config, logger, paths, conversations, windows, stats, connectors } = common;
-    const manager = createTaskLifeCycleManagerV2({
+    const manager = createTaskLifeCycleManagerV3({
       store: this.stores.tasks,
       now: this.clock.now,
       maxPerSession: config.tasks.maxPerSession,
@@ -278,7 +278,7 @@ export class Harness {
     const pools = Object.fromEntries(
       (['fast', 'slow'] as const).map((lane) => [
         lane,
-        createRuntimePool({
+        createRuntimePoolV2({
           maxRuntimes: config.tasks[lane === 'fast' ? 'fastRuntimes' : 'slowRuntimes'],
           runtimeIdleMs: 0,
           now: this.clock.now,
@@ -302,10 +302,10 @@ export class Harness {
         }),
       ])
     ) as TaskSystem['pools'];
-    this.control = createTaskControlBridgeV2(manager, (id) => {
+    this.control = createTaskControlBridgeV3(manager, (id) => {
       this.actor?.cancelExecution(id);
     });
-    const output = createSessionOutputCoordinatorV2({
+    const output = createSessionOutputCoordinatorV3({
       manager,
       budget,
       queue,
@@ -335,7 +335,7 @@ export class Harness {
       },
     });
     const cooperation = createTaskCooperation(manager, queue);
-    const runner: LaneRunner = createDshLaneRunnerV2({
+    const runner: LaneRunner = createDshLaneRunnerV3({
       pools,
       manager,
       preparer: this.preparer,
@@ -345,7 +345,7 @@ export class Harness {
       clock: this.clock,
       cooperation,
     });
-    const actor = createSessionActorV2({
+    const actor = createSessionActorV3({
       manager,
       budget,
       output,
@@ -353,10 +353,13 @@ export class Harness {
       runner,
       clock: this.clock,
       sessions: this.stores.sessions,
+      resetLanes: (key, epoch) => {
+        for (const lane of ['fast', 'slow'] as const) pools[lane].reset(`${key}:${lane}`, epoch);
+      },
       taskIdFactory: () => `b${this.seed}_${++this.serial}`,
       schedulers: {
-        fast: createLaneSchedulerV2(config.tasks.fastRuntimes),
-        slow: createLaneSchedulerV2(config.tasks.slowRuntimes),
+        fast: createLaneSchedulerV3(config.tasks.fastRuntimes),
+        slow: createLaneSchedulerV3(config.tasks.slowRuntimes),
       },
     });
     this.actor = actor;
@@ -378,7 +381,7 @@ export class Harness {
       close: async () => {
         actor.close();
         await Promise.all(Object.values(pools).map((p) => p.disposeAll()));
-        await Promise.all(manager.list().map((t) => manager.handle(t.taskId).done));
+        await actor.whenIdle();
         output.close();
         cooperation.close();
         queue.close();
@@ -399,13 +402,13 @@ export class Harness {
     manager.recover();
   }
   private liveRuntime(options: DshRuntimeOptions): DshRuntime {
-    return this.evidence.attach(createDshRuntime(options), options, this.realtimeClock.now);
+    return this.evidence.attach(createDshRuntimeV2(options), options, this.realtimeClock.now);
   }
   /** Recreate the actual production TaskSystem from a crash-time disk snapshot. */
   async restart(crashSnapshot?: TaskSnapshot[]) {
     await this.system.close();
     if (crashSnapshot) this.stores.tasks.save(crashSnapshot);
-    this.system = createTaskSystemV2({
+    this.system = createTaskSystemV3({
       ...this.dependencies,
       clock: this.clock,
       runtimeFactory: (options) => {
@@ -461,11 +464,15 @@ export class Harness {
   async runtime(taskId: string, lane: Lane) {
     await until(() =>
       this.runtimes.some(
-        (r) => r.options.cwd.includes(`/${taskId}/${lane}`) && r.prompts.length > 0
+        (r) =>
+          r.options.env?.QQBOT_LANE === lane &&
+          r.prompts.some((prompt) => prompt.binding?.taskId === taskId)
       )
     );
     return this.runtimes.find(
-      (r) => r.options.cwd.includes(`/${taskId}/${lane}`) && r.prompts.length > 0
+      (r) =>
+        r.options.env?.QQBOT_LANE === lane &&
+        r.prompts.some((prompt) => prompt.binding?.taskId === taskId)
     )!;
   }
   async finish(handle: TaskHandle, fast = '直接答案', slow = 'NO_REPLY', reverse = false) {
@@ -509,7 +516,7 @@ export class Harness {
   }
   async artifact(handle: TaskHandle, text = 'verified artifact', name = 'answer.txt') {
     const r = await this.runtime(handle.taskId, 'slow');
-    const path = join(r.options.cwd, this.config.media.outboxDir);
+    const path = join(r.options.cwd, 'tasks', handle.taskId, this.config.media.outboxDir);
     await mkdir(path, { recursive: true });
     await writeFile(join(path, name), text);
   }

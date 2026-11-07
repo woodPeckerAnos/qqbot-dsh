@@ -1,9 +1,10 @@
 import { installLaneCooperation } from '../../dsh-profile/plugins/task-control.js';
-import type { DshRuntimeOptions, TaskCooperationUpdate } from '@qqbot/contracts';
+import type { ExecutionBinding, ExecutionHandlers, TaskCooperationUpdate } from '@qqbot/contracts';
 
 export interface MockCooperationMessage {
   id: string;
   content: { text: string }[];
+  source?: { kind: string };
 }
 export interface MockCooperationAgent {
   session: { id: string };
@@ -31,14 +32,8 @@ export class CooperationDriver {
   private readonly hooks: Partial<PluginHooks> = {};
   private readonly plugin;
   private readonly agent;
-  constructor(options: DshRuntimeOptions, sessionId: string) {
-    const env = options.env!;
-    const binding = {
-      taskId: env.QQBOT_TASK_ID!,
-      executionId: env.QQBOT_EXECUTION_ID!,
-      runtimeGeneration: env.QQBOT_RUNTIME_GENERATION!,
-      sessionId,
-    };
+  constructor(binding: ExecutionBinding, handlers: ExecutionHandlers) {
+    const sessionId = binding.sessionId;
     this.agent = {
       session: { id: sessionId },
       inject: (message: { id: string; content: { text: string }[] }) => this.inbox.push(message),
@@ -53,13 +48,19 @@ export class CooperationDriver {
         action: 'cooperation-read' | 'cooperation-wait',
         _taskId: string,
         exec: { signal?: AbortSignal }
-      ) => options.taskCooperation!({ ...binding, action }, exec.signal ?? this.controller.signal),
+      ) => handlers.cooperation!({ ...binding, action }, exec.signal ?? this.controller.signal),
       binding
     );
     this.hooks['agent/created']!({ agent: this.agent });
   }
   receive(update: TaskCooperationUpdate): void {
     this.plugin.receive(update);
+  }
+  begin(messageId: string): void {
+    this.hooks['session/event']!(this.agent.session, {
+      type: 'user/message',
+      data: { id: messageId, source: { kind: 'user' }, content: [] },
+    });
   }
   /** Each committed injection is consumed at the next step, inside the same turn. */
   async stop(text: string): Promise<string> {

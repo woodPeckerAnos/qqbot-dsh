@@ -9,24 +9,26 @@ import { randomUUID } from 'node:crypto';
 import { createTrace, traceSpan } from '../observability/index.js';
 import type { TraceContext } from '@qqbot/contracts';
 import type { MessageContext } from '@qqbot/contracts';
-import type { TaskLifeCycleManagerV2 as TaskLifeCycleManager } from '@qqbot/contracts';
-import type { PromptPreparerV2 as PromptPreparer } from '@qqbot/contracts';
-import type { LaneSchedulerV2 as LaneScheduler } from '@qqbot/contracts';
-import type { LaneRunnerV2 as LaneRunner } from '@qqbot/contracts';
-import type { SessionOutputCoordinatorV2 as SessionOutputCoordinator } from '@qqbot/contracts';
+import type { TaskLifeCycleManagerV3 as TaskLifeCycleManager } from '@qqbot/contracts';
+import type { PromptPreparerV3 as PromptPreparer } from '@qqbot/contracts';
+import type { LaneSchedulerV3 as LaneScheduler } from '@qqbot/contracts';
+import type { LaneRunnerV3 as LaneRunner } from '@qqbot/contracts';
+import type { SessionOutputCoordinatorV3 as SessionOutputCoordinator } from '@qqbot/contracts';
 import type { TaskBudget } from '@qqbot/contracts';
 import type { TaskClock } from '@qqbot/contracts';
-import type { SessionStateWriter } from '@qqbot/contracts';
 import { LANES, isTaskTerminal } from '@qqbot/contracts';
 import type {
   Lane,
-  LaneResultV2 as LaneResult,
-  TaskHandleV2 as TaskHandle,
-  TaskInput,
+  LaneResultV3 as LaneResult,
+  TaskHandleV3 as TaskHandle,
+  TaskInputV3 as TaskInput,
 } from '@qqbot/contracts';
 
 export class SessionActor {
-  private readonly generations = new Map<string, { generation: number; sinceTs: number }>();
+  private readonly generations = new Map<
+    string,
+    { generation: number; sinceTs: number; sessionEpoch: number; resetSinceTs: number }
+  >();
   /** 串行的是输入判定与提交，不能把 Task.done 或发送 Promise 放进这个门闩。 */
   private readonly inputs = new Map<string, Promise<void>>();
   private closed = false;
@@ -39,12 +41,13 @@ export class SessionActor {
       output: SessionOutputCoordinator;
       budget: TaskBudget;
       clock?: TaskClock;
-      sessions?: SessionStateWriter;
+      sessions?: import('@qqbot/contracts').SessionStateWriterV3;
+      resetLanes?: (sessionKey: string, sessionEpoch: number) => void;
       taskIdFactory?: () => string;
     }
   ) {
     for (const state of structuredClone(options.sessions?.load() ?? []))
-      this.generations.set(state.sessionKey, state);
+      this.generations.set(state.sessionKey, upgradeSession(state));
   }
   /** 主动请求在等待输入门闩之前固定触发上下文，避免换成后来话题。 */
   async submit(
@@ -66,7 +69,12 @@ export class SessionActor {
       message: structuredClone(context.message),
     };
     const key = context.message.target.key;
-    const triggerGeneration = this.generations.get(key) ?? { generation: 1, sinceTs: 0 };
+    const triggerGeneration = this.generations.get(key) ?? {
+      generation: 1,
+      sinceTs: 0,
+      sessionEpoch: 1,
+      resetSinceTs: 0,
+    };
     const frozenProactive = proactive
       ? {
           generation: triggerGeneration.generation,
@@ -81,9 +89,14 @@ export class SessionActor {
     this.inputs.set(key, gate);
     await previous;
     try {
-      if (this.closed) throw new Error('SessionActor 已关闭');
+      this.assertOpen();
       this.options.manager.assertAdmission(key);
-      const generation = this.generations.get(key) ?? { generation: 1, sinceTs: 0 };
+      const generation = this.generations.get(key) ?? {
+        generation: 1,
+        sinceTs: 0,
+        sessionEpoch: 1,
+        resetSinceTs: 0,
+      };
       const captured = this.options.preparer.capture(context.message, generation.sinceTs);
       const verdict = proactive
         ? { related: true, mentionsChatRecord: false }
@@ -92,10 +105,15 @@ export class SessionActor {
         related: verdict.related,
         mentionsChatRecord: verdict.mentionsChatRecord,
       });
+      this.assertOpen();
       // 判定期间 /new 可以推进 generation，不能用判定前的旧值覆盖它。
       let current = this.generations.get(key) ?? generation;
       if (!verdict.related && current === generation) {
-        current = { generation: generation.generation + 1, sinceTs: context.message.ts };
+        current = {
+          ...generation,
+          generation: generation.generation + 1,
+          sinceTs: context.message.ts,
+        };
       }
       if (!proactive) {
         this.commitGeneration(key, current);
@@ -106,6 +124,9 @@ export class SessionActor {
         isAdmin: context.isAdmin,
         source: proactive ? 'proactive' : 'user',
         generation: frozenProactive?.generation ?? current.generation,
+        sessionEpoch: current.sessionEpoch,
+        sessionReplay: this.options.preparer.capture(context.message, current.resetSinceTs).replay,
+        topicChanged: !verdict.related,
         reference: {
           messageId: context.message.msgId || undefined,
           excerpt: context.message.content.slice(0, 500),
@@ -202,12 +223,14 @@ export class SessionActor {
   /** /new 清空未完成执行并持久化新回放边界；已完成 Task 的消息继续投递。 */
   reset(sessionKey: string, initiator?: TraceContext): number {
     const previous = this.generations.get(sessionKey);
-    this.commitGeneration(sessionKey, {
-      generation: (previous?.generation ?? 1) + 1,
-      sinceTs: this.options.clock?.now() ?? Date.now(),
-    });
+    const next = resetState(previous, this.options.clock?.now() ?? Date.now());
+    this.commitGeneration(sessionKey, next);
     const tasks = this.options.manager.list(sessionKey).filter((t) => !isTaskTerminal(t));
-    tasks.forEach((t) => this.cancel(t.taskId, initiator));
+    try {
+      this.cancelAll(tasks, initiator);
+    } finally {
+      this.options.resetLanes?.(sessionKey, next.sessionEpoch);
+    }
     return tasks.length;
   }
   snapshot() {
@@ -223,17 +246,38 @@ export class SessionActor {
   }
   close(): void {
     this.closed = true;
-    this.options.manager
-      .list()
-      .filter((t) => !isTaskTerminal(t))
-      .forEach((t) => this.cancel(t.taskId));
-    LANES.forEach((l) => {
-      this.options.schedulers[l].close();
-    });
+    try {
+      this.cancelAll(this.options.manager.list().filter((t) => !isTaskTerminal(t)));
+    } finally {
+      LANES.forEach((l) => {
+        this.options.schedulers[l].close();
+      });
+    }
+  }
+  async whenIdle(): Promise<void> {
+    await Promise.all(LANES.map((lane) => this.options.schedulers[lane].whenIdle()));
+  }
+  private cancelAll(tasks: readonly { taskId: string }[], initiator?: TraceContext): void {
+    let failure: { cause: unknown } | undefined;
+    for (const task of tasks) {
+      try {
+        this.cancel(task.taskId, initiator);
+      } catch (error) {
+        failure ??= { cause: error };
+        this.cancelExecution(task.taskId);
+      }
+    }
+    if (failure)
+      throw failure.cause instanceof Error
+        ? failure.cause
+        : new Error('取消 Task 状态保存失败', failure);
+  }
+  private assertOpen(): void {
+    if (this.closed) throw new Error('SessionActor 已关闭');
   }
   private commitGeneration(
     sessionKey: string,
-    state: { generation: number; sinceTs: number }
+    state: { generation: number; sinceTs: number; sessionEpoch: number; resetSinceTs: number }
   ): void {
     const next = new Map(this.generations);
     next.set(sessionKey, state);
@@ -242,3 +286,25 @@ export class SessionActor {
   }
 }
 export type { SessionContextState } from '@qqbot/contracts';
+
+function upgradeSession(
+  state: import('@qqbot/contracts').SessionContextState &
+    Partial<import('@qqbot/contracts').SessionContextStateV3>
+): import('@qqbot/contracts').SessionContextStateV3 {
+  return {
+    ...state,
+    sessionEpoch: state.sessionEpoch ?? 1,
+    resetSinceTs: state.resetSinceTs ?? state.sinceTs,
+  };
+}
+function resetState(
+  previous: { generation: number; sessionEpoch: number } | undefined,
+  now: number
+) {
+  return {
+    generation: (previous?.generation ?? 1) + 1,
+    sinceTs: now,
+    sessionEpoch: (previous?.sessionEpoch ?? 1) + 1,
+    resetSinceTs: now,
+  };
+}

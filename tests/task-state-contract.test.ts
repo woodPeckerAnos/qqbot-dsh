@@ -267,6 +267,98 @@ describe('Task budget owner 契约', () => {
 });
 
 describe('Actor 与调度保存失败契约', () => {
+  it.each(['epoch', 'cancel', 'none'] as const)(
+    '/new 的 %s 保存边界：旧记录按 epoch 1 读取，先保存重置再取消执行',
+    async (fault) => {
+      const sessions = new FaultStore<SessionContextState>();
+      sessions.records = [{ sessionKey: 'group', generation: 7, sinceTs: 40 }];
+      const store = new FaultStore<TaskSnapshot>();
+      const clock = new ManualClock();
+      clock.time = 100;
+      const manager = new TaskLifeCycleManager({ store, now: () => clock.now() });
+      const resetLanes = vi.fn();
+      const actor = new SessionActor({
+        manager,
+        preparer: {
+          capture: (_message: NormalizedMessage, sinceTs = 0) => ({
+            window: [],
+            replay: `since:${sinceTs}`,
+          }),
+          judge: async () => ({ related: true, mentionsChatRecord: false }),
+          release: () => {},
+        } as unknown as PromptPreparer,
+        schedulers: { fast: new LaneScheduler(), slow: new LaneScheduler() },
+        budget: new TaskBudget(),
+        sessions,
+        clock,
+        resetLanes,
+        runner: {
+          run: async (task, lane, _context, signal) => {
+            manager.start(task.taskId, lane);
+            if (!signal.aborted)
+              await new Promise<void>((resolve) => {
+                signal.addEventListener(
+                  'abort',
+                  () => {
+                    resolve();
+                  },
+                  { once: true }
+                );
+              });
+            return { kind: 'cancelled' };
+          },
+        },
+        output: { accept: async () => {} } as unknown as SessionOutputCoordinator,
+      });
+      const context = {
+        message: input().message,
+        isAdmin: false,
+        connector: {} as BotConnector,
+        logger: createNullLogger(),
+      };
+      try {
+        const first = await actor.submit(context);
+        await vi.waitFor(() => {
+          expect(manager.get(first.taskId)!.lanes.fast.status).toBe('running');
+          expect(manager.get(first.taskId)!.lanes.slow.status).toBe('running');
+        });
+        expect(manager.get(first.taskId)!.input.sessionEpoch).toBe(1);
+        expect(manager.get(first.taskId)!.input.sessionReplay).toBe('since:40');
+        sessions.reject = () => fault === 'epoch';
+        store.reject = (records) => fault === 'cancel' && records.some((t) => t.cancelAccepted);
+        store.beforeSave = (records) => {
+          if (records.some((t) => t.cancelAccepted))
+            expect(sessions.records[0]).toMatchObject({ sessionEpoch: 2, resetSinceTs: 100 });
+        };
+        if (fault === 'none') expect(actor.reset('group')).toBe(1);
+        else expect(() => actor.reset('group')).toThrow('injected-write-failure');
+        if (fault === 'epoch') {
+          expect(resetLanes).not.toHaveBeenCalled();
+          expect(manager.get(first.taskId)!.cancelAccepted).toBe(false);
+          expect(manager.get(first.taskId)!.lanes.fast.status).toBe('running');
+        } else {
+          expect(resetLanes).toHaveBeenCalledTimes(1);
+          expect(resetLanes).toHaveBeenCalledWith('group', 2);
+          expect((await first.done).status).toBe('cancelled');
+        }
+        sessions.reject = () => false;
+        store.reject = () => false;
+        store.beforeSave = () => {};
+        const next = await actor.submit(context);
+        expect(manager.get(next.taskId)!.input.sessionEpoch).toBe(fault === 'epoch' ? 1 : 2);
+        expect(manager.get(next.taskId)!.input.sessionReplay).toBe(
+          fault === 'epoch' ? 'since:40' : 'since:100'
+        );
+      } finally {
+        sessions.reject = () => false;
+        store.reject = () => false;
+        store.beforeSave = () => {};
+        actor.close();
+        await actor.whenIdle();
+      }
+    }
+  );
+
   it('generation 保存失败拒绝准入，修复后仍从上次成功的 generation 递增', async () => {
     const sessions = new FaultStore<SessionContextState>();
     const clock = new ManualClock();
@@ -309,7 +401,9 @@ describe('Actor 与调度保存失败契约', () => {
     const handle = await actor.submit(context);
     await handle.done;
     expect(manager.get(handle.taskId)!.input.generation).toBe(2);
-    expect(sessions.records).toEqual([{ sessionKey: 'group', generation: 2, sinceTs: 100 }]);
+    expect(sessions.records).toEqual([
+      { sessionKey: 'group', generation: 2, sinceTs: 100, sessionEpoch: 1, resetSinceTs: 0 },
+    ]);
   });
 
   it('结算保存失败释放额度，修复后只重试 settle、done 一次、不重跑 run', async () => {
