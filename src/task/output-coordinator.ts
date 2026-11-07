@@ -92,12 +92,54 @@ export class SessionOutputCoordinator {
     resultId?: string
   ): Promise<void> {
     if (result.kind === 'silent') return;
+    if (this.suppressSlowError(task, lane, result) && result.kind === 'failed')
+      result = { ...result, text: result.requiredExplanation ?? '', attention: undefined };
     const policy = this.options.policy?.(task);
     if (policy?.record) {
       await this.acceptRecordCapable(task, lane, result, policy, resultId);
       return;
     }
     await this.acceptLegacy(task, lane, result, resultId);
+  }
+  private suppressSlowError(
+    task: DeepReadonly<TaskSnapshot>,
+    lane: Lane,
+    result: LaneResult
+  ): boolean {
+    if (task.input.source !== 'proactive' || lane !== 'slow' || result.kind !== 'failed')
+      return false;
+    const fast = this.options.manager.get(task.taskId)?.lanes.fast ?? task.lanes.fast;
+    if (fast.status !== 'completed' || fast.result?.kind !== 'reply') return false;
+    const bodies = this.options.queue
+      .messages(task.taskId)
+      .filter(
+        (row) =>
+          row.candidate.lane === 'fast' &&
+          row.candidate.body &&
+          !row.candidate.notification &&
+          !row.candidate.attachment
+      );
+    return (
+      bodies.some((row) =>
+        (row.candidate.body?.segments ?? [{ text: row.candidate.text }]).some((p) => !!p.text)
+      ) && bodies.every((row) => row.status === 'sent')
+    );
+  }
+  private mention(task: DeepReadonly<TaskSnapshot>, result: LaneResult): string | undefined {
+    const ref = task.input.reference;
+    if (
+      result.attention !== 'strong' ||
+      task.input.message.target.kind !== 'group' ||
+      !ref.messageId ||
+      !ref.senderId ||
+      ref.senderId !== task.input.message.senderId
+    )
+      return undefined;
+    return this.options.queue
+      .messages(task.taskId)
+      .some((row) => row.candidate.mention === ref.senderId)
+      ? undefined
+      : ref.senderId;
   }
   private async acceptLegacy(
     task: DeepReadonly<TaskSnapshot>,
@@ -111,10 +153,7 @@ export class SessionOutputCoordinator {
         : '';
     const kind = result.kind === 'failed' ? 'error' : 'final';
     const reference = task.input.reference;
-    const quote =
-      lane === 'slow' ||
-      task.input.source === 'proactive' ||
-      this.clock.now() - task.createdAt >= 30_000;
+    const quote = true;
     const current = this.options.manager.get(task.taskId);
     const trace =
       result.trace ??
@@ -137,21 +176,23 @@ export class SessionOutputCoordinator {
     const bodyId = `${task.taskId}:${lane}:body:${resultId ?? createHash('sha256').update(text).digest('hex')}`;
     if (text) {
       let i = 0;
-      const spokenText =
-        quote && !reference.messageId
-          ? `（关于 ${reference.senderName ?? reference.senderId} 的「${reference.excerpt.slice(0, 120)}」）\n${text}`
-          : text;
+      let mention = this.mention(task, result);
+      const spokenText = !reference.messageId
+        ? `（关于 ${reference.senderName ?? reference.senderId} 的「${reference.excerpt.slice(0, 120)}」）\n${text}`
+        : text;
       const delivered = deliveredBodyCounts(this.options.queue.messages(task.taskId), lane);
       for (const part of segmentText(spokenText, {
         maxChars: this.options.maxChars(task),
         maxSegments: Math.max(1, spokenText.length),
       }).segments) {
         const index = i++;
-        if (!consumeDeliveredBody(delivered, part))
+        if (!consumeDeliveredBody(delivered, part)) {
           this.options.queue.enqueue(
-            { ...base, text: part, body: { id: bodyId, index } },
+            { ...base, mention, text: part, body: { id: bodyId, index } },
             `${bodyId}:text:${index}`
           );
+          mention = undefined;
+        }
       }
     }
     for (const [index, attachment] of (result.attachments ?? []).entries()) {
@@ -233,14 +274,8 @@ export class SessionOutputCoordinator {
       lane,
       message: task.input.message,
       reference: task.input.reference,
-      quote:
-        lane === 'slow' ||
-        task.input.source === 'proactive' ||
-        this.clock.now() - task.createdAt >= 30_000,
-      mention:
-        task.input.source === 'user' && task.input.message.target.kind === 'group'
-          ? task.input.reference.senderId
-          : undefined,
+      quote: true,
+      mention: this.mention(task, result),
       text: '',
       kind: result.kind === 'failed' ? 'error' : 'final',
     };

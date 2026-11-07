@@ -261,6 +261,7 @@ export class AgentTraceObserver {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.stats.incomplete ||= this.calls.size > 0;
     this.options.logger.withTrace(this.options.trace).event('agent.summary', {
       dshSeq: this.sessions.get(this.options.trace.dshSessionId ?? '')?.seq,
       ...this.stats,
@@ -298,6 +299,9 @@ function toolClass(value: unknown): string {
 
 function toolResultIdentity(data: Record<string, unknown>) {
   const message = object(data.message);
-  const block = Array.isArray(message?.content) ? object(message.content[0]) : undefined;
-  return { block, id: block?.callId ?? message?.callId ?? data.callId };
+  const source = object(message?.source);
+  const blocks = Array.isArray(message?.content) ? message.content : [];
+  const block = blocks.map(object).find((b) => typeof b?.toolCallId === 'string');
+  const id = block?.toolCallId;
+  return { block, id: source?.callId !== undefined && source.callId !== id ? undefined : id };
 }

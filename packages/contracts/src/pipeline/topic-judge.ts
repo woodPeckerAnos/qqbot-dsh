@@ -100,9 +100,12 @@ export type parseJudgeOutput = (text: string, askAboutChatRecord?: boolean) => T
  */
 export type createTopicJudge = (options: TopicJudgeOptions) => TopicJudge | undefined;
 
-export type TopicJudgeResult = (
-  input: TopicJudgeInput
-) => Promise<import('../errors.js').Result<TopicVerdict>>;
+export type TopicJudgeResult = (input: TopicJudgeInput) => Promise<
+  import('../errors.js').Result<TopicVerdict> & {
+    diagnostics?: import('../judgment.js').JudgmentDiagnostics;
+    failureClass?: import('../judgment.js').JudgmentFailureClass;
+  }
+>;
 export type parseJudgeResult = (
   text: string,
   askAboutChatRecord?: boolean

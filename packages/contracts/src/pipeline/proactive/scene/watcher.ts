@@ -327,6 +327,10 @@ interface WatcherSnapshotValue {
    */
   judgeCalls: number;
   judgeFailures: number;
+  judgeRetries?: number;
+  judgeFailuresByClass?: Record<string, number>;
+  circuits?: Record<string, import('../../../judgment.js').JudgeCircuitSnapshot>;
+  waitInvalidTargetsByReason?: Record<string, number>;
   /**
    * wait 票据账目。**每张票据只有一个终局**，因此稳态下
    * `created === resolved + spent + stale + unchanged`（灰度一周后据此判断

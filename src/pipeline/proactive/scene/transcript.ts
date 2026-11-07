@@ -79,15 +79,28 @@ export function renderFacts(
     lines.push(`bot 上次在本群发言：${seconds} 秒前`);
   }
   lines.push(`近窗群消息：${evidence.recentMessageCount} 条 / ${evidence.recentHumanCount} 人`);
-  if (pendingQuestions.length > 0) {
-    lines.push('挂起问题（没人回答，按提问时间排序）：');
-    for (const question of pendingQuestions) lines.push(`  · ${question}`);
-  } else {
-    lines.push('挂起问题：无');
-  }
+  lines.push(...questionFacts(evidence, pendingQuestions));
   if (evidence.matchedInterestIds.length > 0) {
     lines.push(`命中的兴趣池条目：${evidence.matchedInterestIds.join('、')}`);
   }
   lines.push(`连续未被回应的介入次数：${evidence.unansweredStreak}`);
   return `<结构化事实>\n${lines.join('\n')}\n</结构化事实>`;
+}
+
+function questionFacts(evidence: SceneEvidence, legacy: readonly string[]): string[] {
+  const lines: string[] = [];
+  const questions = evidence.pendingQuestions.map(
+    (q) =>
+      `q:${q.id} ${q.askerLabel}：${q.text}（已静默 ${q.silentSeconds} 秒，探针 ${q.probes} 次）`
+  );
+  if (evidence.waitWakeup)
+    lines.push(
+      `wait 唤醒目标：q:${evidence.waitWakeup.targetId}（已等待 ${Math.round(evidence.waitWakeup.yieldedForMs / 1000)} 秒）`
+    );
+  const pending = questions.length ? questions : legacy;
+  if (pending.length) {
+    lines.push('挂起问题（没人回答，按提问时间排序）：');
+    for (const question of pending) lines.push(`  · ${question}`);
+  } else lines.push('挂起问题：无');
+  return lines;
 }

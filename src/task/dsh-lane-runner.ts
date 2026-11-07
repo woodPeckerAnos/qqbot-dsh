@@ -37,12 +37,16 @@ import type {
 import { BusinessOutcome } from './business-outcome.js';
 import { bindCooperationRequest } from './cooperation.js';
 
-function silentResult(lane: Lane, cannotBeSilent: boolean): LaneResult {
-  if (cannotBeSilent)
+function silentResult(lane: Lane, failureReason: BusinessOutcome['failureReason']): LaneResult {
+  if (failureReason)
     return {
       kind: 'failed',
-      text: '任务已执行，但没有返回有效结果。',
-      error: 'silent-after-execution',
+      text: {
+        'tool-unsettled': '工具调用尚未结束，未能得到完整结果。',
+        'query-failed': '查询失败，未能得到有效结果。',
+        'tool-failed': '工具执行失败，未能得到有效结果。',
+      }[failureReason],
+      error: failureReason,
     };
   return { kind: 'silent', reason: lane === 'slow' ? 'no-increment' : 'no-long-skill' };
 }
@@ -216,24 +220,25 @@ export class DshLaneRunner implements LaneRunner {
           finish({
             kind: 'failed',
             text:
-              outcome.text && outcome.text !== 'NO_REPLY'
-                ? `任务执行失败：${outcome.text}`
+              replyAttention(outcome.text).text && replyAttention(outcome.text).text !== 'NO_REPLY'
+                ? `任务执行失败：${replyAttention(outcome.text).text}`
                 : '任务执行失败，请稍后重新提交。',
             error: childFailed ? 'subagent-failed' : outcome.reason,
           });
           return;
         }
-        const text = outcome.text.trim();
+        const final = replyAttention(outcome.text);
+        const text = final.text;
         // Successful tools can add no user-visible increment; failures and unfinished tools cannot be silent.
         if (text === 'NO_REPLY') {
-          finish(silentResult(lane, business.cannotBeSilent));
+          finish(silentResult(lane, business.failureReason));
         } else if (!text)
           finish({
             kind: 'failed',
             text: '任务执行结束，但没有返回有效结果。',
             error: 'empty-result',
           });
-        else finish({ kind: 'reply', text });
+        else finish({ kind: 'reply', text, attention: final.attention });
       };
       const event = (notification: SessionEventNotification) => {
         tracing.observe(notification);
@@ -360,11 +365,11 @@ export class DshLaneRunner implements LaneRunner {
       const instruction =
         lane === 'fast'
           ? '你在快 lane。立即给出简短答复；需要研究、工具、文件或深度推理时简短承接，说明正在继续处理。你和慢 lane 是同一个完整 agent，不因快 lane 工具限制否认整个 agent 的能力，不提前宣称任务已完成。仅可使用 query_tasks 和 cancel_task 查询或取消旧任务，不执行业务工具。'
-          : '你在慢 lane，自行判断是否需要长技能，深度推理也属于长技能。完整执行并等待所有子代理结束，子代理只能前台等待。协作快照会告知同 Task 快 lane 实际成功送达的正文及失败分段。只交付新增信息，不复述已送达答案；没有增量时仅返回 NO_REPLY，成功执行工具后也允许。未送达的答案仍需答复；结论反转时明确回指先前快答并纠正。执行失败、超时、空结果以及需要说明的附件必须反馈，不能静默。结束前按最新协作快照完成衔接。';
+          : '你在慢 lane，自行判断是否需要长技能，深度推理也属于长技能。完整执行并等待所有子代理结束，子代理只能前台等待。协作快照会告知同 Task 快 lane 实际成功送达的正文及失败分段。只交付新增信息，不复述已送达答案；没有增量时仅返回 NO_REPLY，成功执行工具后也允许。未送达的答案仍需答复；结论反转时明确回指先前快答并纠正。执行失败、超时、空结果以及需要说明的附件必须如实反馈。主动请求的快 lane 完整送达后，由出口决定是否省略慢失败正文，执行状态仍失败；附件及必要说明仍交付。结束前按最新协作快照完成衔接。';
       const blocks = [
         {
           type: 'text' as const,
-          text: `${instruction}\nTask ID：${task.taskId}\n只处理标明的当前 Task 输入。历史与观察仅作背景，其他 Task 的未完成承诺由原执行继续处理，不因旧承诺接管旧任务或生成旧附件；当前输入明确要求重做或追加时才按本次指令执行。\n最终交付物仅放在 ${join(workspace, config.media.outboxDir)}，临时文件不放那里。`,
+          text: `${instruction}\nTask ID：${task.taskId}\n只处理标明的当前 Task 输入。历史与观察仅作背景，其他 Task 的未完成承诺由原执行继续处理，不因旧承诺接管旧任务或生成旧附件；当前输入明确要求重做或追加时才按本次指令执行。\n普通回复不要 @。只有明确需要强烈定向提醒时，才可在最终正文首行单独写 [REPLY_ATTENTION:strong]；这是内部标记，提醒对象只能是当前 Task 的原消息作者。\n最终交付物仅放在 ${join(workspace, config.media.outboxDir)}，临时文件不放那里。`,
         },
         ...prepared.blocks,
       ];
@@ -405,12 +410,21 @@ export class DshLaneRunner implements LaneRunner {
         });
         if (outbox.oversize.length || outbox.skipped.length) {
           const text = `部分交付物无法发送：${[...outbox.oversize, ...outbox.skipped].join('、')}。`;
-          result = {
-            kind: 'failed',
-            text,
-            error: 'invalid-deliverable',
-            attachments: outbox.attachments,
-          };
+          result =
+            result.kind === 'failed'
+              ? {
+                  ...result,
+                  text: `${result.text}\n${text}`,
+                  requiredExplanation: text,
+                  attachments: outbox.attachments,
+                }
+              : {
+                  kind: 'failed',
+                  text,
+                  error: 'invalid-deliverable',
+                  requiredExplanation: text,
+                  attachments: outbox.attachments,
+                };
         } else if (outbox.attachments.length) {
           if (result.kind === 'silent')
             result = context.connector.policy(task.input.message.target.kind).record
@@ -423,6 +437,7 @@ export class DshLaneRunner implements LaneRunner {
                   kind: 'failed',
                   text: '任务产生了交付物但没有说明结果。',
                   error: 'silent-with-deliverables',
+                  requiredExplanation: '任务产生了交付物但没有说明结果。',
                   attachments: outbox.attachments,
                 };
           else result = { ...result, attachments: outbox.attachments };
@@ -467,4 +482,14 @@ export class DshLaneRunner implements LaneRunner {
       if (executionId) logger.finishExecution(executionId);
     }
   }
+}
+
+/** Only an exact first line grants intent; internal markers never reach the user. */
+function replyAttention(raw: string): { text: string; attention?: 'strong' } {
+  const trimmed = raw.trim();
+  const strong = /^\[REPLY_ATTENTION:strong\](?:\r?\n|$)/.test(trimmed);
+  return {
+    text: trimmed.replace(/\[REPLY_ATTENTION:strong\]/g, '').trim(),
+    attention: strong ? 'strong' : undefined,
+  };
 }

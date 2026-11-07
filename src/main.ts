@@ -380,10 +380,6 @@ async function main(): Promise<void> {
               timeoutMs: config.proactive.judgeTimeoutMs,
             }),
             maxConcurrent: 2,
-            onError: (reason, detail) => {
-              stats.record('proactiveJudgeFailures', 1);
-              logger.warn('主动介入判定失败（本次按沉默处理）', { reason, detail });
-            },
           });
 
     proactive = createProactiveWatcher({
@@ -491,6 +487,10 @@ async function main(): Promise<void> {
         wouldSend: snapshot?.wouldSend ?? 0,
         judgeCalls: snapshot?.judgeCalls ?? 0,
         judgeFailures: snapshot?.judgeFailures ?? 0,
+        judgeRetries: snapshot?.judgeRetries ?? 0,
+        judgeFailuresByClass: snapshot?.judgeFailuresByClass ?? {},
+        circuits: snapshot?.circuits ?? {},
+        waitInvalidTargetsByReason: snapshot?.waitInvalidTargetsByReason ?? {},
         interests: {
           enabled: config.proactive.interestsEnabled,
           loaded: config.proactive.interestsLoaded,

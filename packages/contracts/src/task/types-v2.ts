@@ -13,9 +13,11 @@ export type LaneResultV2 = (
       errorId?: string;
       failure?: import('../errors.js').ContractFailure;
       attachments?: readonly OutgoingAttachment[];
+      /** Required deliverable explanation survives proactive error-body suppression. */
+      requiredExplanation?: string;
     }
   | { kind: 'cancelled'; attachments?: readonly OutgoingAttachment[] }
-) & { trace?: TraceContext };
+) & { trace?: TraceContext; attention?: 'strong' };
 
 export interface LaneSnapshotV2 {
   trace?: TraceContext;

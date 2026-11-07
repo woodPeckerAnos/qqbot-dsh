@@ -315,7 +315,8 @@ export const modules = immutableConstant([
       '每输入一个 Task，双 lane 终结，短事务无整轮锁，预算守恒；慢结束钩子保持 running 等待同 Task 快执行和原始正文终结',
       'lane、Task ID、outbox 和工作区路径仅用于内部协作，用户回复以处理进度和实际交付物描述衔接',
       'prompt 区分历史背景与当前 Task 输入；其他 Task 未完成承诺不触发当前执行接管旧任务或生成旧附件',
-      'record 能力下成功 NO_REPLY 带附件转为无正文 reply 并交付，旧平台继续要求说明；失败和空结果不能冒充成功交付',
+      '强烈提醒标记仅首行转成内部意图，所有长度普通回复保留原引用且不自动提及；只能提及真实原消息作者',
+      'record 能力下成功 NO_REPLY 带附件转为无正文 reply 并交付，旧平台继续要求说明；失败和空结果不能冒充成功交付；工具正文 toolCallId 与 source.callId 核对，追踪不作为业务收口依据',
     ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
@@ -358,6 +359,7 @@ export const modules = immutableConstant([
     capabilities: ['node:crypto', 'node:fs/promises', 'node:path'],
     responsibility: '队列、产物、正文去重、原引用与提醒；不写执行状态',
     invariants: [
+      '主动慢失败仅在快 lane 成功且至少一段原始正文存在、全部原始正文 sent 时抑制错误正文，保留失败状态、附件与必需说明',
       'MessageQueue 唯一写者，发送前持久化，失败通知一次，附件独立；跨 lane 去重只依据成功送达正文，入队 ID 区分 lane',
       '记录与原正文分段映射独立保存，短提示无正文标记；每最终交付至多一条记录，ZIP 保留全部条目且遵守 maxFileBytes',
       '交付组一次持久化后按序尝试，落盘失败无半组；文本/记录/附件通道独立，新 Task 快正文可推进；准备错误由队列结算，每组最多一个失败通知',
@@ -412,7 +414,8 @@ export const modules = immutableConstant([
     invariants: ['去重→命令→闸→记录→准入，旁听不入完整管线'],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
-    errors: '话题失败显式错误并保守回退 related=true，不吞用户输入',
+    errors:
+      '话题请求 reasoning_effort=none，保留 32/48 token；失败显式错误并保守回退 related=true，不吞用户输入，诊断仅元数据',
     concurrency:
       '同模块所有者协调写入；异步退订与关闭幂等，关闭后不创建新工作；事件按具体身份和幂等键至多一次结算',
     freshness: '来源 ts 保留，话题判断有既有 timeout，配置禁用与失败分离',
@@ -456,10 +459,15 @@ export const modules = immutableConstant([
     dependencies: ['task', 'store', 'observability', 'content'],
     capabilities: ['node:crypto', 'node:fs', 'yaml', 'fetch'],
     responsibility: '搜集、判定、否决、话题、问题、wait 票据；发送交给 Task',
-    invariants: ['触发范围固定，旧话题预算回调绑定身份，问题集合只读'],
+    invariants: [
+      '触发范围固定，旧话题预算回调绑定身份，问题集合只读',
+      '提示及 wait 验证共用候选快照，采纳前复核实时台账，禁止猜测目标',
+      '所有入口共用五分钟冷却和单次试探闸门；最终失败由 watcher 单次计数',
+    ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
-    errors: 'judge 失败不伪造命中，否决保守；已准入授权不因话题变化撤回',
+    errors:
+      'judge 失败不伪造命中，否决保守；网络、408/429/5xx 至多三次请求，共享总超时与并发名额，其他失败不重试；诊断仅元数据；已准入授权不因话题变化撤回',
     concurrency:
       '同模块所有者协调写入；异步退订与关闭幂等，关闭后不创建新工作；事件按具体身份和幂等键至多一次结算',
     freshness: '票据绑定来源/触发 span/对象，idle、yield 与 TTL 沿用时间戳',

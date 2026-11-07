@@ -6,6 +6,12 @@ import type {
   WatcherMetrics,
   ProactiveWatcherDeps,
   WatcherSnapshot,
+  ProactiveJudge,
+  ProactiveJudgeInput,
+  Logger,
+  JudgmentResult,
+  JudgmentFailureClass,
+  JudgeCircuitSnapshot,
 } from '@qqbot/contracts';
 /**
  * 主动介入的**唯一 runner**：把「旁听消息 → 状态 → 搜集 → 判定 → 否决 → 投递」
@@ -199,8 +205,16 @@ export class ProactiveWatcher {
   private readonly proposals = new Map<string, number[]>();
   /** 每会话连续判定失败次数（成功即归零） */
   private readonly judgeFailures = new Map<string, number>();
-  /** 因失败过多而暂停评估的会话 */
-  private readonly suspended = new Set<string>();
+  private readonly circuits = new Map<
+    string,
+    {
+      reason?: JudgmentFailureClass;
+      pausedAt?: number;
+      nextProbeAt?: number;
+      probing: boolean;
+    }
+  >();
+  private readonly settledTickets = new WeakSet<WaitTicket>();
 
   /**
    * 每会话**只有一个唤醒点**（第四节的硬要求）。
@@ -241,6 +255,9 @@ export class ProactiveWatcher {
     spoke: 0,
     wouldSend: 0,
     judgeFailures: 0,
+    judgeRetries: 0,
+    judgeFailuresByClass: new Map<string, number>(),
+    waitInvalidTargetsByReason: new Map<string, number>(),
     sessionOpened: 0,
     sessionClosed: 0,
     skippedUnchanged: 0,
@@ -486,7 +503,16 @@ export class ProactiveWatcher {
       buffered: this.windows.buffered,
       pendingQuestions: pending,
       evaluating: this.evaluating.size,
-      suspended: this.suspended.size,
+      suspended: [...this.circuits.values()].filter((c) => c.nextProbeAt !== undefined).length,
+      judgeRetries: this.counters.judgeRetries,
+      judgeFailuresByClass: Object.fromEntries(this.counters.judgeFailuresByClass),
+      waitInvalidTargetsByReason: Object.fromEntries(this.counters.waitInvalidTargetsByReason),
+      circuits: Object.fromEntries(
+        [...this.states.all()].map((state) => [
+          state.convKey,
+          this.circuitSnapshot(state.convKey, now),
+        ])
+      ),
       evaluatedByTrigger: Object.fromEntries(this.counters.evaluatedByTrigger),
       satisfiedByScene: Object.fromEntries(this.counters.satisfiedByScene),
       vetoed: Object.fromEntries(this.counters.vetoed),
@@ -544,8 +570,6 @@ export class ProactiveWatcher {
     trigger: WatcherTrigger,
     extra: { text?: string; waitWakeup?: SceneEvidence['waitWakeup'] } = {}
   ): void {
-    if (this.suspended.has(convKey)) return;
-
     // ① 唯一的本地闸（需求 §三）：转录自上次进入判定以来**没有新增** → 直接返回，
     //    连 LLM 都不调。它不含任何语义判断，成本只有一次 `buffer.some()`；没有它，
     //    定时唤醒会在群里完全安静时反复问同一个问题（上一轮花力气修掉的永动机）。
@@ -606,19 +630,13 @@ export class ProactiveWatcher {
       this.bump(this.counters.vetoed, 'no-candidate');
       return;
     }
-    if (this.suspended.has(convKey) || this.evaluating.has(convKey)) return;
-
-    this.evaluating.add(convKey);
-    void this.evaluate(convKey, target, trigger, evidence, candidates)
-      .catch((error: unknown) => {
-        this.deps.logger.warn('主动介入评估异常（已忽略）', {
-          conversation: convKey,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      })
-      .finally(() => {
-        this.evaluating.delete(convKey);
+    if (this.evaluating.has(convKey)) return;
+    void this.evaluate(convKey, target, trigger, evidence, candidates).catch((error: unknown) => {
+      this.deps.logger.warn('主动介入评估异常（已忽略）', {
+        conversation: convKey,
+        errorClass: error instanceof Error ? error.name : 'unknown',
       });
+    });
   }
 
   /** 组装证据（本地、同步、零成本）。 */
@@ -821,21 +839,10 @@ export class ProactiveWatcher {
       woken.push({ ...ticket, trace: wakeTrace });
     }
 
-    // 过闸的票据交给重新判定（它们的终局在 evaluate / finishWaitWakeup 里收口）
-    if (woken.length > 0) {
-      void this.rejudgeWaitTickets(convKey, target, woken).catch((error: unknown) => {
-        // 唤醒路径的兜底：票据终局**无论如何都要收口**，否则账目不闭合
-        for (const ticket of woken) {
-          this.bumpWaitTicket('spent');
-          this.metrics.waitTicket('spent', ticket.scene);
-          this.finishWaitWakeup(convKey, ticket);
-        }
-        this.deps.logger.warn('主动介入：wait 唤醒重判异常（票据按 spent 收口）', {
-          conversation: convKey,
-          error: error instanceof Error ? error.message : String(error),
-        });
+    if (woken.length > 0)
+      void this.rejudgeWaitTickets(convKey, target, woken).catch(() => {
+        for (const ticket of woken) this.settleWaitTicket(ticket, 'spent');
       });
-    }
 
     // 还有没到点的票据 → 唤醒点重排到**剩余票据里最近的那个**到期时间
     const upcoming = [...(this.waitTickets.get(convKey)?.values() ?? [])];
@@ -883,10 +890,14 @@ export class ProactiveWatcher {
       const candidates = collectCandidates(evidence, {
         maxUnansweredStreak: this.policy.maxUnansweredStreak,
       });
-      await this.evaluate(convKey, target, 'wait-wakeup', evidence, candidates, {
-        ticket,
-        pendingAtEval: pending,
-      });
+      try {
+        await this.evaluate(convKey, target, 'wait-wakeup', evidence, candidates, {
+          ticket,
+          pendingAtEval: pending,
+        });
+      } catch {
+        this.settleWaitTicket(ticket, 'spent');
+      }
       // 本票据的终局由 evaluate 决定；这里只保证它从账上消失
       this.finishWaitWakeup(convKey, ticket);
     }
@@ -1085,7 +1096,59 @@ export class ProactiveWatcher {
   // 内部：一次完整评估（collect → judge → veto → deliver）
   // -------------------------------------------------------------------------
 
+  private settleWaitTicket(ticket: WaitTicket, terminal: WaitTicketTerminal): void {
+    if (this.settledTickets.has(ticket)) return;
+    this.settledTickets.add(ticket);
+    this.bumpWaitTicket(terminal);
+    this.metrics.waitTicket(terminal, ticket.scene);
+  }
+
+  private enterEvaluation(convKey: string): boolean {
+    if (this.evaluating.has(convKey)) return false;
+    const circuit = this.circuits.get(convKey);
+    if (circuit?.probing) return false;
+    return circuit?.nextProbeAt === undefined || this.now() >= circuit.nextProbeAt;
+  }
+
+  private circuitSnapshot(convKey: string, now: number): JudgeCircuitSnapshot {
+    const circuit = this.circuits.get(convKey) ?? { probing: false };
+    return {
+      state: circuitState(circuit, now),
+      consecutiveFailures: this.judgeFailures.get(convKey) ?? 0,
+      reason: circuit.reason,
+      pausedAt: circuit.pausedAt,
+      nextProbeAt: circuit.nextProbeAt,
+    };
+  }
+
   private async evaluate(
+    convKey: string,
+    target: ConversationTarget,
+    trigger: WatcherTrigger,
+    evidence: SceneEvidence,
+    candidates: readonly SceneCandidate[],
+    wait?: { ticket: WaitTicket; pendingAtEval: readonly { id: string }[] }
+  ): Promise<void> {
+    if (!candidates.length || !this.enterEvaluation(convKey)) {
+      if (wait) this.settleWaitTicket(wait.ticket, 'spent');
+      return;
+    }
+    const circuit = this.circuits.get(convKey);
+    this.evaluating.add(convKey);
+    if (circuit?.nextProbeAt !== undefined) circuit.probing = true;
+    try {
+      await this.evaluateAdmitted(convKey, target, trigger, evidence, candidates, wait);
+    } catch (error) {
+      if (wait) this.settleWaitTicket(wait.ticket, 'spent');
+      throw error;
+    } finally {
+      this.evaluating.delete(convKey);
+      const current = this.circuits.get(convKey);
+      if (current) current.probing = false;
+    }
+  }
+
+  private async evaluateAdmitted(
     convKey: string,
     target: ConversationTarget,
     trigger: WatcherTrigger,
@@ -1117,12 +1180,6 @@ export class ProactiveWatcher {
       return;
     }
 
-    const pendingTexts = state.pendingQuestions(now).map((question) => {
-      const seconds = Math.round((now - question.askedAt) / 1000);
-      const who = question.askerName ?? question.askerId;
-      return `${who}：${question.text}（已静默 ${seconds} 秒，探针 ${question.probes} 次）`;
-    });
-
     // 记账基准与判定调用**同一时刻**：唤醒时的"转录有没有新增"要跟
     // "上一次真正跑到判定的那一刻"比，而不是跟建票据那一刻比。
     // 会话级与问题级**两个基准同刻写入**：它们各自服务一条唤醒路径
@@ -1138,38 +1195,21 @@ export class ProactiveWatcher {
     this.counters.judgeCalls += 1;
     this.metrics.evaluated(trigger);
 
-    const verdicts = await judge.judge({
+    const input = {
       candidates,
       evidence,
-      transcript: `${renderFacts(evidence, pendingTexts)}\n\n${renderTranscript(
-        this.judgeTranscriptEntries(state)
-      )}`,
-    });
-    if (verdicts === undefined) {
-      logger
-        .withTrace(traceSpan(trace))
-        .event('proactive.decision', { action: 'silent', reason: 'judge-failed', trigger });
-      this.counters.judgeFailures += 1;
-      this.metrics.judgeFailed(trigger);
-      const failures = (this.judgeFailures.get(convKey) ?? 0) + 1;
-      this.judgeFailures.set(convKey, failures);
-      if (failures >= this.config.maxJudgeFailures) {
-        this.suspended.add(convKey);
-        this.metrics.judgeSuspended(convKey);
-        this.deps.logger.warn('主动介入：判定连续失败，暂停该会话的评估', {
-          conversation: convKey,
-          failures,
-        });
-      }
-      // 唤醒后的重判失败：票据**照样收口**（spent），否则账目不闭合、
-      // 而且这张票据会在"判定坏掉"期间反复重排成一次新的唤醒。
-      if (wait !== undefined) {
-        this.bumpWaitTicket('spent');
-        this.metrics.waitTicket('spent', wait.ticket.scene);
-      }
+      transcript: `${renderFacts(evidence)}\n\n${renderTranscript(this.judgeTranscriptEntries(state))}`,
+    };
+    const judged = await runJudge(judge, input);
+    this.counters.judgeRetries += judged.diagnostics.retryCount ?? 0;
+    if (!judged.ok) {
+      this.recordJudgeFailure(convKey, trigger, logger, judged);
+      if (wait) this.settleWaitTicket(wait.ticket, 'spent');
       return;
     }
+    const verdicts = judged.value;
     this.judgeFailures.set(convKey, 0);
+    this.circuits.set(convKey, { probing: false });
 
     for (const verdict of verdicts) {
       if (verdict.satisfied) this.bump(this.counters.satisfiedByScene, verdict.scene);
@@ -1185,7 +1225,7 @@ export class ProactiveWatcher {
       {
         candidates,
         verdicts,
-        context: this.vetoContext(convKey, state, now, evidence, verdicts, wait?.ticket),
+        context: this.vetoContext(convKey, state, now, evidence, verdicts),
       },
       this.policy
     );
@@ -1203,8 +1243,7 @@ export class ProactiveWatcher {
     if (wait !== undefined) {
       const resolved = decision.action === 'speak';
       const terminal: WaitTicketTerminal = resolved ? 'resolved' : 'spent';
-      this.bumpWaitTicket(terminal);
-      this.metrics.waitTicket(terminal, wait.ticket.scene);
+      this.settleWaitTicket(wait.ticket, terminal);
       if (!resolved) {
         // 这次没让路（模型又给 yielding 也过不去预算）→ 对象到此为止，
         // 不再反复撞同一堵墙（与既有"拒绝也落标记"的口径一致）。
@@ -1256,6 +1295,41 @@ export class ProactiveWatcher {
     // ⑤ session 的收口（唯一入口）：开 / 换话题重建 / 扣预算（**不减到 0 就关**）/
     //    按模型的建议收口。
     this.applySessionOutcome(convKey, now, decision.scene, spoken, sessionOutcome);
+  }
+
+  private recordJudgeFailure(
+    convKey: string,
+    trigger: WatcherTrigger,
+    logger: Logger,
+    judged: Extract<JudgmentResult<readonly SceneVerdict[]>, { ok: false }>
+  ): void {
+    logger.event('proactive.decision', { action: 'silent', reason: 'judge-failed', trigger });
+    this.counters.judgeFailures += 1;
+    this.bump(this.counters.judgeFailuresByClass, judged.failureClass);
+    this.metrics.judgeFailed(trigger);
+    const failures = (this.judgeFailures.get(convKey) ?? 0) + 1;
+    this.judgeFailures.set(convKey, failures);
+    const circuit = this.failCircuit(convKey, judged.failureClass, failures);
+    logger.warn('主动介入判定失败（本次按沉默处理）', {
+      conversation: convKey,
+      failureClass: judged.failureClass,
+      ...judged.diagnostics,
+      consecutiveFailures: failures,
+      pausedAt: circuit.pausedAt,
+      nextProbeAt: circuit.nextProbeAt,
+    });
+  }
+  private failCircuit(convKey: string, reason: JudgmentFailureClass, failures: number) {
+    const cooling = this.circuits.get(convKey)?.probing || failures >= this.config.maxJudgeFailures;
+    const circuit = {
+      reason,
+      probing: false,
+      pausedAt: cooling ? this.now() : undefined,
+      nextProbeAt: cooling ? this.now() + 300_000 : undefined,
+    };
+    this.circuits.set(convKey, circuit);
+    if (cooling) this.metrics.judgeSuspended(convKey);
+    return circuit;
   }
 
   /**
@@ -1344,11 +1418,10 @@ export class ProactiveWatcher {
     state: ConversationState,
     now: number,
     evidence: SceneEvidence,
-    verdicts: readonly SceneVerdict[],
-    woken?: WaitTicket
+    verdicts: readonly SceneVerdict[]
   ): VetoContext {
     const list = this.proposals.get(convKey) ?? [];
-    const wait = this.resolveWaitTarget(state, evidence, verdicts, woken);
+    const wait = this.resolveWaitTarget(state, evidence, verdicts);
     return {
       now,
       spokeCount10Min: list.filter((ts) => now - ts <= 600_000).length,
@@ -1370,16 +1443,12 @@ export class ProactiveWatcher {
    *   - 曾经有过、现在没了 → `open:false` → `wait:stale`（省下一次调用）；
    *   - 仍挂着 → 看预算 → `wait` 或 `wait-spent`。
    *
-   * 唤醒路径（`woken`）必须单独走一条：**那时对象已经不在挂起清单里了**
-   * （问题没被答、没被关，票据才会走到重判），拿"当前清单"去判会把一次
-   * 正常的重判误判成"引用无效"。所以判断依据换成"这张票据是不是我们自己
-   * 建的那一张"——它当然是，因此 `exists:true`，`open` 用当前台账复核。
+   * 普通及唤醒路径都必须显式引用同一候选快照中的对象，再复核实时台账。
    */
   private resolveWaitTarget(
     state: ConversationState,
     evidence: SceneEvidence,
-    verdicts: readonly SceneVerdict[],
-    woken?: WaitTicket
+    verdicts: readonly SceneVerdict[]
   ): WaitTarget | undefined {
     // ⚠️ 这里只筛"有没有说先别说"，**不筛理由是不是 yielding**：
     // 理由的采纳与否是否决层的决定（`not-yet` / `watching` 会被按下并单独计数）。
@@ -1393,36 +1462,21 @@ export class ProactiveWatcher {
     );
     if (waiter === undefined) return undefined;
 
-    // 唤醒路径：对象 id 以**我们自己建的票据**为准（那时它已经不在挂起清单里了）
-    if (woken !== undefined && extractWaitTargetId(waiter.evidence) === undefined) {
-      const open = evidence.pendingQuestions.some((question) => question.id === woken.targetId);
-      return {
-        id: woken.targetId,
-        exists: true,
-        open,
-        yieldBudgetUsed: state.yieldBudget(woken.targetId),
-      };
-    }
-
-    const targetId = extractWaitTargetId(waiter.evidence) ?? woken?.targetId;
-    if (targetId === undefined) return undefined;
-
-    if (woken !== undefined && woken.targetId === targetId) {
-      const open = evidence.pendingQuestions.some((question) => question.id === targetId);
-      return { id: targetId, exists: true, open, yieldBudgetUsed: state.yieldBudget(targetId) };
-    }
-
-    const inLedger = state.questionsById.has(targetId);
-    const open = evidence.pendingQuestions.some((question) => question.id === targetId);
-    if (!inLedger) {
-      // 引用了台账里从来没有过的对象：留一条日志，便于对着
-      // `wait_ticket_invalid_target` 的数据改判据描述（需求：持续 > 0 说明判据要更明确）
-      this.deps.logger.debug('主动介入：模型引用了台账里不存在的挂起问题', {
+    const targetId = extractWaitTargetId(waiter.evidence);
+    const inSnapshot =
+      targetId !== undefined && evidence.pendingQuestions.some((q) => q.id === targetId);
+    const open = inSnapshot && state.pendingQuestions(this.now()).some((q) => q.id === targetId);
+    const rejection = waitRejection(targetId, inSnapshot, open);
+    if (rejection) {
+      this.bump(this.counters.waitInvalidTargetsByReason, rejection);
+      this.deps.logger.debug('主动介入：wait 目标引用未采纳', {
         conversation: state.convKey,
         question: targetId,
+        reason: rejection,
       });
     }
-    return { id: targetId, exists: inLedger, open, yieldBudgetUsed: state.yieldBudget(targetId) };
+    if (targetId === undefined) return undefined;
+    return { id: targetId, exists: inSnapshot, open, yieldBudgetUsed: state.yieldBudget(targetId) };
   }
 
   /**
@@ -1579,4 +1633,37 @@ export class ProactiveWatcher {
 /** 场景 id → 投递层的 trigger 标签（进指标与日志）。 */
 export function sceneTriggerName(scene: SceneId): ProactiveTrigger {
   return `intervention:${scene}` as ProactiveTrigger;
+}
+
+function circuitState(
+  c: { probing: boolean; nextProbeAt?: number },
+  now: number
+): JudgeCircuitSnapshot['state'] {
+  if (c.probing) return 'probing';
+  if (c.nextProbeAt === undefined) return 'closed';
+  return now < c.nextProbeAt ? 'cooldown' : 'probe-ready';
+}
+function waitRejection(
+  id: string | undefined,
+  inSnapshot: boolean,
+  open: boolean
+): string | undefined {
+  if (id === undefined) return 'missing';
+  if (!inSnapshot) return 'forged';
+  if (!open) return 'closed';
+  return undefined;
+}
+async function runJudge(
+  judge: ProactiveJudge,
+  input: ProactiveJudgeInput
+): Promise<JudgmentResult<readonly SceneVerdict[]>> {
+  try {
+    if (judge.judgeResult) return await judge.judgeResult(input);
+    const value = await judge.judge(input);
+    return value === undefined
+      ? { ok: false, failureClass: 'unknown', diagnostics: {} }
+      : { ok: true, value, diagnostics: {} };
+  } catch {
+    return { ok: false, failureClass: 'unknown', diagnostics: {} };
+  }
 }

@@ -115,9 +115,7 @@ export const outputCases: BenchmarkCase[] = definitions.flatMap((d, index) =>
           (tipParts.some(
             (n) => n.type === 'reply' && n.id === h.task(t.taskId).input.reference.messageId
           ) &&
-            (kind === 'private'
-              ? !tipParts.some((n) => n.type === 'at')
-              : tipParts.some((n) => n.mention === '10001')));
+            !probe.actions.some((a) => a.nodes.flat().some((n) => n.type === 'at')));
         const displayPass =
           probe.actions.length === d.target &&
           records.length === Number(!!d.record) &&

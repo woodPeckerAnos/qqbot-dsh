@@ -287,7 +287,6 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     const action = h.mock.actions.find((a) => JSON.stringify(a.params).includes('报告完成'))!;
     expect(action.params.message).toEqual([
       { type: 'reply', data: { id: '1' } },
-      { type: 'at', data: { qq: '123' } },
       { type: 'text', data: { text: '报告完成' } },
     ]);
   });
@@ -309,13 +308,13 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
       });
     }
   );
-  it.each(['', 'NO_REPLY'])('执行后返回 %j 属于契约错误', async (text) => {
+  it.each(['', 'NO_REPLY'])('工具未收口后返回 %j 保留失败', async (text) => {
     const h = await harness();
     h.mock.input(1, '执行');
     const fast = await h.runtime('fast'),
       slow = await h.runtime('slow');
     fast.finish('开始');
-    slow.event('tool/call', { name: 'web_search' });
+    slow.event('tool/call', { callId: 'unfinished-query', name: 'web_search', arguments: '{}' });
     slow.finish(text);
     expect((await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done).status).toBe(
       'failed'

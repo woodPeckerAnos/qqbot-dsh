@@ -428,6 +428,7 @@ export class MessageQueue {
         body: undefined,
         text: `发送 ${name} 消息失败。${c.record || c.preparationError ? (record.error ?? '') : ''}`,
         notification: true,
+        mention: undefined,
         immediateOnly: c.immediateOnly,
         kind: 'error',
       },

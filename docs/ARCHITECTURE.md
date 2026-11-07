@@ -1,5 +1,9 @@
 # 现行架构
 
+判定恢复与提醒意图见 [ADR-008](adr/008-judgment-recovery-reply-attention.md)。话题判定显式 reasoning_effort=none（32/48 token），主动瞬时失败至多三次请求，共享总超时及并发名额；watcher 单次记最终失败，连续三次冷却五分钟，到期仅在有效触发有候选时放行一个试探。所有入口含 wait 共用闸门，继续旁听。提示列出完整 q:<id> 及唤醒等待时间，按同一快照验证并复核实时台账，禁止补猜引用。健康快照提供分类、重试和会话熔断状态。
+
+主动 Task 快 lane 成功且至少一段原始正文存在、全部 sent 时，出口省略慢错误正文，保留真实失败状态、附件及必需说明；其他情况及用户 Task 继续反馈。工具结果的 toolCallId 与 source.callId 核对，追踪缺失不作为业务工具未收口依据。普通回复所有长度均不自动 @，保留原引用；首行内部标记 [REPLY_ATTENTION:strong] 由 runner 移除并转成意图，只提及真实原作者一次，附件与后续分段不重复提及。下文通用慢失败反馈规则适用这一明确例外，ADR-007 自动提及决策属历史。
+
 交互式架构图：[SessionActor 与双 lane 任务编排](diagrams/session-actor-lanes.html)（源：[candidate](diagrams/session-actor-lanes.architecture.json)）。
 
 核心 Logger 已以显式只读 TraceContext 贯通输入、Task、双 lane、DSH 父子执行、产物和独立投递队列；日志只含元数据。状态写入权与调度不变，设计见 [ADR-002](adr/002-logging-tracing.md)。

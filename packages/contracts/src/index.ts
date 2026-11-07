@@ -95,6 +95,7 @@ export * from './task/types.js';
 export { LoggedError } from './logging/serialize.js';
 
 export * from './examples.js';
+export * from './judgment.js';
 
 export * from './media-result.js';
 

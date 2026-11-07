@@ -423,7 +423,7 @@
       "count": 4
     },
     "max-lines-per-function": {
-      "count": 6
+      "count": 5
     },
     "max-statements": {
       "count": 4

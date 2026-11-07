@@ -43,9 +43,15 @@ export interface ProactiveJudgeInput {
 export interface ProactiveJudge {
   /** 返回逐场景判定；**任何失败都返回 undefined**（调用方按沉默处理）。 */
   judge(input: ProactiveJudgeInput): Promise<readonly SceneVerdict[] | undefined>;
+  judgeResult?(
+    input: ProactiveJudgeInput
+  ): Promise<import('../../../judgment.js').JudgmentResult<readonly SceneVerdict[]>>;
 }
 export interface ChatClientLike {
   complete(messages: ChatMessage[]): Promise<string>;
+  completeResult?(
+    messages: ChatMessage[]
+  ): Promise<import('../../../judgment.js').JudgmentResult<string>>;
 }
 export interface CreateProactiveJudgeOptions {
   chat: ChatClientLike;

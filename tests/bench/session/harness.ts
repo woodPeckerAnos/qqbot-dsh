@@ -416,7 +416,7 @@ export class Harness {
     });
   }
   ingress: (m: NormalizedMessage) => Promise<void> = async () => {};
-  message(step: InputStep, id = `input-${++this.serial}`): NormalizedMessage {
+  message(step: InputStep, id = step.messageId ?? `input-${++this.serial}`): NormalizedMessage {
     return {
       kind: step.session?.startsWith('private') ? 'c2c-message' : 'group-at-message',
       target: {

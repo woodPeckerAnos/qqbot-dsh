@@ -69,6 +69,7 @@ describe('双 lane 协作（离线 DSH、连接器与时钟）', () => {
     slow.event('tool/call', { callId: 'run', name: 'bash' });
     slow.event('tool/result', {
       message: {
+        source: { kind: 'tool', callId: 'run' },
         content: [
           {
             type: 'tool-result',

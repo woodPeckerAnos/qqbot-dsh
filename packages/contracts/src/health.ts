@@ -108,6 +108,10 @@ interface ProactiveHealthSnapshotValue {
    */
   judgeCalls: number;
   judgeFailures: number;
+  judgeRetries?: number;
+  judgeFailuresByClass?: Record<string, number>;
+  circuits?: Record<string, import('./judgment.js').JudgeCircuitSnapshot>;
+  waitInvalidTargetsByReason?: Record<string, number>;
   /** 兴趣池：条目数与是否真的读到文件（`enabled && !loaded` = 路径配错了） */
   interests: {
     enabled: boolean;

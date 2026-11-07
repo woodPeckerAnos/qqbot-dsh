@@ -55,6 +55,31 @@ function harness() {
 }
 
 describe('实时 DSH 追踪观察器', () => {
+  it.each([false, true])('实际工具结果 source 与 block 错配=%s，追踪独立配对', (mismatch) => {
+    const h = harness();
+    h.event('root', 1, 'tool/call', {
+      callId: 'actual',
+      name: 'web_fetch',
+      arguments: 'PRIVATE_ARGS',
+    });
+    h.event('root', 2, 'tool/result', {
+      message: {
+        source: { kind: 'tool', callId: mismatch ? 'forged' : 'actual' },
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'actual',
+            isError: false,
+            content: [{ type: 'text', text: 'PRIVATE_RESULT' }],
+          },
+        ],
+      },
+    });
+    expect(h.observer.snapshot().pendingTools).toBe(mismatch ? 1 : 0);
+    h.observer.close();
+    expect(h.records().find((r) => r.event === 'agent.summary')?.incomplete).toBe(mismatch);
+    expect(h.lines.join('')).not.toMatch(/PRIVATE_ARGS|PRIVATE_RESULT/);
+  });
   it('执行身份优先于独立会话水位；子会话首序号可大于零，父子/后代关联正确', () => {
     const h = harness();
     expect(h.started('root', 'child')).toBe(true);
@@ -109,7 +134,17 @@ describe('实时 DSH 追踪观察器', () => {
     h.event('root', 1, 'step/start', { turn: 1, step: 1 });
     h.event('root', 2, 'tool/call', { callId: 'call', name: 'read_file', arguments: 'TOOL_ARGS' });
     h.event('root', 3, 'tool/result', {
-      message: { content: [{ callId: 'call', isError: true, content: 'TOOL_RESULT' }] },
+      message: {
+        source: { kind: 'tool', callId: 'call' },
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call',
+            isError: true,
+            content: [{ type: 'text', text: 'TOOL_RESULT' }],
+          },
+        ],
+      },
     });
     h.event('root', 4, 'assistant/message', {
       usage: { inputTokens: 40, outputTokens: 20, totalTokens: 60, reasoningTokens: 5 },

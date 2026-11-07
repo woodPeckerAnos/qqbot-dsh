@@ -37,8 +37,12 @@ export interface ChatClientOptions {
   timeoutMs: number;
   /** 测试注入；缺省用全局 fetch */
   fetchImpl?: typeof fetch;
+  clock?: import('../../../task/clock.js').TaskClock;
 }
 export interface ChatClient {
   complete(messages: ChatMessage[]): Promise<string>;
+  completeResult?(
+    messages: ChatMessage[]
+  ): Promise<import('../../../judgment.js').JudgmentResult<string>>;
 }
 export type createChatClient = (options: ChatClientOptions) => ChatClient;

@@ -5,6 +5,9 @@ import type {
   TopicVerdict,
   TopicJudge,
   TopicJudgeOptions,
+  JudgmentDiagnostics,
+  JudgmentFailureClass,
+  JudgmentResult,
 } from '@qqbot/contracts';
 /**
  * 话题判定器：新消息与当前会话的既有话题是否相关。
@@ -168,6 +171,7 @@ function topicRequestBody(options: TopicJudgeOptions, input: TopicJudgeInput): s
       { role: 'user', content: renderJudgePrompt(input, options.perTurnMaxChars) },
     ],
     temperature: 0,
+    reasoning_effort: 'none',
     max_tokens: input.askAboutChatRecord ? 48 : 32,
     stream: false,
   });
@@ -176,14 +180,50 @@ function topicRequestBody(options: TopicJudgeOptions, input: TopicJudgeInput): s
 async function requestTopicVerdict(
   options: TopicJudgeOptions,
   input: TopicJudgeInput
-): Promise<Result<TopicVerdict>> {
+): ReturnType<TopicJudgeResult> {
   if (!input.history.length && !input.askAboutChatRecord)
     return { ok: true, value: VERDICT_FALLBACK };
   const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, options.timeoutMs);
+  const diagnostics: JudgmentDiagnostics = { requestModel: options.model };
+  const failed = (failureClass: JudgmentFailureClass): Awaited<ReturnType<TopicJudgeResult>> => {
+    options.logger.warn('话题判定失败，保守保留上下文', { failureClass, ...diagnostics });
+    return {
+      ok: false,
+      failureClass,
+      diagnostics: { ...diagnostics },
+      error: failure(
+        failureClass === 'timeout' ? 'TIMEOUT' : 'UPSTREAM_FAILED',
+        undefined,
+        options.logger.cause(failureClass, 'topic-judge')
+      ),
+    };
+  };
+  let expire!: () => void;
+  const expired = new Promise<Awaited<ReturnType<TopicJudgeResult>>>((resolve) => {
+    expire = () => {
+      controller.abort();
+      resolve(failed('timeout'));
+    };
+  });
+  const timer = setTimeout(expire, options.timeoutMs);
   timer.unref();
+
+  try {
+    return await Promise.race([
+      requestTopic(options, input, controller, diagnostics, failed),
+      expired,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function requestTopic(
+  options: TopicJudgeOptions,
+  input: TopicJudgeInput,
+  controller: AbortController,
+  diagnostics: JudgmentDiagnostics,
+  failed: (failureClass: JudgmentFailureClass) => Awaited<ReturnType<TopicJudgeResult>>
+): ReturnType<TopicJudgeResult> {
   try {
     const response = await (options.fetchImpl ?? fetch)(options.apiBase + '/chat/completions', {
       method: 'POST',
@@ -191,51 +231,65 @@ async function requestTopicVerdict(
       body: topicRequestBody(options, input),
       signal: controller.signal,
     });
-    return await readTopicVerdict(response, input.askAboutChatRecord ?? false, options);
-  } catch (cause) {
-    return {
-      ok: false,
-      error: failure(
-        controller.signal.aborted ? 'TIMEOUT' : 'UPSTREAM_FAILED',
-        cause,
-        options.logger.cause(cause, 'topic-judge')
-      ),
-    };
-  } finally {
-    clearTimeout(timer);
+    if (topicAborted(controller)) return { ok: false, error: failure('TIMEOUT') };
+    const result = await readTopicResponse(
+      response,
+      input.askAboutChatRecord ?? false,
+      diagnostics
+    );
+    if (topicAborted(controller)) return { ok: false, error: failure('TIMEOUT') };
+    return result.ok
+      ? { ok: true, value: result.value, diagnostics: result.diagnostics }
+      : failed(result.failureClass);
+  } catch {
+    return controller.signal.aborted ? { ok: false, error: failure('TIMEOUT') } : failed('network');
   }
 }
-
-async function readTopicVerdict(
+async function readTopicResponse(
   response: Response,
   ask: boolean,
-  options: TopicJudgeOptions
-): Promise<Result<TopicVerdict>> {
-  if (!response.ok)
-    return {
-      ok: false,
-      error: failure(
-        'UPSTREAM_FAILED',
-        response.status,
-        options.logger.cause(response.status, 'http')
-      ),
-    };
-  const body = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
-  const text = body.choices?.[0]?.message?.content;
-  if (typeof text !== 'string')
-    return {
-      ok: false,
-      error: failure('UPSTREAM_FAILED', undefined, options.logger.cause('schema', 'topic-judge')),
-    };
-  const parsed = parseJudgeResult(text, ask);
+  diagnostics: JudgmentDiagnostics
+): Promise<JudgmentResult<TopicVerdict>> {
+  diagnostics.httpStatus = response.status;
+  if (!response.ok) return { ok: false, failureClass: 'http', diagnostics };
+  let raw: unknown;
+  try {
+    raw = await response.json();
+  } catch (error) {
+    if (error instanceof SyntaxError) return { ok: false, failureClass: 'parse', diagnostics };
+    throw error;
+  }
+  const body = topicRecord(raw);
+  const choice = Array.isArray(body?.choices) ? topicRecord(body.choices[0]) : undefined;
+  const message = topicRecord(choice?.message);
+  Object.assign(diagnostics, topicMetadata(body, choice, message));
+  if (typeof message?.content !== 'string')
+    return { ok: false, failureClass: 'response-contract', diagnostics };
+  const parsed = parseJudgeResult(message.content, ask);
   return parsed.ok
-    ? parsed
-    : {
-        ok: false,
-        error: failure(
-          'UPSTREAM_FAILED',
-          parsed.error.cause,
-          options.logger.cause('schema', 'topic-judge')
-        ),
-      };
+    ? { ok: true, value: parsed.value, diagnostics }
+    : { ok: false, failureClass: 'parse', diagnostics };
+}
+function topicMetadata(
+  body?: Record<string, unknown>,
+  choice?: Record<string, unknown>,
+  message?: Record<string, unknown>
+): JudgmentDiagnostics {
+  return {
+    responseModel: typeof body?.model === 'string' ? body.model : undefined,
+    finishReason: typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined,
+    contentLength: topicTextLength(message?.content),
+    reasoningLength: topicTextLength(message?.reasoning_content),
+  };
+}
+function topicTextLength(value: unknown): number {
+  return typeof value === 'string' ? value.length : 0;
+}
+function topicRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+function topicAborted(controller: AbortController): boolean {
+  return controller.signal.aborted;
 }

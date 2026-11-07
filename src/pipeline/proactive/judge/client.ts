@@ -3,6 +3,7 @@ import type {
   ProactiveJudgeInput,
   ProactiveJudge,
   CreateProactiveJudgeOptions,
+  JudgmentResult,
 } from '@qqbot/contracts';
 /**
  * ② LLM 层的**调用侧**：把候选场景 + 转录 + 结构化事实发给模型，拿回逐场景判定。
@@ -47,46 +48,63 @@ export function createProactiveJudge(options: CreateProactiveJudgeOptions): Proa
   let inFlight = 0;
   const waiters: Array<() => void> = [];
 
-  const acquire = async (): Promise<() => void> => {
-    if (inFlight < maxConcurrent) {
-      inFlight += 1;
-      return release;
-    }
-    await new Promise<void>((resolve) => waiters.push(resolve));
-    inFlight += 1;
-    return release;
-    function release(): void {
-      inFlight -= 1;
-      waiters.shift()?.();
-    }
+  const release = (): void => {
+    const next = waiters.shift();
+    if (next) next();
+    else inFlight -= 1;
   };
-
+  const acquire = async (): Promise<() => void> => {
+    if (inFlight < maxConcurrent) inFlight += 1;
+    else await new Promise<void>((resolve) => waiters.push(resolve));
+    return release;
+  };
+  const judgeResult = async (
+    input: ProactiveJudgeInput
+  ): Promise<JudgmentResult<readonly SceneVerdict[]>> => {
+    const relinquish = await acquire();
+    let result: JudgmentResult<readonly SceneVerdict[]>;
+    try {
+      result = await requestVerdicts(options, input);
+    } catch {
+      result = { ok: false, failureClass: 'unknown', diagnostics: {} };
+    } finally {
+      relinquish();
+    }
+    if (!result.ok)
+      options.onError?.(
+        result.failureClass === 'parse' ? 'unparseable' : 'call-failed',
+        JSON.stringify({ failureClass: result.failureClass, ...result.diagnostics })
+      );
+    return result;
+  };
   return {
-    async judge(input: ProactiveJudgeInput): Promise<readonly SceneVerdict[] | undefined> {
-      const release = await acquire();
-      try {
-        const messages: ChatMessage[] = [
-          {
-            role: 'system',
-            content: `${options.renderCriteria(input.candidates)}\n\n${JUDGE_OUTPUT_CONTRACT}`,
-          },
-          { role: 'user', content: input.transcript },
-        ];
-        const raw = await options.chat.complete(messages);
-        const verdicts = parseSceneVerdicts(raw, input.candidates);
-        if (verdicts === undefined) {
-          options.onError?.('unparseable', raw.slice(0, 200));
-          return undefined;
-        }
-        return verdicts;
-      } catch (error) {
-        options.onError?.('call-failed', error instanceof Error ? error.message : String(error));
-        return undefined;
-      } finally {
-        release();
-      }
+    judgeResult,
+    async judge(input) {
+      const result = await judgeResult(input);
+      return result.ok ? result.value : undefined;
     },
   };
+}
+
+async function requestVerdicts(
+  options: CreateProactiveJudgeOptions,
+  input: ProactiveJudgeInput
+): Promise<JudgmentResult<readonly SceneVerdict[]>> {
+  const messages: ChatMessage[] = [
+    {
+      role: 'system',
+      content: `${options.renderCriteria(input.candidates)}\n\n${JUDGE_OUTPUT_CONTRACT}`,
+    },
+    { role: 'user', content: input.transcript },
+  ];
+  const completion = options.chat.completeResult
+    ? await options.chat.completeResult(messages)
+    : { ok: true as const, value: await options.chat.complete(messages), diagnostics: {} };
+  if (!completion.ok) return completion;
+  const verdicts = parseSceneVerdicts(completion.value, input.candidates);
+  return verdicts === undefined
+    ? { ok: false, failureClass: 'parse', diagnostics: completion.diagnostics }
+    : { ok: true, value: verdicts, diagnostics: completion.diagnostics };
 }
 
 /** 便捷构造：直接用 `renderJudgeCriteria` 作为判据渲染。 */

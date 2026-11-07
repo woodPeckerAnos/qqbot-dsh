@@ -1,5 +1,7 @@
 # 主动介入与 Task 提交
 
+当前判定恢复、wait 引用及主动慢失败反馈见 [ADR-008](../../../docs/adr/008-judgment-recovery-reply-attention.md)：最终失败单次计数，瞬时错误至多三次请求；连续三次失败冷却五分钟，所有入口含 wait 共享单次试探恢复闸门，旁听持续。提示与验证同一候选快照并复核实时台账，不补猜等待对象。完整快正文送达后的主动慢错误正文可省略，真实失败状态、附件与必需说明保留。普通回复保留原引用且不自动 @，强烈标记仅用于内部意图。
+
 生效场景仍以 [SCENES.md](interests/SCENES.md) 为准，扩展边界见 [AGENT-CONTRACT.md](AGENT-CONTRACT.md)。当前运行架构见 [ARCHITECTURE](../../../docs/ARCHITECTURE.md)。
 
 群聊观察窗口由 `main.ts` 持有，被动输入与主动判定共用；关闭主动介入后仍可向被 @ 的输入提供上下文。窗口纯内存，Task 创建时将选定窗口、回放和引用持久化。

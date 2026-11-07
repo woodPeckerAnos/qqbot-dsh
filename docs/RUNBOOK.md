@@ -430,7 +430,7 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 ### 4.6 长任务与重启恢复
 
-慢 lane 在所属执行及前台子代理结束后才结算，快 lane 独立推进。默认快 30 秒、慢 30 分钟；普通慢问答 NO_REPLY 是正常成功，实际执行后空结果或 NO_REPLY 属于契约失败。
+慢 lane 在所属执行及前台子代理结束后才结算，快 lane 独立推进。默认快 30 秒、慢 30 分钟；无增量 NO_REPLY 是正常成功（成功工具执行后也允许），工具失败、未收口或空结果属于失败。主动快正文完整送达后可省略慢错误正文，Task 与慢 lane 仍 failed，附件及必要说明继续交付。
 
 | 现象                       | 检查与处理                                                                                         |
 | -------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -481,26 +481,26 @@ curl -s localhost:8080/health | jq .proactive
 **整段缺失** = 介入层没装配（`proactive.enabled=false`，默认值）。
 "bot 只在被 @ 时回复"与"它旁听了但决定不说"是两件事，这里必须先分清。
 
-| 现象                                                   | 常见原因                                                                                                                   | 怎么确认                                                                                                              |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| 段缺失                                                 | `BOT_PROACTIVE_ENABLED` / `proactive.enabled` 没打开                                                                       | 启动日志里的 `主动介入已装配` 一行不会出现                                                                            |
-| `enabled: true` 但 `conversations: 0`                  | 白名单没配或写错（`BOT_LISTEN_GROUPS` 为空 = 不接任何群）                                                                  | 条目必须带平台前缀：`onebot:123456`、`ob11:g123456`                                                                   |
-| `interests.enabled: true` 但 `interests.loaded: false` | 兴趣池文件路径配错（默认 `interests.yml`，容器里要有这个文件）                                                             | 场景 5 永远不会触发，但其余场景正常                                                                                   |
-| `dryRun: true`                                         | **这是默认值**：判定照跑、只记 `wouldSend`，不会真的发言                                                                   | 确认判据准了再显式设 `false`                                                                                          |
-| `wouldSend > 0` 而 `spoke == 0`                        | 就是上面这条（灰度模式在工作）                                                                                             | 观察 `vetoed` / `satisfiedByScene` 判断判据质量                                                                       |
-| `spoke == 0` 且 `vetoed` 全是 `no-candidate`           | 本地预筛没命中：消息不是指代/续聊/问句，也没命中兴趣池                                                                     | 看 `SCENES.md` 的成立条件；兴趣池加条目                                                                               |
-| `spoke == 0` 且 `judgeFailures > 0`                    | 判定调用失败（超时/网络/密钥/解析）                                                                                        | 日志里搜「主动介入判定失败」；连续失败会 `suspended`                                                                  |
-| `suspended > 0`                                        | 判定连续失败达上限，该会话暂停评估                                                                                         | 修好上游后重启进程（暂停状态不持久化）                                                                                |
-| `vetoed` 里 `rate-limit` / `min-gap`                   | 触发了硬限流，或同一话题会话内两次发言间隔没到                                                                             | 这是设计行为；额度见 `config/proactive.yml`                                                                           |
-| `sessions.opened` 涨、`spoke` 不涨                     | 判定判"值得"但发言被后面几道闸门挡下                                                                                       | 看 `vetoed` 是哪一类；`min-gap` / `rate-limit` / `budget-exhausted` 都不消耗预算                                      |
-| `sessions.closedBy['idle']` 占绝大多数                 | 话题会话几乎都是"没人接话"被静默关闭的                                                                                     | 正常兜底；若 `llm-closed` 长期为 0，说明判据里"什么时候该关"那一段没起作用                                            |
-| `sessions.budgetExhausted` 高                          | 同一个话题里"还想说、但额度没了"被挡了很多次                                                                               | 高 = 预算偏紧（模型还想接着聊）；低 = 2 句够用。**注意它不等于"它不说话了"**：会话还开着，只是闭嘴                    |
-| `sessions.spent > 0`                                   | 有话题的额度已用尽、正在闭嘴（会话没关）                                                                                   | 这是正常状态；`idle` 到点或模型说换话题后它会消失                                                                     |
-| `sessions.spokeInSession` 集中在 `"1"`                 | 每个话题仅一个 Task 成功送达，预算 2 用不满                                                                                | 可把 `proactive.sessionBudget` 降为 1（一个成功 Task），或说明模型偏保守                                              |
-| `sessions.noSession` 很高                              | 大量唤醒因为"没有会话"被挡 = 覆盖率低                                                                                      | **这是本设计的预期**（以覆盖率换精度）；要提覆盖只能改判据或调 session 参数                                           |
-| `deliveryDegraded: {"unsupported": N}`                 | **官方通道不支持主动发言**（主动推送已停用）                                                                               | 预期行为，不是故障；OneBot 才有这个能力                                                                               |
-| `deliveryDegraded: {"compose-failed": N}`              | 措辞轮次没产出发言：会话正忙（有用户轮次在跑，主动发言主动让路）/ 生成超时 / runtime 起不来 / 模型看完完整上下文后选择不说 | 偶发 = 正常；持续增长看 debug 日志「主动发言：」「主动介入：发言生成未果」，超时占多就调大 `proactive.speakTimeoutMs` |
-| 发出去的话是"直接回答 xx 的要点（依据：…）"这种元文本  | 措辞轮次没接上（`compose` 未注入时退回发判定要点原文）                                                                     | 启动日志搜 `未注入发言生成`——正常装配不会出现；确认部署的是含措辞轮次的版本                                           |
+| 现象                                                   | 常见原因                                                                                                                   | 怎么确认                                                                                                                 |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 段缺失                                                 | `BOT_PROACTIVE_ENABLED` / `proactive.enabled` 没打开                                                                       | 启动日志里的 `主动介入已装配` 一行不会出现                                                                               |
+| `enabled: true` 但 `conversations: 0`                  | 白名单没配或写错（`BOT_LISTEN_GROUPS` 为空 = 不接任何群）                                                                  | 条目必须带平台前缀：`onebot:123456`、`ob11:g123456`                                                                      |
+| `interests.enabled: true` 但 `interests.loaded: false` | 兴趣池文件路径配错（默认 `interests.yml`，容器里要有这个文件）                                                             | 场景 5 永远不会触发，但其余场景正常                                                                                      |
+| `dryRun: true`                                         | **这是默认值**：判定照跑、只记 `wouldSend`，不会真的发言                                                                   | 确认判据准了再显式设 `false`                                                                                             |
+| `wouldSend > 0` 而 `spoke == 0`                        | 就是上面这条（灰度模式在工作）                                                                                             | 观察 `vetoed` / `satisfiedByScene` 判断判据质量                                                                          |
+| `spoke == 0` 且 `vetoed` 全是 `no-candidate`           | 本地预筛没命中：消息不是指代/续聊/问句，也没命中兴趣池                                                                     | 看 `SCENES.md` 的成立条件；兴趣池加条目                                                                                  |
+| `spoke == 0` 且 `judgeFailures > 0`                    | 判定调用失败（超时/网络/密钥/解析）                                                                                        | 日志里搜「主动介入判定失败」；连续失败会 `suspended`                                                                     |
+| `suspended > 0`                                        | 判定连续失败达上限，该会话暂停评估                                                                                         | 查看 circuits 的 reason、pausedAt、nextProbeAt；五分钟后下一次有效候选触发一个试探，成功恢复，失败再次冷却（状态在内存） |
+| `vetoed` 里 `rate-limit` / `min-gap`                   | 触发了硬限流，或同一话题会话内两次发言间隔没到                                                                             | 这是设计行为；额度见 `config/proactive.yml`                                                                              |
+| `sessions.opened` 涨、`spoke` 不涨                     | 判定判"值得"但发言被后面几道闸门挡下                                                                                       | 看 `vetoed` 是哪一类；`min-gap` / `rate-limit` / `budget-exhausted` 都不消耗预算                                         |
+| `sessions.closedBy['idle']` 占绝大多数                 | 话题会话几乎都是"没人接话"被静默关闭的                                                                                     | 正常兜底；若 `llm-closed` 长期为 0，说明判据里"什么时候该关"那一段没起作用                                               |
+| `sessions.budgetExhausted` 高                          | 同一个话题里"还想说、但额度没了"被挡了很多次                                                                               | 高 = 预算偏紧（模型还想接着聊）；低 = 2 句够用。**注意它不等于"它不说话了"**：会话还开着，只是闭嘴                       |
+| `sessions.spent > 0`                                   | 有话题的额度已用尽、正在闭嘴（会话没关）                                                                                   | 这是正常状态；`idle` 到点或模型说换话题后它会消失                                                                        |
+| `sessions.spokeInSession` 集中在 `"1"`                 | 每个话题仅一个 Task 成功送达，预算 2 用不满                                                                                | 可把 `proactive.sessionBudget` 降为 1（一个成功 Task），或说明模型偏保守                                                 |
+| `sessions.noSession` 很高                              | 大量唤醒因为"没有会话"被挡 = 覆盖率低                                                                                      | **这是本设计的预期**（以覆盖率换精度）；要提覆盖只能改判据或调 session 参数                                              |
+| `deliveryDegraded: {"unsupported": N}`                 | **官方通道不支持主动发言**（主动推送已停用）                                                                               | 预期行为，不是故障；OneBot 才有这个能力                                                                                  |
+| `deliveryDegraded: {"compose-failed": N}`              | 措辞轮次没产出发言：会话正忙（有用户轮次在跑，主动发言主动让路）/ 生成超时 / runtime 起不来 / 模型看完完整上下文后选择不说 | 偶发 = 正常；持续增长看 debug 日志「主动发言：」「主动介入：发言生成未果」，超时占多就调大 `proactive.speakTimeoutMs`    |
+| 发出去的话是"直接回答 xx 的要点（依据：…）"这种元文本  | 措辞轮次没接上（`compose` 未注入时退回发判定要点原文）                                                                     | 启动日志搜 `未注入发言生成`——正常装配不会出现；确认部署的是含措辞轮次的版本                                              |
 
 ### 5.2 "它为什么说了这句"
 
@@ -718,3 +718,15 @@ docker version > /tmp/docker-version.txt
 
 日志已做密钥脱敏（`access_token`、`sk-` 开头的 key、`QQ_APP_SECRET` 都会被替换
 为 `<redacted>`），但仍建议发之前扫一眼。
+
+### ADR-008 判定与回复诊断
+
+话题降级日志含 requestModel、responseModel、httpStatus、finishReason、contentLength、reasoningLength 和 failureClass，禁止附原始正文或推理。普通与聊天记录请求均 reasoning_effort=none，token 仍 32/48。当前路由及用户实测证据不变，不增加真实模型调用。
+
+主动健康字段 judgeRetries 为重试总数，judgeFailuresByClass 按最终失败拆分，circuits 按会话展示 closed/cooldown/probe-ready/probing、consecutiveFailures、reason、pausedAt、nextProbeAt。judgeCalls 是一次逻辑调用，judgeFailures 和 dispatcher.proactiveJudgeFailures 应一致；每次最终失败仅一条 warn。网络、408/429/5xx 最多三次请求，退避 250/1000ms，429 使用预算内 Retry-After；其他 4xx、解析和响应契约错误直接失败。冷却五分钟内零判定，到期不主动发请求，wait 也不能绕过闸门。
+
+waitInvalidTargetsByReason 区分 missing、forged、closed；前两类计无效目标，closed 按 stale 处理，都不算上游判定失败。持续无效引用先核对实际提示是否提供完整 q:<id>，采纳前再查实时台账。wait 票据仍满足 created = resolved + spent + stale + unchanged + pending。
+
+主动慢失败正文只在快 lane 成功、存在原始正文且全部 sent 时抑制；部分、失败、待发和静默均继续反馈，用户 Task 仍反馈。检查 Task/lane 的失败状态与 errorId，不能用群里有没有补发错误判断执行是否成功。工具结果用 message.content[].toolCallId 并核对 source.callId，追踪与业务收口分开；b4d70d53、a886db8e 具体根因仍未确认。
+
+普通回复各长度不自动 @，原引用保留。强烈提醒必须由最终正文首行 [REPLY_ATTENTION:strong] 转为内部意图，只可提及真实原作者；附件和后续分段不重复提醒。上线使用 docker compose up -d --build 重建并重启，观察话题降级、计数一致性、熔断恢复和无效引用比例。
