@@ -194,15 +194,18 @@ describe('语义裁判与门禁', () => {
       'mock-key'
     );
     expect((await calibrate(judge)).passed).toBe(false);
-    expect(parseVerdict('not json', sample.replies).status).toBe('inconclusive');
+    expect(parseVerdict('not json', sample.replies)).toMatchObject({
+      status: 'inconclusive',
+      error: 'judge-invalid-json',
+    });
     expect(parseVerdict(verdict([], 'duplication'), sample.replies).status).toBe('inconclusive');
     expect(parseVerdict(verdict(sample.replies), []).status).toBe('inconclusive');
     expect(
       parseVerdict(
         verdict([{ ...sample.replies[0]!, text: '不在实际输出中的句子' }], 'trust'),
         sample.replies
-      ).status
-    ).toBe('inconclusive');
+      )
+    ).toMatchObject({ status: 'inconclusive', error: 'judge-evidence-unverifiable-quote' });
   });
   it('超时HTTP失败缺内容明确inconclusive且不重试', async () => {
     let calls = 0;
@@ -233,7 +236,10 @@ describe('语义裁判与门禁', () => {
     expect(() => createJudge(config, undefined, '')).toThrow('missing-judge');
   });
   it('基线记录已知问题严格模式拒绝，运行失败始终拒绝', async () => {
-    const record = await runCase(offlineCases[1]!, options),
+    const record = await runCase(
+        offlineCases.find((c) => c.id === 'O02')!,
+        options
+      ),
       report = { records: [record], errors: [], options };
     expect(gate(report)).toBe(true);
     expect(gate({ ...report, options: { ...options, strict: true } })).toBe(false);

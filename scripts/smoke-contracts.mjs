@@ -235,7 +235,7 @@ const runners = {
   },
   async task(example) {
     let notifications = 0;
-    const manager = task.createTaskLifeCycleManager({
+    const manager = task.createTaskLifeCycleManagerV2({
       now: () => example.input.now,
       logger: loggerDouble(),
       ...(example.input.failWrite

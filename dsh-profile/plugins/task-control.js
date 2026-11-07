@@ -13,6 +13,13 @@ export function apply(ctx) {
   if (!process.env.QQBOT_TASK_CHANNEL) return;
   const socket = new Socket({ fd: 3, readable: true, writable: true });
   const pending = new Map();
+  const binding = {
+    taskId: process.env.QQBOT_TASK_ID,
+    executionId: process.env.QQBOT_EXECUTION_ID,
+    runtimeGeneration: process.env.QQBOT_RUNTIME_GENERATION,
+    sessionId: process.env.QQBOT_ROOT_SESSION_ID,
+  };
+  let cooperation;
   let buffer = '';
   socket.setEncoding('utf8');
   socket.on('data', (chunk) => {
@@ -21,12 +28,19 @@ export function apply(ctx) {
     while ((at = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, at);
       buffer = buffer.slice(at + 1);
-      const response = JSON.parse(line);
-      pending.get(response.id)?.resolve(response.value);
-      pending.delete(response.id);
+      try {
+        const response = JSON.parse(line);
+        if (response.type === 'cooperation') cooperation?.receive(response);
+        else if (response.error) pending.get(response.id)?.reject(new Error(response.error));
+        else pending.get(response.id)?.resolve(response.value);
+      } catch {
+        socket.destroy(new Error('Task 控制协议异常'));
+        return;
+      }
     }
   });
   const close = () => {
+    cooperation?.close();
     for (const item of pending.values()) item.reject(new Error('Task 控制通道关闭'));
     pending.clear();
   };
@@ -49,7 +63,10 @@ export function apply(ctx) {
         cleanup();
         reject(error);
       };
-      const timer = setTimeout(() => failed(new Error('Task 控制超时')), 5000);
+      const timer =
+        action === 'cooperation-wait'
+          ? undefined
+          : setTimeout(() => failed(new Error('Task 控制超时')), 5000);
       const abort = () => failed(new Error('Task 控制已取消'));
       exec.signal?.addEventListener('abort', abort, { once: true });
       pending.set(id, {
@@ -60,17 +77,96 @@ export function apply(ctx) {
         reject: failed,
       });
       socket.write(
-        JSON.stringify({ id, action, taskId, sessionId: exec.agent?.session?.id }) + '\n',
+        JSON.stringify({
+          id,
+          ...binding,
+          action,
+          taskId: action.startsWith('cooperation-') ? binding.taskId : taskId,
+          sessionId: exec.agent?.session?.id,
+        }) + '\n',
         (error) => {
           if (error) failed(error);
         }
       );
     });
   installTaskTools(ctx, call, process.env.QQBOT_LANE === 'fast');
+  if (process.env.QQBOT_LANE === 'slow') cooperation = installLaneCooperation(ctx, call, binding);
   ctx.on('dispose', () => {
     close();
     socket.destroy();
   });
+}
+
+/** All updates are scoped to the trusted slow root; children never receive them. */
+export function installLaneCooperation(ctx, call, binding) {
+  let agent;
+  let latest;
+  let injected = 0;
+  let consumed = 0;
+  let closed = false;
+  const messages = new Map();
+  const matches = (candidate) =>
+    ['taskId', 'executionId', 'runtimeGeneration', 'sessionId'].every(
+      (key) => candidate?.[key] === binding[key] && typeof binding[key] === 'string'
+    );
+  const injectLatest = () => {
+    if (closed || !agent || !latest || latest.revision <= injected) return;
+    const id = randomUUID();
+    const text = `同 Task 快慢协作快照：${JSON.stringify(latest)}\n只依据 delivered 中成功送达的原始正文衔接：没有增量时仅返回 NO_REPLY；有增量时仅交付新增部分；反转结论时明确回指并纠正。未送达或失败的正文仍需答复。成功工具执行可以无增量静默，失败、空结果和需要说明的附件必须反馈。不要把快 lane 工具限制当成整个 agent 能力限制。本快照和本次执行仅属于当前 Task；历史中其他 Task 的未完成承诺由原 Task 继续处理，不得补做旧任务或为旧任务生成附件。`;
+    messages.set(id, latest.revision);
+    agent.inject({
+      id,
+      role: 'user',
+      source: { kind: 'plugin', plugin: name },
+      content: [{ type: 'text', text }],
+    });
+    injected = latest.revision;
+  };
+  const update = (snapshot) => {
+    if (
+      closed ||
+      snapshot?.taskId !== binding.taskId ||
+      !Number.isSafeInteger(snapshot.revision) ||
+      snapshot.revision <= (latest?.revision ?? 0)
+    )
+      return;
+    latest = snapshot;
+    injectLatest();
+  };
+  ctx.on('agent/created', ({ agent: created }) => {
+    if (closed || created.session.id !== binding.sessionId) return;
+    agent = created;
+    injectLatest();
+    void call('cooperation-read', binding.taskId, { agent }).then(update, () => {});
+  });
+  // A committed user/message proves next-step consumption; pre-step admission can still abort.
+  ctx.on('session/event', (session, event) => {
+    if (closed || session.id !== binding.sessionId || event.type !== 'user/message') return;
+    const revision = messages.get(event.data.id);
+    if (revision !== undefined) {
+      consumed = Math.max(consumed, revision);
+      messages.delete(event.data.id);
+    }
+  });
+  ctx.on('agent/turn-stopping', async ({ agent: stopping, signal }) => {
+    if (closed || stopping !== agent || stopping.session.id !== binding.sessionId) return;
+    const snapshot = await call('cooperation-wait', binding.taskId, { agent, signal });
+    if (closed || signal.aborted) return;
+    update(snapshot);
+    if (!latest?.ready) throw new Error('协作等待没有返回终态快照');
+    if (consumed < latest.revision) injectLatest();
+  });
+  return {
+    receive: (message) => {
+      if (matches(message.binding)) update(message.snapshot);
+    },
+    close: () => {
+      closed = true;
+      agent = undefined;
+      latest = undefined;
+      messages.clear();
+    },
+  };
 }
 
 export function installTaskTools(ctx, call, fast) {

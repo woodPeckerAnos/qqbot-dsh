@@ -7,6 +7,6 @@ export interface SessionCommandRouter {
   stage(): IngressStage;
 }
 export type createSessionCommandRouterFactory = (options: {
-  actor: SessionActor;
+  actor: Pick<SessionActor, 'stop' | 'reset'>;
   stats: PipelineStats;
 }) => SessionCommandRouter;

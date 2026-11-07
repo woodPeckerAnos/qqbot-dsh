@@ -6,5 +6,5 @@ export const createResponder: import('@qqbot/contracts').createResponderFactory 
   new Responder(...args);
 export const createMessageQueue: import('@qqbot/contracts').createMessageQueueFactory = (...args) =>
   new MessageQueue(...args);
-export const createSessionOutputCoordinator: import('@qqbot/contracts').createSessionOutputCoordinatorFactory =
+export const createSessionOutputCoordinatorV2: import('@qqbot/contracts').createSessionOutputCoordinatorFactoryV2 =
   (...args) => new SessionOutputCoordinator(...args);

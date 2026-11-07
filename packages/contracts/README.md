@@ -20,4 +20,6 @@ npm run test:integration  # 独立 localhost WebSocket 检查
 
 `compatibility/v1` 保存首次建立的完整编译声明图，日常构建和文档生成不更新它。新增接口必须兼容已保存的消费者；破坏性签名应先提供新版本入口，迁移消费者，最后移除无消费者的旧入口。基线变更必须由维护者审阅，禁止为绕过兼容失败而重新复制当前声明。
 
+ADR-006 扩展静默原因后，受影响的 Task/投递接口在 `task/*-v2.ts` 提供 `V2` 类型，生产公共工厂使用 `create…V2`。无后缀的 v1 声明保留作历史签名兼容；持久化仍读取 v1 记录。协作快照及 fd 3 能力是新增接口。
+
 构建顺序为契约包再应用。Docker 安装前需要 workspace manifest，运行阶段需要契约 `dist` 及 manifest，以保留 `node_modules/@qqbot/contracts` 的相对链接。

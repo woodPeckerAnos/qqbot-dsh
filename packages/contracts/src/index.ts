@@ -97,3 +97,15 @@ export { LoggedError } from './logging/serialize.js';
 export * from './examples.js';
 
 export * from './media-result.js';
+
+export * from './task/types-v2.js';
+export * from './task/lifecycle-v2.js';
+export * from './task/dsh-lane-runner-v2.js';
+export * from './task/lane-scheduler-v2.js';
+export * from './task/session-actor-v2.js';
+export * from './task/system-v2.js';
+export * from './task/control-bridge-v2.js';
+export * from './task/prompt-preparer-v2.js';
+export * from './task/proactive-adapter-v2.js';
+export * from './task/output-coordinator-v2.js';
+export * from './task/cooperation.js';

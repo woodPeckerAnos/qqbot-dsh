@@ -29,6 +29,7 @@ export type { DshRuntimeState } from '@qqbot/contracts';
 export class DshRuntime extends EventEmitter {
   private client: HarnessSdkClient | undefined;
   private child: ChildProcessWithoutNullStreams | undefined;
+  private taskChannel?: Duplex;
   private _state: DshRuntimeState = 'starting';
   private _serverInfo: InitializeResult['serverInfo'] | undefined;
   private stderrTail: string[] = [];
@@ -83,14 +84,24 @@ export class DshRuntime extends EventEmitter {
         DSH_HOME: options.dshHome,
         ...options.env,
       },
-      stdio: options.taskControl ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
+      stdio:
+        options.taskControl || options.taskCooperation
+          ? ['pipe', 'pipe', 'pipe', 'pipe']
+          : ['pipe', 'pipe', 'pipe'],
     });
 
     this.child = child;
     options.logger.event('runtime.started', { pid: child.pid });
-    if (options.taskControl) {
-      const taskControl = options.taskControl;
+    if (options.taskControl || options.taskCooperation) {
       const control = child.stdio[3] as Duplex;
+      this.taskChannel = control;
+      const channelAbort = new AbortController();
+      const close = () => {
+        if (channelAbort.signal.aborted) return;
+        channelAbort.abort();
+        this.emit('task.channel.closed');
+      };
+      control.on('close', close);
       let buffer = '';
       control.setEncoding('utf8');
       control.on('data', (chunk: string) => {
@@ -109,15 +120,32 @@ export class DshRuntime extends EventEmitter {
               action: string;
               taskId?: string;
               sessionId?: string;
+              executionId: string;
+              runtimeGeneration: string;
             };
-            const value = taskControl(request);
-            control.write(JSON.stringify({ id: request.id, value }) + '\n');
+            const work = request.action.startsWith('cooperation-')
+              ? options.taskCooperation?.(
+                  request as import('@qqbot/contracts').TaskCooperationRequest,
+                  channelAbort.signal
+                )
+              : options.taskControl?.(request);
+            void Promise.resolve(work).then(
+              (value) => {
+                if (!control.destroyed)
+                  control.write(JSON.stringify({ id: request.id, value }) + '\n');
+              },
+              (error: unknown) => {
+                if (!control.destroyed)
+                  control.write(JSON.stringify({ id: request.id, error: String(error) }) + '\n');
+              }
+            );
           } catch (error) {
             options.logger.warn('Task 控制请求失败', { error: String(error) });
           }
         }
       });
       control.on('error', (error) => {
+        close();
         options.logger.warn('Task 控制通道关闭', { error: error.message });
       });
     }
@@ -219,6 +247,17 @@ export class DshRuntime extends EventEmitter {
     }
   }
 
+  notifyTaskCooperation(update: import('@qqbot/contracts').TaskCooperationUpdate): void {
+    if (this.taskChannel && !this.taskChannel.destroyed)
+      this.taskChannel.write(JSON.stringify(update) + '\n');
+  }
+  onTaskChannelClose(listener: () => void): () => void {
+    this.on('task.channel.closed', listener);
+    return () => {
+      this.off('task.channel.closed', listener);
+    };
+  }
+
   /**
    * 派发一次提示。返回入队回执；结果通过 session.event 流出。
    *
@@ -243,6 +282,7 @@ export class DshRuntime extends EventEmitter {
    * 可重复调用。
    */
   async dispose(): Promise<void> {
+    this.taskChannel?.destroy();
     if (this._state === 'closed') return;
     if (this._state === 'closing') {
       await this.exitPromise;

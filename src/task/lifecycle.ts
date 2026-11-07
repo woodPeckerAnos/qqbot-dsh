@@ -14,15 +14,15 @@ import {
   errorClass,
 } from '../observability/index.js';
 import type { Logger, TraceContext } from '@qqbot/contracts';
-import type { TaskStateWriter } from '@qqbot/contracts';
+import type { TaskStateWriterV2 as TaskStateWriter } from '@qqbot/contracts';
 import { LANES, isLaneTerminal, isTaskTerminal, readonlySnapshot } from '@qqbot/contracts';
 import type {
   Lane,
   LaneExecution,
-  LaneResult,
-  TaskHandle,
+  LaneResultV2 as LaneResult,
+  TaskHandleV2 as TaskHandle,
   TaskInput,
-  TaskSnapshot,
+  TaskSnapshotV2 as TaskSnapshot,
 } from '@qqbot/contracts';
 
 export { TaskAdmissionError } from '@qqbot/contracts';

@@ -385,6 +385,7 @@ export class MessageQueue {
         ...c,
         trace,
         attachment: undefined,
+        body: undefined,
         text: `发送 ${name} 消息失败。`,
         notification: true,
         immediateOnly: c.immediateOnly,

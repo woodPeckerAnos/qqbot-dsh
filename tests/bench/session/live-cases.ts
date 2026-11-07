@@ -100,7 +100,7 @@ const definitions: LiveDefinition[] = [
     '多轮与并发',
     '慢执行中新短问题',
     [{ text: long }, { text: '8加9等于几？', after: 'running' }],
-    '旧慢执行时新快回复17可送达；慢结果引用原问题',
+    '旧慢执行时新快回复17可送达，新短问的慢lane静默且无旧任务附件；旧慢结果引用原问题',
   ],
   [
     'L15',
@@ -248,6 +248,25 @@ async function runSteps(h: Harness, steps: InputStep[], id: string) {
   await Promise.all(h.handles.map((t) => t.done));
   await h.idle();
   h.check('all-inputs-create-task', h.handles.length === steps.length);
+  if (id === 'L14') {
+    const current = h.handles.at(-1)!;
+    const received = h.received(current.taskId);
+    const slowResult = h.task(current.taskId).lanes.slow.result;
+    h.assertions.push({
+      name: 'new-short-task-does-not-complete-old-work',
+      category: 'semantic',
+      status:
+        slowResult?.kind === 'silent' &&
+        received.every((action) => action.lane !== 'slow' && !action.attachments.length)
+          ? 'pass'
+          : 'fail',
+      evidence: {
+        slowResultKind: slowResult?.kind,
+        receivedLanes: received.map((action) => action.lane),
+        attachments: received.flatMap((action) => action.attachments.map((file) => file.fileName)),
+      },
+    });
+  }
   if (id === 'L24') {
     const slow = h.evidence.executions.filter((e) => e.lane === 'slow');
     h.assertions.push({
@@ -284,7 +303,7 @@ export const liveCases: BenchmarkCase[] = definitions.map(
     steps,
     expectation,
     reasoning,
-    version: 1,
+    version: id === 'L14' ? 2 : 1,
     run: (h) => runSteps(h, steps, id),
   })
 );

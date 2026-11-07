@@ -6,6 +6,53 @@ import { remainingCases, mixedCases } from './offline-resources.js';
 export type Definition = [string, string, string, (h: Harness) => Promise<void>];
 const definitions: Definition[] = [
   [
+    'O02C',
+    '应答出口',
+    'O02 正向协作：重复答案在最新快照消费后静默',
+    async (h) => {
+      const t = (await h.input({ text: '解释勾股定理' }))!;
+      const slow = await h.runtime(t.taskId, 'slow');
+      slow.cooperation!.responses.push('NO_REPLY');
+      await h.finish(
+        t,
+        '直角三角形两直角边平方和等于斜边平方。',
+        '勾股定理说：斜边平方等于两直角边平方之和。',
+        true
+      );
+      h.check(
+        'cooperation-duplicate-silent',
+        h.received(t.taskId).length === 1 && h.task(t.taskId).lanes.slow.result?.kind === 'silent'
+      );
+      h.check(
+        'cooperation-consumed',
+        slow.cooperation!.consumed.some(
+          (text) => text.includes('"ready":true') && text.includes('直角三角形')
+        )
+      );
+    },
+  ],
+  [
+    'O03C',
+    '应答出口',
+    'O03 正向协作：承接完整能力并明确纠正先前结论',
+    async (h) => {
+      const t = (await h.input({ text: '求解x+y=10，x-y=2' }))!;
+      const slow = await h.runtime(t.taskId, 'slow');
+      slow.cooperation!.responses.push('纠正先前快答的判断：两式相加得2x=12，所以x=6、y=4。');
+      await h.finish(t, '初步算得 x=5、y=5，我会继续核查。', '草稿');
+      h.check(
+        'cooperation-corrected',
+        h.received(t.taskId).at(-1)?.text.startsWith('纠正先前快答') === true
+      );
+      h.check(
+        'cooperation-capability-prompt',
+        JSON.stringify((await h.runtime(t.taskId, 'fast')).prompts).includes(
+          '不因快 lane 工具限制否认整个 agent 的能力'
+        )
+      );
+    },
+  ],
+  [
     'O01',
     '应答出口',
     '完全相同正文去重，交换lane完成顺序',

@@ -1,6 +1,6 @@
 import { failure } from '@qqbot/contracts';
 import type { DeepReadonly } from '@qqbot/contracts';
-import type { AgentTraceObserver, LaneRunner } from '@qqbot/contracts';
+import type { AgentTraceObserver, LaneRunnerV2 as LaneRunner } from '@qqbot/contracts';
 /**
  * 一个 lane 的 DSH 执行边界：取得独占 runtime 租约、注册执行身份与事件监听，
  * 再派发 prompt。父执行及所属子代理全部结束后，停止具体进程并收集交付物。
@@ -25,13 +25,30 @@ import { traceSpan, legacyTrace } from '../observability/index.js';
 import type { Logger } from '@qqbot/contracts';
 import { SYSTEM_CLOCK } from '@qqbot/contracts';
 import type { TaskClock } from '@qqbot/contracts';
-import type { TaskLifeCycleManager } from '@qqbot/contracts';
-import type { PromptPreparer } from '@qqbot/contracts';
-import type { TaskControlBridge } from '@qqbot/contracts';
-import type { Lane, LaneEvent, LaneResult, TaskSnapshot } from '@qqbot/contracts';
+import type { TaskLifeCycleManagerV2 as TaskLifeCycleManager } from '@qqbot/contracts';
+import type { PromptPreparerV2 as PromptPreparer } from '@qqbot/contracts';
+import type { TaskControlBridgeV2 as TaskControlBridge } from '@qqbot/contracts';
+import type {
+  Lane,
+  LaneEvent,
+  LaneResultV2 as LaneResult,
+  TaskSnapshotV2 as TaskSnapshot,
+} from '@qqbot/contracts';
+import { BusinessOutcome } from './business-outcome.js';
+import { bindCooperationRequest } from './cooperation.js';
+
+function silentResult(lane: Lane, cannotBeSilent: boolean): LaneResult {
+  if (cannotBeSilent)
+    return {
+      kind: 'failed',
+      text: '任务已执行，但没有返回有效结果。',
+      error: 'silent-after-execution',
+    };
+  return { kind: 'silent', reason: lane === 'slow' ? 'no-increment' : 'no-long-skill' };
+}
 
 /** 调度器只依赖此接口，验收可替换 DSH，不需要真实模型或已部署客户端。 */
-export type { LaneRunner } from '@qqbot/contracts';
+export type { LaneRunnerV2 as LaneRunner } from '@qqbot/contracts';
 export class DshLaneRunner implements LaneRunner {
   private readonly clock: TaskClock;
   constructor(
@@ -44,6 +61,7 @@ export class DshLaneRunner implements LaneRunner {
       logger: Logger;
       clock?: TaskClock;
       onEvent?: (event: LaneEvent) => void;
+      cooperation?: import('@qqbot/contracts').TaskCooperation;
     }
   ) {
     this.clock = options.clock ?? SYSTEM_CLOCK;
@@ -64,6 +82,7 @@ export class DshLaneRunner implements LaneRunner {
     let lease: RuntimeLease | undefined;
     let result: LaneResult;
     const disposers: (() => void)[] = [];
+    const cooperationAbort = new AbortController();
     try {
       const prepared = await preparer.prepare(task, {
         ...context,
@@ -92,7 +111,24 @@ export class DshLaneRunner implements LaneRunner {
         workspace,
         {
           logger,
-          env: { QQBOT_TASK_CHANNEL: '1', QQBOT_LANE: lane },
+          env: {
+            QQBOT_TASK_CHANNEL: '1',
+            QQBOT_LANE: lane,
+            QQBOT_TASK_ID: task.taskId,
+            QQBOT_EXECUTION_ID: executionId,
+            QQBOT_ROOT_SESSION_ID: sessionId,
+          },
+          taskCooperation:
+            lane === 'slow'
+              ? bindCooperationRequest(
+                  this.options.cooperation,
+                  { taskId: task.taskId, executionId, sessionId },
+                  () => lease,
+                  manager,
+                  signal,
+                  cooperationAbort.signal
+                )
+              : undefined,
           taskControl: (request) => {
             if (signal.aborted || request.sessionId !== sessionId)
               return { accepted: false, reason: '执行身份已失效' };
@@ -141,10 +177,23 @@ export class DshLaneRunner implements LaneRunner {
       });
       const tracing = observer;
       const runtime = lease.runtime;
+      if (lane === 'slow' && this.options.cooperation) {
+        const binding = { taskId: task.taskId, ...execution };
+        disposers.push(
+          this.options.cooperation.subscribe(task.taskId, (snapshot) => {
+            if (
+              !signal.aborted &&
+              !cooperationAbort.signal.aborted &&
+              manager.matches(task.taskId, lane, execution)
+            )
+              runtime.notifyTaskCooperation?.({ type: 'cooperation', binding, snapshot });
+          })
+        );
+      }
       const accumulator = createTurnAccumulator(sessionId);
       const children = new Set<string>();
       const childParents = new Map<string, string>();
-      let businessCalls = 0;
+      const business = new BusinessOutcome();
       let childFailed = false;
       let lastSeq = -1;
       let resolve!: (result: LaneResult) => void;
@@ -155,6 +204,7 @@ export class DshLaneRunner implements LaneRunner {
       const finish = (value: LaneResult) => {
         if (!settled) {
           settled = true;
+          cooperationAbort.abort();
           resolve(value);
         }
       };
@@ -174,15 +224,9 @@ export class DshLaneRunner implements LaneRunner {
           return;
         }
         const text = outcome.text.trim();
-        // 控制工具不算业务执行；调用业务工具后 NO_REPLY 属于契约失败。
+        // Successful tools can add no user-visible increment; failures and unfinished tools cannot be silent.
         if (text === 'NO_REPLY') {
-          if (businessCalls)
-            finish({
-              kind: 'failed',
-              text: '任务已执行，但没有返回有效结果。',
-              error: 'silent-after-execution',
-            });
-          else finish({ kind: 'silent', reason: 'no-long-skill' });
+          finish(silentResult(lane, business.cannotBeSilent));
         } else if (!text)
           finish({
             kind: 'failed',
@@ -212,11 +256,7 @@ export class DshLaneRunner implements LaneRunner {
         } catch (error) {
           logger.cause(error, 'lane-observer-failed');
         }
-        if (notification.event.type === 'tool/call') {
-          const data = notification.event.data as { name?: string; call?: { name?: string } };
-          if (!['query_tasks', 'cancel_task'].includes(data.name ?? data.call?.name ?? ''))
-            businessCalls++;
-        }
+        business.observe(notification.event);
         accumulator.observe(notification.event);
         check();
       };
@@ -287,6 +327,15 @@ export class DshLaneRunner implements LaneRunner {
       runtime.on('subagent.started', started);
       runtime.on('subagent.finished', finished);
       runtime.on('exit', exit);
+      const channelClosed = () => {
+        if (lane === 'slow' && this.options.cooperation)
+          finish({
+            kind: 'failed',
+            text: '协作通道关闭，任务已停止。',
+            error: 'cooperation-channel-closed',
+          });
+      };
+      disposers.push(runtime.onTaskChannelClose?.(channelClosed) ?? (() => {}));
       signal.addEventListener('abort', abort, { once: true });
       disposers.push(() => {
         runtime.off('invalid', invalid);
@@ -310,12 +359,12 @@ export class DshLaneRunner implements LaneRunner {
       });
       const instruction =
         lane === 'fast'
-          ? '你在快 lane。立即给出简短答复；需要长技能时说明任务会继续执行。仅可使用 query_tasks 和 cancel_task 查询或取消旧任务，不执行业务工具。'
-          : '你在慢 lane，自行判断是否需要长技能；深度推理也属于长技能。普通问答且无需长技能时仅返回 NO_REPLY。需要工具、研究、文件或深度推理时完整执行并等待所有子代理结束，子代理只能前台等待，最后返回最终结果。实际执行后失败、超时或空结果必须明确说明，执行后禁止返回 NO_REPLY。';
+          ? '你在快 lane。立即给出简短答复；需要研究、工具、文件或深度推理时简短承接，说明正在继续处理。你和慢 lane 是同一个完整 agent，不因快 lane 工具限制否认整个 agent 的能力，不提前宣称任务已完成。仅可使用 query_tasks 和 cancel_task 查询或取消旧任务，不执行业务工具。'
+          : '你在慢 lane，自行判断是否需要长技能，深度推理也属于长技能。完整执行并等待所有子代理结束，子代理只能前台等待。协作快照会告知同 Task 快 lane 实际成功送达的正文及失败分段。只交付新增信息，不复述已送达答案；没有增量时仅返回 NO_REPLY，成功执行工具后也允许。未送达的答案仍需答复；结论反转时明确回指先前快答并纠正。执行失败、超时、空结果以及需要说明的附件必须反馈，不能静默。结束前按最新协作快照完成衔接。';
       const blocks = [
         {
           type: 'text' as const,
-          text: `${instruction}\nTask ID：${task.taskId}\n最终交付物仅放在 ${join(workspace, config.media.outboxDir)}，临时文件不放那里。`,
+          text: `${instruction}\nTask ID：${task.taskId}\n只处理标明的当前 Task 输入。历史与观察仅作背景，其他 Task 的未完成承诺由原执行继续处理，不因旧承诺接管旧任务或生成旧附件；当前输入明确要求重做或追加时才按本次指令执行。\n最终交付物仅放在 ${join(workspace, config.media.outboxDir)}，临时文件不放那里。`,
         },
         ...prepared.blocks,
       ];
@@ -403,6 +452,7 @@ export class DshLaneRunner implements LaneRunner {
             errorId: logger.cause(error, 'lane-failed'),
           };
     } finally {
+      cooperationAbort.abort();
       observer?.close();
       disposers.forEach((fn) => {
         fn();

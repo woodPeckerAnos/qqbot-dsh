@@ -1,3 +1,4 @@
+import { CooperationDriver } from './cooperation-driver.js';
 import { EventEmitter } from 'node:events';
 import type WebSocket from 'ws';
 import type { DshRuntime, DshRuntimeOptions } from '../../src/dsh/process.js';
@@ -36,6 +37,7 @@ export class MockDshRuntime extends EventEmitter {
   disposed = 0;
   prompts: { sessionId: string; blocks: PromptContentBlock[] }[] = [];
   seq = 0;
+  cooperation?: CooperationDriver;
   constructor(readonly options: DshRuntimeOptions) {
     super();
   }
@@ -52,6 +54,8 @@ export class MockDshRuntime extends EventEmitter {
   async prompt(sessionId: string, blocks: PromptContentBlock[]) {
     this.prompts.push({ sessionId, blocks });
     this.emit('session.status', { sessionId, status: 'running' });
+    if (this.options.taskCooperation)
+      this.cooperation = new CooperationDriver(this.options, sessionId);
     return { messageId: 'mock-prompt' };
   }
   event(type: string, data: Record<string, unknown>, sessionId = this.prompts[0]!.sessionId) {
@@ -59,10 +63,27 @@ export class MockDshRuntime extends EventEmitter {
   }
   finish(text: string, reason = 'completed') {
     this.event('assistant/message', { message: { content: [{ type: 'text', text }] } });
-    this.event('turn/end', { reason: { kind: reason } });
-    this.emit('session.status', { sessionId: this.prompts[0]!.sessionId, status: 'idle' });
+    const end = (answer: string) => {
+      if (answer !== text)
+        this.event('assistant/message', { message: { content: [{ type: 'text', text: answer }] } });
+      this.event('turn/end', { turn: 1, reason: { kind: reason } });
+      this.emit('session.status', { sessionId: this.prompts[0]!.sessionId, status: 'idle' });
+    };
+    if (this.cooperation && reason === 'completed')
+      void this.cooperation.stop(text).then(end, () => {});
+    else end(text);
+  }
+  notifyTaskCooperation(update: import('@qqbot/contracts').TaskCooperationUpdate) {
+    this.cooperation?.receive(update);
+  }
+  onTaskChannelClose(listener: () => void) {
+    this.on('task.channel.closed', listener);
+    return () => {
+      this.off('task.channel.closed', listener);
+    };
   }
   async dispose() {
+    this.cooperation?.close();
     if (!this.ready) return;
     this.disposed++;
     this.ready = false;

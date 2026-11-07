@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import type { TaskHandle, Lane } from '@qqbot/contracts';
+import type { TaskHandleV2 as TaskHandle, Lane } from '@qqbot/contracts';
 import { isTaskTerminal } from '../../../src/task/index.js';
 import { until } from './harness.js';
 import type { Harness } from './harness.js';
@@ -188,14 +188,17 @@ export const remainingCases: Definition[] = [
       h.connector.maxChars = 10;
       for (const session of ['group-quota', 'private-quota']) {
         const t = (await h.input({ text: '配额', session }))!;
-        await h.finish(t, '甲乙丙丁戊己庚辛壬癸'.repeat(8));
+        (await h.runtime(t.taskId, 'fast')).finish('甲乙丙丁戊己庚辛壬癸'.repeat(8));
+        (await h.runtime(t.taskId, 'slow')).finish('NO_REPLY');
         const quota = session.startsWith('private') ? 4 : 5;
+        await until(() => h.received(t.taskId).length === quota);
         h.check('official-quota', h.received(t.taskId).length === quota, h.received(t.taskId));
         h.check(
           'shared-sequence',
           h.received(t.taskId).every((a, i) => a.seq === i + 1)
         );
         h.system.queue.observe(h.message({ text: '新出口', session }));
+        await t.done;
         await h.idle();
         h.check(
           'fresh-anchor-drains',
@@ -255,11 +258,11 @@ export const remainingCases: Definition[] = [
       const timed = (await h.input({ text: '发送超时' }))!;
       (await h.runtime(timed.taskId, 'fast')).finish('超时正文');
       (await h.runtime(timed.taskId, 'slow')).finish('NO_REPLY');
-      await timed.done;
       await until(() => h.system.queue.snapshot().sending === 1);
       h.clock.advance(120001);
       await new Promise<void>((r) => setImmediate(r));
       gate.resolve();
+      await timed.done;
       await h.idle();
       h.system.queue.wake();
       await h.idle();
@@ -275,7 +278,6 @@ export const remainingCases: Definition[] = [
         rows.some((m) => m.candidate.text === 'unknown-body' && m.status === 'sent');
       (await h.runtime(unknown.taskId, 'fast')).finish('unknown-body');
       (await h.runtime(unknown.taskId, 'slow')).finish('NO_REPLY');
-      await unknown.done;
       await until(() => h.received(unknown.taskId).length === 1);
       h.system.queue.wake();
       await new Promise<void>((r) => setImmediate(r));
@@ -286,6 +288,7 @@ export const remainingCases: Definition[] = [
       );
       h.stores.messages.fail = () => false;
       h.system.queue.wake();
+      await unknown.done;
       await h.idle();
     },
   ],
@@ -352,7 +355,7 @@ export const remainingCases: Definition[] = [
       h.connector.connected = false;
       const t = await h.submit({ text: '待发附件' });
       await h.artifact(t, 'durable-copy');
-      await h.finish(t, '承接', '附件说明');
+      await h.finish(t, 'NO_REPLY', '附件说明');
       const task = h.task(t.taskId);
       h.archived.push(task);
       h.system.manager.destroy(t.taskId);

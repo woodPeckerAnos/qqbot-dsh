@@ -20,19 +20,21 @@ Logger 子实例共享配置、预算与 stderr JSONL 缓冲。TaskLifeCycleMana
 
 ## Task 与双 lane
 
-应答链路的离线回归与真实模型语义 benchmark 见 [验收说明](SESSION-BENCHMARK.md) 和 [ADR-005](adr/005-session-response-benchmark.md)。承接、增量交付与矛盾检测是目标评测标准；当前出口仍只保证完全相同正文去重，尚无近似重复或终局否认冲突的语义保证。
+应答链路的离线回归与真实模型语义 benchmark 见 [验收说明](SESSION-BENCHMARK.md)。[ADR-006](adr/006-lane-cooperation.md) 已引入快回复插入和结束钩子衔接，提示词要求承接、增量交付和明确纠错；真实模型遵循情况须由独立 live benchmark 验收。ADR-005 的坏样本保留为裁判校准。
 
 当前运行架构：接入、归一化、去重、命令、输入判定 → SessionActor → TaskLifeCycleManager → 两个独立 LaneScheduler → SessionOutputCoordinator → MessageQueue → 连接器。唯一入口 `src/main.ts` 已完成装配。
 
 每个有效输入和主动请求恰好创建一个 Task，原子准入两个 lane。同 Session 每个 lane 串行，lane 之间独立推进。Actor 只协调短事务；长执行、媒体整理和上传不占 Actor 锁。上下文在输入时固定，话题切换只影响后续 generation。
 
-快 lane 独立 runtime / session，thinking=false、reasoningEffort=off，仅可查询和取消 Task。慢 lane 自行判定长技能（包括深度推理）；普通问答正常返回 NO_REPLY；实际执行失败、超时和空结果必须产生失败产物。子代理前台等待，执行及子代理均终结后结算。
+快 lane 独立 runtime / session，thinking=false、reasoningEffort=off，仅可查询和取消 Task；长任务简短承接，不因工具限制否认整个 agent 的能力、不提前宣称完成。慢 lane 自行判定长技能（包括深度推理），基于实际成功送达正文只交付新增部分，结论反转明确回指并纠正。无增量允许 NO_REPLY（包括成功工具执行后）；失败、超时、空结果和需要说明的附件必须反馈。子代理前台等待，执行及子代理均终结后结算。
+
+TaskSystem 提供只读协作快照，保留快 lane 执行状态、原始正文分段顺序、投递异常与成功送达内容。fd 3 消息绑定 Task/execution/runtime generation/sessionId，只向对应慢根 agent 同步 `agent.inject()`，下一 step 消费。`agent/turn-stopping` 直接等待快执行和其原始正文投递终态，未消费最新快照时继续同一 turn 完成衔接。等待保留 runtime、session、调度名额及 running 状态，计入 slowTimeoutMs；沿用 /stop 和存活提醒。取消、超时、通道关闭、服务关闭均释放等待资源；真正结束后才 endExecution。
 
 快 lane 的最终 provider/model 在环境覆盖后校验：`models.providers.<路由>.models` 中显式列举的所选模型必须声明 `reasoningEfforts.off` 和至少一个非 off 档位，禁止以缺省值或 `false` 隐藏能力不匹配。`modelOverrides` 仅在显式覆写能力时校验；未覆写的 DSH 目录及带外路由由 DSH 握手校验。初始化根因先记录，再回收进程；未就绪进程直接 SIGTERM，保留信号宽限及 SIGKILL 兜底，不等待无法发出的 shutdown。见 [ADR-004](adr/004-fast-lane-model-capability.md)。
 
-两个 lane 终结才结算 Task。取消优先，否则任一失败为 failed，其余 completed。执行完成不等待投递；投递失败不改写执行状态。已入队产物取消后仍发送。/stop 取消命令到达时有 lane 正执行的 Task；/new 取消全部未完成 Task 并重置上下文。
+两个 lane 终结才结算 Task。取消优先，否则任一失败为 failed，其余 completed。慢产物经衔接闸门入队后不等待自身投递；投递失败不改写执行状态。快原始正文 pending 时慢执行继续等待合法出口。已入队产物取消后仍发送。/stop 取消命令到达时有 lane 正执行的 Task（含结束钩子等待）；/new 取消全部未完成 Task 并重置上下文。
 
-慢、延迟、主动和存活提醒引用输入时保存的原消息。引用目标与平台出口锚点独立。相同 Task 完全相同正文去重，附件单独保留。后来的话题或回答不撤销已授权的主动请求。
+慢、延迟、主动和存活提醒引用输入时保存的原消息。引用目标与平台出口锚点独立。跨 lane 精确分段去重只依据成功送达的原始正文，入队幂等 ID 区分 lane；未送达的快答案不吞掉慢答案。附件独立保留，提醒、附件说明和失败通知不冒充原始正文。后来的话题或回答不撤销已授权的主动请求。受影响接口使用 v2，v1 声明和兼容基线保留。
 
 主动预算按 Task 预留一个单位，首次任意消息成功送达提交一次，静默或所有投递失败释放。范围绑定触发时的话题。队列先持久化再尝试发送；失败或超时不重试，只生成一次不递归失败通知。重启不恢复执行、不重发已尝试但结果未知的消息。
 

@@ -286,13 +286,15 @@ export const modules = immutableConstant([
   {
     id: 'task',
     title: 'Task',
-    version: '1.0.0',
+    version: '2.0.0',
     owner: '项目维护者',
     entry: 'src/task/index.ts',
     files: [
       'src/task/budget.ts',
+      'src/task/business-outcome.ts',
       'src/task/clock.ts',
       'src/task/control-bridge.ts',
+      'src/task/cooperation.ts',
       'src/task/dsh-lane-runner.ts',
       'src/task/index.ts',
       'src/task/lane-scheduler.ts',
@@ -306,11 +308,15 @@ export const modules = immutableConstant([
     dependencies: ['runtime', 'media', 'store', 'delivery', 'observability', 'content'],
     capabilities: ['node:crypto', 'node:fs', 'node:fs/promises', 'node:path', 'node:url'],
     responsibility: 'Actor、执行状态、lane、预算、控制、输入准备及装配；不写投递状态',
-    invariants: ['每输入一个 Task，双 lane 终结，短事务无整轮锁，预算守恒'],
+    invariants: [
+      '每输入一个 Task，双 lane 终结，短事务无整轮锁，预算守恒；慢结束钩子保持 running 等待同 Task 快执行和原始正文终结',
+      'lane、Task ID、outbox 和工作区路径仅用于内部协作，用户回复以处理进度和实际交付物描述衔接',
+      'prompt 区分历史背景与当前 Task 输入；其他 Task 未完成承诺不触发当前执行接管旧任务或生成旧附件',
+    ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
     errors:
-      '准入/持久化失败不留下可调度半成品；失败与正常 silent 分开；预算保存失败由维护循环只补结算，未创建 Task 的预留释放',
+      '准入/持久化失败不留下可调度半成品；失败与正常 silent 分开，v2 成功执行无增量允许 no-increment；预算保存失败由维护循环只补结算，未创建 Task 的预留释放',
     concurrency:
       '同模块所有者协调写入；异步退订与关闭幂等，关闭后不创建新工作；事件按具体身份和幂等键至多一次结算',
     freshness: '输入时固定 generation/窗口，排队不计执行时限，终态保留 7 天',
@@ -334,7 +340,7 @@ export const modules = immutableConstant([
   {
     id: 'delivery',
     title: '投递',
-    version: '1.0.0',
+    version: '2.0.0',
     owner: '项目维护者',
     entry: 'src/delivery/index.ts',
     files: [
@@ -346,7 +352,9 @@ export const modules = immutableConstant([
     dependencies: ['content', 'media', 'observability'],
     capabilities: ['node:crypto', 'node:fs/promises', 'node:path'],
     responsibility: '队列、产物、正文去重、原引用与提醒；不写执行状态',
-    invariants: ['MessageQueue 唯一写者，发送前持久化，失败通知一次，附件独立'],
+    invariants: [
+      'MessageQueue 唯一写者，发送前持久化，失败通知一次，附件独立；跨 lane 去重只依据成功送达正文，入队 ID 区分 lane',
+    ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
     errors:

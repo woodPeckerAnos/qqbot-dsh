@@ -7,25 +7,49 @@ import type { DeepReadonly } from '@qqbot/contracts';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { traceSpan, legacyTrace } from '../observability/index.js';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { normalizeWhitespace, stripControlChars } from '../content/index.js';
 import { segmentText } from '../content/index.js';
 import type { TaskBudget } from '@qqbot/contracts';
 import { SYSTEM_CLOCK } from '@qqbot/contracts';
 import type { TaskClock } from '@qqbot/contracts';
-import type { TaskLifeCycleManager } from '@qqbot/contracts';
+import type { TaskLifeCycleManagerV2 as TaskLifeCycleManager } from '@qqbot/contracts';
 import type { MessageQueue } from '@qqbot/contracts';
 import { isTaskTerminal } from '@qqbot/contracts';
 import type {
   DeliveryResult,
   Lane,
-  LaneResult,
+  LaneResultV2 as LaneResult,
   ReplyCandidate,
-  TaskSnapshot,
+  QueuedMessage,
+  TaskSnapshotV2 as TaskSnapshot,
 } from '@qqbot/contracts';
 
+/** Match each successfully delivered occurrence once, preserving repeated segments. */
+function deliveredBodyCounts(rows: DeepReadonly<QueuedMessage[]>, lane: Lane): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const candidate = row.candidate;
+    if (
+      row.status !== 'sent' ||
+      candidate.lane === lane ||
+      !candidate.body ||
+      candidate.notification ||
+      candidate.attachment
+    )
+      continue;
+    counts.set(candidate.text, (counts.get(candidate.text) ?? 0) + 1);
+  }
+  return counts;
+}
+function consumeDeliveredBody(counts: Map<string, number>, text: string): boolean {
+  const remaining = counts.get(text) ?? 0;
+  if (!remaining) return false;
+  counts.set(text, remaining - 1);
+  return true;
+}
+
 export class SessionOutputCoordinator {
-  private readonly texts = new Map<string, Set<string>>();
   private readonly fastSent = new Map<string, number>();
   private readonly reminded = new Set<string>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -54,14 +78,8 @@ export class SessionOutputCoordinator {
         this.onDelivery(result, candidate);
       }),
     ];
-    for (const row of options.queue.messages()) {
-      const texts = this.texts.get(row.candidate.taskId) ?? new Set<string>();
-      // Body identity is also reconstructed below by accepting the same result chunks.
-      texts.add(row.candidate.text);
-      this.texts.set(row.candidate.taskId, texts);
-    }
   }
-  /** runner 已验证静默契约；不同 lane 的不同正文分别保留，附件不参与正文去重。 */
+  /** runner 已完成协作闸门；跨 lane 去重只依据成功送达原始正文，附件独立幂等。 */
   async accept(
     task: DeepReadonly<TaskSnapshot>,
     lane: Lane,
@@ -98,41 +116,55 @@ export class SessionOutputCoordinator {
       quote,
       kind,
     } as const;
-    const seen = this.texts.get(task.taskId) ?? new Set<string>();
-    this.texts.set(task.taskId, seen);
-    if (text && !seen.has(text)) {
+    const bodyId = `${task.taskId}:${lane}:body:${resultId ?? createHash('sha256').update(text).digest('hex')}`;
+    if (text) {
       let i = 0;
-      const bodyId =
-        resultId ?? `${task.taskId}:body:${createHash('sha256').update(text).digest('hex')}`;
       const spokenText =
         quote && !reference.messageId
           ? `（关于 ${reference.senderName ?? reference.senderId} 的「${reference.excerpt.slice(0, 120)}」）\n${text}`
           : text;
+      const delivered = deliveredBodyCounts(this.options.queue.messages(task.taskId), lane);
       for (const part of segmentText(spokenText, {
         maxChars: this.options.maxChars(task),
         maxSegments: Math.max(1, spokenText.length),
-      }).segments)
-        this.options.queue.enqueue({ ...base, text: part }, `${bodyId}:text:${i++}`);
-      seen.add(text);
+      }).segments) {
+        const index = i++;
+        if (!consumeDeliveredBody(delivered, part))
+          this.options.queue.enqueue(
+            { ...base, text: part, body: { id: bodyId, index } },
+            `${bodyId}:text:${index}`
+          );
+      }
     }
-    for (const attachment of result.attachments ?? []) {
+    for (const [index, attachment] of (result.attachments ?? []).entries()) {
+      const attachmentId = `${bodyId}:attachment:${index}`;
+      if (this.options.queue.messages(task.taskId).some((row) => row.id === attachmentId)) continue;
       // 先复制到队列专属目录，Task 工作区到期清理后待发附件仍能取到字节。
       const directory = join(this.options.filesDir, task.taskId);
       await mkdir(directory, { recursive: true });
-      const absPath = join(directory, `${lane}-${randomUUID()}-${basename(attachment.fileName)}`);
+      const absPath = join(
+        directory,
+        `${lane}-${createHash('sha256').update(attachmentId).digest('hex')}-${basename(attachment.fileName)}`
+      );
       await copyFile(attachment.absPath, absPath);
       const ref = task.input.reference;
-      this.options.queue.enqueue({
-        ...base,
-        text: `附件「${attachment.fileName}」对应 ${ref.senderName ?? ref.senderId} 的「${ref.excerpt.slice(0, 100)}」。`,
-        reference: ref,
-      });
-      this.options.queue.enqueue({
-        ...base,
-        text: '',
-        attachment: { ...attachment, absPath },
-        reference: task.input.reference,
-      });
+      this.options.queue.enqueue(
+        {
+          ...base,
+          text: `附件「${attachment.fileName}」对应 ${ref.senderName ?? ref.senderId} 的「${ref.excerpt.slice(0, 100)}」。`,
+          reference: ref,
+        },
+        `${attachmentId}:description`
+      );
+      this.options.queue.enqueue(
+        {
+          ...base,
+          text: '',
+          attachment: { ...attachment, absPath },
+          reference: task.input.reference,
+        },
+        attachmentId
+      );
     }
   }
   /** 任一送达即可提交；释放则必须同时满足执行结束与所有消息均终结未成功。 */
@@ -161,7 +193,6 @@ export class SessionOutputCoordinator {
     const timer = this.timers.get(taskId);
     if (timer) this.clock.clearTimeout(timer);
     this.timers.delete(taskId);
-    this.texts.delete(taskId);
     this.fastSent.delete(taskId);
     this.reminded.delete(taskId);
   }

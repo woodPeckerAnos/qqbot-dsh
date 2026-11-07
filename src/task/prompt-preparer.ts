@@ -25,7 +25,7 @@ import { collectWindowMedia, latestPendingRecord, renderWindowBlock } from '../s
 import type { MessageContext } from '@qqbot/contracts';
 import type { PipelineStats } from '@qqbot/contracts';
 import type { TopicJudge } from '@qqbot/contracts';
-import type { TaskSnapshot, TaskInput } from '@qqbot/contracts';
+import type { TaskSnapshotV2 as TaskSnapshot, TaskInput } from '@qqbot/contracts';
 import type { TaskClock } from '@qqbot/contracts';
 interface PreparedPrompt {
   blocks: PromptContentBlock[];
@@ -172,7 +172,14 @@ export class PromptPreparer {
     const current = proactive
       ? `（系统主动 Task，已在触发时授权；按保存的依据与原引用执行，不因为后来话题翻篇或问题已答而撤销。）\n任务：${proactive.directive}\n触发依据：${proactive.evidence ?? ''}`
       : `[${task.input.message.username ?? task.input.message.senderId}] ${task.input.message.content}`;
-    const text = [renderWindowBlock(context.window), recordText, context.replay, current]
+    const background = [renderWindowBlock(context.window), recordText, context.replay]
+      .filter(Boolean)
+      .join('\n\n');
+    const text = [
+      background &&
+        `【历史与观察背景：仅用于理解本次输入。其他 Task 的未完成承诺由原 Task 继续处理，本次不得自行接管。】\n${background}\n【背景结束】`,
+      `【当前唯一 Task 输入：${task.taskId}】\n${current}\n【当前输入结束】`,
+    ]
       .filter(Boolean)
       .join('\n\n');
     const result = await this.buildPromptBlocks(

@@ -1,4 +1,8 @@
-import type { RuntimePool, MessageQueue, SessionOutputCoordinator } from '@qqbot/contracts';
+import type {
+  RuntimePool,
+  MessageQueue,
+  SessionOutputCoordinatorV2 as SessionOutputCoordinator,
+} from '@qqbot/contracts';
 /**
  * Task 架构装配与资源生命周期：独立状态存储、双 runtime 池、控制桥和出口回调。
  * 恢复先登记一次中断产物，再结算旧执行，最后释放孤立预算与到期工作区。
@@ -27,16 +31,17 @@ import type { BudgetRecord } from '@qqbot/contracts';
 import { createMessageQueue } from '../delivery/index.js';
 import type { QueuedMessage } from '@qqbot/contracts';
 import { PromptPreparer } from './prompt-preparer.js';
-import { createSessionOutputCoordinator } from '../delivery/index.js';
+import { createSessionOutputCoordinatorV2 } from '../delivery/index.js';
 import { LaneScheduler } from './lane-scheduler.js';
 import { TaskControlBridge } from './control-bridge.js';
 import { DshLaneRunner } from './dsh-lane-runner.js';
-import type { LaneRunner } from '@qqbot/contracts';
+import type { LaneRunnerV2 as LaneRunner } from '@qqbot/contracts';
 import { SessionActor } from './session-actor.js';
+import { TaskCooperation } from './cooperation.js';
 import type { SessionContextState } from '@qqbot/contracts';
 import { ProactiveTaskAdapter } from './proactive-adapter.js';
 import type { TaskClock } from '@qqbot/contracts';
-import type { Lane, TaskSnapshot } from '@qqbot/contracts';
+import type { Lane, TaskSnapshotV2 as TaskSnapshot } from '@qqbot/contracts';
 
 export class TaskSystem {
   readonly manager: TaskLifeCycleManager;
@@ -46,6 +51,7 @@ export class TaskSystem {
   readonly actor: SessionActor;
   readonly output: SessionOutputCoordinator;
   readonly proactive: ProactiveTaskAdapter;
+  readonly cooperation: TaskCooperation;
   private readonly maintenance: ReturnType<typeof setInterval>;
   private readonly preparer: PromptPreparer;
   constructor(
@@ -92,6 +98,7 @@ export class TaskSystem {
       logger,
       clock: options.clock,
     });
+    this.cooperation = new TaskCooperation(this.manager, this.queue);
     const preparer = (this.preparer = new PromptPreparer(options));
     this.pools =
       options.pools ??
@@ -123,7 +130,7 @@ export class TaskSystem {
     const control = new TaskControlBridge(this.manager, (id) => {
       this.actor.cancelExecution(id);
     });
-    this.output = createSessionOutputCoordinator({
+    this.output = createSessionOutputCoordinatorV2({
       manager: this.manager,
       budget: this.budget,
       queue: this.queue,
@@ -177,6 +184,7 @@ export class TaskSystem {
         config,
         logger,
         clock: options.clock,
+        cooperation: this.cooperation,
       });
     const actor = new SessionActor({
       manager: this.manager,
@@ -261,6 +269,7 @@ export class TaskSystem {
   async prune(): Promise<void> {
     for (const task of this.manager.prune()) {
       this.output.forget(task.taskId);
+      this.cooperation.forget(task.taskId);
       try {
         await this.preparer.removeWorkspace(task);
       } catch (error) {
@@ -305,6 +314,7 @@ export class TaskSystem {
       this.manager.list().map((task) => this.manager.handle(task.taskId).done)
     );
     this.output.close();
+    this.cooperation.close();
     this.queue.close();
   }
 }

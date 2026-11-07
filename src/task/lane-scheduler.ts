@@ -5,7 +5,7 @@ import type { DeepReadonly } from '@qqbot/contracts';
  * 调度器拥有 AbortController 和运行名额，Task 状态通过 settle 交回管理器。
  * run 包含所属执行的产物收尾；finally 后才允许同 Session 的下一项开始。
  */
-import type { LaneResult, TaskSnapshot } from '@qqbot/contracts';
+import type { LaneResultV2 as LaneResult, TaskSnapshotV2 as TaskSnapshot } from '@qqbot/contracts';
 
 interface Job {
   task: DeepReadonly<TaskSnapshot>;

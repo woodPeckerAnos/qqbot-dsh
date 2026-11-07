@@ -3,16 +3,16 @@ import {
   type DeepReadonly,
   type RuntimeLease,
   type StateReader,
-  type TaskSnapshot,
+  type TaskSnapshotV2 as TaskSnapshot,
 } from '@qqbot/contracts';
-import { createTaskLifeCycleManager } from '../../src/task/index.js';
+import { createTaskLifeCycleManagerV2 } from '../../src/task/index.js';
 import { createPipelineStats } from '../../src/observability/index.js';
 import { createRuntimePool } from '../../src/runtime/index.js';
 
 /** Compile-only consumer: each expected error must remain an actual TypeScript rejection. */
 export function verifyTaskSnapshots(
   task: DeepReadonly<TaskSnapshot>,
-  manager: ReturnType<typeof createTaskLifeCycleManager>
+  manager: ReturnType<typeof createTaskLifeCycleManagerV2>
 ): void {
   // @ts-expect-error Task execution state belongs to its lifecycle owner.
   task.lanes.fast.status = 'completed';
@@ -35,7 +35,7 @@ export function verifyTaskSnapshots(
 
 export function verifyDelivery(
   queue: import('@qqbot/contracts').MessageQueue,
-  actor: import('@qqbot/contracts').SessionActor,
+  actor: import('@qqbot/contracts').SessionActorV2,
   observer: import('@qqbot/contracts').AgentTraceObserver
 ): void {
   // @ts-expect-error The public message list is immutable, including its array.

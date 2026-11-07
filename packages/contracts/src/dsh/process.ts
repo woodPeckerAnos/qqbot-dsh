@@ -53,6 +53,10 @@ export interface DshRuntimeOptions {
   reasoningEffort?: string;
   /** Dedicated fd 3 channel; authorization is bound by the parent, never by model args. */
   taskControl?: (request: { action: string; taskId?: string; sessionId?: string }) => unknown;
+  taskCooperation?: (
+    request: import('../task/cooperation.js').TaskCooperationRequest,
+    signal: AbortSignal
+  ) => unknown;
   requestTimeoutMs?: number;
   /** initialize 的等待超时（进程冷启动 + profile 组合，可能较慢） */
   startTimeoutMs: number;
@@ -91,6 +95,8 @@ export interface DshRuntime extends EventEmitter {
    * 已经过 MIME 嗅探与大小裁剪，这里只负责原样透传。
    */
   prompt(sessionId: string, blocks: PromptContentBlock[]): Promise<SessionPromptResult>;
+  notifyTaskCooperation?(update: import('../task/cooperation.js').TaskCooperationUpdate): void;
+  onTaskChannelClose?(listener: () => void): () => void;
   /** 是否已就绪且可接受新提示 */
   get isReady(): boolean;
   /**

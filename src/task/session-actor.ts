@@ -9,16 +9,21 @@ import { randomUUID } from 'node:crypto';
 import { createTrace, traceSpan } from '../observability/index.js';
 import type { TraceContext } from '@qqbot/contracts';
 import type { MessageContext } from '@qqbot/contracts';
-import type { TaskLifeCycleManager } from '@qqbot/contracts';
-import type { PromptPreparer } from '@qqbot/contracts';
-import type { LaneScheduler } from '@qqbot/contracts';
-import type { LaneRunner } from '@qqbot/contracts';
-import type { SessionOutputCoordinator } from '@qqbot/contracts';
+import type { TaskLifeCycleManagerV2 as TaskLifeCycleManager } from '@qqbot/contracts';
+import type { PromptPreparerV2 as PromptPreparer } from '@qqbot/contracts';
+import type { LaneSchedulerV2 as LaneScheduler } from '@qqbot/contracts';
+import type { LaneRunnerV2 as LaneRunner } from '@qqbot/contracts';
+import type { SessionOutputCoordinatorV2 as SessionOutputCoordinator } from '@qqbot/contracts';
 import type { TaskBudget } from '@qqbot/contracts';
 import type { TaskClock } from '@qqbot/contracts';
 import type { SessionStateWriter } from '@qqbot/contracts';
 import { LANES, isTaskTerminal } from '@qqbot/contracts';
-import type { Lane, LaneResult, TaskHandle, TaskInput } from '@qqbot/contracts';
+import type {
+  Lane,
+  LaneResultV2 as LaneResult,
+  TaskHandleV2 as TaskHandle,
+  TaskInput,
+} from '@qqbot/contracts';
 
 export class SessionActor {
   private readonly generations = new Map<string, { generation: number; sinceTs: number }>();

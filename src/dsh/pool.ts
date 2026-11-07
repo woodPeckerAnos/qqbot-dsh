@@ -61,6 +61,7 @@ interface RuntimeEntry {
   lease?: RuntimeLease;
   closing: boolean;
   disposal?: Promise<void>;
+  readonly disposers: (() => void)[];
 }
 
 export type { RuntimePoolOptions } from '@qqbot/contracts';
@@ -277,6 +278,10 @@ export class RuntimePool extends EventEmitter {
       });
     });
     await entry.disposal;
+    entry.disposers.forEach((dispose) => {
+      dispose();
+    });
+    entry.disposers.length = 0;
     if (this.entries.get(conversationKey) === entry) this.entries.delete(conversationKey);
     this.wakeWaiters();
   }
@@ -308,6 +313,7 @@ export class RuntimePool extends EventEmitter {
     const runtimeOptions: DshRuntimeOptions = {
       ...base,
       ...overrides,
+      env: { ...base.env, ...overrides.env, QQBOT_RUNTIME_GENERATION: generation },
       cwd: workspacePath,
       logger: (overrides.logger ?? logger).child({
         conversation: conversationKey,
@@ -333,21 +339,27 @@ export class RuntimePool extends EventEmitter {
       activeChildren: new Set<string>(),
       handle: this.runtimeHandle(runtime),
       closing: false,
+      disposers: [],
     };
-
-    runtime.on('session.event', (n) => this.emit('session.event', conversationKey, n));
-    runtime.on('session.status', (n) => this.emit('session.status', conversationKey, n));
+    const listen = <K extends keyof DshRuntimeEvents>(event: K, listener: DshRuntimeEvents[K]) => {
+      runtime.on(event, listener);
+      entry.disposers.push(() => {
+        runtime.off(event, listener);
+      });
+    };
+    listen('session.event', (n) => this.emit('session.event', conversationKey, n));
+    listen('session.status', (n) => this.emit('session.status', conversationKey, n));
     // 子代理进出：维护 activeChildren（回收豁免的依据），并向上冒泡供统计/日志。
-    runtime.on('subagent.started', (n: SubagentStartedNotification) => {
+    listen('subagent.started', (n: SubagentStartedNotification) => {
       entry.activeChildren.add(n.childSessionId);
       this.emit('subagent.started', conversationKey, n);
     });
-    runtime.on('subagent.finished', (n: SubagentFinishedNotification) => {
+    listen('subagent.finished', (n: SubagentFinishedNotification) => {
       entry.activeChildren.delete(n.childSessionId);
       if (!entry.busy && !entry.activeChildren.size) this.wakeWaiters();
       this.emit('subagent.finished', conversationKey, n);
     });
-    runtime.on('exit', (code, signal) => {
+    listen('exit', (code, signal) => {
       this.emit('runtime.exit', conversationKey, code, signal);
     });
 
@@ -355,6 +367,9 @@ export class RuntimePool extends EventEmitter {
       await runtime.start();
     } catch (error) {
       await runtime.dispose().catch(() => {});
+      entry.disposers.forEach((dispose) => {
+        dispose();
+      });
       throw error;
     }
     return entry;
@@ -376,6 +391,10 @@ export class RuntimePool extends EventEmitter {
       },
       prompt: (sessionId: string, blocks: PromptContentBlock[]) =>
         runtime.prompt(sessionId, structuredClone(blocks)),
+      notifyTaskCooperation: (update: import('@qqbot/contracts').TaskCooperationUpdate) =>
+        runtime.notifyTaskCooperation?.(structuredClone(update)),
+      onTaskChannelClose: (listener: () => void) =>
+        runtime.onTaskChannelClose?.(listener) ?? (() => {}),
       on: <K extends keyof DshRuntimeEvents>(event: K, listener: DshRuntimeEvents[K]): void => {
         runtime.on(event, listener);
       },

@@ -11,7 +11,7 @@ import { createTrace, traceSpan } from '../observability/index.js';
 import type { TraceContext, Logger } from '@qqbot/contracts';
 import type { MessageContext } from '@qqbot/contracts';
 
-import type { SessionActor } from '@qqbot/contracts';
+import type { SessionActorV2 as SessionActor } from '@qqbot/contracts';
 import type { ReplyCandidate } from '@qqbot/contracts';
 
 /** watcher 的触发时预算投影，回调闭包始终指向原话题对象。 */

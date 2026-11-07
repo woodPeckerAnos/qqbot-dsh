@@ -58,3 +58,9 @@ function retryPolicy(code: FailureCode): ContractFailure['retry'] {
     return 'safe';
   return 'after-change';
 }
+
+export interface TaskStateWriterV2 extends StateWriter<
+  import('./task/types-v2.js').TaskSnapshotV2
+> {
+  readonly domain?: 'tasks';
+}

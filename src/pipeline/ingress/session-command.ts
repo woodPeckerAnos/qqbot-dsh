@@ -1,4 +1,4 @@
-import type { SessionActor } from '@qqbot/contracts';
+import type { SessionActorV2 as SessionActor } from '@qqbot/contracts';
 import type { PipelineStats } from '@qqbot/contracts';
 import { logInputShortcut } from './types.js';
 import type { IngressStage } from '@qqbot/contracts';
@@ -17,7 +17,9 @@ export function parseSessionCommand(content: string): 'stop' | 'new' | undefined
  * 普通成员的自然语言取消由输入身份绑定的 TaskControlBridge 检查权限。
  */
 export class SessionCommandRouter {
-  constructor(private readonly options: { actor: SessionActor; stats: PipelineStats }) {}
+  constructor(
+    private readonly options: { actor: Pick<SessionActor, 'stop' | 'reset'>; stats: PipelineStats }
+  ) {}
   stage(): IngressStage {
     return async (context, next) => {
       const command = parseSessionCommand(context.message.content);

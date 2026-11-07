@@ -41,6 +41,9 @@ class FakeRuntime {
   on(event: string, handler: (...args: never[]) => void): void {
     (this.handlers[event] ??= []).push(handler);
   }
+  off(event: string, handler: (...args: never[]) => void): void {
+    this.handlers[event] = (this.handlers[event] ?? []).filter((item) => item !== handler);
+  }
 
   /** 测试驱动：触发已注册的事件 handler。 */
   emit(event: string, ...args: unknown[]): void {

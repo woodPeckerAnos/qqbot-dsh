@@ -678,7 +678,7 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     await h.connector.stop();
     await mkdir(join(slow.options.cwd, 'outbox'), { recursive: true });
     await writeFile(join(slow.options.cwd, 'outbox', 'report.txt'), '可靠内容');
-    fast.finish('开始');
+    fast.finish('NO_REPLY');
     slow.finish('完成');
     await h.system.manager.handle(h.system.manager.list()[0]!.taskId).done;
     const attachment = h.system.queue.messages().find((r) => r.candidate.attachment)!.candidate
@@ -1239,8 +1239,8 @@ describe('Logger 全链路离线验收', () => {
     });
     const old = { ...message('expired'), ts: Date.now() - 10000 };
     const handle = await h.system.actor.submit(h.system.context(old));
-    (await h.runtime('fast')).finish('delayed reply');
-    (await h.runtime('slow')).finish('NO_REPLY');
+    (await h.runtime('fast')).finish('NO_REPLY');
+    (await h.runtime('slow')).finish('delayed reply');
     const task = await handle.done;
     expect(h.system.queue.snapshot().pending).toBe(1);
     h.system.manager.destroy(task.taskId);

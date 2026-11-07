@@ -99,6 +99,8 @@ export interface ReplyCandidate {
   reference?: OriginalMessageReference;
   quote?: boolean;
   text: string;
+  /** Original body marker excludes attachment descriptions, reminders and notices. */
+  body?: { id: string; index: number };
   attachment?: OutgoingAttachment;
   kind: 'final' | 'error' | 'progress';
   /** 发送失败通知标记，阻止通知失败时递归创建新通知。 */

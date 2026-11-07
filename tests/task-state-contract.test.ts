@@ -551,7 +551,7 @@ describe('MessageQueue owner 持久化契约', () => {
     );
     expect(h.queue.messages()).toHaveLength(1);
     h.store.reject = () => false;
-    await output.accept(manager.get('task')!, 'slow', result);
+    await output.accept(manager.get('task')!, 'fast', result);
     expect(h.queue.messages()).toHaveLength(3);
     expect(
       h.queue
@@ -561,5 +561,9 @@ describe('MessageQueue owner 持久化契约', () => {
     ).toBe('abcdefgh');
     await output.accept(manager.get('task')!, 'fast', result);
     expect(h.queue.messages()).toHaveLength(3);
+    // The other lane has its own IDs; pending fast segments cannot suppress slow answers.
+    await output.accept(manager.get('task')!, 'slow', result);
+    expect(h.queue.messages()).toHaveLength(6);
+    expect(new Set(h.queue.messages().map((row) => row.id)).size).toBe(6);
   });
 });

@@ -35,7 +35,7 @@ import { installLoggingReload } from './observability/index.js';
 import { createLogger } from './observability/index.js';
 import { CN_HOLIDAYS_2026 } from '@qqbot/contracts';
 import { createOffpeakGate } from './offpeak/index.js';
-import { createTaskSystem } from './task/index.js';
+import { createTaskSystemV2 } from './task/index.js';
 import { createDocumentExtractor } from './media/index.js';
 import { writeModelApiPatch } from './config/index.js';
 import { createResponder } from './delivery/index.js';
@@ -304,7 +304,7 @@ async function main(): Promise<void> {
     logger: logger.child({ component: 'offpeak' }),
   });
 
-  const taskSystem = createTaskSystem({
+  const taskSystem = createTaskSystemV2({
     config,
     logger: logger.child({ component: 'tasks' }),
     paths,

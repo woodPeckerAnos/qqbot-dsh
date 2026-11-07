@@ -23,7 +23,7 @@ import { createServer, type Server } from 'node:http';
 
 import type { ConnectorHealth } from '@qqbot/contracts';
 import type { LoggingSnapshot } from '@qqbot/contracts';
-import type { SessionActor } from '@qqbot/contracts';
+import type { SessionActorV2 as SessionActor } from '@qqbot/contracts';
 import type { MessageQueue } from '@qqbot/contracts';
 import type { PipelineStatsSnapshot } from '@qqbot/contracts';
 
