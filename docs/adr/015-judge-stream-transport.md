@@ -20,6 +20,6 @@ JudgeConfig 增加可选 stream:boolean，默认 false 保持原 JSON 响应协�
 
 离线实现完成后的 `npm run check` 已通过：62 个文件、1371 项离线测试、39 个契约冒烟；44 项 WebSocket 按离线模式跳过。新增传输回归还验证累计正文超限、错误 UTF-8、非 SSE 正文取消、读流网络失败及超时后 reader/监听器释放。真实模型三重复回归使用独立目录 `tmp/session-context-stream-strict`，实际结果记入 [Phase 1 验收](../SESSION-CONTEXT-ACCEPTANCE.md)，完成前不标记发布通过。
 
-该流式轮次已完成并[归档](../benchmarks/session-context-live-v4/strict-failed/report.json)：校准 14/14、运行 18/18，语义 16 pass、2 fail/severe、0 inconclusive，关闭资源全部为零。没有传输请求错误，但旧生产进度提示的 LC02 第一次、第三次因完成范围未限定，被判 trust=fail/severe，严格门禁未通过。旧提示轮次不代表 [ADR-016](016-progress-completion-qualification.md) 修复后的行为；修复后的独立完整回归继续使用相同 SSE 传输。
+该流式轮次已完成：校准 14/14、运行 18/18，语义 16 pass、2 fail/severe、0 inconclusive，关闭资源全部为零。没有传输请求错误，但旧生产进度提示的 LC02 第一次、第三次因完成范围未限定，被判 trust=fail/severe，严格门禁未通过。旧提示轮次不代表 [ADR-016](016-progress-completion-qualification.md) 修复后的行为；修复后的独立完整回归继续使用相同 SSE 传输。摘要见 [SessionContextView 证据摘要](../SESSION-CONTEXT-EVIDENCE.md)，原始报告按需重新生成。
 
-ADR-016 修复后的[独立完整回归](../benchmarks/session-context-live-v5/strict/report.json) 已通过：真实校准 14/14、六场景各三次运行与语义 18/18，零失败、零 inconclusive、零关闭资源。该轮使用本 ADR 的 SSE 传输与 300 秒时限；无个别重试或旧样本合并，传输与生产修复的联合发布前门禁完成。
+ADR-016 修复后的独立完整回归已通过：真实校准 14/14、六场景各三次运行与语义 18/18，零失败、零 inconclusive、零关闭资源。该轮使用本 ADR 的 SSE 传输与 300 秒时限；无个别重试或旧样本合并，传输与生产修复的联合发布前门禁完成。摘要与源码指纹见 [SessionContextView 证据摘要](../SESSION-CONTEXT-EVIDENCE.md)。

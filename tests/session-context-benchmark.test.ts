@@ -7,7 +7,7 @@ import { compare, gate, markdown } from './bench/session/report.js';
 import type { BenchmarkOptions, BenchmarkReport } from './bench/session/types.js';
 
 const baselinePath = fileURLToPath(
-  new URL('../docs/benchmarks/session-context-v1/report.json', import.meta.url)
+  new URL('./fixtures/session-context-baseline.json', import.meta.url)
 );
 const options: BenchmarkOptions = {
   mode: 'offline',

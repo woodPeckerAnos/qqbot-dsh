@@ -7,7 +7,7 @@
     "seed": 42,
     "full": false,
     "strict": true,
-    "output": "/Users/woodpeckeranos/Projects/qqbot-dsh/docs/benchmarks/session-context-v1"
+    "output": "tmp/session-context-baseline"
   },
   "records": [
     {

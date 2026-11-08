@@ -14,7 +14,7 @@
 
 场景可声明 `requiredAssertions`，报告原样保存。runner 检查每项声明都有实际执行的断言，缺失形成运行失败；失败和 inconclusive 均不可通过运行门禁。默认 npm test 和 bench:session 必须包含整个 C01–C10 组，专门的消费者测试核对固定场景和每项关键断言，避免删掉场景或检查后仍显示通过。
 
-JSON 保存完整 Task、实际查询桥返回值、View、投递快照、原消息引用和平台动作；Markdown 展示基线断言，包括成功证据。固定 seed=42 的严格结果保存到版本库中的 docs/benchmarks/session-context-v1，后续报告写 tmp，通过既有 --baseline 比较，不能覆盖基准文件冒充回归通过。固定基线比较要求场景版本、seed、repetition、输入及必需断言清单一致；改变输入或删减检查不能借用旧基线通过。
+JSON 保存完整 Task、实际查询桥返回值、View、投递快照、原消息引用和平台动作；Markdown 由报告生成器按需生成，不作为源码提交。固定 seed=42 的严格基线作为测试夹具保存在 [`tests/fixtures/session-context-baseline.json`](../../tests/fixtures/session-context-baseline.json)，后续报告写 `tmp/` 或 CI artifact，通过既有 `--baseline` 比较，不能覆盖基线文件冒充回归通过。固定基线比较要求场景版本、seed、repetition、输入及必需断言清单一致；改变输入或删减检查不能借用旧基线通过。
 
 ## 验收边界
 

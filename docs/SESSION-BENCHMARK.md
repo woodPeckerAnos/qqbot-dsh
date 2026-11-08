@@ -42,11 +42,11 @@ QQ 收发使用内存连接器，配置装载时只覆盖接入平台与 OneBot 
 | 派发时读取最新上下文 | C04 排队期间完成；C05 初始化期间完成结算                               | 实际慢 runtime 的 View 包含旧 Task 最新正文/状态，快快照冻结；B 快 lane 不等待 A 慢任务；原任务只执行一次      |
 | 执行完成不冒充送达   | C06 pending；C07 sending；C08 部分失败；C09 超时未知；C10 正文记录缺失 | Task completed 与 View delivery 独立；失败不能被成功通知掩盖；未知不重发；记录不足为 unknown；正常 sent 对照   |
 
-场景版本 v1，注入固定起始时钟和种子。完整 [JSON 基准](benchmarks/session-context-v1/report.json) / [Markdown 证据](benchmarks/session-context-v1/report.md) 保存在版本库，后续结果写入 tmp，不覆盖基准。2026-11-08 首次严格基线：10 个场景、21 个 Task、122 条运行断言全部通过，108 项必需断言均实际执行，关闭资源全部为零。
+场景版本 v1，注入固定起始时钟和种子。固定 JSON 基线作为测试夹具保存在 [`tests/fixtures/session-context-baseline.json`](../tests/fixtures/session-context-baseline.json)，后续运行报告写入 `tmp/` 或 CI artifact，不覆盖夹具。2026-11-08 首次严格基线：10 个场景、21 个 Task、122 条运行断言全部通过，108 项必需断言均实际执行，关闭资源全部为零。
 
 ```sh
 npm run bench:session -- --cases 任务衔接基线 --strict --seed 42 --output tmp/session-context-current
-npm run bench:session -- --cases 任务衔接基线 --strict --seed 42 --baseline docs/benchmarks/session-context-v1/report.json --output tmp/session-context-comparison
+npm run bench:session -- --cases 任务衔接基线 --strict --seed 42 --baseline tests/fixtures/session-context-baseline.json --output tmp/session-context-comparison
 ```
 
 离线结果证明编排、查询桥、实际 prompt 和投递状态满足基线；模拟回复不等于真实模型语义验收。live 的 trust 规则另查“完成但未送达”的错误宣称，校准包含 pending/failed/unknown 坏样本和正确区分状态的样本。决策见 [ADR-011](adr/011-session-context-benchmark-baseline.md)。
@@ -137,4 +137,4 @@ Task 边界修复后的完整 `npm run check` 再次通过（55 个文件、1102
 
 发布前命令：清空构建产物并运行 npm run check；live 一次联合 L13/L14/L18 验收后发布前三次严格回归；真实 WebSocket 单列 npm run test:integration。离线、live、WebSocket 的实际结果见 [本轮验收记录](SESSION-CONTEXT-ACCEPTANCE.md)，历史记录不代表新增行为已经通过。
 
-2026-11-08 最终 Phase 1 门禁通过：完整检查 1371 项离线测试、39 个契约冒烟，C01–C10 严格基线比较 10/10；[真实模型最终报告](benchmarks/session-context-live-v5/strict/report.json) 的校准 14/14、L13/L14/L18 与 LC01–LC03 各三次运行和语义均 18/18，零失败、零 inconclusive、关闭资源全部为零。该轮包含 ADR-014/016 的生产提示修正和 ADR-015 的 SSE 传输，旧失败报告与 minor 判定原样保留。live 使用内存 QQ 连接器，独立 WebSocket 与真实 QQ 客户端仍分别统计。
+2026-11-08 最终 Phase 1 门禁通过：完整检查 1371 项离线测试、39 个契约冒烟，C01–C10 严格基线比较 10/10；[真实模型最终证据摘要](SESSION-CONTEXT-EVIDENCE.md) 记录校准 14/14、L13/L14/L18 与 LC01–LC03 各三次运行和语义均 18/18，零失败、零 inconclusive、关闭资源全部为零。该轮包含 ADR-014/016 的生产提示修正和 ADR-015 的 SSE 传输，旧失败报告与 minor 判定原样保留；原始 JSON 报告按需重新生成到 `tmp/`/CI artifact，不再提交到版本库。live 使用内存 QQ 连接器，独立 WebSocket 与真实 QQ 客户端仍分别统计。

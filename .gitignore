@@ -29,6 +29,10 @@ config/local/*.yml
 # 临时探针/日志目录：不纳入版本库，避免 git add . 误提交
 tmp/
 
+# benchmark 原始报告是生成物，写 tmp/ 或 CI artifact；
+# 固定离线基线作为测试夹具存放在 tests/fixtures/。
+docs/benchmarks/
+
 # archify 每请求工作目录：candidate、生成 HTML、截图和浏览器回执都是过程产物，
 # 不做版本追踪；需要长期保留的图精选后放 docs/diagrams/。
 .archify/
