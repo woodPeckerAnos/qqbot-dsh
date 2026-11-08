@@ -38,6 +38,9 @@ export type LaneResult = (
 
 /** 准入时固定的输入；后续话题变化不改写旧 Task 的身份、上下文或授权。 */
 export interface TaskInput {
+  /** Verified association at admission; old records omit both fields. */
+  followUpOf?: string;
+  progressOnly?: boolean;
   trace?: TraceContext;
   message: NormalizedMessage;
   /** 由 Ingress 身份白名单绑定，不能由模型提供。 */

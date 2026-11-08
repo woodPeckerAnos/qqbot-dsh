@@ -1,4 +1,6 @@
 import { readonlySnapshot } from '@qqbot/contracts';
+import { DEFAULT_SESSION_CONTEXT } from '@qqbot/contracts';
+import { classifyTaskFollowUp } from '../session/index.js';
 
 /**
  * Session 输入协调者，拥有上下文 generation 和逐 Session 的输入事务顺序。
@@ -41,6 +43,7 @@ export class SessionActor {
       clock?: TaskClock;
       sessions?: SessionStateWriter;
       taskIdFactory?: () => string;
+      sessionContext?: Partial<import('@qqbot/contracts').SessionContextSettings>;
     }
   ) {
     for (const state of structuredClone(options.sessions?.load() ?? []))
@@ -93,14 +96,17 @@ export class SessionActor {
         mentionsChatRecord: verdict.mentionsChatRecord,
       });
       // 判定期间 /new 可以推进 generation，不能用判定前的旧值覆盖它。
-      let current = this.generations.get(key) ?? generation;
-      if (!verdict.related && current === generation) {
-        current = { generation: generation.generation + 1, sinceTs: context.message.ts };
-      }
+      const { current, followUp } = this.resolveContextGeneration(
+        context.message,
+        generation,
+        verdict.related,
+        !!proactive
+      );
       if (!proactive) {
         this.commitGeneration(key, current);
       }
       const input: TaskInput = {
+        ...followUp,
         trace,
         message: context.message,
         isAdmin: context.isAdmin,
@@ -137,6 +143,7 @@ export class SessionActor {
       for (const lane of LANES)
         this.options.schedulers[lane].enqueue({
           task,
+          precomputed: progressResult(input, lane),
           run: async (signal) => {
             let result: LaneResult;
             try {
@@ -180,6 +187,12 @@ export class SessionActor {
     const { accepted } = this.options.manager.cancel(taskId, initiator);
     if (accepted) this.cancelExecution(taskId);
     return accepted;
+  }
+  generation(sessionKey: string): number {
+    return this.generations.get(sessionKey)?.generation ?? 1;
+  }
+  sinceTs(sessionKey: string): number {
+    return this.generations.get(sessionKey)?.sinceTs ?? 0;
   }
   /** 控制桥已完成权限检查和取消状态写入时，调用此方法终止剩余调度。 */
   cancelExecution(taskId: string): void {
@@ -231,6 +244,42 @@ export class SessionActor {
       this.options.schedulers[l].close();
     });
   }
+  private resolveContextGeneration(
+    message: import('@qqbot/contracts').NormalizedMessage,
+    generation: { generation: number; sinceTs: number },
+    related: boolean,
+    proactive: boolean
+  ) {
+    let current = this.generations.get(message.target.key) ?? generation;
+    const followUp = this.association(
+      message,
+      current.generation,
+      !proactive && current === generation
+    );
+    if (!related && !followUp.followUpOf && current === generation)
+      current = { generation: generation.generation + 1, sinceTs: message.ts };
+    return { current, followUp };
+  }
+  private association(
+    message: import('@qqbot/contracts').NormalizedMessage,
+    generation: number,
+    valid: boolean
+  ): Readonly<{ followUpOf?: string; progressOnly?: boolean }> {
+    const settings = { ...DEFAULT_SESSION_CONTEXT, ...this.options.sessionContext };
+    // A reset during topic judgment invalidates the old target.
+    if (settings.mode === 'off' || !valid) return {};
+    const followUp = classifyTaskFollowUp({
+      message,
+      generation,
+      tasks: this.options.manager.list(message.target.key),
+      now: this.options.clock?.now() ?? Date.now(),
+      recentTaskWindowMs: settings.recentTaskWindowMs,
+    });
+    return {
+      followUpOf: followUp.followUpOf,
+      progressOnly: settings.progressGuard ? followUp.progressOnly : undefined,
+    };
+  }
   private commitGeneration(
     sessionKey: string,
     state: { generation: number; sinceTs: number }
@@ -242,3 +291,8 @@ export class SessionActor {
   }
 }
 export type { SessionContextState } from '@qqbot/contracts';
+
+function progressResult(input: TaskInput, lane: Lane): LaneResult | undefined {
+  if (lane === 'slow' && input.progressOnly) return { kind: 'silent', reason: 'no-increment' };
+  return undefined;
+}

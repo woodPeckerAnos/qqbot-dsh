@@ -21,7 +21,7 @@
 | `config/runtime.yml`         | `dsh` / `pool` 硬上限 / `tasks` 双 lane / `paths` / `health` / `logLevel` | ✅         |
 | `config/logging.yml`         | `logging` 记录/缓冲预算、agent 诊断目标、有效期与 flush                   | ✅         |
 | `config/media.yml`           | `attachments`（含 `forward`、`files`）/ `media`                           | ✅         |
-| `config/interaction.yml`     | `personas` / `topic` / `observation`                                      | ✅         |
+| `config/interaction.yml`     | `personas` / `topic` / `observation` / `sessionContext`                   | ✅         |
 | `config/proactive.yml`       | `proactive` 主动发言全部参数                                              | ✅         |
 | `config/offpeak.yml`         | `offpeak` 谷时段闸                                                        | ✅         |
 | `config/local/models.yml`    | 本机模型路由与 `dsh.provider`/`dsh.model`                                 | ❌         |
@@ -178,3 +178,21 @@ tasks:
 旧 `pool.maxConcurrentTurns`、平台 `progress*` / `turnTimeoutMs`、`onebot.maxRepliesPerMsg`、`hints.longTask`、`proactive.speakTimeoutMs` 仅保留配置解析兼容，生产路径不使用；请删除并迁移到 `tasks.*`。启动摘要在 `deprecated.ignored` 明示这些键。旧值仍做类型与范围校验，建议升级时移除。QQ 的 `maxRepliesPerMsg` 继续作为平台条数约束；OneBot 不按产物数扣主动预算，`proactive.sessionBudget` 的单位是 Task。
 
 上下文 generation 与回放边界在 `stateDir/task-sessions.json`；Task 状态持久化在 `stateDir/tasks.json`，队列在 `messages.json`，预算在 `task-budgets.json`，待发送附件在 `message-files/<Task ID>/`。终态记录及 Task 工作区到期清理，队列和必要附件独立保留。旧 `background-pending.json` 不导入新队列，升级前请检查和交付其待发内容；旧运行任务不会恢复。
+
+## 11. SessionContextView 与进度追问（ADR-009）
+
+`config/interaction.yml` 的 `sessionContext` 可选，旧配置加载时自动补齐默认值，不需要数据迁移。仅配置文件提供这组设置，重启生效。
+
+| 配置               | 默认       | 合法值                             |
+| ------------------ | ---------- | ---------------------------------- |
+| mode               | board-only | off / board-only / full            |
+| progressGuard      | true       | 布尔值                             |
+| maxCharsPerTask    | 8000       | 1–100000，两个 lane 正文合计       |
+| maxTotalChars      | 12000      | 1024–1000000，含边界、状态及统计   |
+| maxTasks           | 8          | 1–64                               |
+| maxRecentMessages  | 0          | 0–12，仅 full 生效                 |
+| recentTaskWindowMs | 300000     | 1–86400000，追问候选及近期消息窗口 |
+
+board-only 仅在普通慢 lane 派发前读取旧 Task 增量结果；full 另补近期纯文本背景，不重新摄取媒体。纯进度只认 40 字内整句白名单和唯一同成员用户目标，失败、取消、主动和既有进度 Task 不作候选。引用不完整或有歧义时正常执行双 lane。进度快答需真实 query_tasks，慢 lane 直接静默结算。
+
+回滚全部新增行为设 `sessionContext.mode: off`；只恢复普通双 lane 设 `progressGuard: false`，此时保留追问关联及 View。关闭 View 不取消旧 Task，也不更改已入队消息。

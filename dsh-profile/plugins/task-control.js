@@ -112,7 +112,7 @@ export function installLaneCooperation(ctx, call, binding) {
   const injectLatest = () => {
     if (closed || !agent || !latest || latest.revision <= injected) return;
     const id = randomUUID();
-    const text = `同 Task 快慢协作快照：${JSON.stringify(latest)}\n只依据 delivered 中成功送达的原始正文衔接：没有增量时仅返回 NO_REPLY；有增量时仅交付新增部分；反转结论时明确回指并纠正。未送达或失败的正文仍需答复。成功工具执行可以无增量静默，失败、空结果和需要说明的附件必须反馈。不要把快 lane 工具限制当成整个 agent 能力限制。本快照和本次执行仅属于当前 Task；历史中其他 Task 的未完成承诺由原 Task 继续处理，不得补做旧任务或为旧任务生成附件。`;
+    const text = `同 Task 快慢协作快照：${JSON.stringify(latest)}\ndelivered 仅表示本 Task 快答。只依据其中成功送达的原始正文衔接：同 Task 快答已完整满足本次请求且没有增量时仅返回 NO_REPLY；当前明确要求引用或复述其他 Task 已有结果时，应使用可核对正文完成本次答复，不重做旧业务。旧 Task 已送达或本 Task 快答仅告知等待，都不表示当前复述请求已完成。有增量时仅交付新增部分；反转结论时明确回指并纠正。未送达或失败的正文仍需答复。成功工具执行可以无增量静默，失败、空结果和需要说明的附件必须反馈。不要把快 lane 工具限制当成整个 agent 能力限制。本快照和本次执行仅属于当前 Task；历史中其他 Task 的未完成承诺由原 Task 继续处理，不得补做旧任务或为旧任务生成附件。`;
     messages.set(id, latest.revision);
     agent.inject({
       id,

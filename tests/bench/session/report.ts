@@ -9,6 +9,14 @@ export function gate(
   if (report.errors.length || report.calibration?.passed === false || !report.records.length)
     return false;
   if (
+    report.records.some((record) =>
+      record.requiredAssertions?.some(
+        (name) => !record.assertions.some((assertion) => assertion.name === name)
+      )
+    )
+  )
+    return false;
+  if (
     report.records.some((r) =>
       r.assertions.some((a) => a.category === 'runtime' && a.status !== 'pass')
     )
@@ -97,6 +105,7 @@ export function markdown(report: BenchmarkReport) {
       `| ${id} ${rows[0]!.title} | ${rows.length} | ${rows.filter(runtimePass).length}/${rows.length} | ${['pass', 'fail', 'inconclusive'].map((s) => rows.filter((r) => r.judge?.status === s).length).join('/')} | ${rows.some((r) => r.knownIssue) ? '是，不豁免严格门禁' : ''} |`
     );
   }
+  lines.push(...baselineLines(report.records));
   lines.push('', '## 耗时与资源', '', '```json', JSON.stringify(report.metrics, null, 2), '```');
   const output = report.records.filter((r) => r.outputDelivery);
   if (output.length) {
@@ -160,6 +169,35 @@ export function markdown(report: BenchmarkReport) {
     );
   return lines.join('\n') + '\n';
 }
+function baselineLines(records: RunRecord[]): string[] {
+  const baselines = records.filter((record) => record.requiredAssertions?.length);
+  if (!baselines.length) return [];
+  return [
+    '',
+    '## 固定基线断言与证据',
+    '',
+    '以下为实际执行的检查，包括成功证据；离线模拟回复不代表真实模型语义验收。',
+    ...baselines.flatMap((record) => [
+      '',
+      `### ${record.caseId} ${record.title}（第 ${record.repetition} 次）`,
+      '',
+      '```json',
+      JSON.stringify(
+        {
+          requiredAssertions: record.requiredAssertions,
+          assertions: record.assertions.filter(
+            (assertion) =>
+              record.requiredAssertions?.includes(assertion.name) ||
+              assertion.name === 'required-assertions-present'
+          ),
+        },
+        null,
+        2
+      ),
+      '```',
+    ]),
+  ];
+}
 export function sanitize<T>(value: T, secrets: string[] = []): T {
   const nonempty = secrets.filter((s) => s.length > 3);
   return JSON.parse(
@@ -191,6 +229,15 @@ export async function compare(report: BenchmarkReport, path: string) {
     (r) => !old.records.some((b) => b.caseId === r.caseId && b.caseVersion === r.caseVersion)
   );
   if (changed.length) throw new Error('baseline-scenario-version-mismatch');
+  const required = report.records
+    .filter(
+      (record) =>
+        record.requiredAssertions ||
+        old.records.some(
+          (baseline) => baseline.caseId === record.caseId && baseline.requiredAssertions
+        )
+    )
+    .map((record) => compareRequired(record, old.records));
   const delivery = report.records
     .filter((r) => r.outputDelivery)
     .map((r) => {
@@ -206,9 +253,29 @@ export async function compare(report: BenchmarkReport, path: string) {
       return { caseId: r.caseId, previous: b.outputDelivery, current: r.outputDelivery };
     });
   return {
+    requiredAssertions: required,
     outputDelivery: delivery,
     baseline: path,
     previous: metrics(old.records.filter((r) => report.records.some((b) => b.caseId === r.caseId))),
     current: report.metrics,
+  };
+}
+function compareRequired(record: RunRecord, previous: RunRecord[]) {
+  const baseline = previous.find(
+    (entry) =>
+      entry.caseId === record.caseId &&
+      entry.caseVersion === record.caseVersion &&
+      entry.seed === record.seed &&
+      entry.repetition === record.repetition
+  );
+  if (!baseline || JSON.stringify(baseline.inputs) !== JSON.stringify(record.inputs))
+    throw new Error('baseline-required-input-mismatch');
+  if (JSON.stringify(baseline.requiredAssertions) !== JSON.stringify(record.requiredAssertions))
+    throw new Error('baseline-required-assertions-mismatch');
+  return {
+    caseId: record.caseId,
+    repetition: record.repetition,
+    previous: baseline.assertions.map(({ name, status }) => ({ name, status })),
+    current: record.assertions.map(({ name, status }) => ({ name, status })),
   };
 }

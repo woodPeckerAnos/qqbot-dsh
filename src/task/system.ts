@@ -23,6 +23,7 @@ import type { ConversationStore } from '@qqbot/contracts';
 import type { ObservationWindowStore } from '@qqbot/contracts';
 import type { StorePaths } from '@qqbot/contracts';
 import { createStateWriter } from '../store/index.js';
+import { createSessionContextView } from '../session/index.js';
 import { createResponder } from '../delivery/index.js';
 import type { MessageContext } from '@qqbot/contracts';
 import { TaskLifeCycleManager } from './lifecycle.js';
@@ -191,6 +192,24 @@ export class TaskSystem {
         logger,
         clock: options.clock,
         cooperation: this.cooperation,
+        contextView: createSessionContextView({
+          settings: config.sessionContext,
+          tasks: (key) => this.manager.list(key),
+          messages: (id) => this.queue.messages(id),
+          generation: (key) => this.actor.generation(key),
+          sinceTs: (key) => this.actor.sinceTs(key),
+          conversations: (key) => {
+            const result = options.conversations.readResult(key);
+            if (!result.ok) {
+              if (result.error.code === 'NOT_FOUND') return [];
+              throw new Error('conversation-read-failed');
+            }
+            if (result.value.corrupted) throw new Error('conversation-partial-read');
+            return result.value.turns;
+          },
+          window: (key) => options.windows.read(key),
+          now: clock === undefined ? undefined : () => clock.now(),
+        }),
       });
     const actor = new SessionActor({
       manager: this.manager,
@@ -198,6 +217,7 @@ export class TaskSystem {
       output: this.output,
       preparer,
       runner,
+      sessionContext: config.sessionContext,
       schedulers: {
         fast: new LaneScheduler(config.tasks.fastRuntimes, (error, taskId) => {
           logger.cause(error, 'persistence', { taskId });

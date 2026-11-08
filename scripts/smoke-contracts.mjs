@@ -12,6 +12,7 @@ import * as store from '../dist/store/index.js';
 import * as media from '../dist/media/index.js';
 import * as runtime from '../dist/runtime/index.js';
 import * as task from '../dist/task/index.js';
+import * as session from '../dist/session/index.js';
 import * as delivery from '../dist/delivery/index.js';
 import * as ingress from '../dist/ingress/index.js';
 import * as proactive from '../dist/proactive/index.js';
@@ -109,6 +110,35 @@ async function flushMicrotasks() {
 }
 
 const runners = {
+  session(example) {
+    const manager = task.createTaskLifeCycleManagerV2({ now: () => 100 });
+    manager.create(taskInputDouble(), 'original');
+    const followUp = session.classifyTaskFollowUp({
+      message: messageDouble('follow-up', example.input.text),
+      generation: 0,
+      now: 100,
+      tasks: example.input.target ? manager.list() : [],
+    });
+    if (example.kind === 'failure') return followUp;
+    manager.create({ ...taskInputDouble(), ...followUp }, 'current');
+    const view = session
+      .createSessionContextView({
+        tasks: () => (example.input.target ? manager.list() : []),
+        messages: () => [],
+        generation: () => 0,
+        now: () => 100,
+      })
+      .read(manager.get('current'));
+    return {
+      ...followUp,
+      contextTasks: view.tasks.length,
+      rendered: !!session.renderSessionContextView(view),
+      immutable: rejectedWrite(() => {
+        view.tasks.push({});
+      }),
+    };
+  },
+
   config(example) {
     try {
       return { value: config.parseConfigFileText(example.input.text) };

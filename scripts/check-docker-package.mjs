@@ -34,9 +34,9 @@ import assert from 'node:assert/strict';
 import { LANES, readonlySnapshot } from '@qqbot/contracts';
 assert.deepEqual(LANES, ['fast', 'slow']);
 assert(Object.isFrozen(readonlySnapshot({ nested: { value: 1 } })));
-for (const id of ['config','content','connectors','store','media','runtime','task','delivery','ingress','proactive','offpeak','observability']) await import('./dist/' + id + '/index.js');
+for (const id of ['config','content','connectors','store','media','runtime','task','session','delivery','ingress','proactive','offpeak','observability']) await import('./dist/' + id + '/index.js');
 `,
   ],
   { cwd: root, stdio: 'inherit' }
 );
-console.log('Docker 运行阶段的 workspace 相对链接、契约产物与 12 个模块均可解析。');
+console.log('Docker 运行阶段的 workspace 相对链接、契约产物与 13 个模块均可解析。');

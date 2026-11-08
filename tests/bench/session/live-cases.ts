@@ -1,6 +1,7 @@
 import type { BenchmarkCase, InputStep } from './types.js';
 import type { Harness } from './harness.js';
 import { until } from './harness.js';
+import { liveContextCases } from './live-context-cases.js';
 
 const long =
   '请证明：任意整数n，n的五次方减n能被30整除。给出完整证明，逐步核对2、3、5三个因子，说明为何可以合并。';
@@ -92,8 +93,8 @@ const definitions: LiveDefinition[] = [
     'L13',
     '多轮与并发',
     '进度查询',
-    [{ text: long }, { text: '上一项任务进度怎样？', after: 'running' }],
-    '查询真实Task进度，与原结果归属清楚',
+    [{ text: long }, { text: '上个任务进度怎样？', after: 'running' }],
+    '快 lane 实际 query_tasks 查询原 Task；进度 Task 慢 runtime 为零，旧工作继续并按原引用交付',
   ],
   [
     'L14',
@@ -248,6 +249,48 @@ async function runSteps(h: Harness, steps: InputStep[], id: string) {
   await Promise.all(h.handles.map((t) => t.done));
   await h.idle();
   h.check('all-inputs-create-task', h.handles.length === steps.length);
+  if (id === 'L13') {
+    const [original, progress] = h.handles;
+    const task = h.task(progress!.taskId);
+    const executions = h.evidence.executions.filter((e) => e.taskId === progress!.taskId);
+    const queries = executions.filter((e) => e.lane === 'fast').flatMap((e) => e.taskQueries ?? []);
+    h.check(
+      'progress-target-query',
+      queries.some(
+        (q) =>
+          q.taskId === original!.taskId &&
+          Array.isArray(q.result) &&
+          q.result.some((entry: { taskId?: string }) => entry.taskId === original!.taskId)
+      ),
+      queries
+    );
+    h.check(
+      'progress-no-slow-runtime',
+      executions.every((e) => e.lane !== 'slow') &&
+        task.input.progressOnly === true &&
+        task.input.followUpOf === original!.taskId &&
+        task.lanes.slow.result?.kind === 'silent',
+      executions
+    );
+    h.check(
+      'progress-no-artifacts-or-reminders',
+      h.system.queue
+        .messages(progress!.taskId)
+        .every(
+          (m) =>
+            m.candidate.lane === 'fast' &&
+            !m.candidate.attachment &&
+            m.candidate.kind !== 'progress'
+        )
+    );
+    h.check(
+      'original-result-reference',
+      h
+        .received(original!.taskId)
+        .filter((a) => a.lane === 'slow')
+        .every((a) => a.reference?.messageId === h.task(original!.taskId).input.message.msgId)
+    );
+  }
   if (id === 'L14') {
     const current = h.handles.at(-1)!;
     const received = h.received(current.taskId);
@@ -295,18 +338,19 @@ async function runSteps(h: Harness, steps: InputStep[], id: string) {
     h.system.manager.list().map((t) => ({ id: t.taskId, status: t.status }))
   );
 }
-export const liveCases: BenchmarkCase[] = definitions.map(
-  ([id, group, title, steps, expectation, reasoning]) => ({
+export const liveCases: BenchmarkCase[] = [
+  ...definitions.map<BenchmarkCase>(([id, group, title, steps, expectation, reasoning]) => ({
     id,
     group,
     title,
     steps,
     expectation,
     reasoning,
-    version: id === 'L14' ? 2 : 1,
+    version: ['L13', 'L14'].includes(id) ? 2 : 1,
     run: (h) => runSteps(h, steps, id),
-  })
-);
+  })),
+  ...liveContextCases,
+];
 export const LIGHT_IDS = [
   'L01',
   'L02',
@@ -318,6 +362,7 @@ export const LIGHT_IDS = [
   'L08',
   'L09',
   'L11',
+  'L13',
   'L14',
   'L15',
 ];

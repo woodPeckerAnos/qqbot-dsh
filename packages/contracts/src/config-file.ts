@@ -276,6 +276,7 @@ export interface LoggingFileConfig {
   flushTimeoutMs?: number;
 }
 export interface FileConfig {
+  sessionContext?: Partial<import('./session/context.js').SessionContextSettings>;
   logging?: LoggingFileConfig;
   connectors?: string[];
   qqOfficial?: QqOfficialFileConfig;

@@ -6,9 +6,11 @@
 
 `npm run bench:session` 运行全部离线场景和固定种子混合负载；`npm test` 同样执行离线验收。`npm run bench:session:live` 显式调用真实 DSH 与独立语义裁判。独立 Vitest 配置只匹配 `session.bench.ts`，在线入口不匹配 `*.test.ts`。
 
-公共选项：`--cases ID,ID`（也支持分组名）、`--repeat N`、`--seed N`、`--baseline report.json`、`--strict`、`--output DIR`；在线另支持 `--full`。离线默认各一次；在线轻量集 L01–L09、L11、L14、L15 各三次；完整集 L01–L24 各五次。所有样本计入，不取最佳、不自动重跑。
+公共选项：`--cases ID,ID`（也支持分组名）、`--repeat N`、`--seed N`、`--baseline report.json`、`--strict`、`--output DIR`；在线另支持 `--full`。离线默认各一次；在线轻量集 L01–L09、L11、L13、L14、L15 各三次；完整集 L01–L24、LC01–LC03 各五次。所有样本计入，不取最佳、不自动重跑。
 
 在线沿用 `QQ_CONFIG_FILE` 对应生产配置入口、模型路由与 profile，凭证由调用进程环境提供；临时路径隔离状态、工作区与 DSH_HOME。裁判使用 `BENCH_JUDGE_CONFIG` 指向 JSON，格式见 `tests/bench/session/judge.example.json`。端点为完整 chat/completions URL，独立指定 model、apiKeyEnv、timeoutMs。缺模型凭证、裁判配置或校准失败都明确失败。
+
+裁判配置可选 `stream: true` 使用标准 SSE（默认 false）。流式模式使用独立连接，只解析最终判定正文，不保存思考正文；须同时收到 stop 和 [DONE]，截断或不完整响应仍阻断门禁。网络错误仅记录预定义系统代码，未知错误不保留原文。见 [ADR-015](adr/015-judge-stream-transport.md)。
 
 QQ 收发使用内存连接器，配置装载时只覆盖接入平台与 OneBot token 占位，不需要真实 QQ 凭证。DSH 的 bin/profile、快慢模型路由、模型 patch 与思考设置沿用实际配置；调用前检查 bin 可执行和 profile 可读。
 
@@ -20,9 +22,36 @@ QQ 收发使用内存连接器，配置装载时只覆盖接入平台与 OneBot 
 
 `BenchmarkCase` 固定 id/version/group、输入步骤、运行函数和语义期望。`RunRecord` 保存 seed/repetition、输入、Task/平台证据、运行断言、JudgeVerdict、时间与资源。`AssertionResult` 的 pass/fail/inconclusive 与 runtime/semantic 分类分别门禁。`JudgeVerdict` 对重复、矛盾、承接和可信度给出 pass/fail/inconclusive、严重度、理由与可在实际回复中逐字核对的引用；失败无引用、输出畸形和缺必要交付均不能通过。
 
-深度推理要求 slow lane 有可观测 reasoning 事件或正数 reasoningTokens。只记录是否出现与计数；缺失标 inconclusive，答案长度与工具调用不能替代。
+真实任务衔接额外记录 prompt 派发时间、工具名、成功工具结果中的 UUID、实际派发的只读 View，以及按目标/调用者 Task 和采样时刻绑定的 deliveryEvidence。投递证据区分生成回复时的状态和后来恢复出口的送达结果，禁止用事后送达替代当时的证据；不记录思考正文、工具参数或完整工具输出。见 [ADR-012](adr/012-live-session-context-verification.md) / [ADR-013](adr/013-live-benchmark-evidence-diagnostics.md)。
+
+[ADR-014](adr/014-follow-up-result-reuse.md) 保留 RunRecord 中的原始 taskQueries，裁判输入仅投影实际查询的 Task 身份、状态、lane 结果及时间，省去重复 trace/execution 标识。toolResultUuids 只采集 receipt 标记后的业务编号。普通关联追问必须完成当前请求的结果引用或复述，旧 Task 已送达不能替代当前快答；必需断言不受裁判 pass 覆盖。
+
+固定基线场景另外声明 `requiredAssertions` 并写入 RunRecord。每项必需断言均须实际执行；缺失形成 `required-assertions-present` 运行失败。Markdown 同时展示这些断言的成功证据，防止只有场景名称、没有检查却显示通过。
+
+场景的 `reasoning` 标记以显式 `reasoningRequired` 传给裁判并保存到运行记录，只有标记为 true 才要求所属 Task 的 slow lane 有可观测 reasoning 事件或正数 reasoningTokens。只记录是否出现与计数；缺失标 inconclusive，答案长度、工具调用、其他 Task 与 fast lane 的记录不能替代。慢 lane 以 no-increment 静默不使推理证据失效，快 lane 关闭推理符合设计；答案正确性与交付可信度仍独立评测。旧报告缺少 `reasoningRequired` 时保留历史结论。
 
 ## 场景与标准
+
+### 任务衔接基线（ADR-009 / ADR-011）
+
+这组固定验证三个目标，进入默认 `npm test` 与 `bench:session`，可独立严格运行：
+
+| 目标                 | 场景                                                                   | 必需证据                                                                                                       |
+| -------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| 进度追问不重复执行   | C01 连续追问；C02 已完成但待发送；C03 混合补充请求                     | 独立 Task、真实 query_tasks 返回、进度慢 runtime/队列/附件/提醒为零；混合请求仍双 lane；旧结果按原引用继续交付 |
+| 派发时读取最新上下文 | C04 排队期间完成；C05 初始化期间完成结算                               | 实际慢 runtime 的 View 包含旧 Task 最新正文/状态，快快照冻结；B 快 lane 不等待 A 慢任务；原任务只执行一次      |
+| 执行完成不冒充送达   | C06 pending；C07 sending；C08 部分失败；C09 超时未知；C10 正文记录缺失 | Task completed 与 View delivery 独立；失败不能被成功通知掩盖；未知不重发；记录不足为 unknown；正常 sent 对照   |
+
+场景版本 v1，注入固定起始时钟和种子。完整 [JSON 基准](benchmarks/session-context-v1/report.json) / [Markdown 证据](benchmarks/session-context-v1/report.md) 保存在版本库，后续结果写入 tmp，不覆盖基准。2026-11-08 首次严格基线：10 个场景、21 个 Task、122 条运行断言全部通过，108 项必需断言均实际执行，关闭资源全部为零。
+
+```sh
+npm run bench:session -- --cases 任务衔接基线 --strict --seed 42 --output tmp/session-context-current
+npm run bench:session -- --cases 任务衔接基线 --strict --seed 42 --baseline docs/benchmarks/session-context-v1/report.json --output tmp/session-context-comparison
+```
+
+离线结果证明编排、查询桥、实际 prompt 和投递状态满足基线；模拟回复不等于真实模型语义验收。live 的 trust 规则另查“完成但未送达”的错误宣称，校准包含 pending/failed/unknown 坏样本和正确区分状态的样本。决策见 [ADR-011](adr/011-session-context-benchmark-baseline.md)。
+
+2026-11-08：对保存基准的严格比较 10/10 通过；`npm run check` 通过 61 个测试文件、1332 项测试及 39 个契约冒烟。固定组注册、断言完整性及基线输入/版本匹配均有反向回归。新版裁判的真实模型语义验收仍单列。
 
 ### 输出交付（ADR-007）
 
@@ -54,7 +83,9 @@ O02 近似重复和 O03 终局否认冲突保留为坏样本校准：注入坏�
 
 快正文 pending 时，慢执行在结束钩子保持 running，等待计入原 slowTimeoutMs；配额和持久化故障夹具须先恢复快正文出口/终态，再等待 Task 完成。慢结果入队后，Task 结算仍不等待该消息自身送达。真实 WebSocket 使用独立 `npm run test:integration`，不混入离线或 live 语义评测。
 
-在线固定 24 场景：L01–L06 长证明、约束求解、代码生成、本地文件读取、CSV 计算、资料综合；L07–L12 基础事实、简单算术、寒暄、信息不足澄清、深度推理、简短结论长任务；L13–L18 进度、执行中新短问题、换话题旧结果、同群不同成员、跨群同问题、追加条件上下文归属；L19–L24 文件产物、资料不足、图片降级、引用/转发、工具失败、前台子代理完成后交付。
+在线基础 24 场景：L01–L06 长证明、约束求解、代码生成、本地文件读取、CSV 计算、资料综合；L07–L12 基础事实、简单算术、寒暄、信息不足澄清、深度推理、简短结论长任务；L13–L18 进度、执行中新短问题、换话题旧结果、同群不同成员、跨群同问题、追加条件上下文归属；L19–L24 文件产物、资料不足、图片降级、引用/转发、工具失败、前台子代理完成后交付。
+
+新增“真实任务衔接”组 LC01–LC03 进入完整 live 集：LC01 的原慢任务通过工具产生一次 UUID，排队的后续请求须从实际 View 复用该编号，不再调用业务工具；LC02 在生成进度答复期间保持原结果 pending，再恢复出口；LC03 验证原结果发送失败后仍不能把 completed 宣称为已送达。三项均使用真实模型，只有输入先后和连接器故障由 Harness 控制。可用 `--cases L13,L14,L18,真实任务衔接` 联跑。v2 输入明确指定单次 bash 的 UUID 生成命令，并要求成功工具结果的唯一编号与正文一致，额外调用仍失败。
 
 L14 v2 额外检查新短问的慢 lane 静默且无旧任务附件。该语义断言直接参与严格门禁，裁判将归属混乱判为 minor 也不会放行。
 
@@ -64,7 +95,15 @@ L14 v2 额外检查新短问的慢 lane 静默且无旧任务附件。该语义�
 
 裁判 v3 要求端点支持 `response_format: {"type":"json_object"}`，输出引用必须逐字匹配实际送达正文，保留公式反斜线和标点。非法 JSON 与引用校验失败分别记录具体错误，均为 inconclusive，不修补输出或自动重试。
 
+请求诊断按 [ADR-013](adr/013-live-benchmark-evidence-diagnostics.md) 区分 `judge-timeout`、`judge-http-<状态码>`、`judge-response-invalid-json`、`judge-response-too-large` 和 `judge-network-error`。响应正文和底层异常信息不写入报告，评分与重试策略不变，所有请求错误仍阻断严格门禁。
+
+校准开始及每个样本结束后保存报告；完成前 `calibration.passed=false`，中断时保留已结束样本，部分校准不能通过门禁。新一轮需用新目录运行完整校准，不补写中断报告。
+
 裁判 v4 明确区分“解释新答案的推导”与“回指并纠正先前快答”：前者不豁免无解释的终局否认反转。四个维度独立评测，正确终局答案不能自动使 contradiction 通过。
+
+裁判 v5 按显式 `reasoningRequired` 和同 Task 慢 lane 元数据评测推理要求，接受慢 lane 核对后静默；不会要求快 lane 出现推理事件。校准 v2 保留原六项并增加三项推理边界样本，缺少必要慢推理的样本必须为 trust=inconclusive。runner 的确定性缺证据拦截继续生效，详见 [ADR-010](adr/010-benchmark-reasoning-evidence.md)。新规则的实际在线结果须另行记录。
+
+裁判 v6 / 校准 v3 增加执行完成与投递完成的边界，原九项校准保留。pending/sending/failed/unknown 四项虚假送达样本须 trust=fail/severe，明确说明已执行完成但仍待发送的正样本须通过；实际送达时间和查询时间独立核对。固定基线的 --baseline 比较还要求 seed、repetition、输入与必需断言清单一致。
 
 ## 验收记录
 
@@ -89,3 +128,13 @@ L14 v2 额外检查新短问的慢 lane 静默且无旧任务附件。该语义�
 最终 L14 v2 验证旧慢执行期间新快回复可送达，新短问慢结果为 `no-increment`，无旧任务附件；旧慢增量引用 input-1。L19 实际收到 20 字节 `orders.csv`，内容为 `name,value\nA,12\nB,8\n`，SHA-256 为 `1fc7baaab5d151ec51fc2fb2f5f7c83046d66e1539ef4d0c60fb757d3a3e47cf`。首回复 p50/p95 为 1450/3326 ms，仅为本次样本记录。
 
 Task 边界修复后的完整 `npm run check` 再次通过（55 个文件、1102 项及 36 个契约冒烟）；裁判 v4 文本澄清后 46 项 benchmark 离线验收通过。以上覆盖 7 场景各一次，未运行默认 12 场景各三次或完整 24 场景各五次。报告位于忽略的 tmp 目录，可用 `--output` 保存到指定位置；本次五轮 JSON/Markdown 共 10 个报告通过凭证扫描。
+
+## Phase 1：SessionContextView / 进度 guard 验收
+
+当前决策见 [ADR-009](adr/009-session-context-view.md)。L13 升级为 v2，进入 13 项轻量集：必须记录 B 快 lane 实际调用 Task 查询桥的 taskId、时间及返回结果；B 慢 runtime 为零、无附件和提醒，A 继续按原引用交付。执行记录的 taskQueries 仅保存实际桥调用，提示词提到工具不能冒充调用证据。并发前提未满足保留 inconclusive，严格门禁拒绝通过。L14/L18 保留新短问与补充条件归属检查。
+
+新增离线 session 单元、契约消费者及真实 Actor/scheduler/runner 回归，DSH、连接器和时钟使用注入 mock。覆盖同毫秒顺序、显式引用、深只读、预算、主动来源、unknown/部分失败投递、旧记录、排队/初始化增量、连续进度、取消/new/关闭、快失败和静默保存失败仅补结算。独立 normal/edge/failure 冒烟使模块总数为 13、示例为 39。
+
+发布前命令：清空构建产物并运行 npm run check；live 一次联合 L13/L14/L18 验收后发布前三次严格回归；真实 WebSocket 单列 npm run test:integration。离线、live、WebSocket 的实际结果见 [本轮验收记录](SESSION-CONTEXT-ACCEPTANCE.md)，历史记录不代表新增行为已经通过。
+
+2026-11-08 最终 Phase 1 门禁通过：完整检查 1371 项离线测试、39 个契约冒烟，C01–C10 严格基线比较 10/10；[真实模型最终报告](benchmarks/session-context-live-v5/strict/report.json) 的校准 14/14、L13/L14/L18 与 LC01–LC03 各三次运行和语义均 18/18，零失败、零 inconclusive、关闭资源全部为零。该轮包含 ADR-014/016 的生产提示修正和 ADR-015 的 SSE 传输，旧失败报告与 minor 判定原样保留。live 使用内存 QQ 连接器，独立 WebSocket 与真实 QQ 客户端仍分别统计。

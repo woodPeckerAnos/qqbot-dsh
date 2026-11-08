@@ -13,6 +13,7 @@ import {
   loadJudgeConfig,
   inconclusive,
   JUDGE_VERSION,
+  CALIBRATION_VERSION,
   RUBRIC,
 } from './judge.js';
 import type { Judge } from './judge.js';
@@ -23,6 +24,7 @@ import type {
   BenchmarkReport,
   RunRecord,
   JudgeVerdict,
+  ExecutionEvidence,
 } from './types.js';
 import type { Config } from '@qqbot/contracts';
 import type { ReasoningEvidence } from './types.js';
@@ -108,6 +110,8 @@ async function collectCase(
             caseId: c.id,
             inputs: h.inputs,
             expectation: c.expectation,
+            reasoningRequired: c.reasoning === true,
+            deliveryEvidence: h.deliveryEvidence,
             received,
             execution: tasks.map((t) => ({
               taskId: t.taskId,
@@ -115,9 +119,7 @@ async function collectCase(
               slowEndedAt: t.lanes.slow.executionEndedAt,
             })),
             reasoning: h.reasoning,
-            toolsAndChildren: h.evidence.executions.map(
-              ({ modelFinalText: _text, ...metadata }) => metadata
-            ),
+            toolsAndChildren: h.evidence.executions.map(judgeExecutionEvidence),
           },
           received
         )
@@ -150,7 +152,14 @@ async function collectCase(
     Object.values(resources).every((n) => n === 0),
     resources
   );
+  if (c.requiredAssertions) {
+    const missing = c.requiredAssertions.filter(
+      (name) => !h.assertions.some((assertion) => assertion.name === name)
+    );
+    h.check('required-assertions-present', missing.length === 0, { missing });
+  }
   const record: RunRecord = {
+    deliveryEvidence: h.deliveryEvidence.length ? h.deliveryEvidence : undefined,
     outputDelivery: h.outputDelivery,
     caseId: c.id,
     caseVersion: c.version,
@@ -168,13 +177,65 @@ async function collectCase(
     messages,
     actions: h.connector.actions,
     reasoning: h.reasoning,
+    reasoningRequired: c.reasoning === true,
     executions: h.evidence.executions,
     assertions: h.assertions,
+    requiredAssertions: c.requiredAssertions,
     judge: verdict,
     resources,
     configuration: await manifest(h),
   };
   return record;
+}
+/** Keep the original query in RunRecord; send semantic facts without repeated trace identities. */
+export function judgeExecutionEvidence(execution: ExecutionEvidence) {
+  const { modelFinalText: _text, taskQueries, ...metadata } = execution;
+  return {
+    ...metadata,
+    taskQueries: taskQueries?.map((query) => ({
+      taskId: query.taskId,
+      at: query.at,
+      result: Array.isArray(query.result) ? query.result.map(queryTaskFacts) : query.result,
+    })),
+  };
+}
+function queryTaskFacts(value: unknown) {
+  if (!value || typeof value !== 'object') return value;
+  const task = value as Record<string, unknown>;
+  const lanes = task.lanes as TaskSnapshotQuery['lanes'] | undefined;
+  return {
+    taskId: task.taskId,
+    status: task.status,
+    senderId: task.senderId,
+    createdAt: task.createdAt,
+    endedAt: task.endedAt,
+    lanes:
+      lanes &&
+      Object.fromEntries(
+        Object.entries(lanes).map(([name, lane]) => [
+          name,
+          {
+            status: lane.status,
+            startedAt: lane.startedAt,
+            executionEndedAt: lane.executionEndedAt,
+            endedAt: lane.endedAt,
+            result: lane.result && { kind: lane.result.kind, text: lane.result.text },
+          },
+        ])
+      ),
+  };
+}
+interface TaskSnapshotQuery {
+  lanes?: Record<
+    string,
+    {
+      status?: unknown;
+      startedAt?: unknown;
+      executionEndedAt?: unknown;
+      endedAt?: unknown;
+      result?: { kind?: unknown; text?: unknown };
+    }
+  >;
 }
 export function requireReasoning(
   verdict: JudgeVerdict,
@@ -244,12 +305,17 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<Benchmark
         ...judgeConfig,
         version: JUDGE_VERSION,
         rubricHash: hash(RUBRIC),
-        calibrationVersion: 1,
+        calibrationVersion: CALIBRATION_VERSION,
       };
       config = liveConfig();
       await livePreflight(config);
       judge = createJudge(judgeConfig);
-      report.calibration = await calibrate(judge);
+      report.calibration = { passed: false, samples: [] };
+      await writeReport(report, secrets);
+      report.calibration = await calibrate(judge, async (sample) => {
+        report.calibration!.samples.push(sample);
+        await writeReport(report, secrets);
+      });
       if (!report.calibration.passed) throw new Error('judge-calibration-failed');
     }
     const liveRepeat = options.full ? 5 : 3;

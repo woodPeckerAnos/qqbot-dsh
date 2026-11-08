@@ -35,5 +35,6 @@ export type createDshLaneRunnerFactoryV2 = (options: {
   logger: Logger;
   clock?: TaskClock;
   cooperation?: import('./cooperation.js').TaskCooperation;
+  contextView?: ReturnType<import('../session/context.js').createSessionContextViewFactory>;
   onEvent?: (event: LaneEvent) => void;
 }) => DshLaneRunnerV2;

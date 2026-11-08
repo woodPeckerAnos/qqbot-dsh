@@ -57,12 +57,18 @@ import {
 } from '../../../src/ingress/index.js';
 import { createLogger, createPipelineStats } from '../../../src/observability/index.js';
 import { createDocumentExtractor } from '../../../src/media/index.js';
+import { createSessionContextView } from '../../../src/session/index.js';
 import { BenchmarkClock, RealtimeClock } from './clock.js';
 import { RuntimeEvidence } from './runtime-evidence.js';
 import { sanitize } from './report.js';
 import { BenchmarkRuntime } from './mock-runtime.js';
 import { MemoryConnector } from './connector.js';
-import type { AssertionResult, InputStep, OutputDeliveryEvidence } from './types.js';
+import type {
+  AssertionResult,
+  InputStep,
+  OutputDeliveryEvidence,
+  DeliveryEvidence,
+} from './types.js';
 
 export async function until(predicate: () => boolean, timeoutMs = 10000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -98,6 +104,8 @@ export interface HarnessSettings {
 }
 
 export class Harness {
+  deliveryEvidence: DeliveryEvidence[] = [];
+  beforeRuntimePrompt: (options: DshRuntimeOptions) => Promise<void> | undefined = () => undefined;
   outputDelivery?: OutputDeliveryEvidence;
   outputProbeListeners = 0;
   readonly connector = new MemoryConnector();
@@ -297,7 +305,7 @@ export class Harness {
             const r = new BenchmarkRuntime(options);
             this.runtimeSetup(r);
             this.runtimes.push(r);
-            return this.evidence.attach(r.asRuntime(), options, this.clock.now);
+            return this.observeRuntime(r.asRuntime(), options, this.clock.now);
           },
         }),
       ])
@@ -344,6 +352,16 @@ export class Harness {
       logger,
       clock: this.clock,
       cooperation,
+      contextView: createSessionContextView({
+        settings: config.sessionContext,
+        tasks: (key) => manager.list(key),
+        messages: (id) => queue.messages(id),
+        generation: (key) => this.actor?.generation(key) ?? 1,
+        sinceTs: (key) => this.actor?.sinceTs(key) ?? 0,
+        conversations: (key) => conversations.readAll(key),
+        window: (key) => windows.read(key),
+        now: this.clock.now,
+      }),
     });
     const actor = createSessionActorV2({
       manager,
@@ -351,6 +369,7 @@ export class Harness {
       output,
       preparer: this.preparer,
       runner,
+      sessionContext: config.sessionContext,
       clock: this.clock,
       sessions: this.stores.sessions,
       taskIdFactory: () => `b${this.seed}_${++this.serial}`,
@@ -399,7 +418,16 @@ export class Harness {
     manager.recover();
   }
   private liveRuntime(options: DshRuntimeOptions): DshRuntime {
-    return this.evidence.attach(createDshRuntime(options), options, this.realtimeClock.now);
+    return this.observeRuntime(createDshRuntime(options), options, this.realtimeClock.now);
+  }
+  private observeRuntime(runtime: DshRuntime, options: DshRuntimeOptions, now: () => number) {
+    const observed = this.evidence.attach(runtime, options, now);
+    const prompt = observed.prompt.bind(observed);
+    observed.prompt = async (sessionId, blocks) => {
+      await this.beforeRuntimePrompt(options);
+      return prompt(sessionId, blocks);
+    };
+    return observed;
   }
   /** Recreate the actual production TaskSystem from a crash-time disk snapshot. */
   async restart(crashSnapshot?: TaskSnapshot[]) {
@@ -411,7 +439,7 @@ export class Harness {
       runtimeFactory: (options) => {
         const r = new BenchmarkRuntime(options);
         this.runtimes.push(r);
-        return this.evidence.attach(r.asRuntime(), options, this.clock.now);
+        return this.observeRuntime(r.asRuntime(), options, this.clock.now);
       },
     });
   }

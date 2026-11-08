@@ -730,3 +730,13 @@ waitInvalidTargetsByReason 区分 missing、forged、closed；前两类计无效
 主动慢失败正文只在快 lane 成功、存在原始正文且全部 sent 时抑制；部分、失败、待发和静默均继续反馈，用户 Task 仍反馈。检查 Task/lane 的失败状态与 errorId，不能用群里有没有补发错误判断执行是否成功。工具结果用 message.content[].toolCallId 并核对 source.callId，追踪与业务收口分开；b4d70d53、a886db8e 具体根因仍未确认。
 
 普通回复各长度不自动 @，原引用保留。强烈提醒必须由最终正文首行 [REPLY_ATTENTION:strong] 转为内部意图，只可提及真实原作者；附件和后续分段不重复提醒。上线使用 docker compose up -d --build 重建并重启，观察话题降级、计数一致性、熔断恢复和无效引用比例。
+
+## SessionContextView 与进度追问排查
+
+进度追问没有慢执行是 ADR-009 的正常路径：TaskInput 有 progressOnly/followUpOf，慢 lane 已完成且 result=silent/no-increment，没有慢 runtime、队列名额、附件或提醒。快答需真实查询原任务；query_tasks 尚无 delivery，完成不等于送达。原任务继续按自己的引用交付。
+
+重复执行先核对配置 mode/progressGuard、发送者与 generation、候选是否唯一、引用是否完整，以及输入是否包含重做、补充、媒体或混合请求。这些保守回退都会正常执行双 lane。连续进度 Task 不作候选，主动 Task 仅作为完成结果背景。
+
+普通慢 lane 的 `SessionContextView 已读取` 日志只有范围、数量、字符数和省略统计；`读取降级` 表示追加块为空，执行和投递状态继续独立推进。检查历史读取、Task/Queue 只读能力，不将 unknown 投递改成 sent，不重发未知消息。静默保存失败由维护循环 flushSettlements 只补保存，不能重新启动 runner。
+
+需要回滚时在配置设置 sessionContext.mode: off 后重启；无需迁移或删除 Task/消息记录。只排查 guard 可设置 progressGuard: false。live 语义与 localhost WebSocket 检查分开运行，发布前至少三次严格 live 回归。

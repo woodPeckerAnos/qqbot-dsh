@@ -8,6 +8,18 @@ import {
 import { createTaskLifeCycleManagerV2 } from '../../src/task/index.js';
 import { createPipelineStats } from '../../src/observability/index.js';
 import { createRuntimePool } from '../../src/runtime/index.js';
+import { createSessionContextView } from '../../src/session/index.js';
+
+export function verifyContextView(
+  view: ReturnType<ReturnType<typeof createSessionContextView>['read']>
+): void {
+  // @ts-expect-error View task lists cannot be extended by a consumer.
+  view.tasks.push({});
+  // @ts-expect-error Per-lane delivery is a read-only projection.
+  view.tasks[0]!.lanes.slow.delivery = 'sent';
+  // @ts-expect-error Nested scope belongs to the captured read.
+  view.scope.generation = 99;
+}
 
 /** Compile-only consumer: each expected error must remain an actual TypeScript rejection. */
 export function verifyTaskSnapshots(

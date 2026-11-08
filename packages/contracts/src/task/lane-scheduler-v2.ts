@@ -11,6 +11,8 @@ import type { DeepReadonly } from '../readonly.js';
  */
 import type { LaneResultV2, TaskSnapshotV2 } from './types-v2.js';
 interface Job {
+  /** Settle without queue capacity, runtime, run or artifact preparation. */
+  precomputed?: LaneResultV2;
   task: DeepReadonly<TaskSnapshotV2>;
   run: (signal: AbortSignal) => Promise<LaneResultV2>;
   settle: (result: LaneResultV2) => void;

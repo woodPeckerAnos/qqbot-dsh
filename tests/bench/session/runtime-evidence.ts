@@ -22,6 +22,20 @@ export class RuntimeEvidence {
       childrenFinished: 0,
       childFailures: 0,
     };
+    const taskControl = options.taskControl;
+    if (taskControl)
+      options.taskControl = (request) => {
+        const result = taskControl(request);
+        if (request.action === 'query') {
+          execution.taskQueries ??= [];
+          execution.taskQueries.push({
+            taskId: request.taskId,
+            at: now(),
+            result: structuredClone(result),
+          });
+        }
+        return result;
+      };
     this.reasoning.push(reasoning);
     this.executions.push(execution);
     this.activeObservers++;
@@ -46,8 +60,19 @@ export class RuntimeEvidence {
         reasoning.events++;
       }
       reasoning.appeared ||= reasoning.tokens > 0;
-      if (n.event.type === 'tool/call') execution.toolCalls++;
-      if (n.event.type === 'tool/result' && hasToolError(n.event.data)) execution.toolErrors++;
+      if (n.event.type === 'tool/call') {
+        execution.toolCalls++;
+        const data = n.event.data as { name?: string; call?: { name?: string } };
+        execution.toolNames ??= [];
+        execution.toolNames.push(data.name ?? data.call?.name ?? 'unknown');
+      }
+      if (n.event.type === 'tool/result') {
+        if (hasToolError(n.event.data)) execution.toolErrors++;
+        else {
+          execution.toolResultUuids ??= [];
+          execution.toolResultUuids.push(...extractToolResultUuids(n.event.data));
+        }
+      }
       if (n.sessionId !== parent) return;
       const text = extractAssistantText(n.event);
       if (text) execution.modelFinalText = text;
@@ -89,6 +114,19 @@ export class RuntimeEvidence {
     };
     runtime.prompt = (sessionId, blocks) => {
       parent = sessionId;
+      execution.promptAt = now();
+      const block = blocks.find(
+        (entry) =>
+          entry.type === 'text' && entry.text.startsWith('当前输入是唯一执行项。以下是只读背景')
+      );
+      if (block?.type === 'text') {
+        try {
+          const json = block.text.match(/<转发内容>\n([\s\S]+)\n<\/转发内容>$/u)?.[1];
+          execution.contextView = JSON.parse(json ?? '') as ExecutionEvidence['contextView'];
+        } catch {
+          execution.contextViewError = 'invalid-context-view';
+        }
+      }
       return prompt(sessionId, blocks);
     };
     runtime.dispose = async () => {
@@ -122,6 +160,40 @@ export function countReasoningTokens(data: unknown, depth = 0): number {
 }
 function hasToolError(data: unknown): boolean {
   if (!data || typeof data !== 'object') return false;
-  const object = data as { isError?: boolean; status?: string; result?: { isError?: boolean } };
-  return object.isError === true || object.status === 'error' || object.result?.isError === true;
+  const object = data as {
+    isError?: boolean;
+    status?: string;
+    error?: unknown;
+    result?: { isError?: boolean };
+  };
+  return (
+    object.isError === true ||
+    object.status === 'error' ||
+    object.error !== undefined ||
+    object.result?.isError === true ||
+    toolResultBlocks(data).some((block) => block.isError === true)
+  );
+}
+function toolResultBlocks(data: unknown): { isError?: boolean; content?: unknown[] }[] {
+  if (!data || typeof data !== 'object') return [];
+  const object = data as { message?: { content?: unknown } };
+  const content = object.message?.content;
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (block) => block && typeof block === 'object' && block.type === 'tool-result'
+  ) as { isError?: boolean; content?: unknown[] }[];
+}
+function extractToolResultUuids(data: unknown): string[] {
+  return toolResultBlocks(data)
+    .flatMap((block) => (Array.isArray(block.content) ? block.content : []))
+    .flatMap((content) => {
+      if (!content || typeof content !== 'object') return [];
+      const text = content as { type?: string; text?: string };
+      if (text.type !== 'text' || typeof text.text !== 'string') return [];
+      return [
+        ...text.text.matchAll(
+          /\breceipt=([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\b/giu
+        ),
+      ].map((value) => value[1]!.toLowerCase());
+    });
 }

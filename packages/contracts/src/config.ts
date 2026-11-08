@@ -154,6 +154,7 @@ export interface Config {
    * 自己的 settings 层带外提供）。
    */
   modelApi: ModelApiConfig;
+  sessionContext?: import('./session/context.js').SessionContextSettings;
   tasks: {
     fastTimeoutMs: number;
     slowTimeoutMs: number;

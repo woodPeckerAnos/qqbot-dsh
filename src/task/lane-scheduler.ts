@@ -8,6 +8,7 @@ import type { DeepReadonly } from '@qqbot/contracts';
 import type { LaneResultV2 as LaneResult, TaskSnapshotV2 as TaskSnapshot } from '@qqbot/contracts';
 
 interface Job {
+  precomputed?: LaneResult;
   task: DeepReadonly<TaskSnapshot>;
   run: (signal: AbortSignal) => Promise<LaneResult>;
   settle: (result: LaneResult) => void;
@@ -25,6 +26,10 @@ export class LaneScheduler {
   }
   enqueue(job: Job): void {
     if (this.closed) throw new Error('lane 已关闭');
+    if (job.precomputed) {
+      this.settle(job, job.precomputed);
+      return;
+    }
     const key = job.task.input.message.target.key;
     const queue = this.queues.get(key) ?? [];
     queue.push(job);

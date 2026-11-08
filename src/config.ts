@@ -1,4 +1,5 @@
 import { DEFAULT_OFFPEAK_WINDOWS } from '@qqbot/contracts';
+import { DEFAULT_SESSION_CONTEXT } from '@qqbot/contracts';
 import type { ConnectorName, Config } from '@qqbot/contracts';
 /**
  * 配置层：env（密钥）+ 配置文件（qqbot.yml 入口 + config/ 模块）+ 代码内置默认，
@@ -553,6 +554,30 @@ function requiredSecret(env: Env, key: string, hints: string[] = []): string {
   return raw;
 }
 
+function resolveSessionContext(
+  update: FileConfig['sessionContext']
+): import('@qqbot/contracts').SessionContextSettings {
+  const settings = { ...DEFAULT_SESSION_CONTEXT, ...update };
+  if (!['off', 'board-only', 'full'].includes(settings.mode))
+    throw new ConfigError('sessionContext.mode 只能是 off、board-only 或 full');
+  if (typeof settings.progressGuard !== 'boolean')
+    throw new ConfigError('sessionContext.progressGuard 必须是布尔值');
+  const ranges = {
+    maxCharsPerTask: [1, 100000],
+    maxTotalChars: [1024, 1000000],
+    maxTasks: [1, 64],
+    maxRecentMessages: [0, 12],
+    recentTaskWindowMs: [1, 86400000],
+  } as const;
+  for (const key of Object.keys(ranges) as (keyof typeof ranges)[]) {
+    const value = settings[key];
+    const [min, max] = ranges[key];
+    if (!Number.isInteger(value) || value < min || value > max)
+      throw new ConfigError(`sessionContext.${key} 必须是 [${min}, ${max}] 内的整数`);
+  }
+  return settings;
+}
+
 export function loadConfig(env: Env = process.env, file: FileConfig = {}): Config {
   const hints = ['请复制 .env.example 为 .env 并填写后重试'];
 
@@ -1057,6 +1082,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       ),
     },
     modelApi,
+    sessionContext: resolveSessionContext(file.sessionContext),
     tasks: {
       fastTimeoutMs: pickInt(
         env,
@@ -1487,6 +1513,7 @@ export function describeConfig(config: Config): Record<string, unknown> {
     },
     pool: { maxRuntimes: config.pool.maxRuntimes, replayTurns: config.pool.replayTurns },
     tasks: config.tasks,
+    sessionContext: config.sessionContext,
     topic: {
       enabled: config.topic.enabled,
       // 凭证解析到哪条路由（apiKey 本身绝不进摘要）

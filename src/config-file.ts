@@ -168,6 +168,15 @@ const TASKS_SPEC: SectionSpec = {
   retentionMs: 'int',
   reminderMs: 'int',
 };
+const SESSION_CONTEXT_SPEC: SectionSpec = {
+  mode: 'string',
+  progressGuard: 'bool',
+  maxCharsPerTask: 'int',
+  maxTotalChars: 'int',
+  maxTasks: 'int',
+  maxRecentMessages: 'int',
+  recentTaskWindowMs: 'int',
+};
 const POOL_SPEC: SectionSpec = {
   maxConcurrentTurns: 'int',
   maxRuntimes: 'int',
@@ -293,6 +302,7 @@ const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: Sect
   { yamlKey: 'dsh', field: 'dsh', spec: DSH_SPEC },
   { yamlKey: 'pool', field: 'pool', spec: POOL_SPEC },
   { yamlKey: 'tasks', field: 'tasks', spec: TASKS_SPEC },
+  { yamlKey: 'sessionContext', field: 'sessionContext', spec: SESSION_CONTEXT_SPEC },
   { yamlKey: 'topic', field: 'topic', spec: TOPIC_SPEC },
   { yamlKey: 'paths', field: 'paths', spec: PATHS_SPEC },
   { yamlKey: 'offpeak', field: 'offpeak', spec: OFFPEAK_SPEC },

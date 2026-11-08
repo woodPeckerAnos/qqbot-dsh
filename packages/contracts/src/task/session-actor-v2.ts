@@ -12,6 +12,8 @@ import type { TaskClock } from './clock.js';
 
 import type { Lane, TaskHandleV2, TaskInput } from './types-v2.js';
 export interface SessionActorV2 {
+  generation(sessionKey: string): number;
+  sinceTs(sessionKey: string): number;
   /** 主动请求在等待输入门闩之前固定触发上下文，避免换成后来话题。 */
   submit(
     context: MessageContext,
@@ -49,5 +51,6 @@ export type createSessionActorFactoryV2 = (options: {
   clock?: TaskClock;
   sessions?: SessionStateWriter;
   taskIdFactory?: () => string;
+  sessionContext?: Partial<import('../session/context.js').SessionContextSettings>;
 }) => SessionActorV2;
 export type { SessionContextState } from './session-actor.js';

@@ -2,6 +2,7 @@ import { until } from './harness.js';
 import type { Harness } from './harness.js';
 import type { BenchmarkCase } from './types.js';
 import { remainingCases, mixedCases } from './offline-resources.js';
+import { contextCases } from './context-cases.js';
 
 export type Definition = [string, string, string, (h: Harness) => Promise<void>];
 const definitions: Definition[] = [
@@ -348,7 +349,7 @@ const definitions: Definition[] = [
     },
   ],
 ];
-export const offlineCases: BenchmarkCase[] = [...definitions, ...remainingCases].map(
+const coreCases: BenchmarkCase[] = [...definitions, ...remainingCases].map(
   ([id, group, title, run]) => ({
     id,
     group,
@@ -360,4 +361,5 @@ export const offlineCases: BenchmarkCase[] = [...definitions, ...remainingCases]
     knownIssue: id === 'O02' || id === 'O03',
   })
 );
+export const offlineCases: BenchmarkCase[] = [...coreCases, ...contextCases];
 export { mixedCases };

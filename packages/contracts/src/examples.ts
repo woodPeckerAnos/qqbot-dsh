@@ -1,7 +1,9 @@
 import { immutableConstant } from './readonly.js';
 import type { modules } from './metadata.js';
 
-export type ContractModuleId = (typeof modules)[number]['id'];
+/** Historical v1 union stays closed; consumers of newly registered modules use V2. */
+export type ContractModuleId = Exclude<(typeof modules)[number]['id'], 'session'>;
+export type ContractModuleIdV2 = (typeof modules)[number]['id'];
 export interface ContractExample {
   readonly id: string;
   readonly module: ContractModuleId;
@@ -9,9 +11,40 @@ export interface ContractExample {
   readonly input: Readonly<Record<string, unknown>>;
   readonly expected: Readonly<Record<string, unknown>>;
 }
+export interface ContractExampleV2 extends Omit<ContractExample, 'module'> {
+  readonly module: ContractModuleIdV2;
+}
 
 /** 数据夹具由消费者测试和独立离线冒烟共用；此包不包含生产实现。 */
 export const contractExamples = immutableConstant([
+  {
+    id: 'session.normal',
+    module: 'session',
+    kind: 'normal',
+    input: { text: '完成了吗', target: true },
+    expected: {
+      followUpOf: 'original',
+      progressOnly: true,
+      contextTasks: 1,
+      rendered: true,
+      immutable: true,
+    },
+  },
+  {
+    id: 'session.edge',
+    module: 'session',
+    kind: 'edge',
+    input: { text: '完成了吗', target: false },
+    expected: { contextTasks: 0, rendered: false, immutable: true },
+  },
+  {
+    id: 'session.failure',
+    module: 'session',
+    kind: 'failure',
+    input: { text: '还没吃饭吗', target: true },
+    expected: {},
+  },
+
   {
     id: 'config.normal',
     module: 'config',
@@ -322,4 +355,4 @@ export const contractExamples = immutableConstant([
     input: { amount: -1 },
     expected: { rejected: true, error: 'RangeError', received: 0 },
   },
-] as const satisfies readonly ContractExample[]);
+] as const satisfies readonly ContractExampleV2[]);

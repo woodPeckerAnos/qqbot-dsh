@@ -17,7 +17,7 @@ npm run check        # 类型、契约、lint、格式、测试、冒烟与 Dock
 | `npm run format:check`    | Prettier 只读校验                                            |
 | `npm run typecheck`       | 契约独立编译、应用 `tsc --noEmit`、消费者反向类型用例        |
 | `npm run contracts:check` | 模块边界、状态写入权、消费者兼容、示例覆盖和文档漂移         |
-| `npm run smoke:contracts` | 12 个模块的独立离线消费者示例                                |
+| `npm run smoke:contracts` | 13 个模块的独立离线消费者示例                                |
 
 ## 配置边界
 

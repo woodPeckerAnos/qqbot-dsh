@@ -21,6 +21,18 @@
 # 预设只放风格与口径（口吻、详略、组织方式）；身份与纪律写在 dsh-profile 的
 # personaPrefix 里全局共用，预设不要重复。仓库自带示例见 dsh-profile/personas/。
 # 环境变量：BOT_PERSONA_DIR
+sessionContext:
+  # off 关闭新增行为；board-only 仅增量 Task 台账；full 加近期纯文本背景。
+  mode: board-only
+  # 纯进度追问保守识别，慢 lane 直接静默结算，快 lane 实际查询旧 Task。
+  progressGuard: true
+  maxCharsPerTask: 8000
+  maxTotalChars: 12000
+  maxTasks: 8
+  # 仅 full 生效；0 关闭，最多 12 条，消息只作背景。
+  maxRecentMessages: 0
+  recentTaskWindowMs: 300000
+
 personas:
   dir: dsh-profile/personas
 

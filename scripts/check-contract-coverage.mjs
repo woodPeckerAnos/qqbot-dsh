@@ -9,6 +9,7 @@ export const unitTests = {
   store: ['tests/store.test.ts', 'tests/window.test.ts', 'tests/personas.test.ts'],
   media: ['tests/image.test.ts', 'tests/files.test.ts', 'tests/document.test.ts'],
   runtime: ['tests/protocol.test.ts', 'tests/pool.test.ts', 'tests/agent-trace.test.ts'],
+  session: ['tests/session-context.test.ts', 'tests/session-context-integration.test.ts'],
   task: ['tests/task-state-contract.test.ts', 'tests/task-system.test.ts'],
   delivery: ['tests/task-state-contract.test.ts', 'tests/task-system.test.ts'],
   ingress: ['tests/task-system.test.ts', 'tests/topic-judge.test.ts'],

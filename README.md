@@ -133,11 +133,13 @@ npm run bench:session:live # 显式真实 DSH + 独立裁判，需要配置与�
 npm run test:integration # 独立 localhost WebSocket 回路，无已部署客户端
 npm run build
 npm run contracts:check  # 边界、兼容、覆盖与生成契约漂移
-npm run smoke:contracts  # 12 模块、36 个公共入口离线示例
+npm run smoke:contracts  # 13 模块、39 个公共入口离线示例
 npm run check            # 类型、契约、lint、格式、测试、冒烟与 Docker 包解析
 ```
 
 应答 benchmark 的场景、裁判配置、基线比较与严格门禁见 [验收说明](docs/SESSION-BENCHMARK.md)。快慢协作要求增量和明确纠错；真实模型效果单列 live benchmark，离线正向协作回归与坏样本校准分别保留。
+
+进度追问不重做、慢任务读取最新旧结果、执行与投递状态分离是固定的 [任务衔接基线](docs/SESSION-BENCHMARK.md#任务衔接基线adr-009--adr-011)。运行 `npm run bench:session -- --cases 任务衔接基线 --strict`；C01–C10 同时进入默认离线测试，完整基准报告保存在版本库。
 
 OneBot 的长文和多媒体使用一条平铺消息记录，普通多文件及混合附件合为一个 ZIP。输出交付的真实适配器离线动作比较可运行 `npm run bench:session -- --cases 输出交付 --strict`，官方 QQ 保留既有交付方式。
 
@@ -182,7 +184,7 @@ interests.yml              兴趣池（场景 5；独立 schema）
 dsh-profile/               DSH profile 补丁 + 自动审批桩 + /persona 人设预设
 packages/contracts/        独立契约 workspace：接口、值类型、错误、元数据、示例与 v1 兼容基线
 src/                       后端源码：接入适配（adapters）/ 编排（pipeline）/ DSH 桥接（dsh）/
-                           Task 与双 lane（task）/ 持久化与观察窗口（store）/ 配置合并（config*.ts）
+                           Task 与双 lane（task）/ 只读会话增量（session）/ 持久化与观察窗口（store）/ 配置合并（config*.ts）
 scripts/                   容器入口、云上 preflight（cloud-preflight.sh）、
                            卷批次备份恢复（volume-bundle.sh）与验证脚本
 tests/                     离线契约与回归；legacy/ 仅保存旧路径测试夹具

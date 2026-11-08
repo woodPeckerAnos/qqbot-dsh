@@ -1,5 +1,13 @@
 # 现行架构
 
+[ADR-009](adr/009-session-context-view.md) 引入只读 SessionContextView 与保守进度追问 guard。默认 board-only，慢 lane 在 runtime ready 后读取同会话/generation、先准入且在当前 Task 排队或初始化期间终结的旧结果；显式 followUpOf 可读取仍执行或更早完成的目标。两 lane 正文及状态独立保留，主动结果标注来源，正文投递记录缺失或不确定为 unknown，预算包含整个渲染块与省略统计。full 可增补最多 12 条近期纯文本背景，generation 已变化则不读取；快 lane 继续冻结快照。
+
+[ADR-014](adr/014-follow-up-result-reuse.md) 将无增量静默的比较基准明确为同 Task 已成功送达的快答。普通关联输入明确要求引用或复述旧结果时，使用 View 中的可核对正文完成当前答复，不重复旧业务；旧 Task 已送达或当前快答仅告知等待，都不能替代本次请求的完成。runner、协作插件、默认 profile 和 View 说明表达同一范围。
+
+[ADR-016](adr/016-progress-completion-qualification.md) 要求关联进度回复明确区分执行与送达。query_tasks 的 completed 只证明执行完成；查询没有 delivery 时，明确说执行已完成、送达未核实，不使用“已全部完成”等未限定范围的声明，不推断发送状态。生产查询字段保持不变。
+
+Actor 在话题判定后按注入时钟和准入顺序同步识别純进度，仅关联同发送者、同 generation、唯一用户目标；连续进度、主动、取消及失败 Task 不作候选。进度 Task 仍原子创建两个 lane，慢 lane 通过 scheduler precomputed 直接保存 silent/no-increment，不占队列、runtime 或产物资源；快 lane 按指示实际 query_tasks 查询目标。保存失败只重试结算。mode=off 回滚全部新增行为，progressGuard=false 恢复普通双 lane 并保留关联和 View；无数据迁移。
+
 判定恢复与提醒意图见 [ADR-008](adr/008-judgment-recovery-reply-attention.md)。话题判定显式 reasoning_effort=none（32/48 token），主动瞬时失败至多三次请求，共享总超时及并发名额；watcher 单次记最终失败，连续三次冷却五分钟，到期仅在有效触发有候选时放行一个试探。所有入口含 wait 共用闸门，继续旁听。提示列出完整 q:<id> 及唤醒等待时间，按同一快照验证并复核实时台账，禁止补猜引用。健康快照提供分类、重试和会话熔断状态。
 
 主动 Task 快 lane 成功且至少一段原始正文存在、全部 sent 时，出口省略慢错误正文，保留真实失败状态、附件及必需说明；其他情况及用户 Task 继续反馈。工具结果的 toolCallId 与 source.callId 核对，追踪缺失不作为业务工具未收口依据。普通回复所有长度均不自动 @，保留原引用；首行内部标记 [REPLY_ATTENTION:strong] 由 runner 移除并转成意图，只提及真实原作者一次，附件与后续分段不重复提及。下文通用慢失败反馈规则适用这一明确例外，ADR-007 自动提及决策属历史。
@@ -14,13 +22,13 @@ Logger 子实例共享配置、预算与 stderr JSONL 缓冲。TaskLifeCycleMana
 
 ## 机器强制的模块边界
 
-现行跨模块值、错误、常量和接口在独立 workspace `packages/contracts`，实现以 `src/{config,content,connectors,store,media,runtime,task,delivery,ingress,proactive,offpeak,observability}/index.ts` 提供具有契约类型的工厂与函数。旧目录路径保留同模块内部协作与历史夹具；生产消费者只通过公共入口和契约接口。`docs/MODULE-CONTRACTS.md` 从独立编译声明、元数据和可执行示例确定性生成，接口签名不再手写复制。
+现行跨模块值、错误、常量和接口在独立 workspace `packages/contracts`，实现以 `src/{config,content,connectors,store,media,runtime,task,session,delivery,ingress,proactive,offpeak,observability}/index.ts` 提供具有契约类型的工厂与函数。旧目录路径保留同模块内部协作与历史夹具；生产消费者只通过公共入口和契约接口。`docs/MODULE-CONTRACTS.md` 从独立编译声明、元数据和可执行示例确定性生成，接口签名不再手写复制。
 
 边界检查使用 TypeScript 解析与模块解析，覆盖各导入形态、再导出、别名、动态目标、运行依赖环和公共类型来源。状态写能力按 `tasks`、`messages`、`task-budgets`、`task-sessions` 分配，仅装配器发放；检查拒绝越权调用、能力解构及绑定旁路。网络、文件与子进程能力按模块清单声明，协议、下载、文档抽取和持久化故障通过注入替身验证。
 
 状态所有者准备候选值并成功持久化后，才提交内存、通知与结算。未落盘执行结果保留用于后续仅补保存；平台发送后保存失败保留结果未知，不能重发。Runtime 池持有 busy 和子代理集合，仅发放身份绑定的只读租约及受限协议能力。深快照隔离对象、数组、Map、Set 与字节引用；PipelineStats 只提供记录方法和只读快照。
 
-`npm run check` 包含契约编译、公共工厂反向类型用例、边界、版本兼容基线、文档漂移、模块覆盖、离线消费者测试、36 个独立冒烟示例和 Docker 目录解析。真实 WebSocket 单列 `test:integration`。决策和兼容流程见 [ADR-003](adr/003-enforced-module-contracts.md)；历史手写接口与可写租约见该 ADR 之前的 git 版本及 `tests/legacy`。
+`npm run check` 包含契约编译、公共工厂反向类型用例、边界、版本兼容基线、文档漂移、模块覆盖、离线消费者测试、39 个独立冒烟示例和 Docker 目录解析。真实 WebSocket 单列 `test:integration`。决策和兼容流程见 [ADR-003](adr/003-enforced-module-contracts.md)；历史手写接口与可写租约见该 ADR 之前的 git 版本及 `tests/legacy`。
 
 ## Task 与双 lane
 
@@ -32,7 +40,7 @@ Logger 子实例共享配置、预算与 stderr JSONL 缓冲。TaskLifeCycleMana
 
 原始正文分段在去重前固定，记录保存分段到节点的映射；提示不属于原正文。成功记录展开用于快慢协作，历史保存完整正文。独立文件副本先准备，完整交付组一次持久化，再由 MessageQueue 按序尝试。文本、记录、附件通道独立，新 Task 的快正文不等待记录上传。记录完整序列化帧上限为 100 MiB；单文件和 ZIP 沿用 maxFileBytes，超限明确失败、不截断、不拆记录、不删 ZIP 条目。每组最多一个失败通知，未知结果不重发。
 
-每个有效输入和主动请求恰好创建一个 Task，原子准入两个 lane。同 Session 每个 lane 串行，lane 之间独立推进。Actor 只协调短事务；长执行、媒体整理和上传不占 Actor 锁。上下文在输入时固定，话题切换只影响后续 generation。
+每个有效输入和主动请求恰好创建一个 Task，原子准入两个 lane。同 Session 每个 lane 串行，lane 之间独立推进。Actor 只协调短事务；长执行、媒体整理和上传不占 Actor 锁。输入背景在准入时固定；普通慢 lane 在派发前补充只读增量 View，话题切换只影响后续 generation。
 
 快 lane 独立 runtime / session，thinking=false、reasoningEffort=off，仅可查询和取消 Task；长任务简短承接，不因工具限制否认整个 agent 的能力、不提前宣称完成。慢 lane 自行判定长技能（包括深度推理），基于实际成功送达正文只交付新增部分，结论反转明确回指并纠正。无增量允许 NO_REPLY（包括成功工具执行后）；失败、超时、空结果和需要说明的附件必须反馈。子代理前台等待，执行及子代理均终结后结算。
 

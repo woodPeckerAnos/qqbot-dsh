@@ -35,6 +35,7 @@ import type {
   TaskSnapshotV2 as TaskSnapshot,
 } from '@qqbot/contracts';
 import { BusinessOutcome } from './business-outcome.js';
+import { renderSessionContextView } from '../session/index.js';
 import { bindCooperationRequest } from './cooperation.js';
 
 function silentResult(lane: Lane, failureReason: BusinessOutcome['failureReason']): LaneResult {
@@ -66,9 +67,48 @@ export class DshLaneRunner implements LaneRunner {
       clock?: TaskClock;
       onEvent?: (event: LaneEvent) => void;
       cooperation?: import('@qqbot/contracts').TaskCooperation;
+      contextView?: ReturnType<import('@qqbot/contracts').createSessionContextViewFactory>;
     }
   ) {
     this.clock = options.clock ?? SYSTEM_CLOCK;
+  }
+  private appendContext(
+    blocks: import('@qqbot/contracts').PromptContentBlock[],
+    task: DeepReadonly<TaskSnapshot>,
+    lane: Lane,
+    logger: Logger
+  ): void {
+    if (this.options.config.sessionContext?.mode === 'off') return;
+    if (lane === 'fast' && task.input.followUpOf) {
+      blocks.push({
+        type: 'text',
+        text: `本次输入关联旧 Task ${task.input.followUpOf}。必须实际调用 query_tasks，参数 taskId=${task.input.followUpOf}，按真实查询结果理解本次请求。${task.input.progressOnly ? '这是纯进度追问，只汇报查询到的状态，不执行、重做或承诺接管旧工作。' : '当前输入的重做、补充或新要求仍由本 Task 正常执行。'}查询没有 delivery 字段时，不声称结果已送达。查询中的 completed 仅表示执行完成。缺少 delivery 时，完成状态必须明确表述为“任务执行已完成，结果送达情况尚未核实”，不能笼统说“已全部完成”，也不推断已发送、发送失败或正在发送。用普通语言回复，不暴露 lane、Task ID 或查询工具名。`,
+      });
+    }
+    if (lane === 'slow' && this.options.contextView) {
+      try {
+        const view = this.options.contextView.read(task);
+        const text = renderSessionContextView(view);
+        if (text) blocks.push({ type: 'text', text });
+        logger.info('SessionContextView 已读取', {
+          taskId: task.taskId,
+          sessionKey: view.scope.sessionKey,
+          generation: view.scope.generation,
+          since: view.scope.since,
+          now: view.scope.now,
+          tasks: view.tasks.length,
+          messages: view.messages.length,
+          chars: text.length,
+          ...view.stats,
+        });
+      } catch {
+        logger.warn('SessionContextView 读取降级', {
+          taskId: task.taskId,
+          generation: task.input.generation,
+          reason: 'read-failed',
+        });
+      }
+    }
   }
   async run(
     task: DeepReadonly<TaskSnapshot>,
@@ -365,7 +405,7 @@ export class DshLaneRunner implements LaneRunner {
       const instruction =
         lane === 'fast'
           ? '你在快 lane。立即给出简短答复；需要研究、工具、文件或深度推理时简短承接，说明正在继续处理。你和慢 lane 是同一个完整 agent，不因快 lane 工具限制否认整个 agent 的能力，不提前宣称任务已完成。仅可使用 query_tasks 和 cancel_task 查询或取消旧任务，不执行业务工具。'
-          : '你在慢 lane，自行判断是否需要长技能，深度推理也属于长技能。完整执行并等待所有子代理结束，子代理只能前台等待。协作快照会告知同 Task 快 lane 实际成功送达的正文及失败分段。只交付新增信息，不复述已送达答案；没有增量时仅返回 NO_REPLY，成功执行工具后也允许。未送达的答案仍需答复；结论反转时明确回指先前快答并纠正。执行失败、超时、空结果以及需要说明的附件必须如实反馈。主动请求的快 lane 完整送达后，由出口决定是否省略慢失败正文，执行状态仍失败；附件及必要说明仍交付。结束前按最新协作快照完成衔接。';
+          : '你在慢 lane，自行判断是否需要长技能，深度推理也属于长技能。完整执行并等待所有子代理结束，子代理只能前台等待。协作快照会告知同 Task 快 lane 实际成功送达的正文及失败分段。只交付相对于同 Task 快答的增量，同 Task 快答已完整满足请求时仅返回 NO_REPLY，成功执行工具后也允许。当前输入明确要求引用或复述其他 Task 已有结果时，使用已有可核对结果实际答复，不重做旧业务；仅告知等待的快答和旧 Task 已送达都不能替代本次请求的完成。未送达的答案仍需答复；结论反转时明确回指先前快答并纠正。执行失败、超时、空结果以及需要说明的附件必须如实反馈。主动请求的快 lane 完整送达后，由出口决定是否省略慢失败正文，执行状态仍失败；附件及必要说明仍交付。结束前按最新协作快照完成衔接。';
       const blocks = [
         {
           type: 'text' as const,
@@ -373,6 +413,7 @@ export class DshLaneRunner implements LaneRunner {
         },
         ...prepared.blocks,
       ];
+      this.appendContext(blocks, task, lane, logger);
       // 监听器、身份和计时器先于派发，连同步 mock 事件也不会漏收或串属。
       void runtime.prompt(sessionId, blocks).catch((error: unknown) => {
         if (settled) return;

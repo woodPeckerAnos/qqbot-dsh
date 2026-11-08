@@ -3,6 +3,8 @@ import type {
   TaskSnapshotV2 as TaskSnapshot,
   QueuedMessage,
   OriginalMessageReference,
+  SessionContextViewValue,
+  TaskStatus,
 } from '@qqbot/contracts';
 import type { Harness } from './harness.js';
 import type { ProbeAction } from './onebot-probe.js';
@@ -59,6 +61,7 @@ export interface BenchmarkCase {
   expectation: string;
   reasoning?: boolean;
   knownIssue?: boolean;
+  requiredAssertions?: readonly string[];
   run: (h: Harness) => Promise<void>;
 }
 export interface AttachmentEvidence {
@@ -92,6 +95,12 @@ export interface ReasoningEvidence {
   tokens: number;
 }
 export interface ExecutionEvidence {
+  promptAt?: number;
+  contextView?: Pick<SessionContextViewValue, 'scope' | 'tasks' | 'messages' | 'stats'>;
+  contextViewError?: string;
+  toolNames?: string[];
+  toolResultUuids?: string[];
+  taskQueries?: { taskId?: string; at: number; result: unknown }[];
   taskId: string;
   lane: string;
   modelFinalText: string;
@@ -103,7 +112,16 @@ export interface ExecutionEvidence {
   lastChildFinishedAt?: number;
   parentEndedAt?: number;
 }
+export interface DeliveryEvidence {
+  taskId: string;
+  callerTaskId: string;
+  at: number;
+  status: TaskStatus;
+  delivery: string;
+  records: { id: string; status: string; outcome?: string }[];
+}
 export interface RunRecord {
+  deliveryEvidence?: DeliveryEvidence[];
   outputDelivery?: OutputDeliveryEvidence;
   caseId: string;
   caseVersion: number;
@@ -121,8 +139,11 @@ export interface RunRecord {
   messages: readonly DeepReadonly<QueuedMessage>[];
   actions: PlatformAction[];
   reasoning: ReasoningEvidence[];
+  /** Absent in historical reports; only explicit true requires slow reasoning evidence. */
+  reasoningRequired?: boolean;
   executions: ExecutionEvidence[];
   assertions: AssertionResult[];
+  requiredAssertions?: readonly string[];
   judge?: JudgeVerdict;
   resources: Record<string, number>;
   configuration: Record<string, unknown>;
