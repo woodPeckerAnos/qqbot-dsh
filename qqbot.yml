@@ -94,7 +94,9 @@ include:
 
 # --- 只来自 .env 的密钥与个人标识 -------------------------------------------
 # 配置文件里没有这些键，写了会在启动期被拒绝或当成未知项：
-#   密钥：QQ_APP_ID / QQ_APP_SECRET / ONEBOT_ACCESS_TOKEN / DEEPSEEK_API_KEY
+#   密钥：QQ_APP_ID / QQ_APP_SECRET / ONEBOT_ACCESS_TOKEN / DEEPSEEK_API_KEY，
+#         以及 models.yml 里各路由 apiKeyEnv 引用的变量（ARC_CODE_API_KEY、
+#         QWEN_TOKEN_PLAN_API_KEY 等；变量名必须与路由声明一致）
 #   个人标识：BOT_ADMINS（管理员，平台:发送者id）
 #             BOT_LISTEN_GROUPS（群白名单，平台:群号；留空 = 不接群也不观察）
 # 条目格式与旧变量兼容说明见 .env.example 与 docs/CONFIG.md。

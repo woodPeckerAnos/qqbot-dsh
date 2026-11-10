@@ -82,7 +82,11 @@
         # false ：提权一律拒绝，机器人只能做不需要执行命令的工作。
         allowEscalation: true
 
-# --- 6. 联网搜索改走方舟订阅（不再烧 DeepSeek 官方 key） ----------------------
+# --- 6. 联网搜索默认后端：方舟订阅（不写 models.webSearch 时生效）------------
+# 注意：这一节是**兜底**。config/local/models.yml 里配了 models.webSearch 时，
+# qqbot 启动时生成的第二个 patch 会把 ctx.web 的搜索 provider 钉到千问（qwen），
+# 并覆盖下面第 7 节那个插件的配置；本节仍然保留，方便随时切回方舟。
+#
 # DSH 的 web_search 后端（web-search-deepseek）默认直连 DeepSeek 官方 Messages
 # API（model=deepseek-v4-flash，凭证=DEEPSEEK_API_KEY），**与主模型走哪条路由
 # 无关**：群里每搜一次，消耗的都是 DS 官方 key，而不是方舟订阅。
@@ -107,3 +111,25 @@
     baseURL: https://ark.cn-beijing.volces.com/api/plan/v1
     apiKeyEnv: ARC_CODE_API_KEY
     model: ark-code-latest
+
+# --- 7. 千问 Token Plan 联网搜索插件（可选后端）------------------------------
+# 这个插件实现的是 OpenAI 兼容 Responses API 的 `web_search` 内置工具（千问
+# Token Plan 的联网搜索只在这个协议下触发；Chat Completions 的 enable_search
+# 不会返回结构化来源）。它注册为 ctx.web 的 `qwen` provider，只有
+# models.webSearch 存在时才会被选中（生成的 patch 会把 searchProvider 设为
+# qwen）；没配 webSearch 时它只是挂载着，不影响第 6 节的方舟后端。
+#
+# 下面的 config 是缺省值，启动时会被 models.webSearch 解析出的 apiKeyEnv /
+# baseURL / model 整份覆盖（config 是替换而非深合并）。这里保留一份可运行的
+# 默认值，让插件在模型配置生成失败时也能报出可读的运行时错误。
+#
+# 默认模型 qwen3.7-plus 是 Token Plan 内置工具支持档位里最便宜的一档；
+# qwen3.8-max / qwen3.7-max 质量更高但搜索一次消耗更多 Credits。
+- insert:
+    - id: web-search-qwen
+      name: ./plugins/web-search-qwen.js
+      inject: [web]
+      config:
+        apiKeyEnv: QWEN_TOKEN_PLAN_API_KEY
+        baseURL: https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1
+        model: qwen3.7-plus

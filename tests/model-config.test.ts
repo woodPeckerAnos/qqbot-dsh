@@ -132,6 +132,9 @@ providers:
     expect(() =>
       parseModelApiSection(parseYaml('providers:\n  openai:\n    models:\n      - id: m\n        contextwindow: 1'), 'models'),
     ).toThrow(/models\[0\]\.contextwindow/);
+    expect(() =>
+      parseModelApiSection(parseYaml('deepseek: {}\nwebSearch:\n  provider: qwen-token-plan\n  modle: x'), 'models'),
+    ).toThrow(/webSearch\.modle/);
   });
 
   it('拒绝内联密钥写法与带密钥语义的 header（密钥只允许 apiKeyEnv 引用）', () => {
@@ -223,6 +226,40 @@ providers:
     expect(() => parseModelApiSection(parseYaml('{}'), 'models')).toThrow(/不能为空/);
   });
 
+  it('webSearch：provider 必填且必须是路由名；model / maxOutputTokens 校验', () => {
+    const parsed = parseModelApiSection(
+      parseYaml(`
+providers:
+  qwen-token-plan:
+    apiKeyEnv: QWEN_TOKEN_PLAN_API_KEY
+    baseURL: https://token-plan.example/v1
+webSearch:
+  provider: qwen-token-plan
+  model: qwen3.7-plus
+  maxOutputTokens: 2048
+`),
+      'models',
+    );
+    expect(parsed.webSearch).toEqual({
+      provider: 'qwen-token-plan',
+      model: 'qwen3.7-plus',
+      maxOutputTokens: 2048,
+    });
+
+    expect(() => parseModelApiSection(parseYaml('deepseek: {}\nwebSearch:\n  model: m'), 'models')).toThrow(
+      /provider 是必填项/,
+    );
+    expect(() =>
+      parseModelApiSection(parseYaml('deepseek: {}\nwebSearch:\n  provider: Qwen'), 'models'),
+    ).toThrow(/路由名/);
+    expect(() =>
+      parseModelApiSection(
+        parseYaml('deepseek: {}\nwebSearch:\n  provider: qwen-token-plan\n  maxOutputTokens: 8'),
+        'models',
+      ),
+    ).toThrow(/maxOutputTokens/);
+  });
+
   it('deepseek 目录条目校验（imagePixelBudget / 枚举字段）', () => {
     expect(() =>
       parseModelApiSection(
@@ -261,6 +298,40 @@ describe('assertModelApiConfig', () => {
     const config: ModelApiConfig = { deepseek: { apiKeyEnv: 'MY_DS_KEY' }, providers: {} };
     expect(() => assertModelApiConfig(config, 'deepseek-official', {})).toThrow(/MY_DS_KEY/);
     expect(() => assertModelApiConfig(config, 'deepseek-official', { MY_DS_KEY: 'x' })).not.toThrow();
+  });
+
+  it('webSearch 指向的路由必须存在、协议兼容，并带 apiKeyEnv/baseURL', () => {
+    const route = { apiKeyEnv: 'QWEN_TOKEN_PLAN_API_KEY', baseURL: 'https://token-plan.example/v1' };
+    const ok: ModelApiConfig = {
+      providers: { 'qwen-token-plan': route },
+      webSearch: { provider: 'qwen-token-plan' },
+    };
+    expect(() => assertModelApiConfig(ok, 'qwen-token-plan', { QWEN_TOKEN_PLAN_API_KEY: 'sk-sp' })).not.toThrow();
+    // 引用的凭证变量仍然要存在
+    expect(() => assertModelApiConfig(ok, 'qwen-token-plan', {})).toThrow(/QWEN_TOKEN_PLAN_API_KEY/);
+    // 未声明 / 原生路由 / 协议不兼容 / 缺 apiKeyEnv / 缺 baseURL
+    expect(() => assertModelApiConfig({ providers: {}, webSearch: { provider: 'qwen-token-plan' } }, 'deepseek-official', { DEEPSEEK_API_KEY: 'x' })).toThrow(
+      /未在 models\.providers/,
+    );
+    expect(() => assertModelApiConfig({ providers: {}, webSearch: { provider: 'deepseek-official' } }, 'deepseek-official', { DEEPSEEK_API_KEY: 'x' })).toThrow(
+      /不能是原生路由/,
+    );
+    expect(() =>
+      assertModelApiConfig(
+        {
+          providers: { claude: { apiKeyEnv: 'K', baseURL: 'https://x/v1', api: 'anthropic-messages' } },
+          webSearch: { provider: 'claude' },
+        },
+        'claude',
+        { K: 'x' },
+      ),
+    ).toThrow(/联网搜索无法使用/);
+    expect(() =>
+      assertModelApiConfig({ providers: { q: { baseURL: 'https://x/v1' } }, webSearch: { provider: 'q' } }, 'q', {}),
+    ).toThrow(/没有 apiKeyEnv/);
+    expect(() =>
+      assertModelApiConfig({ providers: { q: { apiKeyEnv: 'K' } }, webSearch: { provider: 'q' } }, 'q', { K: 'x' }),
+    ).toThrow(/没有 baseURL/);
   });
 });
 
@@ -331,6 +402,34 @@ describe('renderModelApiPatch', () => {
     const text = renderModelApiPatch({ deepseek: { thinking: 'enabled' }, providers: {} }) as string;
     const entries = parseYaml(text) as Array<{ config: Record<string, unknown> }>;
     expect(entries[0]?.config).toEqual({ thinking: 'enabled' });
+  });
+
+  it('webSearch 生成 web + web-search-qwen 两条条目，凭证与端点来自路由', () => {
+    const text = renderModelApiPatch({
+      providers: {
+        'qwen-token-plan': {
+          apiKeyEnv: 'QWEN_TOKEN_PLAN_API_KEY',
+          baseURL: 'https://token-plan.example/v1',
+        },
+      },
+      webSearch: { provider: 'qwen-token-plan', maxOutputTokens: 4096 },
+    }) as string;
+    const entries = parseYaml(text) as Array<{ id: string; config: Record<string, unknown> }>;
+    expect(entries.map((entry) => entry.id)).toEqual(['llm-pi-ai', 'web', 'web-search-qwen']);
+    // config 是整份替换：fetchProvider 必须写回来，否则 base bundle 的抓取后端被抹掉
+    expect(entries[1]?.config).toEqual({ searchProvider: 'qwen', fetchProvider: 'http' });
+    expect(entries[2]?.config).toEqual({
+      apiKeyEnv: 'QWEN_TOKEN_PLAN_API_KEY',
+      baseURL: 'https://token-plan.example/v1',
+      model: 'qwen3.7-plus',
+      maxOutputTokens: 4096,
+    });
+  });
+
+  it('webSearch 指向不可用路由时渲染期直接报错（不生成半截配置）', () => {
+    expect(() =>
+      renderModelApiPatch({ providers: {}, webSearch: { provider: 'missing' } }),
+    ).toThrow(/未在 models\.providers/);
   });
 });
 
@@ -440,6 +539,32 @@ topic:
   provider: openai
 `);
     expect(() => loadConfig({ ...baseEnv, OPENAI_API_KEY: 'sk-o' }, file)).toThrow(/没有 baseURL/);
+  });
+
+  it('models.webSearch 从文件流入 Config.modelApi；缺凭证变量 → 启动期报错', () => {
+    const file = parseConfigFileText(`
+dsh:
+  provider: qwen-token-plan
+models:
+  providers:
+    qwen-token-plan:
+      apiKeyEnv: QWEN_TOKEN_PLAN_API_KEY
+      baseURL: https://token-plan.example/v1
+  webSearch:
+    provider: qwen-token-plan
+    model: qwen3.7-plus
+topic:
+  enabled: false
+`);
+    expect(() => loadConfig({ QQ_APP_ID: 'a', QQ_APP_SECRET: 's' }, file)).toThrow(/QWEN_TOKEN_PLAN_API_KEY/);
+    const config = loadConfig(
+      { QQ_APP_ID: 'a', QQ_APP_SECRET: 's', QWEN_TOKEN_PLAN_API_KEY: 'sk-sp-test' },
+      file,
+    );
+    expect(config.modelApi.webSearch).toEqual({ provider: 'qwen-token-plan', model: 'qwen3.7-plus' });
+    expect(config.dsh.provider).toBe('qwen-token-plan');
+    const summary = describeConfig(config) as unknown as { modelApi: { webSearch: string } };
+    expect(summary.modelApi.webSearch).toBe('qwen-token-plan');
   });
 
   it('完全不依赖 DeepSeek 的部署：DEEPSEEK_API_KEY 不再必填', () => {

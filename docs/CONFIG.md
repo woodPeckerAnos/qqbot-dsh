@@ -23,7 +23,7 @@
 | `config/interaction.yml` | `personas` / `hints` / `topic` / `observation` | ✅ |
 | `config/proactive.yml` | `proactive` 主动发言全部参数 | ✅ |
 | `config/offpeak.yml` | `offpeak` 谷时段闸 | ✅ |
-| `config/local/models.yml` | 本机模型路由与 `dsh.provider`/`dsh.model` | ❌ |
+| `config/local/models.yml` | 本机模型路由 / `dsh.provider`/`dsh.model` / 联网搜索后端 `models.webSearch` | ❌ |
 | `config/local/overrides.yml` | 其他本机覆盖 | ❌ |
 | `config/local/README.md` | 本机配置说明 | ✅ |
 
@@ -33,6 +33,12 @@
 模型选择放在本机文件里，是因为它不是密钥、但属于"这台机器用哪家/哪个模型"的
 部署选择。不创建 `models.yml` 时走代码内置默认（`deepseek-official` +
 `deepseek-flash`），行为与不配置一致。
+
+联网搜索后端同样收在这里：`models.webSearch.provider` 指向一条带 `baseURL` 的
+`openai-completions` 路由，插件复用该路由的 `apiKeyEnv`/`baseURL`；
+`models.webSearch.model` 是搜索模型。不写这一节时，搜索沿用
+`dsh-profile/cordis.patch.yml` 里静态配置的后端（当前是方舟），因此**没有 Qwen
+订阅的部署不受影响**。密钥仍然只在 `.env`（`QWEN_TOKEN_PLAN_API_KEY`）。
 
 > 历史设计文档（`*PLAN.md` / `*REQUIREMENT.md`）里提到的 `qqbot.yml` 指拆分前的
 > 单文件形态；现行配置位置以本表为准。

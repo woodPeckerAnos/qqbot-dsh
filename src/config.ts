@@ -1465,6 +1465,9 @@ export function describeConfig(config: Config): Record<string, unknown> {
     modelApi: {
       deepseek: config.modelApi.deepseek === undefined ? 'default' : 'customized',
       providers: Object.keys(config.modelApi.providers),
+      // 'profile' = 沿用 dsh-profile 里静态配置的搜索后端（方舟）；否则是
+      // models.webSearch.provider 指向的路由名（搜索走千问 Responses API）。
+      webSearch: config.modelApi.webSearch === undefined ? 'profile' : config.modelApi.webSearch.provider,
     },
     pool: config.pool,
     topic: {

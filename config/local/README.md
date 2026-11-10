@@ -11,7 +11,7 @@
 
 | 文件 | 是否提交 | 用途 |
 |---|---|---|
-| `models.yml` | ❌ | 本机模型路由/模型选择（可选） |
+| `models.yml` | ❌ | 本机模型路由 / 模型选择 / 联网搜索后端（可选） |
 | `overrides.yml` | ❌ | 本机其他覆盖（可选，如本群 bot 别名） |
 
 `qqbot.yml` 以 `optional: true` 加载这两个文件：
@@ -42,6 +42,11 @@ include:
   形式；内联密钥会在启动期被拒绝。不提交 ≠ 可以放密钥。
 - 如果自建 `models.yml` 并引用了额外提供商，按其中的 `apiKeyEnv` 在 `.env`
   里设置对应变量；没有自建文件时不需要额外密钥。
+- 联网搜索后端也在这个文件里：`models.webSearch.provider` 指向一条带
+  `baseURL` 的 `openai-completions` 路由（插件复用它的 key 与端点），
+  `models.webSearch.model` 选 Token Plan 支持内置工具的模型
+  （`qwen3.8-max` / `qwen3.7-max` / `qwen3.7-plus`）。不写这一节时沿用
+  `dsh-profile/cordis.patch.yml` 里静态配置的方舟搜索。
 - 容器以非 root 用户（uid 10001）运行。宿主机上新建的文件若权限是 600，
   容器会读不到；需要时执行 `chmod 644 config/local/*.yml`。
 - 改完配置执行 `docker compose restart qqbot` 生效；不需要重建镜像。

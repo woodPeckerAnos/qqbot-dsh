@@ -574,8 +574,9 @@ HTTP 抓取后端（`@deepseek-ai/dsh-web-fetch-http`）：
    Docker Desktop 的 DNS 转发到宿主解析器，容器里解析出来是同一批 fake IP。
 
 **注意区分两条链路**：
-- `web_search` 走的是 **DeepSeek 服务端搜索**，只回标题/URL/摘要，与容器出网无关，
-  所以它一直是好的；
+- `web_search` 是**服务端搜索**（默认方舟；配了 `models.webSearch` 则是千问
+  Token Plan 的 Responses API），只回回答/URL/来源，与容器出网无关，所以它一直
+  是好的；
 - `web_fetch` 才是容器自己发请求的那个，被上面的校验挡住。
 
 ### 9.2 解决办法：显式配置 HTTP 代理
@@ -636,6 +637,92 @@ docker compose exec qqbot node scripts/smoke-web-fetch.mjs
 **若代理不可用时的兜底**：容器内 `curl` 本身能出网，可以在会话工作区写个
 `AGENTS.md` 规则，让模型在 `web_fetch` 报 `WEB_BLOCKED_URL` 时改用 shell 抓取。
 但这条路径绕开了 DSH 的受限输出与 HTML→Markdown 转换，回答质量更差，只当止血用。
+
+### 9.4 联网搜索后端：方舟 / 千问 Token Plan
+
+搜索是**服务端能力**，与 9.1 的容器出网、代理都无关；可选的只是"用谁的服务端"。
+
+| 后端 | 何时生效 | 凭证 | 协议 |
+|---|---|---|---|
+| 方舟订阅（默认） | 不写 `models.webSearch` | `ARC_CODE_API_KEY` | Anthropic Messages + `web_search` 服务端工具 |
+| 千问 Token Plan | 写了 `models.webSearch` | 该路由的 `apiKeyEnv`（默认 `QWEN_TOKEN_PLAN_API_KEY`） | OpenAI 兼容 Responses API + 内置 `web_search` |
+
+**为什么千问不能用 Chat Completions**：Token Plan 的联网搜索是模型内置工具
+（Harness 工具），官方文档明确说只有 **Responses API** 会触发；Chat Completions
+的 `enable_search` 既不会触发内置工具，OpenAI 兼容协议也不返回搜索来源。
+所以 `dsh-profile/plugins/web-search-qwen.js` 发的是
+`POST {baseURL}/responses`，并从 `web_search_call.action.sources` 解析来源。
+
+**配置（两步）**：
+
+1. `.env` 填 Token Plan 专属 key（`sk-sp-` 开头；按量付费的 `sk-ws-`/`sk-`
+   不能用于 Token Plan）：
+   ```ini
+   QWEN_TOKEN_PLAN_API_KEY=sk-sp-...
+   ```
+2. `config/local/models.yml` 里声明路由并选中它：
+   ```yaml
+   dsh:
+     provider: qwen-token-plan
+     model: qwen3.8-flash
+   models:
+     providers:
+       qwen-token-plan:
+         apiKeyEnv: QWEN_TOKEN_PLAN_API_KEY
+         baseURL: https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1
+     webSearch:
+       provider: qwen-token-plan
+       model: qwen3.7-plus
+   ```
+
+> **判定调用先别跟着切**：`topic.provider`（话题判定 + 主动介入判定）是
+> `/chat/completions` 直调，输出上限只有 32–48 token，而 Qwen3.6/3.7/3.8 系列是
+> 「混合模式、默认开启思考」。请求不带 `enable_thinking: false` 时，思考 token
+> 会先吃掉这小段额度，content 可能为空，判定会静默降级成 fail-safe（永远"相关"）。
+> 在让判定客户端支持发 `enable_thinking: false` 之前，`topic.provider` 保持
+> `arc-code`；主模型与搜索换到千问不受影响。
+
+**端点按订阅渠道选择**（key 与 Base URL 必须同源）：
+
+| 渠道 | Base URL | 建议变量名 |
+|---|---|---|
+| 千问AI平台（platform.qianwenai.com） | `https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1` | `QWEN_TOKEN_PLAN_API_KEY` |
+| 阿里云百炼中国站 | `https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1` | `QWEN_TOKEN_PLAN_CN_API_KEY` |
+| 阿里云百炼国际站 | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` | `QWEN_TOKEN_PLAN_API_KEY` |
+
+**搜索模型限制**：Token Plan 内置工具只支持 `qwen3.8-max` / `qwen3.7-max` /
+`qwen3.7-plus`（个人版、团队版相同）；用别的模型会在第一次搜索时收到
+"没有返回 web_search_call"的明确报错。默认 `qwen3.7-plus` 是其中最便宜的一档，
+要更高质量就换 `qwen3.8-max`。
+
+> **订阅条款边界**：千问 Token Plan 个人版 FAQ 明确写的是"仅供个人通过官方
+> 指定工具进行交互式开发，不允许用于生产环境的自动化服务、批量脚本或后台定时
+> 任务"。QQ 机器人属于无人值守的自动化服务——用个人版 Token Plan 驱动它是否
+> 合规、账号是否会被风控，由订阅方自行判断；团队版/按量付费通道更适合这种形态。
+> 本仓库只做技术接入，不对渠道条款做保证。
+
+**生效方式**：本次接入包含 `src/**` 的配置层改动，**首次要
+`docker compose up -d --build`**（重建镜像 + 用新 `.env` 重建容器）。之后：
+
+| 改了什么 | 命令 |
+|---|---|
+| `config/local/models.yml`（模型/搜索选择） | `docker compose restart qqbot`（绑定挂载） |
+| `.env`（密钥） | `docker compose up -d`（重建容器才会重读 env_file） |
+| `dsh-profile/**`（插件/patch） | `docker compose restart qqbot`（绑定挂载） |
+| `src/**`（本仓库代码） | `docker compose up -d --build` |
+
+**验证**：`docker compose up -d --build` 后看启动日志里
+`模型路由 patch 已生成` 的 `webSearch` 字段；再在群里让机器人搜一条实时信息。
+搜索失败时错误信息会带上端点和失败码——
+- `WEB_PROVIDER_CREDENTIAL_MISSING`：`.env` 里的 `QWEN_TOKEN_PLAN_API_KEY` 为空（或容器没重建）；
+- `WEB_PROVIDER_ERROR` + HTTP 401/403：key 与 Base URL 不同源（Token Plan /
+  按量付费 / Coding Plan 的 key 互不通用）；
+- `没有返回 web_search_call`：`webSearch.model` 不支持内置工具，或端点不是
+  Responses API。
+
+**回退**：删掉 `models.webSearch` 整节（或把 `dsh.provider` 换成 `arc-code`），
+`docker compose restart qqbot`；搜索立即回到方舟后端，不需要重建镜像。如果是要
+把本仓库的代码改动整体撤掉，则 `git checkout` 后 `docker compose up -d --build`。
 
 ---
 

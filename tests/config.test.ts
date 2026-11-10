@@ -711,12 +711,24 @@ offpeak:
     for (const module of ['connectors', 'runtime', 'media', 'interaction', 'proactive', 'offpeak']) {
       expect(loaded.files?.some((file) => file.endsWith(`/config/${module}.yml`))).toBe(true);
     }
+    // 本机的 config/local/models.yml 可能声明了额外路由（不进 git）。守门测试只
+    // 关心"仓库的共享配置能加载"，所以按实际声明的路由补占位密钥——否则测试
+    // 结果会依赖这台机器用哪家模型。干净 checkout 下 models 段不存在，这段为空。
+    // "缺哪个变量的密钥就报错"由 model-config.test.ts 单独覆盖。
+    const modelSecrets: Record<string, string> = {};
+    if (loaded.config.models?.deepseek?.apiKeyEnv !== undefined) {
+      modelSecrets[loaded.config.models.deepseek.apiKeyEnv] = 'sk-test-deepseek';
+    }
+    for (const [id, route] of Object.entries(loaded.config.models?.providers ?? {})) {
+      if (route.apiKeyEnv !== undefined) modelSecrets[route.apiKeyEnv] = `sk-test-${id}`;
+    }
     const config = loadConfig(
       {
         QQ_APP_ID: 'app-1',
         QQ_APP_SECRET: 'secret-1',
         DEEPSEEK_API_KEY: 'sk-test',
         ONEBOT_ACCESS_TOKEN: 'token-1',
+        ...modelSecrets,
       },
       loaded.config,
     );

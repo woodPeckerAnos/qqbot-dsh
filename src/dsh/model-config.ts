@@ -20,9 +20,15 @@
  *     anthropic 只需补 `apiKeyEnv`，目录外的自建网关必须给 `api` + `baseURL` +
  *     非空 `models`）。
  *
+ * 另有可选的 `models.webSearch`：把联网搜索后端从 profile 里静态配置的方舟切到
+ * 千问 Token Plan。它不新增模型路由，而是复用 `webSearch.provider` 指向的路由的
+ * 凭证与端点，并生成 `- id: web` / `- id: web-search-qwen` 两条 patch。
+ *
  * 产出物是一份**生成的 patch 文件**（`writeModelApiPatch`），在启动时作为第二个
  * `--patch` 叠加在 dsh-profile/cordis.patch.yml 之后——dsh CLI 的 `--patch` 可重复、
- * 按 argv 顺序应用，所以不需要改动随镜像提供的 profile patch。
+ * 按 argv 顺序应用。模型路由因此不必改 profile；只有 webSearch 需要 profile patch
+ * 里预先插入 `web-search-qwen` 插件（相对路径以 profile 为基准），生成层只覆盖它的
+ * 配置与选中项。
  *
  * 字段语义以 DSH 的配置目录为准（docs/config-catalog.md 的
  * `@deepseek-ai/dsh-llm-deepseek-api-key` 与 `@deepseek-ai/dsh-llm-pi-ai` 两节）；
@@ -227,16 +233,54 @@ export interface PiAiProviderConfig {
   retryPolicy?: RetryPolicyConfig;
 }
 
+/**
+ * 联网搜索后端配置（`models.webSearch`）。
+ *
+ * 不写这一节 = 沿用 dsh-profile/cordis.patch.yml 里静态配置的搜索后端（当前是
+ * 方舟订阅）。写了就把 `ctx.web` 的搜索 provider 切到千问（qwen）——它走 OpenAI
+ * 兼容的 **Responses API**（`{路由 baseURL}/responses`）与内置 `web_search` 工具，
+ * 而不是 Chat Completions 的 `enable_search`，因为只有 Responses 协议会返回结构化
+ * 搜索来源，且 Token Plan 的内置工具就是按 Responses 设计的。
+ *
+ * 凭证与端点全部复用 `provider` 指向的模型路由（该路由必须在 `models.providers`
+ * 里声明、带 `baseURL`、协议为 openai-completions），所以这里不重复写 apiKeyEnv。
+ */
+export interface WebSearchConfig {
+  /** 提供 /responses 端点的 pi-ai 路由名（不能是 deepseek-official） */
+  provider: string;
+  /** 搜索模型 id；缺省 qwen3.7-plus（Token Plan 内置工具支持的最低档） */
+  model?: string;
+  /** Responses 请求的输出上限（含思考 token）；缺省 2048 */
+  maxOutputTokens?: number;
+}
+
 /** 配置文件 `models:` 段解析后的形状（也是 Config.modelApi 的类型）。 */
 export interface ModelApiConfig {
   /** 原生 DeepSeek 路由（provider = deepseek-official）的配置 */
   deepseek?: DeepSeekRouteConfig;
   /** pi-ai 多提供商路由，键即 provider 路由名 */
   providers: Record<string, PiAiProviderConfig>;
+  /** 联网搜索后端（可选；缺省沿用 profile 里的静态配置） */
+  webSearch?: WebSearchConfig;
 }
 
 /** 原生 DeepSeek 路由名（llm-deepseek-api-key 插件注册的路由）。 */
 export const DEEPSEEK_OFFICIAL_PROVIDER = 'deepseek-official';
+
+/**
+ * 千问联网搜索 provider 的 entry id（dsh-profile/plugins/web-search-qwen.js）。
+ * 该插件由 profile patch 静态插入，models.webSearch 只覆盖它的配置与选中项。
+ */
+export const QWEN_WEB_SEARCH_PLUGIN_ID = 'web-search-qwen';
+
+/** 该插件向 ctx.web 注册的 search provider id（`web.searchProvider` 的取值）。 */
+export const QWEN_WEB_SEARCH_PROVIDER_ID = 'qwen';
+
+/** 缺省搜索模型：Token Plan 内置 web_search 支持它，且比 max 档便宜。 */
+export const QWEN_WEB_SEARCH_DEFAULT_MODEL = 'qwen3.7-plus';
+
+/** Qwen Responses API 对 max_output_tokens 的下限。 */
+const QWEN_WEB_SEARCH_MIN_OUTPUT_TOKENS = 16;
 
 /**
  * qqbot 不能占用的路由名：这两个由 base bundle 的原生插件注册，
@@ -834,6 +878,37 @@ function readPiAiProvider(raw: unknown, path: string): PiAiProviderConfig {
 }
 
 // ---------------------------------------------------------------------------
+// 联网搜索后端（webSearch）
+// ---------------------------------------------------------------------------
+
+const WEB_SEARCH_KEYS = ['provider', 'model', 'maxOutputTokens'] as const;
+
+function readWebSearch(raw: unknown, path: string): WebSearchConfig {
+  if (!isPlainObject(raw)) {
+    throw new ConfigError(`${path} 必须是映射（key: value），收到 ${describeValue(raw)}`);
+  }
+  assertNoUnknownKeys(raw, WEB_SEARCH_KEYS, path);
+  const provider = readString(raw, 'provider', path);
+  if (provider === undefined) {
+    throw new ConfigError(`${path}.provider 是必填项`, [
+      '写提供 /responses 端点的模型路由名，例如 qwen-token-plan（该路由必须在 models.providers 里声明）',
+    ]);
+  }
+  if (!PROVIDER_ID_PATTERN.test(provider)) {
+    throw new ConfigError(`${path}.provider 必须是 models.providers 里的路由名（小写连字符标识符）`, [
+      '正确示例：qwen-token-plan、acme-gateway',
+    ]);
+  }
+  return stripUndefined({
+    provider,
+    model: readString(raw, 'model', path),
+    maxOutputTokens: readInt(raw, 'maxOutputTokens', path, {
+      min: QWEN_WEB_SEARCH_MIN_OUTPUT_TOKENS,
+    }),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // 顶层解析
 // ---------------------------------------------------------------------------
 
@@ -847,7 +922,7 @@ export function parseModelApiSection(raw: unknown, path: string): ModelApiConfig
   if (!isPlainObject(raw)) {
     throw new ConfigError(`${path} 必须是映射（key: value），收到 ${describeValue(raw)}`);
   }
-  assertNoUnknownKeys(raw, ['deepseek', 'providers'], path);
+  assertNoUnknownKeys(raw, ['deepseek', 'providers', 'webSearch'], path);
 
   const deepseekRaw = raw['deepseek'];
   const deepseek = deepseekRaw === undefined || deepseekRaw === null
@@ -877,12 +952,21 @@ export function parseModelApiSection(raw: unknown, path: string): ModelApiConfig
     }
   }
 
+  const webSearchRaw = raw['webSearch'];
+  const webSearch = webSearchRaw === undefined || webSearchRaw === null
+    ? undefined
+    : readWebSearch(webSearchRaw, `${path}.webSearch`);
+
   if (deepseek === undefined && Object.keys(providers).length === 0) {
     throw new ConfigError(`${path} 段不能为空`, [
       '至少配置 models.deepseek 或 models.providers 中的一项；不需要自定义就把整段删掉',
     ]);
   }
-  return { ...(deepseek === undefined ? {} : { deepseek }), providers };
+  return {
+    ...(deepseek === undefined ? {} : { deepseek }),
+    providers,
+    ...(webSearch === undefined ? {} : { webSearch }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -891,6 +975,57 @@ export function parseModelApiSection(raw: unknown, path: string): ModelApiConfig
 
 type Env = Record<string, string | undefined>;
 
+/** 联网搜索解析结果：插件真正需要的只有凭证引用与 /responses 基址。 */
+interface WebSearchRouteResolution {
+  apiKeyEnv: string;
+  baseURL: string;
+}
+
+/**
+ * 把 `models.webSearch.provider` 解析成搜索插件可用的凭证与端点。
+ *
+ * 搜索插件在 dsh 子进程里直接发 HTTP，不经过 pi-ai 的目录/环境发现，所以：
+ *   - 必须是 models.providers 里声明过的路由（deepseek-official 走 Anthropic
+ *     Messages，不提供 /responses，直接拒绝）；
+ *   - `baseURL` 必须显式写出来（目录路由的默认端点只存在于 pi-ai 里，插件读不到，
+ *     静默回退到别的域名会把请求发错主机）；
+ *   - `apiKeyEnv` 必须存在（与判定调用同一条纪律）。
+ */
+function resolveWebSearchRoute(
+  modelApi: ModelApiConfig,
+  config: WebSearchConfig,
+  path: string,
+): WebSearchRouteResolution {
+  if (config.provider === DEEPSEEK_OFFICIAL_PROVIDER) {
+    throw new ConfigError(`${path}.provider 不能是原生路由 ${DEEPSEEK_OFFICIAL_PROVIDER}`, [
+      '原生 DeepSeek 路由是 Anthropic Messages 协议，没有 OpenAI 兼容的 /responses 端点',
+      '给联网搜索指定一条 models.providers 下、带 baseURL 的 openai-completions 路由（例如 qwen-token-plan）',
+    ]);
+  }
+  const route = modelApi.providers[config.provider];
+  if (route === undefined) {
+    throw new ConfigError(`${path}.provider 指定的模型路由 ${JSON.stringify(config.provider)} 未在 models.providers 里声明`, [
+      `已声明的路由：${[DEEPSEEK_OFFICIAL_PROVIDER, ...Object.keys(modelApi.providers)].join('、')}`,
+    ]);
+  }
+  if (route.api !== undefined && route.api !== 'openai-completions') {
+    throw new ConfigError(`${path}.provider 指向的路由 ${config.provider} 声明了 api: ${route.api}，联网搜索无法使用`, [
+      '千问搜索插件走 OpenAI 兼容的 /responses；只有 openai-completions 路由可用',
+    ]);
+  }
+  if (route.apiKeyEnv === undefined) {
+    throw new ConfigError(`${path}.provider 指向的路由 ${config.provider} 没有 apiKeyEnv，联网搜索拿不到凭证`, [
+      '搜索是 dsh 子进程内的直调，pi-ai 的"环境发现"在这里不存在；请给该路由配 apiKeyEnv',
+    ]);
+  }
+  if (route.baseURL === undefined) {
+    throw new ConfigError(`${path}.provider 指向的路由 ${config.provider} 没有 baseURL，联网搜索不知道往哪里发`, [
+      '搜索插件需要显式端点（目录路由的默认 baseURL 在 pi-ai 的目录里，插件读不到）；给该路由写 baseURL',
+    ]);
+  }
+  return { apiKeyEnv: route.apiKeyEnv, baseURL: route.baseURL };
+}
+
 /**
  * 合并后的语义校验：
  *   1. `dsh.provider` 选中的路由必须真实存在（原生 deepseek-official，或
@@ -898,7 +1033,8 @@ type Env = Record<string, string | undefined>;
  *      才报 UNKNOWN_MODEL/未知 provider，把配置错误拖成运行期故障；
  *   2. 每个 apiKeyEnv 引用的环境变量必须在进程环境里非空——dsh 子进程继承本进程
  *      环境（src/dsh/process.ts），缺了它 DSH 会在首次请求时以 MISSING_CREDENTIAL
- *      失败，同样该在启动期就拦住。
+ *      失败，同样该在启动期就拦住；
+ *   3. `models.webSearch` 指向的路由必须能提供 /responses 端点与凭证。
  */
 export function assertModelApiConfig(modelApi: ModelApiConfig, selectedProvider: string, env: Env): void {
   const declaredRoutes = Object.keys(modelApi.providers);
@@ -909,6 +1045,9 @@ export function assertModelApiConfig(modelApi: ModelApiConfig, selectedProvider:
         `在 config/local/models.yml（或声明 models 的模块）的 models.providers.${selectedProvider} 下声明它，或把 dsh.provider 改回已声明的路由`,
       ],
     );
+  }
+  if (modelApi.webSearch !== undefined) {
+    resolveWebSearchRoute(modelApi, modelApi.webSearch, 'models.webSearch');
   }
   const refs: Array<{ route: string; envName: string }> = [];
   if (modelApi.deepseek?.apiKeyEnv !== undefined) {
@@ -1004,6 +1143,14 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
 /**
  * 把 models: 段渲染成 dsh 的 patch 文本（纯函数）。
  *
+ * 除了两条模型路由，`models.webSearch` 存在时还会追加两条：
+ *   - `- id: web`：把 ctx.web 的搜索 provider 钉到千问（并写回 http 抓取后端）；
+ *   - `- id: web-search-qwen`：用该路由的凭证/端点覆盖 profile 静态插入的插件配置。
+ *
+ * 依赖静态 profile patch 先插入 `web-search-qwen` 这个插件——插件的相对路径
+ * （./plugins/web-search-qwen.js）以 profile patch 文件为基准解析，不能放在
+ * 每次启动生成到 stateDir 的 patch 里。
+ *
  * 没有配置任何路由时返回 undefined——此时启动参数与现状完全一致（不加第二个
  * --patch），保证未使用本功能的部署零变化。
  */
@@ -1014,6 +1161,24 @@ export function renderModelApiPatch(modelApi: ModelApiConfig): string | undefine
   }
   if (Object.keys(modelApi.providers).length > 0) {
     entries.push({ id: 'llm-pi-ai', config: { providers: modelApi.providers } });
+  }
+  if (modelApi.webSearch !== undefined) {
+    const route = resolveWebSearchRoute(modelApi, modelApi.webSearch, 'models.webSearch');
+    // config 是整份替换而非深合并（cordis 的 patch 语义），所以 fetchProvider 也
+    // 要写回来，否则 base bundle 里的 http 抓取后端会被抹成缺省值。
+    entries.push({
+      id: 'web',
+      config: { searchProvider: QWEN_WEB_SEARCH_PROVIDER_ID, fetchProvider: 'http' },
+    });
+    entries.push({
+      id: QWEN_WEB_SEARCH_PLUGIN_ID,
+      config: stripUndefined({
+        apiKeyEnv: route.apiKeyEnv,
+        baseURL: route.baseURL,
+        model: modelApi.webSearch.model ?? QWEN_WEB_SEARCH_DEFAULT_MODEL,
+        maxOutputTokens: modelApi.webSearch.maxOutputTokens,
+      }),
+    });
   }
   if (entries.length === 0) return undefined;
   return (

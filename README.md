@@ -59,6 +59,7 @@ docker compose logs -f
 - 行为参数在 `qqbot.yml` + `config/*.yml`（带注释，改完 `restart` 生效），密钥与个人标识只写在 `.env`；
 - 可选主动发言：`.env` 填 `BOT_LISTEN_GROUPS`（它同时决定被 @ 时的观察范围）与 `BOT_PROACTIVE_ENABLED`，默认先灰度观察；它会在什么情况下开口见 [SCENES.md](src/pipeline/proactive/interests/SCENES.md)；
 - 可选换 / 加模型提供商：在 `config/local/models.yml`（不进 git，机制见 [config/local/README.md](config/local/README.md)）的 `models:` 段声明路由，密钥以 `apiKeyEnv` 引用、值写进 `.env`（内联密钥启动期直接拒绝）；
+- 可选接入**阿里千问 Token Plan 订阅**（聊天 + `web_search` 一起）：路由名 `qwen-token-plan`，密钥变量 `QWEN_TOKEN_PLAN_API_KEY`（`sk-sp-` 开头，Token Plan 专属，不能与按量付费 key 混用）；搜索在 `models.webSearch` 下单独指定模型（Token Plan 内置工具支持 `qwen3.8-max` / `qwen3.7-max` / `qwen3.7-plus`），不配则沿用 profile 里静态配置的方舟搜索。详见 [docs/DEPLOY.md](docs/DEPLOY.md) 第 9.4 节；
 - **完整步骤、框架选型、常见坑与调参：[docs/DEPLOY.md](docs/DEPLOY.md)**。
 
 ### 路线二：云服务部署（云主机一体化，无需外部电脑）

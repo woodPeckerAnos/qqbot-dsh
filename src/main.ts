@@ -260,6 +260,7 @@ async function main(): Promise<void> {
       path: modelApiPatch,
       deepseek: config.modelApi.deepseek === undefined ? 'default' : 'customized',
       providers: Object.keys(config.modelApi.providers),
+      webSearch: config.modelApi.webSearch === undefined ? 'profile' : config.modelApi.webSearch.provider,
     });
   }
   const pool = new RuntimePool({
