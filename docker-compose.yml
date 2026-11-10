@@ -15,6 +15,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 构建加速（可选，只影响 build，不影响容器运行时）：
+      #   BUILD_APT_MIRROR=mirrors.cloud.tencent.com（或 mirrors.aliyun.com）
+      #   BUILD_NPM_REGISTRY=https://registry.npmmirror.com
+      # 写在 .env 或命令前的环境变量里均可，不设时保持官方源。
+      args:
+        APT_MIRROR: ${BUILD_APT_MIRROR:-deb.debian.org}
+        NPM_REGISTRY: ${BUILD_NPM_REGISTRY:-}
     image: qqbot-dsh:0.1.0
     container_name: qqbot-dsh
     restart: unless-stopped

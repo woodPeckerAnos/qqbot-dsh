@@ -1,6 +1,11 @@
 # --- 构建阶段 ---------------------------------------------------------------
 FROM node:24-bookworm-slim AS build
 
+# 构建期 npm 镜像源（可选，只影响 npm ci 的下载速度，不改变运行时）。
+# 为空 = 官方 registry.npmjs.org；中国大陆云主机可传 npmmirror：
+#   BUILD_NPM_REGISTRY=https://registry.npmmirror.com docker compose ... up -d --build
+ARG NPM_REGISTRY=
+
 WORKDIR /app
 
 # 先只拷贝清单，最大化利用层缓存。
@@ -8,8 +13,13 @@ WORKDIR /app
 # 没有锁文件会直接失败（也保证不同时间构建装到同一批版本）。
 COPY package.json package-lock.json ./
 COPY scripts/docker-install.mjs ./scripts/docker-install.mjs
-# 1) 安装全部依赖（含 devDependencies，编译需要 typescript）
-RUN node scripts/docker-install.mjs install
+# 1) 安装全部依赖（含 devDependencies，编译需要 typescript）。
+#    /root/.npm 用 BuildKit cache mount：重复构建时 npm 的 tarball 缓存不会丢，
+#    也不会被写进镜像层。
+RUN --mount=type=cache,target=/root/.npm \
+    set -eux; \
+    if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi; \
+    node scripts/docker-install.mjs install
 
 COPY tsconfig.json ./
 COPY src ./src
@@ -32,8 +42,28 @@ FROM node:24-bookworm-slim AS runtime
 # 刻意走系统包而不是 npm 的纯 JS PDF 库——部署形态只有 Docker，且 poppler 对
 # 中文/畸形/加密 PDF 的健壮性远好于纯 JS 方案；缺失时机器人自动降级为
 # 「只把原文落进 inbox/ 并告知路径」，不会让这一轮失败。
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+#
+# 构建期 Debian 镜像站（只影响 apt 下载，不改变运行时配置）。
+# 默认官方源；中国大陆云主机直连 deb.debian.org 可能极慢（实测单次 43 分钟）。
+# 传**主机名**（不要带 http://）：腾讯云用 mirrors.cloud.tencent.com，
+# 其他可用 mirrors.aliyun.com：
+#   BUILD_APT_MIRROR=mirrors.cloud.tencent.com docker compose ... up -d --build
+ARG APT_MIRROR=deb.debian.org
+
+# /var/cache/apt 用 BuildKit cache mount：.deb 跨构建复用，且不会进入最终镜像。
+# 配合 Keep-Downloaded-Packages 让 apt 保留已下载的包；docker-clean 会删掉它们。
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    set -eux; \
+    if [ "$APT_MIRROR" != "deb.debian.org" ]; then \
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        if [ -f "$f" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g" "$f"; fi; \
+      done; \
+    fi; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache; \
+    printf 'Acquire::Retries "3";\nAcquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99qqbot-build; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
       tini \
       ca-certificates \
       bubblewrap \
@@ -42,8 +72,8 @@ RUN apt-get update \
       python3 \
       poppler-utils \
       procps \
-      curl \
- && rm -rf /var/lib/apt/lists/*
+      curl; \
+    rm -rf /var/lib/apt/lists/*
 
 # 非 root 运行。uid/gid 固定，便于宿主侧 volume 权限对齐。
 RUN groupadd --gid 10001 qqbot \

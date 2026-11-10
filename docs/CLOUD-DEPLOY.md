@@ -122,6 +122,45 @@ Dockerfile 现在同时拷贝 `package.json` 与 `package-lock.json`，
 从宿主机仓库读取。所以云主机上必须保留一份仓库（至少 `qqbot.yml`、
 `config/`、`dsh-profile/`、`interests.yml`），只 `docker compose pull` 起不来。
 
+### 2.8 构建加速（中国大陆云主机）
+
+典型症状：`docker compose up -d --build` 卡在运行阶段的
+`apt-get update && apt-get install`，一次几十分钟（实测 43 分钟）。根因是
+容器内直连 `deb.debian.org`，与代码和机器性能无关。
+
+**最快做法**：在 `.env` 里打开构建期镜像源（只影响 build，不影响容器运行时）：
+
+```ini
+BUILD_APT_MIRROR=mirrors.cloud.tencent.com   # 腾讯云；其他云可用 mirrors.aliyun.com
+# BUILD_NPM_REGISTRY=https://registry.npmmirror.com   # npm 也慢时再开
+```
+
+然后正常构建：
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d --build
+```
+
+Dockerfile 会把这个主机名替换进 Debian 源，并启用：
+
+- `/var/cache/apt` 的 BuildKit cache mount：`.deb` 跨构建复用，且不进入最终镜像；
+- `Keep-Downloaded-Packages`：让 apt 保留已下载的包（默认的 `docker-clean` 会删掉）；
+- `Acquire::ForceIPv4` + 重试：避免 IPv6 黑洞导致长时间挂起。
+
+**几个要点**：
+
+1. **首次构建仍要从镜像站下载**，之后只改 `src/**` 时 `apt` 层会命中缓存，
+   通常是秒级到分钟级，不会再跑一遍 apt；
+2. 不要随手 `docker builder prune --all` / `docker system prune -a`，那会把
+   apt 层缓存一起清掉；`--no-cache` 也会强制重跑慢路径，只在需要时用；
+3. `BUILD_APT_MIRROR` 只填**主机名**，不要带 `http://`；镜像是公共 Debian
+   仓库结构（腾讯云 `mirrors.cloud.tencent.com/debian` 等），不是 Ubuntu 源；
+4. 如果镜像站仍慢，可在 Linux 云主机上用 host 网络构建：
+   `docker build --network=host ...`，或给 compose 的 `build` 段临时加
+   `network: host`（改完记得撤回，别影响本地 macOS）；
+5. 长期做法是把镜像在 CI 里构建并推到 OCI 仓库，云主机只 `pull`；这需要
+   仓库/凭据配置，当前 CI 只构建不推送。
+
 ---
 
 ## 3. NapCat 进容器：资源与风控评估
