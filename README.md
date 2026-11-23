@@ -111,6 +111,7 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 | [docs/CONFIG.md](docs/CONFIG.md) | 配置模块手册（怎么加模块、怎么排查） |
 | [docs/DESIGN.md](docs/DESIGN.md) | 方案设计：架构、多接入模型、协议契约、硬约束落地、权限与安全 |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | 排障手册：按症状组织的排查流程（主动发言见 §5） |
+| [docs/LATENCY-TRIAGE.md](docs/LATENCY-TRIAGE.md) | 模型变慢/长任务超时的分层排查：日志口径、会话耗时拆解、判据与处置 |
 | [SCENES.md](src/pipeline/proactive/interests/SCENES.md) | 主动介入场景的自然语言真相源：什么情况下会说、典型对话、红线 |
 | docs/ 其余 | 需求与架构过程文档（主动介入、话题会话、富媒体等） |
 
