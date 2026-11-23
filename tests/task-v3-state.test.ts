@@ -116,6 +116,16 @@ function completedWorker(manager: TaskLifeCycleManagerV3, id = 'task') {
   const summary = manager.pendingJobs().find((job) => job.taskId === id && job.kind === 'summary')!;
   return { ...initial, receipt, summary };
 }
+function cancelledWorker(manager: TaskLifeCycleManagerV3) {
+  const initial = started(manager);
+  const receipt = unwrap(manager.acceptWorker(initial.request));
+  unwrap(manager.finishFrontend('task', initial.job.jobId, success({ kind: 'dispatched' })));
+  unwrap(manager.claimJob(receipt.jobId));
+  const execution = { ...initial.execution, jobId: receipt.jobId, executionId: 'worker-execution' };
+  unwrap(manager.bindExecution('task', receipt.jobId, execution));
+  unwrap(manager.cancel('task'));
+  return { ...initial, receipt, execution };
+}
 const tick = () =>
   new Promise<void>((resolve) => {
     setImmediate(resolve);
@@ -250,7 +260,7 @@ describe('V3 执行状态持久化', () => {
     }
     const final = manager.get('task')!;
     expect(final.frontend.summaryAttempts).toBe(2);
-    expect(final.finalReply?.text).toContain('业务执行已完成');
+    expect(final.finalReply?.text).toContain('执行已结束');
     expect(final.worker?.result).toEqual(workerResult);
     expect(manager.pendingJobs()).toEqual([]);
     unwrap(manager.confirmEnqueued('task', final.finalReply!.replyId));
@@ -405,6 +415,80 @@ describe('V3 执行状态持久化', () => {
     });
     expect(manager.pendingJobs()).toEqual([]);
   });
+  it.each(['completed', 'failed', 'unknown'] as const)('取消收尾拒绝迟到的 %s 结果', (status) => {
+    const manager = createTaskLifeCycleManagerV3({ now: () => 100 });
+    const state = cancelledWorker(manager);
+    const before = manager.get('task');
+    unwrap(
+      manager.saveWorkerResult('task', state.receipt.jobId, success({ ...workerResult, status }))
+    );
+    expect(manager.get('task')).toEqual(before);
+    expect(manager.matches('task', state.receipt.jobId, state.execution)).toBe(false);
+  });
+  it('取消材料保存失败保留空结果，补保存幂等且恢复后仍为取消', () => {
+    const store = new FaultStore();
+    const manager = createTaskLifeCycleManagerV3({ store, now: () => 100 });
+    const state = cancelledWorker(manager);
+    const before = manager.get('task')!;
+    const result: WorkerResult = {
+      ...workerResult,
+      status: 'cancelled',
+      text: '已经算出部分结果。',
+      failure: failure('CANCELLED'),
+      unfinished: ['已按要求停止，现有内容已保留。'],
+    };
+    store.reject = () => true;
+    expect(manager.saveWorkerResult('task', state.receipt.jobId, success(result))).toMatchObject({
+      ok: false,
+      error: { code: 'PERSISTENCE_FAILED' },
+    });
+    expect(manager.get('task')).toEqual(before);
+    store.reject = () => false;
+    unwrap(manager.saveWorkerResult('task', state.receipt.jobId, success(result)));
+    const saved = manager.get('task')!;
+    expect(saved).toMatchObject({
+      status: 'cancelled',
+      phase: 'terminal',
+      endedAt: before.endedAt,
+      worker: {
+        receipt: { status: 'cancelled' },
+        endedAt: before.worker?.endedAt,
+        resultVersion: before.worker!.resultVersion + 1,
+        result,
+      },
+    });
+    unwrap(
+      manager.saveWorkerResult(
+        'task',
+        state.receipt.jobId,
+        success({ ...result, text: '重复调用试图换正文' })
+      )
+    );
+    expect(manager.get('task')).toEqual(saved);
+    const restarted = createTaskLifeCycleManagerV3({ store, now: () => 200 });
+    unwrap(restarted.recover());
+    expect(restarted.get('task')).toEqual(saved);
+    expect(restarted.pendingJobs()).toEqual([]);
+  });
+  it('取消已保存结果后，迟到的取消材料不能覆盖已有业务内容', () => {
+    const manager = createTaskLifeCycleManagerV3({ now: () => 100 });
+    const state = completedWorker(manager);
+    unwrap(manager.cancel('task'));
+    const before = manager.get('task');
+    unwrap(
+      manager.saveWorkerResult(
+        'task',
+        state.receipt.jobId,
+        success({
+          ...workerResult,
+          status: 'cancelled',
+          text: '尝试覆盖',
+          failure: failure('CANCELLED'),
+        })
+      )
+    );
+    expect(manager.get('task')).toEqual(before);
+  });
   it('持久数据非法明确拒绝', () => {
     const store = new FaultStore();
     store.records = [{ schemaVersion: 3, taskId: 'bad', status: 'running' }];
@@ -526,7 +610,7 @@ describe('V3 重启与排队截止', () => {
     expect(manager.get('task')).toMatchObject({
       phase: 'reply-pending',
       frontend: { summaryAttempts: 0, failure: { code: 'TIMEOUT' } },
-      finalReply: { text: expect.stringContaining('业务执行已完成') },
+      finalReply: { text: expect.stringContaining('执行已结束') },
     });
     expect(manager.pendingJobs()).toEqual([]);
   });
@@ -607,6 +691,67 @@ describe('V3 重启与排队截止', () => {
 });
 
 describe('V3 job 调度', () => {
+  it('worker结果待补保存时取消，仍以取消分类补存材料且不重跑', async () => {
+    const store = new FaultStore();
+    const manager = createTaskLifeCycleManagerV3({ store, now: () => 100 });
+    const state = started(manager);
+    const receipt = unwrap(manager.acceptWorker(state.request));
+    unwrap(manager.finishFrontend('task', state.job.jobId, success({ kind: 'dispatched' })));
+    const task = unwrap(manager.claimJob(receipt.jobId));
+    unwrap(
+      manager.bindExecution('task', receipt.jobId, { ...state.execution, jobId: receipt.jobId })
+    );
+    const failedSave = new Deferred<void>();
+    const scheduler = createJobSchedulerV3({
+      onSettlementError: () => {
+        failedSave.resolve();
+      },
+    });
+    closes.push(() => scheduler.close());
+    const run = vi.fn(async (): Promise<TaskJobOutcomeV3> => ({
+      kind: 'worker',
+      result: success(workerResult),
+    }));
+    store.reject = () => true;
+    unwrap(
+      scheduler.enqueue({
+        job: {
+          jobId: receipt.jobId,
+          taskId: 'task',
+          sessionKey: task.input.message.target.key,
+          kind: 'worker',
+          createdAt: Date.now(),
+          deadlineAt: Date.now() + 60_000,
+        },
+        run,
+        settle: (outcome) =>
+          outcome.kind === 'worker'
+            ? manager.saveWorkerResult('task', receipt.jobId, outcome.result)
+            : success(undefined),
+      })
+    );
+    await failedSave.promise;
+    await tick();
+    expect(scheduler.snapshot()).toMatchObject({ running: 0, pendingSettlements: 1 });
+    store.reject = () => false;
+    unwrap(manager.cancel('task'));
+    scheduler.cancel('task');
+    scheduler.flushSettlements();
+    const saved = manager.get('task');
+    expect(saved).toMatchObject({
+      status: 'cancelled',
+      phase: 'terminal',
+      worker: {
+        result: { status: 'cancelled', text: workerResult.text, failure: { code: 'CANCELLED' } },
+      },
+    });
+    scheduler.flushSettlements();
+    expect(manager.get('task')).toEqual(saved);
+    expect(manager.pendingJobs()).toEqual([]);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(scheduler.snapshot().pendingSettlements).toBe(0);
+  });
+
   it('同 Session 首次前台与整理交替，跨 Session 轮转，同 Session worker 串行', async () => {
     const scheduler = createJobSchedulerV3({ capacity: 1 });
     closes.push(() => scheduler.close());

@@ -51,6 +51,7 @@ export interface TaskLifeCycleManagerV3 {
     controlOperations?: string[];
   }): Result<WorkerReceipt>;
   finishFrontend(taskId: string, jobId: string, result: Result<FrontendTurnResultV3>): Result<void>;
+  /** 取消后只允许同一已绑定 worker 的 cancelled 收尾补存空占位结果中的材料；不重启整理或投递。 */
   saveWorkerResult(taskId: string, jobId: string, result: Result<WorkerResult>): Result<void>;
   saveFinalReply(taskId: string, jobId: string, result: Result<FrontendReply>): Result<void>;
   confirmEnqueued(taskId: string, replyId: string): Result<void>;

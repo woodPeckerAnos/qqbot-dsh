@@ -293,7 +293,7 @@ export const modules = immutableConstant([
   {
     id: 'task',
     title: 'Task',
-    version: '3.0.0',
+    version: '3.1.0',
     owner: '项目维护者',
     entry: 'src/task/index.ts',
     examplesV3: [
@@ -324,6 +324,7 @@ export const modules = immutableConstant([
       'src/task/control-bridge-v3.ts',
       'src/task/system-v3.ts',
       'src/task/runtime-profile-v3.ts',
+      'src/task/worker-outcome-v3.ts',
     ],
     dependencies: ['runtime', 'media', 'store', 'delivery', 'observability', 'content', 'session'],
     capabilities: ['node:crypto', 'node:fs', 'node:fs/promises', 'node:path', 'node:url'],
@@ -336,6 +337,11 @@ export const modules = immutableConstant([
       '首次前台彻底退出后才领取整理，整理最多两回合；只补已固定结果保存和回复入队，不重复业务',
       '取消优先于交接，stop 保留尚未开始首次处理的排队 Task；new 取消所有未完成阶段',
       '最终回复入队确认后结束 Task；业务结果、前台整理和实际送达状态分别展示',
+      'worker 正文直接保存为内容，执行分类由程序生成；自然语言、Markdown 和正文里的 JSON 不决定成功或失败；正常结束的空正文仍进入整理',
+      '新 worker evidence 只记录运行事实和文件检查，业务证据及未完成说明保留原文；运行故障保留部分正文和有效附件',
+      '取消后同一已绑定 worker 的 cancelled 收尾只补存空占位结果的材料，重复提交幂等，不改变终态、取消时间或重启整理和投递',
+      '整理直接返回非空正文，程序交付本次全部已保存并再次校验的附件；整理保留正文、已有证据和未完成补充材料，排除原始异常及内部校验诊断，使用面向用户的运行说明',
+      '收集和整理都核对 outbox 规范目录仍属本 worker 工作区，附件规范路径仍属合法 outbox，拒绝跨任务目录链接和外来附件',
       '持久输入、引用、附件、交接、阶段和执行身份先校验；未知版本和重复会话记录明确报错',
       '启动检查与正常执行共用最终模型和 profile；检查失败不恢复业务状态',
       'V1/V2 未完成任务先保存固定 ID 中断通知，再保存 failed 状态；队列故障不得先终结旧任务',

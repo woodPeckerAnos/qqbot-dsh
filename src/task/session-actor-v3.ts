@@ -328,14 +328,16 @@ export class SessionActorV3 implements ActorContract {
   }
   private saveJobOutcome(job: DeepReadonly<TaskJobV3>, outcome: TaskJobOutcomeV3): Result<void> {
     const task = this.options.manager.get(job.taskId);
-    if (!task || task.cancelAccepted || isTaskTerminal(task)) return { ok: true, value: undefined };
+    if (!task) return { ok: true, value: undefined };
     // 领取落盘失败未开始执行；等维护重新入队，不将存储故障变成业务失败。
     if (jobClaimSaveFailed(task, job, outcome)) return { ok: true, value: undefined };
+    // 管理器核对 worker 身份和终态，取消收尾只补材料。
+    if (outcome.kind === 'worker')
+      return this.options.manager.saveWorkerResult(job.taskId, job.jobId, outcome.result);
+    if (task.cancelAccepted || isTaskTerminal(task)) return { ok: true, value: undefined };
     if (outcome.kind === 'frontend') {
       return this.options.manager.finishFrontend(job.taskId, job.jobId, outcome.result);
     }
-    if (outcome.kind === 'worker')
-      return this.options.manager.saveWorkerResult(job.taskId, job.jobId, outcome.result);
     const saved = this.options.manager.saveFinalReply(job.taskId, job.jobId, outcome.result);
     if (saved.ok && !outcome.result.ok) this.summaryFailures++;
     return saved;

@@ -50,10 +50,14 @@ export interface WorkerReceipt {
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
 }
 export interface WorkerResult {
+  /** 程序按运行结果生成；completed 表示正常结束，正文里的业务未完成说明不改变分类。 */
   status: 'completed' | 'failed' | 'cancelled' | 'unknown';
+  /** 完整模型正文，作为内容保存；不解析其中的 JSON、状态或证据字段。 */
   text: string;
+  /** 新结果只记录程序掌握的运行事实和文件检查；历史模型证据原样保留。 */
   evidence: string[];
   attachments: OutgoingAttachment[];
+  /** 程序生成的运行中断和交付问题；业务未完成说明保留在 text。 */
   unfinished: string[];
   failure?: ContractFailure;
 }
@@ -61,6 +65,7 @@ export interface FrontendReply {
   replyId: string;
   text: string;
   attention?: 'strong';
+  /** V3 整理回复由程序加入本次已保存并再次校验通过的全部附件。 */
   attachments?: OutgoingAttachment[];
 }
 export type FrontendTurnResultV3 = { kind: 'reply'; reply: FrontendReply } | { kind: 'dispatched' };

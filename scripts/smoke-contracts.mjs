@@ -583,11 +583,47 @@ async function executeTaskV3(example) {
         }).ok,
         true
       );
+      const workerJob = manager.pendingJobs().find((pending) => pending.kind === 'worker');
+      assert.equal(manager.claimJob(workerJob.jobId).ok, true);
+      assert.equal(
+        manager.bindExecution(handle.taskId, workerJob.jobId, {
+          ...execution,
+          jobId: workerJob.jobId,
+        }).ok,
+        true
+      );
+      assert.equal(
+        manager.saveWorkerResult(handle.taskId, workerJob.jobId, {
+          ok: true,
+          value: {
+            status: 'completed',
+            text: example.input.workerText,
+            evidence: ['离线运行正常结束。'],
+            attachments: [],
+            unfinished: [],
+          },
+        }).ok,
+        true
+      );
+      const summaryJob = manager.pendingJobs().find((pending) => pending.kind === 'summary');
+      assert.equal(manager.claimJob(summaryJob.jobId).ok, true);
+      assert.equal(
+        manager.saveFinalReply(handle.taskId, summaryJob.jobId, {
+          ok: true,
+          value: example.input.reply,
+        }).ok,
+        true
+      );
+      const replyId = manager.get(handle.taskId).finalReply.replyId;
+      assert.equal(manager.confirmEnqueued(handle.taskId, replyId).ok, true);
+      await completion;
       const snapshot = manager.get(handle.taskId);
       return {
         status: snapshot.status,
         phase: snapshot.phase,
         workerStatus: snapshot.worker.receipt.status,
+        workerText: snapshot.worker.result.text,
+        evidence: snapshot.worker.result.evidence,
         frontendEnded: snapshot.frontend.initialEndedAt !== undefined,
         done,
       };

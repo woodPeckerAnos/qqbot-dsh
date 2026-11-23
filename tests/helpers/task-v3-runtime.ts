@@ -17,6 +17,7 @@ import {
   createObservationWindowStore,
   resolveStorePaths,
   ensureStoreDirs,
+  createStateWriter,
 } from '../../src/store/index.js';
 import { BenchmarkRuntime } from '../bench/session/mock-runtime.js';
 import { MemoryConnector } from '../bench/session/connector.js';
@@ -55,7 +56,10 @@ class ObservedRuntime extends BenchmarkRuntime {
   }
 }
 
-export async function createRuntimeHarness(configuration?: FileConfig) {
+export async function createRuntimeHarness(
+  configuration?: FileConfig,
+  savedTasks?: readonly unknown[]
+) {
   const root = await mkdtemp(join(tmpdir(), 'task-v3-runtime-'));
   const config = loadConfig(
     {
@@ -70,6 +74,10 @@ export async function createRuntimeHarness(configuration?: FileConfig) {
     workspacesRoot: join(root, 'workspaces'),
   });
   ensureStoreDirs(paths);
+  if (savedTasks)
+    createStateWriter<unknown, 'tasks'>('tasks', join(paths.stateDir, 'tasks.json')).save(
+      savedTasks
+    );
   config.paths.dshHome = join(root, 'dsh');
   const logger = createLogger({ autoTick: false, sink: () => {} });
   const connector = new MemoryConnector();
@@ -128,6 +136,20 @@ export async function createRuntimeHarness(configuration?: FileConfig) {
         });
       });
     },
+    sent(taskId: string): Promise<void> {
+      const delivered = () => {
+        const delivery = system.queue.taskDelivery(taskId);
+        return delivery.success && !delivery.pending;
+      };
+      if (delivered()) return Promise.resolve();
+      return new Promise((resolve) => {
+        const off = system.queue.onDelivery(() => {
+          if (!delivered()) return;
+          off();
+          resolve();
+        });
+      });
+    },
     async close() {
       await system.close();
       await connector.stop();
@@ -147,11 +169,6 @@ export function startWorker(runtime: BenchmarkRuntime) {
   });
 }
 
-export function workerText(status = 'completed') {
-  return JSON.stringify({
-    status,
-    text: '完整业务结果：20',
-    evidence: ['12+8=20'],
-    unfinished: status === 'completed' ? [] : ['缺少最终确认'],
-  });
+export function workerText() {
+  return '完整业务结果：20\n依据：12+8=20。';
 }

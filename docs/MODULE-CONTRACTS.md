@@ -12,7 +12,7 @@
 | 存储           | `src/store/index.ts`         | 1.0.0 |
 | 媒体           | `src/media/index.ts`         | 1.0.0 |
 | Runtime        | `src/runtime/index.ts`       | 1.0.0 |
-| Task           | `src/task/index.ts`          | 3.0.0 |
+| Task           | `src/task/index.ts`          | 3.1.0 |
 | Session 上下文 | `src/session/index.ts`       | 1.0.0 |
 | 投递           | `src/delivery/index.ts`      | 3.0.0 |
 | Ingress        | `src/ingress/index.ts`       | 1.0.0 |
@@ -3064,7 +3064,7 @@ v1 只增不改；破坏性签名先添加新版本，迁移生产消费者后�
 
 ## Task
 
-版本：3.0.0；Owner：项目维护者；公共入口：`src/task/index.ts`。
+版本：3.1.0；Owner：项目维护者；公共入口：`src/task/index.ts`。
 
 ### 1. 职责边界
 
@@ -4155,7 +4155,7 @@ export type createDshTaskRunnerFactoryV3 = (options: {
 
 ### 3. 不变量
 
-每输入一个 Task，普通输入只执行前台；每 Task 最多接受一个 worker；领取、派发、结果和最终回复先保存后通知；job 与 runtime 身份拒绝重复和迟到事件；同 Session 首次前台和整理交替，worker 串行；worker 完成后不占执行额度等待整理；首次前台彻底退出后才领取整理，整理最多两回合；只补已固定结果保存和回复入队，不重复业务；取消优先于交接，stop 保留尚未开始首次处理的排队 Task；new 取消所有未完成阶段；最终回复入队确认后结束 Task；业务结果、前台整理和实际送达状态分别展示；持久输入、引用、附件、交接、阶段和执行身份先校验；未知版本和重复会话记录明确报错；启动检查与正常执行共用最终模型和 profile；检查失败不恢复业务状态；V1/V2 未完成任务先保存固定 ID 中断通知，再保存 failed 状态；队列故障不得先终结旧任务。
+每输入一个 Task，普通输入只执行前台；每 Task 最多接受一个 worker；领取、派发、结果和最终回复先保存后通知；job 与 runtime 身份拒绝重复和迟到事件；同 Session 首次前台和整理交替，worker 串行；worker 完成后不占执行额度等待整理；首次前台彻底退出后才领取整理，整理最多两回合；只补已固定结果保存和回复入队，不重复业务；取消优先于交接，stop 保留尚未开始首次处理的排队 Task；new 取消所有未完成阶段；最终回复入队确认后结束 Task；业务结果、前台整理和实际送达状态分别展示；worker 正文直接保存为内容，执行分类由程序生成；自然语言、Markdown 和正文里的 JSON 不决定成功或失败；正常结束的空正文仍进入整理；新 worker evidence 只记录运行事实和文件检查，业务证据及未完成说明保留原文；运行故障保留部分正文和有效附件；取消后同一已绑定 worker 的 cancelled 收尾只补存空占位结果的材料，重复提交幂等，不改变终态、取消时间或重启整理和投递；整理直接返回非空正文，程序交付本次全部已保存并再次校验的附件；整理保留正文、已有证据和未完成补充材料，排除原始异常及内部校验诊断，使用面向用户的运行说明；收集和整理都核对 outbox 规范目录仍属本 worker 工作区，附件规范路径仍属合法 outbox，拒绝跨任务目录链接和外来附件；持久输入、引用、附件、交接、阶段和执行身份先校验；未知版本和重复会话记录明确报错；启动检查与正常执行共用最终模型和 profile；检查失败不恢复业务状态；V1/V2 未完成任务先保存固定 ID 中断通知，再保存 failed 状态；队列故障不得先终结旧任务。
 
 持久化写入能力：`tasks` → `TaskStateWriter`（`src/task/lifecycle.ts`, `src/task/lifecycle-v3.ts`）；`task-budgets` → `BudgetStateWriter`（`src/task/budget.ts`）；`task-sessions` → `SessionStateWriter`（`src/task/session-actor.ts`, `src/task/session-actor-v3.ts`）。
 
@@ -4268,7 +4268,7 @@ v1 只增不改；破坏性签名先添加新版本，迁移生产消费者后�
 
 ### V3 edge：`task.v3.edge`
 
-```json
+````json
 {
   "input": {
     "taskId": "fixture-task-v3",
@@ -4276,17 +4276,24 @@ v1 只增不改；破坏性签名先添加新版本，迁移生产消费者后�
     "assignment": {
       "instruction": "执行业务计算",
       "deliverables": ["报告"]
+    },
+    "workerText": "结果：20。\n依据：12+8=20。\n```json\n{\"status\":\"failed\"}\n```",
+    "reply": {
+      "replyId": "model-reply",
+      "text": "结果是20。"
     }
   },
   "expected": {
-    "status": "running",
-    "phase": "worker-waiting",
-    "workerStatus": "queued",
+    "status": "completed",
+    "phase": "terminal",
+    "workerStatus": "completed",
+    "workerText": "结果：20。\n依据：12+8=20。\n```json\n{\"status\":\"failed\"}\n```",
+    "evidence": ["离线运行正常结束。"],
     "frontendEnded": true,
-    "done": false
+    "done": true
   }
 }
-```
+````
 
 ### V3 failure：`task.v3.failure`
 

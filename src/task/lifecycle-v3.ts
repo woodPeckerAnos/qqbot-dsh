@@ -7,6 +7,7 @@ import {
 } from '@qqbot/contracts';
 import { stripControlChars } from '../content/index.js';
 import { legacyTrace } from '../observability/index.js';
+import { failedWorker } from './worker-outcome-v3.js';
 import type {
   AttachmentReference,
   ContractFailure,
@@ -288,7 +289,10 @@ export class TaskLifeCycleManagerV3 implements ManagerContract {
     if (!source?.worker) return { ok: false, error: failure('NOT_FOUND', jobId) };
     if (source.worker.receipt.jobId !== jobId)
       return { ok: false, error: failure('CONFLICT', jobId) };
-    if (source.worker.result || !acceptsExecution(source)) return { ok: true, value: undefined };
+    if (source.cancelAccepted || source.worker.result || !acceptsExecution(source))
+      return source.cancelAccepted
+        ? this.saveCancelledWorkerMaterials(source, result)
+        : { ok: true, value: undefined };
     if (source.worker.receipt.status !== 'running' && source.worker.receipt.status !== 'queued')
       return { ok: false, error: failure('CONFLICT', jobId) };
     const task = structuredClone(source);
@@ -315,6 +319,24 @@ export class TaskLifeCycleManagerV3 implements ManagerContract {
       execution: worker.execution,
       resultVersion: worker.resultVersion,
     });
+  }
+  private saveCancelledWorkerMaterials(
+    source: TaskSnapshotV3,
+    outcome: Result<WorkerResult>
+  ): Result<void> {
+    if (
+      !source.worker ||
+      !hasCancelledWorkerPlaceholder(source.worker) ||
+      !outcome.ok ||
+      !validCancelledWorkerMaterials(outcome.value)
+    )
+      return { ok: true, value: undefined };
+    const task = structuredClone(source);
+    const worker = structuredClone(source.worker);
+    worker.result = structuredClone(outcome.value);
+    worker.resultVersion++;
+    task.worker = worker;
+    return this.commit(task);
   }
   saveFinalReply(taskId: string, jobId: string, result: Result<FrontendReply>): Result<void> {
     const source = this.tasks.get(taskId);
@@ -902,23 +924,30 @@ function validWorkerResult(value: unknown): value is WorkerResult {
     (value.failure === undefined || validFailure(value.failure))
   );
 }
-function failedWorker(error: ContractFailure): WorkerResult {
-  const status = error.code === 'UNKNOWN_OUTCOME' ? 'unknown' : 'failed';
-  return {
-    status: error.code === 'CANCELLED' ? 'cancelled' : status,
-    text: '',
-    evidence: [],
-    attachments: [],
-    unfinished: ['执行未完成，详情见失败分类。'],
-    failure: structuredClone(error),
-  };
+function hasCancelledWorkerPlaceholder(worker: WorkerSnapshotV3): boolean {
+  const saved = worker.result;
+  return (
+    !!worker.execution &&
+    saved?.status === 'cancelled' &&
+    !saved.text &&
+    !saved.attachments.length &&
+    !saved.evidence.length
+  );
+}
+function validCancelledWorkerMaterials(value: unknown): value is WorkerResult {
+  return (
+    validWorkerResult(value) &&
+    value.status === 'cancelled' &&
+    value.failure?.code === 'CANCELLED' &&
+    !!(value.text.trim() || value.attachments.length || value.evidence.length)
+  );
 }
 function summaryFailureText(result?: WorkerResult): string {
   if (result?.status === 'completed')
-    return '业务执行已完成，但结果整理失败。结果和附件已保存，可稍后查询。';
+    return '执行已结束，但结果整理失败。结果和附件已保存，可稍后查询。';
   if (result?.status === 'unknown')
-    return '业务执行结果未知，结果整理失败。已保存现有记录，请稍后查询。';
-  return '业务执行未完成，结果整理失败。已保存现有结果和附件，可稍后查询。';
+    return '执行中断，完成情况暂时无法确认，结果整理失败。已保存现有记录，请稍后查询。';
+  return '执行未能顺利结束，结果整理失败。已保存现有结果和附件，可稍后查询。';
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

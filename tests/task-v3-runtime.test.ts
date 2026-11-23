@@ -1,17 +1,404 @@
 import { mkdir, writeFile, readFile, realpath, symlink, rename } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createTaskControlBridgeV3, createPromptPreparerV3 } from '../src/task/index.js';
+import { failure } from '@qqbot/contracts';
+import {
+  createTaskControlBridgeV3,
+  createPromptPreparerV3,
+  createTaskLifeCycleManagerV3,
+} from '../src/task/index.js';
 import { createLogger, createPipelineStats } from '../src/observability/index.js';
 import {
   createConversationStore,
   workspacePathFor,
   conversationFileFor,
+  createStateWriter,
 } from '../src/store/index.js';
 import { createRuntimeHarness, startWorker, workerText } from './helpers/task-v3-runtime.js';
 
 describe('V3真实运行编排、注入DSH事件与本地文件', () => {
+  it('stop取消后保存同一worker的部分正文和真实文件，重复收尾与重启仍保持取消', async () => {
+    const h = await createRuntimeHarness();
+    try {
+      const handle = await h.submit();
+      startWorker(await h.started('frontend'));
+      const worker = await h.started('worker');
+      const outbox = join(worker.options.cwd, h.config.media.outboxDir);
+      await mkdir(outbox, { recursive: true });
+      await writeFile(join(outbox, 'partial.txt'), '已完成第一项');
+      worker.event('tool/call', { name: 'bash' });
+      worker.event('assistant/message', {
+        message: { content: [{ type: 'text', text: '已完成第一项，后续尚未完成。' }] },
+      });
+      expect(h.system.actor.stop('onebot:group:group')).toBe(1);
+      const stopped = await handle.done;
+      const collected = await h.observe(
+        (task) =>
+          task.taskId === handle.taskId &&
+          task.worker?.result?.text === '已完成第一项，后续尚未完成。'
+      );
+      expect(collected).toMatchObject({
+        status: 'cancelled',
+        phase: 'terminal',
+        cancelAccepted: true,
+        endedAt: stopped.endedAt,
+        worker: {
+          receipt: { status: 'cancelled' },
+          endedAt: stopped.worker?.endedAt,
+          result: { status: 'cancelled', failure: { code: 'CANCELLED' } },
+        },
+      });
+      expect(collected.worker?.result?.evidence).toContain('已记录工具调用：1次。');
+      const result = collected.worker!.result!;
+      expect(await readFile(result.attachments[0]!.absPath, 'utf8')).toBe('已完成第一项');
+      const before = structuredClone(collected);
+      expect(
+        h.system.manager.saveWorkerResult(handle.taskId, collected.worker!.receipt.jobId, {
+          ok: true,
+          value: {
+            ...result,
+            evidence: [...result.evidence],
+            attachments: result.attachments.map((attachment) => ({ ...attachment })),
+            unfinished: [...result.unfinished],
+          },
+        }).ok
+      ).toBe(true);
+      expect(h.system.manager.get(handle.taskId)).toEqual(before);
+      expect(h.system.manager.pendingJobs()).toEqual([]);
+      expect(h.runtimes).toHaveLength(2);
+      expect(worker.disposed).toBe(1);
+      expect(h.connector.actions).toEqual([]);
+      const restarted = createTaskLifeCycleManagerV3({
+        store: createStateWriter<unknown, 'tasks'>('tasks', join(h.paths.stateDir, 'tasks.json')),
+        now: h.clock.now,
+      });
+      expect(restarted.recover().ok).toBe(true);
+      expect(restarted.get(handle.taskId)).toEqual(before);
+      expect(restarted.pendingJobs()).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('说明加合法围栏JSON保留完整正文、运行证据和result.txt并实际发送', async () => {
+    const h = await createRuntimeHarness();
+    try {
+      const body = await readFile(
+        new URL('./fixtures/worker-result-with-fenced-json.txt', import.meta.url),
+        'utf8'
+      );
+      const handle = await h.submit('计算12+8并给出报告');
+      startWorker(await h.started('frontend'));
+      const worker = await h.started('worker');
+      const outbox = join(worker.options.cwd, h.config.media.outboxDir);
+      await mkdir(outbox, { recursive: true });
+      const content = '12+8=20\n完整计算报告\n';
+      await writeFile(join(outbox, 'result.txt'), content);
+      worker.event('tool/call', { name: 'bash' });
+      worker.finish(body);
+      const summary = await h.started('summary');
+      const result = h.system.manager.get(handle.taskId)!.worker!.result!;
+      expect(result.status).toBe('completed');
+      expect(result.text).toBe(body.trim());
+      expect(result.evidence).toContain('执行正常结束。');
+      expect(result.evidence).toContain('已记录工具调用：1次。');
+      expect(result.evidence.join(' ')).toContain('result.txt');
+      expect(summary.prompts[0]?.blocks[0]).toMatchObject({
+        text: expect.stringContaining(JSON.stringify(body.trim())),
+      });
+      summary.finish('结果是20，完整报告见附件。');
+      expect((await handle.done).status).toBe('completed');
+      await h.sent(handle.taskId);
+      expect(h.connector.actions.flatMap((action) => action.attachments)).toContainEqual(
+        expect.objectContaining({ fileName: 'result.txt', text: content })
+      );
+      expect(h.system.queue.taskDelivery(handle.taskId)).toMatchObject({
+        success: true,
+        pending: false,
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it.each([
+    '普通完整报告。',
+    '# 报告\n\n已完成调查，第三项待确认。',
+    '{"status":"failed","text":"还缺一项业务材料"}',
+    'NO_REPLY',
+  ])('worker正常结束保留正文 %s，正文不改变运行分类', async (body) => {
+    const h = await createRuntimeHarness();
+    try {
+      const handle = await h.submit();
+      startWorker(await h.started('frontend'));
+      (await h.started('worker')).finish(body);
+      const summary = await h.started('summary');
+      expect(h.system.manager.get(handle.taskId)?.worker?.result).toMatchObject({
+        status: 'completed',
+        text: body,
+        unfinished: [],
+      });
+      summary.finish('现有报告已返回，待确认的事项保留在说明中。');
+      expect((await handle.done).status).toBe('completed');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it.each([false, true])('worker空正文、存在附件 %s 时仍正常结束并如实整理', async (hasFile) => {
+    const h = await createRuntimeHarness();
+    try {
+      const handle = await h.submit();
+      startWorker(await h.started('frontend'));
+      const worker = await h.started('worker');
+      if (hasFile) {
+        const outbox = join(worker.options.cwd, h.config.media.outboxDir);
+        await mkdir(outbox, { recursive: true });
+        await writeFile(join(outbox, 'only.txt'), '只有附件');
+      }
+      worker.finish('  \n ');
+      const summary = await h.started('summary');
+      expect(h.system.manager.get(handle.taskId)?.worker?.result).toMatchObject({
+        status: 'completed',
+        text: '',
+      });
+      const prompt = summary.prompts[0]!.blocks[0]!;
+      expect(prompt).toMatchObject({
+        text: expect.stringContaining(hasFile ? 'only.txt' : '本次没有返回正文或附件'),
+      });
+      summary.finish(hasFile ? '文件已返回，见附件。' : '这次没有返回结果。');
+      const task = await handle.done;
+      expect(task.status).toBe('completed');
+      expect(task.finalReply?.attachments).toHaveLength(hasFile ? 1 : 0);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it.each(['timeout', 'child-failed'] as const)(
+    '%s 保留部分正文、运行证据及有效文件',
+    async (mode) => {
+      const h = await createRuntimeHarness();
+      try {
+        const handle = await h.submit();
+        startWorker(await h.started('frontend'));
+        const worker = await h.started('worker');
+        const outbox = join(worker.options.cwd, h.config.media.outboxDir);
+        await mkdir(outbox, { recursive: true });
+        await writeFile(join(outbox, 'partial.txt'), '已完成第一项');
+        worker.event('tool/call', { name: 'bash' });
+        if (mode === 'timeout') {
+          worker.event('assistant/message', {
+            message: { content: [{ type: 'text', text: '已完成第一项，第二项未完成。' }] },
+          });
+          h.clock.advance(h.config.tasks.slowTimeoutMs);
+        } else {
+          worker.child(true, 'child');
+          worker.finish('已完成第一项，第二项未完成。');
+          worker.child(false, 'child', 'error');
+        }
+        const summary = await h.started('summary');
+        const result = h.system.manager.get(handle.taskId)!.worker!.result!;
+        expect(result.status).toBe('failed');
+        expect(result.failure?.code).toBe(mode === 'timeout' ? 'TIMEOUT' : 'UPSTREAM_FAILED');
+        expect(result.text).toBe('已完成第一项，第二项未完成。');
+        expect(result.evidence).toContain('已记录工具调用：1次。');
+        expect(result.attachments[0]?.fileName).toBe('partial.txt');
+        summary.finish('已完成第一项，第二项未完成，现有文件见附件。');
+        expect((await handle.done).status).toBe('failed');
+      } finally {
+        await h.close();
+      }
+    }
+  );
+
+  it('整理材料使用自然失败说明，排除原始异常、内部身份和路径', async () => {
+    const h = await createRuntimeHarness();
+    try {
+      const handle = await h.submit('给我当前结果');
+      startWorker(await h.started('frontend'));
+      const worker = await h.started('worker');
+      const task = h.system.manager.get(handle.taskId)!;
+      expect(
+        h.system.manager.saveWorkerResult(handle.taskId, task.worker!.receipt.jobId, {
+          ok: true,
+          value: {
+            status: 'failed',
+            text: '第一项调查已完成。',
+            evidence: ['已核对来源 https://example.com/report'],
+            attachments: [],
+            unfinished: ['第三项仍缺确认材料。', '执行未完成，详情见失败分类。'],
+            failure: failure(
+              'UPSTREAM_FAILED',
+              { message: 'private-stack-secret', path: '/private/internal/path' },
+              'private-error-id'
+            ),
+          },
+        }).ok
+      ).toBe(true);
+      worker.finish('迟到的正文');
+      const summary = await h.started('summary');
+      const prompt = summary.prompts[0]!.blocks[0]!;
+      expect(prompt).toMatchObject({
+        text: expect.stringContaining('处理未能顺利结束，现有内容已保留。'),
+      });
+      expect(prompt).toMatchObject({ text: expect.stringContaining('第一项调查已完成。') });
+      for (const diagnostic of [
+        'private-stack-secret',
+        '/private/internal/path',
+        'private-error-id',
+        'UPSTREAM_FAILED',
+        'runtimeGeneration',
+        'errorId',
+        '"status":',
+      ])
+        expect(prompt).toMatchObject({ text: expect.not.stringContaining(diagnostic) });
+      expect(prompt).toMatchObject({ text: expect.stringContaining('第三项仍缺确认材料。') });
+      expect(prompt).toMatchObject({ text: expect.not.stringContaining('详情见失败分类') });
+      summary.finish('第一项调查已完成，后续处理遇到问题。');
+      await handle.done;
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('历史V3待整理结果重启后保留独立引用和未完成材料', async () => {
+    const original = await createRuntimeHarness();
+    let restored: Awaited<ReturnType<typeof createRuntimeHarness>> | undefined;
+    try {
+      const handle = await original.submit('整理上次调查结果');
+      startWorker(await original.started('frontend'));
+      await original.started('worker');
+      const task = original.system.manager.get(handle.taskId)!;
+      expect(
+        original.system.manager.saveWorkerResult(handle.taskId, task.worker!.receipt.jobId, {
+          ok: true,
+          value: {
+            status: 'completed',
+            text: '调查正文。',
+            evidence: ['引用 https://example.com/source'],
+            unfinished: ['第三项待提供签字文件。'],
+            attachments: [],
+          },
+        }).ok
+      ).toBe(true);
+      const saved = original.system.manager.get(handle.taskId)!;
+      restored = await createRuntimeHarness(undefined, [saved]);
+      expect(restored.system.actor.recover().ok).toBe(true);
+      const summary = await restored.started('summary');
+      expect(summary.prompts[0]?.blocks[0]).toMatchObject({
+        text: expect.stringContaining('https://example.com/source'),
+      });
+      expect(summary.prompts[0]?.blocks[0]).toMatchObject({
+        text: expect.stringContaining('第三项待提供签字文件。'),
+      });
+      expect(restored.system.manager.get(handle.taskId)?.worker?.result).toEqual(
+        saved.worker?.result
+      );
+      summary.finish('调查正文已保留，第三项仍需提供签字文件。');
+      await restored.observe(
+        (value) => value.taskId === handle.taskId && value.status === 'completed'
+      );
+    } finally {
+      await restored?.close();
+      await original.close();
+    }
+  });
+
+  it('worker拒绝指向其他任务目录的整个outbox', async () => {
+    const h = await createRuntimeHarness();
+    try {
+      const handle = await h.submit();
+      startWorker(await h.started('frontend'));
+      const worker = await h.started('worker');
+      const otherOutbox = join(h.root, 'other-task', 'outbox');
+      await mkdir(otherOutbox, { recursive: true });
+      await writeFile(join(otherOutbox, 'other.txt'), '其他任务文件');
+      await symlink(otherOutbox, join(worker.options.cwd, h.config.media.outboxDir));
+      worker.finish('当前任务正文。');
+      const summary = await h.started('summary');
+      expect(h.system.manager.get(handle.taskId)?.worker?.result).toMatchObject({
+        status: 'failed',
+        text: '当前任务正文。',
+        failure: { code: 'INVALID_INPUT' },
+        attachments: [],
+      });
+      summary.finish('正文已保留，附件检查遇到问题。');
+      expect((await handle.done).status).toBe('failed');
+      expect(h.connector.actions.flatMap((action) => action.attachments)).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('整理拒绝保存结果中来自其他任务的真实规范文件路径', async () => {
+    const h = await createRuntimeHarness();
+    try {
+      const handle = await h.submit();
+      startWorker(await h.started('frontend'));
+      const worker = await h.started('worker');
+      const outbox = join(worker.options.cwd, h.config.media.outboxDir);
+      await mkdir(outbox, { recursive: true });
+      const otherOutbox = join(h.root, 'other-task', 'outbox');
+      await mkdir(otherOutbox, { recursive: true });
+      const foreign = join(otherOutbox, 'other.txt');
+      await writeFile(foreign, 'other');
+      const task = h.system.manager.get(handle.taskId)!;
+      expect(
+        h.system.manager.saveWorkerResult(handle.taskId, task.worker!.receipt.jobId, {
+          ok: true,
+          value: {
+            status: 'completed',
+            text: '当前任务正文。',
+            evidence: [],
+            unfinished: [],
+            attachments: [
+              {
+                kind: 'file',
+                absPath: await realpath(foreign),
+                fileName: 'other.txt',
+                sizeBytes: 5,
+              },
+            ],
+          },
+        }).ok
+      ).toBe(true);
+      worker.finish('迟到正文');
+      (await h.started('summary')).finish('报告见附件。');
+      const saved = await handle.done;
+      expect(saved.status).toBe('failed');
+      expect(saved.frontend.failure?.code).toBe('INVALID_INPUT');
+      expect(saved.finalReply?.attachments).toBeUndefined();
+      expect(h.connector.actions.flatMap((action) => action.attachments)).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('outbox指向当前worker内目录、文件内部链接仍能正常交付', async () => {
+    const h = await createRuntimeHarness();
+    try {
+      const handle = await h.submit();
+      startWorker(await h.started('frontend'));
+      const worker = await h.started('worker');
+      const owned = join(worker.options.cwd, 'deliverables');
+      await mkdir(owned, { recursive: true });
+      await writeFile(join(owned, 'report.txt'), '报告');
+      await symlink(join(owned, 'report.txt'), join(owned, 'copy.txt'));
+      await symlink(owned, join(worker.options.cwd, h.config.media.outboxDir));
+      worker.finish('报告已完成。');
+      (await h.started('summary')).finish('报告见附件。');
+      const task = await handle.done;
+      expect(task.status).toBe('completed');
+      expect(task.finalReply?.attachments?.map((attachment) => attachment.fileName)).toEqual([
+        'copy.txt',
+        'report.txt',
+      ]);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('full模式读取旧背景失败时仍执行当前已授权的普通请求', async () => {
     const h = await createRuntimeHarness({
       sessionContext: { mode: 'full', maxRecentMessages: 12 },
@@ -91,7 +478,7 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       expect(frontend.disposed).toBe(1);
       worker.finish(workerText());
       const summary = await h.started('summary');
-      summary.finish(JSON.stringify({ text: '结果是20。', attachmentIds: [] }));
+      summary.finish('结果是20。');
       expect((await handle.done).status).toBe('completed');
       expect(
         h.runtimes.filter((runtime) => runtime.options.env?.QQBOT_ROLE === 'worker')
@@ -146,17 +533,14 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
         '只说摘要的新业务规则'
       );
       const result = h.system.manager.get(handle.taskId)!.worker!.result!;
-      expect(result.evidence).toEqual(['12+8=20']);
-      const attachment = result.attachments[0]!;
-      const id = createHash('sha256')
-        .update(JSON.stringify([attachment.absPath, attachment.fileName, attachment.sizeBytes]))
-        .digest('hex')
-        .slice(0, 24);
+      expect(result.text).toBe(workerText());
+      expect(result.evidence).toContain('执行正常结束。');
+      expect(result.evidence.join(' ')).toContain('report.csv');
       expect(summary.prompts[0]?.blocks[0]).toMatchObject({
         type: 'text',
-        text: expect.stringContaining(id),
+        text: expect.stringContaining('report.csv'),
       });
-      summary.finish(JSON.stringify({ text: '已算出20，报告在附件里。', attachmentIds: [id] }));
+      summary.finish('已算出20，报告在附件里。');
       const task = await handle.done;
       expect(task.finalReply?.attachments?.[0]?.absPath).toBe(await realpath(file));
       expect(h.connector.actions.some((action) => action.text === '完整业务结果：20')).toBe(false);
@@ -174,20 +558,25 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       const outbox = join(worker.options.cwd, h.config.media.outboxDir);
       await mkdir(outbox, { recursive: true });
       await writeFile(join(outbox, 'oversize.csv'), Buffer.alloc(h.config.media.maxFileBytes + 1));
+      await writeFile(join(outbox, 'partial.csv'), 'total\n20\n');
+      worker.event('tool/call', { name: 'bash' });
       worker.event('assistant/message', {
-        message: { content: [{ type: 'text', text: workerText('unknown') }] },
+        message: { content: [{ type: 'text', text: `${workerText()}\n缺少最终确认。` }] },
       });
       worker.emit('exit', 1, null);
       const summary = await h.started('summary');
       const result = h.system.manager.get(handle.taskId)!.worker!.result!;
       expect(result.status).toBe('unknown');
-      expect(result.text).toBe('完整业务结果：20');
-      expect(result.evidence).toEqual(['12+8=20']);
-      expect(result.unfinished).toContain('缺少最终确认');
+      expect(result.text).toBe(`${workerText()}\n缺少最终确认。`);
+      expect(result.evidence).toContain('已记录工具调用：1次。');
+      expect(result.failure?.code).toBe('UNKNOWN_OUTCOME');
+      expect(result.attachments.map((attachment) => attachment.fileName)).toEqual(['partial.csv']);
+      expect(result.unfinished.join(' ')).toContain('完成情况暂时无法确认');
       expect(result.unfinished.join(' ')).toContain('oversize.csv');
-      summary.finish(
-        JSON.stringify({ text: '已完成部分计算，最后结果还没确认。', attachmentIds: [] })
-      );
+      expect(summary.prompts[0]?.blocks[0]).toMatchObject({
+        text: expect.stringContaining('oversize.csv'),
+      });
+      summary.finish('已完成部分计算，最后结果还没确认。');
       expect((await handle.done).status).toBe('failed');
     } finally {
       await h.close();
@@ -212,19 +601,17 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       expect(texts).toContain('完整业务结果：20');
       expect(texts).toContain('旧业务由原任务继续处理');
       const summary = await h.started('summary');
-      summary.finish(JSON.stringify({ text: '旧结果20。', attachmentIds: [] }));
+      summary.finish('旧结果20。');
       await old.done;
       worker.finish(workerText());
-      (await h.started('summary')).finish(
-        JSON.stringify({ text: '根据20补好了说明。', attachmentIds: [] })
-      );
+      (await h.started('summary')).finish('根据20补好了说明。');
       await followup.done;
     } finally {
       await h.close();
     }
   });
 
-  it('伪造执行身份无法派发，worker结果格式非法仍保留原始正文', async () => {
+  it('伪造执行身份无法派发，worker自然正文正常保存业务未完成说明', async () => {
     const h = await createRuntimeHarness();
     try {
       const handle = await h.submit();
@@ -244,38 +631,42 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       worker.finish('已完成部分调查，第三项尚未完成。');
       const summary = await h.started('summary');
       const result = h.system.manager.get(handle.taskId)?.worker?.result;
-      expect(result?.status).toBe('failed');
+      expect(result?.status).toBe('completed');
       expect(result?.text).toBe('已完成部分调查，第三项尚未完成。');
-      expect(result?.failure?.code).toBe('INVALID_INPUT');
-      summary.finish(
-        JSON.stringify({ text: '调查完成了一部分，第三项还没完成。', attachmentIds: [] })
-      );
-      await handle.done;
+      expect(result?.failure).toBeUndefined();
+      summary.finish('调查完成了一部分，第三项还没完成。');
+      expect((await handle.done).status).toBe('completed');
     } finally {
       await h.close();
     }
   });
 
-  it('整理拒绝虚构附件ID，失败只保留已保存业务结果', async () => {
+  it('整理正文中的虚构附件ID不影响全部已保存附件交付', async () => {
     const h = await createRuntimeHarness();
     try {
       const handle = await h.submit();
       startWorker(await h.started('frontend'));
-      (await h.started('worker')).finish(workerText());
-      (await h.started('summary')).finish(
-        JSON.stringify({ text: '报告好了', attachmentIds: ['made-up'] })
-      );
+      const worker = await h.started('worker');
+      const outbox = join(worker.options.cwd, h.config.media.outboxDir);
+      await mkdir(outbox, { recursive: true });
+      await writeFile(join(outbox, 'first.csv'), 'first');
+      await writeFile(join(outbox, 'second.csv'), 'second');
+      worker.finish(workerText());
+      (await h.started('summary')).finish('报告好了。正文示例：{"attachmentIds":["made-up"]}');
       const task = await handle.done;
-      expect(task.status).toBe('failed');
-      expect(task.worker?.result?.text).toBe('完整业务结果：20');
+      expect(task.status).toBe('completed');
+      expect(task.worker?.result?.text).toBe(workerText());
       expect(task.frontend.summaryAttempts).toBe(1);
-      expect(task.finalReply?.attachments).toBeUndefined();
+      expect(task.finalReply?.attachments?.map((attachment) => attachment.fileName)).toEqual([
+        'first.csv',
+        'second.csv',
+      ]);
     } finally {
       await h.close();
     }
   });
 
-  it('整理拒绝伪造或已被替换成符号链接的附件ID', async () => {
+  it('整理拒绝已被替换成符号链接的已保存附件', async () => {
     const h = await createRuntimeHarness();
     try {
       const handle = await h.submit();
@@ -287,16 +678,11 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       await writeFile(file, 'report');
       worker.finish(workerText());
       const summary = await h.started('summary');
-      const attachment = h.system.manager.get(handle.taskId)!.worker!.result!.attachments[0]!;
-      const id = createHash('sha256')
-        .update(JSON.stringify([attachment.absPath, attachment.fileName, attachment.sizeBytes]))
-        .digest('hex')
-        .slice(0, 24);
       const alternate = join(h.root, 'other.csv');
       await writeFile(alternate, 'other!');
       await rename(file, join(outbox, 'old.csv'));
       await symlink(alternate, file);
-      summary.finish(JSON.stringify({ text: '附件好了。', attachmentIds: [id] }));
+      summary.finish('附件好了。');
       const task = await handle.done;
       expect(task.status).toBe('failed');
       expect(task.frontend.summaryAttempts).toBe(1);

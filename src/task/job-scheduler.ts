@@ -8,6 +8,7 @@ import type {
   TaskJobV3,
   createJobSchedulerFactoryV3,
 } from '@qqbot/contracts';
+import { recordWorkerFailure } from './worker-outcome-v3.js';
 
 interface SessionJobQueue {
   frontend: ScheduledTaskJobV3[];
@@ -70,6 +71,9 @@ export class JobSchedulerV3 implements SchedulerContract {
     return { ok: true, value: undefined };
   }
   cancel(taskId: string): void {
+    for (const settlement of this.settlements.values())
+      if (settlement.job.job.taskId === taskId)
+        settlement.result = cancelledOutcome(settlement.result);
     for (const queue of this.queues.values())
       for (const kind of ['frontend', 'summary', 'worker'] as const) {
         const cancelled = queue[kind].filter((job) => job.job.taskId === taskId);
@@ -144,10 +148,7 @@ export class JobSchedulerV3 implements SchedulerContract {
           )
         )
         .then((result) => {
-          this.settle(
-            job,
-            controller.signal.aborted ? failedOutcome(job.job.kind, 'CANCELLED') : result
-          );
+          this.settle(job, controller.signal.aborted ? cancelledOutcome(result) : result);
         })
         .finally(() => {
           this.running.delete(sessionKey);
@@ -208,4 +209,13 @@ function failedOutcome(
   cause?: unknown
 ): TaskJobOutcomeV3 {
   return { kind, result: { ok: false, error: failure(code, cause) } };
+}
+
+function cancelledOutcome(outcome: TaskJobOutcomeV3): TaskJobOutcomeV3 {
+  if (outcome.kind !== 'worker' || !outcome.result.ok)
+    return failedOutcome(outcome.kind, 'CANCELLED');
+  return {
+    kind: 'worker',
+    result: { ok: true, value: recordWorkerFailure(outcome.result.value, failure('CANCELLED')) },
+  };
 }

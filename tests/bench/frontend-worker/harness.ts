@@ -88,7 +88,7 @@ export async function createHarness(hooks: Partial<TaskRunnerV3> = {}, root?: st
       if (task.input.progressOnly) {
         text =
           oldResult?.ok && oldResult.value[0]?.worker?.result?.status === 'completed'
-            ? `业务执行已完成，保存结果：${oldResult.value[0].worker.result.text}`
+            ? `执行已结束，保存结果：${oldResult.value[0].worker.result.text}`
             : '任务仍在执行，送达状态将在结果准备后更新。';
       }
       return {
@@ -105,7 +105,7 @@ export async function createHarness(hooks: Partial<TaskRunnerV3> = {}, root?: st
         value: {
           status: 'completed',
           text: '完整业务结果：20',
-          evidence: ['12+8=20'],
+          evidence: ['离线运行正常结束。'],
           attachments: [],
           unfinished: [],
         },
