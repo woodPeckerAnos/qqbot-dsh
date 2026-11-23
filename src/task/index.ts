@@ -9,6 +9,13 @@ import { PromptPreparer } from './prompt-preparer.js';
 import { SessionActor } from './session-actor.js';
 import { TaskSystem } from './system.js';
 import { TaskCooperation } from './cooperation.js';
+import { TaskLifeCycleManagerV3 } from './lifecycle-v3.js';
+import { SessionActorV3 } from './session-actor-v3.js';
+import { JobSchedulerV3 } from './job-scheduler.js';
+import { TaskControlBridgeV3 } from './control-bridge-v3.js';
+import { DshTaskRunnerV3 } from './dsh-task-runner-v3.js';
+import { PromptPreparerV3 } from './prompt-preparer-v3.js';
+import { TaskSystemV3 } from './system-v3.js';
 export const createTaskCooperation: import('@qqbot/contracts').createTaskCooperationFactory = (
   ...args
 ) => new TaskCooperation(...args);
@@ -34,6 +41,26 @@ export const createSessionActorV2: import('@qqbot/contracts').createSessionActor
 ) => new SessionActor(...args);
 export const createTaskSystemV2: import('@qqbot/contracts').createTaskSystemFactoryV2 = (...args) =>
   new TaskSystem(...args);
+export const createTaskLifeCycleManagerV3: import('@qqbot/contracts').createTaskLifeCycleManagerFactoryV3 =
+  (...args) => new TaskLifeCycleManagerV3(...args);
+export const createSessionActorV3: import('@qqbot/contracts').createSessionActorFactoryV3 = (
+  ...args
+) => new SessionActorV3(...args);
+export const createJobSchedulerV3: import('@qqbot/contracts').createJobSchedulerFactoryV3 = (
+  ...args
+) => new JobSchedulerV3(...args);
+export const createTaskControlBridgeV3: import('@qqbot/contracts').createTaskControlBridgeFactoryV3 =
+  (...args) => new TaskControlBridgeV3(...args);
+export const createDshTaskRunnerV3: import('@qqbot/contracts').createDshTaskRunnerFactoryV3 = (
+  ...args
+) => new DshTaskRunnerV3(...args);
+export const createPromptPreparerV3: import('@qqbot/contracts').createPromptPreparerFactoryV3 = (
+  ...args
+) => new PromptPreparerV3(...args);
+export const createTaskSystemV3: import('@qqbot/contracts').createTaskSystemFactoryV3 = (...args) =>
+  new TaskSystemV3(...args);
+export const createProactiveTaskAdapterV3: import('@qqbot/contracts').createProactiveTaskAdapterFactoryV3 =
+  (...args) => new ProactiveTaskAdapter(...args);
 export { SYSTEM_CLOCK } from './clock.js';
 export { TaskAdmissionError } from './lifecycle.js';
 export { LANES, isTaskTerminal, isLaneTerminal, readonlySnapshot } from './types.js';

@@ -272,16 +272,20 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 ## 4. 收到消息但不回复
 
-### 4.1 先区分执行与投递
+### 4.1 先区分执行、整理与投递
 
-`/metrics` 的 `tasks.fast` / `tasks.slow` 分别显示 running、queued，unfinished 是未完成 Task 数。`messages` 的 pending、sending、sent、failed 描述投递，Task 完成不要求消息已经送达。
+V3 Task 的阶段分别记录首次前台、等待或执行 worker、等待或执行整理、固定回复及入队确认。健康信息显示前台和 worker 的 running、queued、待处理数及最长等待；unfinished 是未完成 Task 数。`messages` 的 pending、sending、sent、failed 单独描述实际投递，Task 结算后消息仍可能等待可用出口。
 
-| 现象                             | 检查                                         | 处置                                                           |
-| -------------------------------- | -------------------------------------------- | -------------------------------------------------------------- |
-| 回“未完成任务已达上限”           | `tasks.unfinished`、Session 待完成数         | 调整 `tasks.maxPerSession` / `maxGlobal`；不是 runtime 硬上限  |
-| 慢 Task 未结束，但新快回复送不出 | 两 lane 容量、`messages.sending`、连接器健康 | 检查快 runtime 是否就绪；附件上传不应占正文通道                |
-| 回“任务执行超时”                 | 持久 Task 的 lane.result.error               | 调整 `tasks.fastTimeoutMs` / `slowTimeoutMs`；排队不计执行时限 |
-| Task 已 completed 但没收到结果   | `messages.pending`、QQ 当前出口              | 没尝试的结果可等待合法锚点，继续保留原引用                     |
+| 现象                            | 检查                                                       | 处置                                                               |
+| ------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------ |
+| 回“未完成任务已达上限”          | unfinished 与 Session 未完成数                             | 调整 `tasks.maxPerSession / maxGlobal`                             |
+| worker 执行期间新输入不推进     | 前台容量、待整理工作、连接器与正文通道                     | 检查前台 runtime 初始化；worker 结果整理也需要前台名额             |
+| 任务排队超时                    | 保存的阶段与 queue deadline                                | 检查前台/worker 容量及 `tasks.queueTimeoutMs`                      |
+| 前台或 worker 模型执行超时      | 角色、job ID、worker ID 与结果失败分类                     | 分别检查 `tasks.fastTimeoutMs / slowTimeoutMs`；初始化和排队另计时 |
+| 业务结果已保存，整理失败        | worker 结果、整理次数与最终失败说明                        | 最多两次整理；保留结果和附件供查询，不重跑业务                     |
+| Task completed 但未收到最终回复 | 固定 reply ID、入队确认、`messages.pending` 与当前 QQ 出口 | 已固定回复只补入队；未尝试消息等待合法锚点                         |
+
+重启后排队 worker 保留截止时间，已保存结果恢复整理，已固定回复只恢复入队。已开始执行却缺结果的 worker 标记中断或结果未知，不自动重跑。旧 `lanes.fast / slow` 仅用于历史双 lane 记录。
 
 ### 4.2 发送失败
 
@@ -294,16 +298,16 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 | 40034105（主动消息无权限）      | 检查是否有合法发送锚点；原引用与发送锚点不能混用                                |
 | 401                             | 凭证刷新服务后续新消息，当前消息终态失败，不鉴权重发                            |
 
-QQ 群聊被动窗口 5 分钟、单聊 60 分钟，条数及序号跨 Task、lane、命令共享。无可用窗口或条数时尚未尝试的消息保持 pending；一次实际尝试失败后进入 failed，新输入也不会带出重发。
+QQ 群聊被动窗口 5 分钟、单聊 60 分钟，条数及序号跨 Task、前台/worker、命令共享。无可用窗口或条数时尚未尝试的消息保持 pending；一次实际尝试失败后进入 failed，新输入也不会带出重发。
 
 ### 4.3 DSH runtime 起不来
 
 当前应用日志记录 `root.error`，初始化阶段的 `errorClass` 为
-`runtime-initialize`，并带 errorId 和 Task/lane 身份；先按该身份确认哪个 lane
+`runtime-initialize`，并带 errorId、Task、角色与执行身份；先按该身份确认哪个前台或 worker
 从未出现 `runtime.ready`。原始错误与 stderr 不写入应用日志。旧版曾在异常或
 Task 状态中保留原文，这属于历史实现，当前不能据此期待容器日志附带 stderr。
 初始化尚未创建 DSH 会话时，也不能假定存在对应会话日志；应结合生成的模型
-patch、最终路由选择和独立初始化探针排查。
+patch、最终共享路由选择和独立初始化检查排查。
 
 手工复现：
 
@@ -316,29 +320,20 @@ docker compose run --rm --entrypoint dsh qqbot --profile sdk \
 说明 patch 里 `disabled: true` 关掉了一个**服务提供者**。见
 `docs/ARCHITECTURE.md` 的「DSH profile 与 persona」 坑 2——只能关纯叶子行。
 
-#### 持续提示“任务执行失败”，但慢 lane 正常
+#### 前台或 worker 持续初始化失败
 
-若不同 Task 都是 fast failed / slow completed，先检查快 lane 最终模型能力。
-DSH 0.1.5-rc.2 下，手写模型缺少 `reasoningEfforts` 时可能拒绝快 lane 固定的
-`reasoningEffort=off`，每个 Task 各投递一次失败产物。部署报告已验证
-`arc-code/ark-code-latest` 补 `{ off: null, high: high }` 可用；修复配置和关闭思考
-语义见 [CONFIG 的快 lane 模型能力](CONFIG.md#快-lane-模型能力)。当前启动校验会
-提前拒绝显式 models 列表中的不兼容选择，并提示准确配置路径。
+先核对最终 `tasks.taskProvider / taskModel / reasoningEffort`。前台和 worker 共用任务模型，默认显式 `high`；手写 `models` 目录必须提供所选档位的 `reasoningEfforts` 线上拼写。缺模型、缺能力、禁用思考或档位不支持会启动报错并指出配置路径，修复说明见 [共享任务模型能力](CONFIG.md#共享任务模型能力)。仅继承 DSH 已安装目录时，在 runtime 初始化核对能力。
 
-仅修 YAML 后执行 `docker compose restart qqbot`；更新本次代码需执行
-`docker compose up -d --build`。生成的 `/data/bot/model-api.patch.yml` 应保留
-该模型声明。发送一条有效测试消息后，确认两个 lane 都出现 `runtime.ready`，
-最近 Task 的 fast / slow 均为 completed，且没有新的 fast 初始化失败。
-默认状态目录下可只读检查最近记录：
+`tasks.fastProvider / fastModel` 已弃用，切换旧 fast 路由不会改变生产前台模型。历史 fast failed / slow completed 与固定 `off` 请求问题见 [ADR-004](adr/004-fast-lane-model-capability.md)；旧记录继续保留，不用于判断 V3 的执行阶段。
+
+只改 YAML 时重启服务；更新代码需重建镜像；改环境变量需重新创建容器。生成的 `/data/bot/model-api.patch.yml` 应保留所选模型能力声明。真实消息检查会调用模型并产生费用，执行前取得授权；普通检查可先只读查看状态和健康信息：
 
 ```sh
-docker compose exec qqbot node -e 'const {records}=require("/data/bot/tasks.json"); for (const t of records.slice(-3)) console.log(t.taskId, t.status, "fast="+t.lanes?.fast?.status, "slow="+t.lanes?.slow?.status)'
+docker compose exec qqbot node -e 'const {records}=require("/data/bot/tasks.json"); for (const t of records.slice(-3)) console.log(t.taskId, t.schemaVersion, t.status, t.phase)'
 docker compose exec qqbot node dist/health-probe.js
 ```
 
-健康检查通过不能单独证明模型初始化成功，仍需上面的真实消息复验。未就绪
-进程现在直接 SIGTERM，不再先等待 15 秒 shutdown 宽限；就绪进程的优雅关闭
-及 Task 失败产物投递语义保持不变。
+初始化失败的未就绪进程直接 SIGTERM，保留信号退出宽限及 SIGKILL 兜底；就绪进程沿用正常优雅关闭。按 errorId 关联根因和阶段，应用日志不包含原始协议正文或 stderr。
 
 ### 4.4 模型调用失败
 

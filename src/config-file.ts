@@ -155,6 +155,11 @@ const DSH_SPEC: SectionSpec = {
   shutdownTimeoutMs: 'int',
 };
 const TASKS_SPEC: SectionSpec = {
+  taskProvider: 'string',
+  taskModel: 'string',
+  reasoningEffort: 'string',
+  frontendMaxSteps: 'int',
+  queueTimeoutMs: 'int',
   fastTimeoutMs: 'int',
   slowTimeoutMs: 'int',
   fastProvider: 'string',

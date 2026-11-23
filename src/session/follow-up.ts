@@ -2,10 +2,15 @@ import type {
   classifyTaskFollowUp,
   MessagePart,
   TaskSnapshotV2,
+  TaskSnapshotV3,
+  classifyTaskFollowUpV3,
   DeepReadonly,
 } from '@qqbot/contracts';
 
-type FollowUpOptions = Parameters<classifyTaskFollowUp>[0];
+type Task = DeepReadonly<TaskSnapshotV2 | TaskSnapshotV3>;
+type FollowUpOptions = Omit<Parameters<classifyTaskFollowUp>[0], 'tasks'> & {
+  tasks: readonly Task[];
+};
 const POINTER =
   /(?:(?:刚才那个|之前那个|上一个|上一项|刚才|之前|上个|那个|这个|这项|那项|这次|那次)(?:的)?(?:任务|问题|查询|核实|调查|检查|搜索|请求|事情|事|结果|回答)|原任务|这件事|那件事)/;
 const PROGRESS =
@@ -19,20 +24,30 @@ function plain(parts: readonly MessagePart[]): string | undefined {
     .join('')
     .trim();
 }
-function replyTexts(task: DeepReadonly<TaskSnapshotV2>): string[] {
+function replyTexts(task: Task): string[] {
+  if ('schemaVersion' in task)
+    return [task.finalReply?.text, task.worker?.result?.text]
+      .filter((text): text is string => !!text?.trim())
+      .map((text) => text.trim());
   return Object.values(task.lanes).flatMap((lane) =>
     lane.result?.kind === 'reply' && lane.result.text.trim() ? [lane.result.text.trim()] : []
   );
 }
-function recentReply(task: DeepReadonly<TaskSnapshotV2>, options: FollowUpOptions): boolean {
-  if (task.status !== 'completed' || task.endedAt === undefined) return false;
+function recentReply(task: Task, options: FollowUpOptions): boolean {
+  if (!queryableResult(task) || task.endedAt === undefined) return false;
   return (
     task.endedAt <= options.now &&
     task.endedAt >= options.now - (options.recentTaskWindowMs ?? 300000) &&
     replyTexts(task).length > 0
   );
 }
-function sameIdentity(task: DeepReadonly<TaskSnapshotV2>, options: FollowUpOptions): boolean {
+function queryableResult(task: Task): boolean {
+  if (task.status === 'completed') return true;
+  if (!('schemaVersion' in task) || task.status !== 'failed') return false;
+  const result = task.worker?.result;
+  return !!result && (!!result.text.trim() || result.attachments.length > 0);
+}
+function sameIdentity(task: Task, options: FollowUpOptions): boolean {
   return (
     task.creationSequence < (options.beforeSequence ?? Infinity) &&
     task.input.message.target.key === options.message.target.key &&
@@ -40,7 +55,7 @@ function sameIdentity(task: DeepReadonly<TaskSnapshotV2>, options: FollowUpOptio
     task.input.message.senderId === options.message.senderId
   );
 }
-function candidate(task: DeepReadonly<TaskSnapshotV2>, options: FollowUpOptions): boolean {
+function candidate(task: Task, options: FollowUpOptions): boolean {
   if (
     !sameIdentity(task, options) ||
     task.input.source !== 'user' ||
@@ -70,7 +85,7 @@ function requestText(message: FollowUpOptions['message']): string | undefined {
 }
 
 /** Exact rules only: uncertain references and mixed requests retain normal execution. */
-export const classifyFollowUp: classifyTaskFollowUp = (options) => {
+function classifyReference(options: FollowUpOptions): ReturnType<classifyTaskFollowUp> {
   const input = inputText(options.message);
   if (!input) return {};
   const targets = options.tasks
@@ -85,4 +100,6 @@ export const classifyFollowUp: classifyTaskFollowUp = (options) => {
   const progressOnly = input.text.length <= 40 && PROGRESS.test(input.text);
   if (!progressOnly && !input.quote && !POINTER.test(input.text)) return {};
   return { followUpOf: target.taskId, ...(progressOnly ? { progressOnly: true } : {}) };
-};
+}
+export const classifyFollowUp: classifyTaskFollowUp = classifyReference;
+export const classifyFollowUpV3: classifyTaskFollowUpV3 = classifyReference;

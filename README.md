@@ -4,15 +4,15 @@
 
 ## 核心能力
 
-|     | 能力                   | 一句话                                                                                                                                            |
-| --- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ⚙️  | **完整 agent 能力**    | 内核是 [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh)：每个会话一个独立进程 + 独立工作区，能真的写代码、跑命令、读文件、多步干活并交付产物 |
-| 🔌  | **一套服务，多套出口** | 官方开放平台与社区框架（OneBot v11）**可同时在线**，接入差异全部收在适配器里，编排层以上只有一条代码路径                                          |
-| 💬  | **主动发言**           | 不只对 @ 反应：旁听群聊 → 判断该不该开口 → 五类场景主动插话，带限流、发言预算、「没人理我就停」等硬闸门                                           |
-| 🎭  | **可切换的人设前台**   | 管理员发 `/persona <名>` 即可切换该会话的应答风格，**下一条消息生效、无需重启**                                                                   |
-| 🐳  | **Compose 一键部署**   | 只支持 Docker：配置随仓库提供（带注释、**不用复制**），起步只有「填 `.env` → `docker compose up -d --build`」两步                                 |
-| 💾  | **数据持久化**         | 会话记忆、每会话工作区、QQ 登录态与设备标识全部落在命名卷，升级 / 重启 / 重建容器不丢                                                             |
-| 🔒  | **安全隔离**           | 容器加固（只读根文件系统、`cap_drop: ALL`、非 root、资源上限）+ workspace-write 沙箱；管理端口只绑回环，密钥通过受权限保护的 env 文件注入、不入库 |
+|     | 能力                   | 一句话                                                                                                                                                          |
+| --- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ⚙️  | **完整 agent 能力**    | 内核是 [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh)：前台回合与动态 worker 各有独立进程 + 任务工作区，能真的写代码、跑命令、读文件、多步干活并交付产物 |
+| 🔌  | **一套服务，多套出口** | 官方开放平台与社区框架（OneBot v11）**可同时在线**，接入差异全部收在适配器里，编排层以上只有一条代码路径                                                        |
+| 💬  | **主动发言**           | 不只对 @ 反应：旁听群聊 → 判断该不该开口 → 五类场景主动插话，带限流、发言预算、「没人理我就停」等硬闸门                                                         |
+| 🎭  | **可切换的人设前台**   | 管理员发 `/persona <名>` 即可切换该会话的应答风格，**下一条消息生效、无需重启**                                                                                 |
+| 🐳  | **Compose 一键部署**   | 只支持 Docker：配置随仓库提供（带注释、**不用复制**），起步只有「填 `.env` → `docker compose up -d --build`」两步                                               |
+| 💾  | **数据持久化**         | 会话记忆、每会话工作区、QQ 登录态与设备标识全部落在命名卷，升级 / 重启 / 重建容器不丢                                                                           |
+| 🔒  | **安全隔离**           | 容器加固（只读根文件系统、`cap_drop: ALL`、非 root、资源上限）+ workspace-write 沙箱；管理端口只绑回环，密钥通过受权限保护的 env 文件注入、不入库               |
 
 ```mermaid
 flowchart LR
@@ -23,11 +23,11 @@ flowchart LR
 
   subgraph BOT["qqbot-dsh（一个容器）"]
     C["接入、归一化、去重、命令"] --> D["SessionActor → Task"]
-    D --> E["快 lane 独立队列"]
-    D --> F["慢 lane 独立队列"]
+    D --> E["前台执行 / 结果整理队列"]
+    E -->|保存派发请求| F["按需 worker 队列"]
+    F -->|保存业务结果| E
     G["主动介入<br/>旁听 → 判定 → 否决"] --> D
     E --> O["出口协调 → 持久消息队列"]
-    F --> O
     O --> C
   end
 
@@ -89,7 +89,7 @@ QQ 机器人的约束比看起来紧得多。挑五条最有代表性的（完�
 | **长截图**整张缩下去读不出、超限图被 runtime 整条拒收                   | 长图按像素预算**原生分辨率切片**；超限图先探测真实像素再降采样重编码，只有解不开的才不内联           |
 | 用户发来的**文件**是字节、模型读不了；多任务附件容易串属                | 每 Task 摄取一次并抽正文（PDF 走 `pdftotext`）；交付物按 Task 隔离，队列保存独立文件副本             |
 
-旧慢任务执行及结束前等待期间，新输入的快 lane 仍可推进。慢 lane 接收同 Task 快回复的实际送达快照，结束前等待快执行及原始正文投递终结，再交付增量或无增量静默。两 lane 都终结才完成 Task；慢结果入队后不等待自身送达，慢结果和延迟结果引用原消息。主动预算按 Task 预留，首次成功送达只提交一次。管理员 `/stop` 停止正在执行或等待衔接的 Task 并保留排队任务，`/new` 取消全部未完成 Task 并重置上下文。
+每条有效输入先运行前台；普通回复和进度查询无需 worker。长任务保存派发请求后释放前台名额，worker 独立执行，结果交回前台组织表达与附件交付。前台和 worker 共用任务模型，默认显式 `high`；整理最多两个回合，失败保留业务结果供查询。最终回复固定后幂等入队，实际送达由队列继续推进，主动预算首次送达只提交一次。`/stop` 取消已开始处理的 Task（含等待 worker 与整理），保留未开始首次前台的排队 Task；`/new` 取消全部未完成 Task 并重置上下文。固定快慢双 lane 已成为历史方案。
 
 ## 权限模型（请务必了解）
 
@@ -113,7 +113,7 @@ docker compose run --rm --entrypoint node qqbot scripts/verify-sandbox-capabilit
 | [docs/DEPLOY.md](docs/DEPLOY.md)                                                    | **本地部署手册**：从零到跑通，含框架选型与调参建议                                |
 | [docs/CLOUD-DEPLOY.md](docs/CLOUD-DEPLOY.md)                                        | **云服务部署手册**：资源建议、NapCat 同机编排、加密迁移、备份与回滚、上线验证清单 |
 | [docs/CONFIG.md](docs/CONFIG.md)                                                    | 配置模块手册（怎么加模块、怎么排查）                                              |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) / [模块契约](docs/MODULE-CONTRACTS.md) | 当前 Task、双 lane、出口与资源所有权                                              |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) / [模块契约](docs/MODULE-CONTRACTS.md) | 当前 Task、前台/worker、出口与资源所有权                                          |
 | [docs/adr/](docs/adr/)                                                              | 关键决策与取舍记录（只追加）                                                      |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md)                                                  | 排障手册：按症状组织的排查流程（主动发言见 §5）                                   |
 | [docs/LINTING.md](docs/LINTING.md)                                                  | 代码格式、ESLint 规则边界与存量基线、提交前检查                                   |
@@ -128,18 +128,19 @@ npm run typecheck
 npm run lint             # ESLint（类型感知；存量债务基线见 docs/LINTING.md）
 npm run format:check     # Prettier 只读校验
 npm test                 # 离线 mock；含本地文件/子进程桩，不请求真实模型
-npm run bench:session    # 离线应答 benchmark，输出 JSON/Markdown 基线
+npm run bench:tasks-v3   # 现行前台/worker 离线 benchmark，注入依赖和真实文件
+npm run bench:session    # 固定双 lane 的历史 V2 回归，保留历史报告
 npm run bench:session:live # 显式真实 DSH + 独立裁判，需要配置与凭证
 npm run test:integration # 独立 localhost WebSocket 回路，无已部署客户端
 npm run build
 npm run contracts:check  # 边界、兼容、覆盖与生成契约漂移
-npm run smoke:contracts  # 13 模块、39 个公共入口离线示例
+npm run smoke:contracts  # 13 模块、42 个公共入口离线示例（含 V3）
 npm run check            # 类型、契约、lint、格式、测试、冒烟与 Docker 包解析
 ```
 
-应答 benchmark 的场景、裁判配置、基线比较与严格门禁见 [验收说明](docs/SESSION-BENCHMARK.md)。快慢协作要求增量和明确纠错；真实模型效果单列 live benchmark，离线正向协作回归与坏样本校准分别保留。
+应答 benchmark 的场景、裁判配置、基线比较与严格门禁见 [验收说明](docs/SESSION-BENCHMARK.md)。当前前台/worker 使用独立 V3 场景；旧快慢增量协作报告和坏样本校准保留为历史。真实模型效果单列 live benchmark，需要费用授权。
 
-进度追问不重做、慢任务读取最新旧结果、执行与投递状态分离是固定的 [任务衔接基线](docs/SESSION-BENCHMARK.md#任务衔接基线adr-009--adr-011)。运行 `npm run bench:session -- --cases 任务衔接基线 --strict`；C01–C10 同时进入默认离线测试，完整基准报告保存在版本库。
+现行 V3 验证使用 `npm run bench:tasks-v3`，覆盖前台、动态 worker 与固定回复交付。进度追问不重做、引用旧结果和执行/投递状态分离继续沿用。C01–C10 [历史任务衔接基线](docs/SESSION-BENCHMARK.md#任务衔接基线adr-009--adr-011) 保留原 V2 版本及报告，可用 `bench:session` 单独回归。V3 真实模型费用评测尚未运行。
 
 OneBot 的长文和多媒体使用一条平铺消息记录，普通多文件及混合附件合为一个 ZIP。输出交付的真实适配器离线动作比较可运行 `npm run bench:session -- --cases 输出交付 --strict`，官方 QQ 保留既有交付方式。
 
@@ -184,7 +185,7 @@ interests.yml              兴趣池（场景 5；独立 schema）
 dsh-profile/               DSH profile 补丁 + 自动审批桩 + /persona 人设预设
 packages/contracts/        独立契约 workspace：接口、值类型、错误、元数据、示例与 v1 兼容基线
 src/                       后端源码：接入适配（adapters）/ 编排（pipeline）/ DSH 桥接（dsh）/
-                           Task 与双 lane（task）/ 只读会话增量（session）/ 持久化与观察窗口（store）/ 配置合并（config*.ts）
+                           Task、前台与 worker（task）/ 只读会话增量（session）/ 持久化与观察窗口（store）/ 配置合并（config*.ts）
 scripts/                   容器入口、云上 preflight（cloud-preflight.sh）、
                            卷批次备份恢复（volume-bundle.sh）与验证脚本
 tests/                     离线契约与回归；legacy/ 仅保存旧路径测试夹具

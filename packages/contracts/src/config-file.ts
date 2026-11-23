@@ -93,6 +93,11 @@ export interface DshFileConfig {
   shutdownTimeoutMs?: number;
 }
 export interface TasksFileConfig {
+  taskProvider?: string;
+  taskModel?: string;
+  reasoningEffort?: string;
+  frontendMaxSteps?: number;
+  queueTimeoutMs?: number;
   fastTimeoutMs?: number;
   slowTimeoutMs?: number;
   fastProvider?: string;

@@ -11,7 +11,6 @@ import { createTrace, traceSpan } from '../observability/index.js';
 import type { TraceContext, Logger } from '@qqbot/contracts';
 import type { MessageContext } from '@qqbot/contracts';
 
-import type { SessionActorV2 as SessionActor } from '@qqbot/contracts';
 import type { ReplyCandidate } from '@qqbot/contracts';
 
 /** watcher 的触发时预算投影，回调闭包始终指向原话题对象。 */
@@ -28,7 +27,13 @@ export class ProactiveTaskAdapter {
   >();
   constructor(
     private readonly options: {
-      actor: SessionActor;
+      actor: {
+        submit: (
+          context: MessageContext,
+          proactive?: import('@qqbot/contracts').TaskInput['proactive'],
+          budgetLimit?: number
+        ) => Promise<{ taskId: string }>;
+      };
       connectors: ReadonlyMap<string, BotConnector>;
       logger: Logger;
       context: (
@@ -38,7 +43,7 @@ export class ProactiveTaskAdapter {
       ) => MessageContext;
     }
   ) {}
-  /** true 只表示双 lane Task 已准入；发言记账等待 DeliveryResult 成功。 */
+  /** 准入只预留一次预算；发言记账等待 DeliveryResult 成功。 */
   async submit(request: ProactiveTaskRequest): Promise<boolean> {
     const result = await this.submitResult(request);
     return result.ok && result.value;

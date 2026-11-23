@@ -1,0 +1,633 @@
+{
+  "schemaVersion": 1,
+  "architectureVersion": 3,
+  "benchmarkVersion": "tasks-v3-v1",
+  "mode": "offline",
+  "generatedAt": "2026-11-23T09:25:17.244Z",
+  "status": "passed",
+  "expectedScenarios": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09"],
+  "coverage": {
+    "productionTaskSystem": true,
+    "productionSchedulers": true,
+    "productionMessageQueue": true,
+    "injectedRunner": true,
+    "injectedConnector": true,
+    "injectedClock": true,
+    "realLocalFiles": true
+  },
+  "modelEvaluation": {
+    "performed": false,
+    "reason": "正文和业务执行由注入 runner 给定；真实 DSH 模型和独立语义裁判未运行。",
+    "apiRequests": 0
+  },
+  "summary": { "scenarios": 9, "passed": 9, "checks": 34 },
+  "scenarios": [
+    {
+      "id": "F01",
+      "version": 1,
+      "name": "普通请求 worker 为零",
+      "status": "passed",
+      "durationMs": 17.69,
+      "checks": [
+        {
+          "name": "普通请求仅运行一次前台",
+          "passed": true,
+          "evidence": { "frontend": 1, "worker": 0, "summary": 0 }
+        },
+        {
+          "name": "最终回复保存并确认入队",
+          "passed": true,
+          "evidence": {
+            "status": "completed",
+            "replyEnqueued": true,
+            "replyId": "db7df1d5-cce3-46a5-bc36-cb4385a9a5af:reply:1",
+            "deliveryGroups": ["db7df1d5-cce3-46a5-bc36-cb4385a9a5af:reply:1:delivery"]
+          }
+        },
+        {
+          "name": "正文引用原消息且只送达一次",
+          "passed": true,
+          "evidence": [{ "text": "答复：你好", "reference": "m1" }]
+        },
+        {
+          "name": "关闭后执行、排队和计时器全部释放",
+          "passed": true,
+          "evidence": {
+            "frontendRunning": 0,
+            "frontendQueued": 0,
+            "workerRunning": 0,
+            "workerQueued": 0,
+            "timers": 0
+          }
+        }
+      ],
+      "closed": {
+        "frontendRunning": 0,
+        "frontendQueued": 0,
+        "workerRunning": 0,
+        "workerQueued": 0,
+        "timers": 0
+      },
+      "counts": { "frontend": 1, "worker": 0, "summary": 0 },
+      "tasks": [
+        {
+          "taskId": "db7df1d5-cce3-46a5-bc36-cb4385a9a5af",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 0
+        }
+      ]
+    },
+    {
+      "id": "F02",
+      "version": 1,
+      "name": "长任务与前台新输入交错",
+      "status": "passed",
+      "durationMs": 18.17,
+      "checks": [
+        {
+          "name": "worker 未结束时新普通请求已完成",
+          "passed": true,
+          "evidence": { "worker": "running", "ordinary": "completed" }
+        },
+        {
+          "name": "进度关联原 Task 且不创建新 worker",
+          "passed": true,
+          "evidence": { "progressOnly": true, "followUpMatches": true, "workers": 1 }
+        },
+        {
+          "name": "结果交回前台整理一次",
+          "passed": true,
+          "evidence": { "frontend": 3, "worker": 1, "summary": 1 }
+        },
+        {
+          "name": "业务内部正文未直接发送",
+          "passed": true,
+          "evidence": [
+            "已接下这项工作，完成后回复。",
+            "任务仍在执行，送达状态将在结果准备后更新。",
+            "答复：你好",
+            "整理后的结果：20"
+          ]
+        },
+        {
+          "name": "关闭后执行、排队和计时器全部释放",
+          "passed": true,
+          "evidence": {
+            "frontendRunning": 0,
+            "frontendQueued": 0,
+            "workerRunning": 0,
+            "workerQueued": 0,
+            "timers": 0
+          }
+        }
+      ],
+      "closed": {
+        "frontendRunning": 0,
+        "frontendQueued": 0,
+        "workerRunning": 0,
+        "workerQueued": 0,
+        "timers": 0
+      },
+      "counts": { "frontend": 3, "worker": 1, "summary": 1 },
+      "tasks": [
+        {
+          "taskId": "4765a2b4-3d6f-4101-bf3e-79c7bdac7446",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "d5114abc-aefd-45dc-93bb-a717f32bfe21",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 0
+        },
+        {
+          "taskId": "a30b9020-ee85-40be-9e62-f15f10cd0467",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 0
+        }
+      ]
+    },
+    {
+      "id": "F03",
+      "version": 1,
+      "name": "两次整理失败保留结果",
+      "status": "passed",
+      "durationMs": 9.49,
+      "checks": [
+        {
+          "name": "整理最多两次且 worker 只运行一次",
+          "passed": true,
+          "evidence": { "attempts": 2, "counts": { "frontend": 1, "worker": 1, "summary": 2 } }
+        },
+        {
+          "name": "失败终态保留完整业务结果",
+          "passed": true,
+          "evidence": { "status": "failed", "workerText": "完整业务结果：20" }
+        },
+        {
+          "name": "整理失败说明送达，原业务正文不直接发出",
+          "passed": true,
+          "evidence": [
+            "已接下这项工作，完成后回复。",
+            "业务执行已完成，但结果整理失败。结果和附件已保存，可稍后查询。"
+          ]
+        },
+        {
+          "name": "关闭后执行、排队和计时器全部释放",
+          "passed": true,
+          "evidence": {
+            "frontendRunning": 0,
+            "frontendQueued": 0,
+            "workerRunning": 0,
+            "workerQueued": 0,
+            "timers": 0
+          }
+        }
+      ],
+      "closed": {
+        "frontendRunning": 0,
+        "frontendQueued": 0,
+        "workerRunning": 0,
+        "workerQueued": 0,
+        "timers": 0
+      },
+      "counts": { "frontend": 1, "worker": 1, "summary": 2 },
+      "tasks": [
+        {
+          "taskId": "a61a1ce0-4ab6-46ea-96e9-34244512f081",
+          "status": "failed",
+          "phase": "terminal",
+          "summaryAttempts": 2,
+          "workerStatus": "completed"
+        }
+      ]
+    },
+    {
+      "id": "F04",
+      "version": 1,
+      "name": "多会话容量上限",
+      "status": "passed",
+      "durationMs": 85.13,
+      "checks": [
+        {
+          "name": "最多四个 worker 执行，其余六个排队",
+          "passed": true,
+          "evidence": { "active": 4, "peak": 4, "scheduler": { "running": 4, "queued": 6 } }
+        },
+        {
+          "name": "运行总量不超过八个，全部首次前台已保存结束状态",
+          "passed": true,
+          "evidence": {
+            "frontendRunning": 1,
+            "workerRunning": 4,
+            "frontends": 10,
+            "initialEnded": true
+          }
+        },
+        {
+          "name": "十个任务均完成且峰值始终不超限",
+          "passed": true,
+          "evidence": { "completed": 10, "peak": 4, "active": 0 }
+        },
+        {
+          "name": "关闭后执行、排队和计时器全部释放",
+          "passed": true,
+          "evidence": {
+            "frontendRunning": 0,
+            "frontendQueued": 0,
+            "workerRunning": 0,
+            "workerQueued": 0,
+            "timers": 0
+          }
+        }
+      ],
+      "closed": {
+        "frontendRunning": 0,
+        "frontendQueued": 0,
+        "workerRunning": 0,
+        "workerQueued": 0,
+        "timers": 0
+      },
+      "counts": { "frontend": 10, "worker": 10, "summary": 10 },
+      "tasks": [
+        {
+          "taskId": "e2e7307a-b43e-49b6-9120-678630382843",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "de975952-6aba-48cf-b4ab-8626f4fed6c0",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "69b5846d-21ca-497c-962f-bb8231f1b8d5",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "c2d82454-1241-4414-8b3d-a690d9aa3b6b",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "572bd9dc-ffb4-4841-84ea-8de094cc7d5d",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "2cf6e21e-2e86-4949-8d58-00c6fbf894b0",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "d036fedd-73fd-4645-8f46-5c03dbc92236",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "34804116-f2c4-4565-ae82-c6a822b16e3f",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "8b48bcf6-b7f3-4377-a27d-2c279868e953",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "e92f8454-8751-4562-8d23-f7ad01120371",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        }
+      ]
+    },
+    {
+      "id": "F05",
+      "version": 1,
+      "name": "跨会话公平与会话内串行",
+      "status": "passed",
+      "durationMs": 31.08,
+      "checks": [
+        {
+          "name": "忙会话只运行一个 worker，其他会话先完成",
+          "passed": true,
+          "evidence": { "started": ["busy", "free"], "otherStatus": "completed" }
+        },
+        {
+          "name": "被阻塞会话仍按顺序完成全部 worker",
+          "passed": true,
+          "evidence": { "started": ["busy", "free", "busy", "busy"], "workers": 4 }
+        },
+        {
+          "name": "关闭后执行、排队和计时器全部释放",
+          "passed": true,
+          "evidence": {
+            "frontendRunning": 0,
+            "frontendQueued": 0,
+            "workerRunning": 0,
+            "workerQueued": 0,
+            "timers": 0
+          }
+        }
+      ],
+      "closed": {
+        "frontendRunning": 0,
+        "frontendQueued": 0,
+        "workerRunning": 0,
+        "workerQueued": 0,
+        "timers": 0
+      },
+      "counts": { "frontend": 4, "worker": 4, "summary": 4 },
+      "tasks": [
+        {
+          "taskId": "5b2e83fc-50bc-4e88-83da-0036e1bc2061",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "323e3352-d39c-44c2-87cd-ecd9a5611fa8",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "aa584901-76b3-4a5b-affd-5c2fa0cdf30a",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "69ea857a-fcf8-4d3f-9e3e-fa1cf2fbff9b",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        }
+      ]
+    },
+    {
+      "id": "F06",
+      "version": 1,
+      "name": "执行 worker 取消",
+      "status": "passed",
+      "durationMs": 4.68,
+      "checks": [
+        {
+          "name": "取消已开始 worker 被接受",
+          "passed": true,
+          "evidence": { "taskId": "072ec6e5-3242-49e8-81e2-8e63abbb1aba" }
+        },
+        {
+          "name": "取消终态不启动整理或再次执行 worker",
+          "passed": true,
+          "evidence": {
+            "status": "cancelled",
+            "cancelAccepted": true,
+            "counts": { "frontend": 1, "worker": 1, "summary": 0 }
+          }
+        },
+        {
+          "name": "关闭后执行、排队和计时器全部释放",
+          "passed": true,
+          "evidence": {
+            "frontendRunning": 0,
+            "frontendQueued": 0,
+            "workerRunning": 0,
+            "workerQueued": 0,
+            "timers": 0
+          }
+        }
+      ],
+      "closed": {
+        "frontendRunning": 0,
+        "frontendQueued": 0,
+        "workerRunning": 0,
+        "workerQueued": 0,
+        "timers": 0
+      },
+      "counts": { "frontend": 1, "worker": 1, "summary": 0 },
+      "tasks": [
+        {
+          "taskId": "072ec6e5-3242-49e8-81e2-8e63abbb1aba",
+          "status": "cancelled",
+          "phase": "terminal",
+          "summaryAttempts": 0,
+          "workerStatus": "cancelled"
+        }
+      ]
+    },
+    {
+      "id": "F07",
+      "version": 1,
+      "name": "stop 保留首次前台排队任务",
+      "status": "passed",
+      "durationMs": 4.78,
+      "checks": [
+        {
+          "name": "stop 只取消已经开始的 Task",
+          "passed": true,
+          "evidence": { "cancelled": 1, "first": "cancelled" }
+        },
+        {
+          "name": "未开始首次前台的输入保留并完成",
+          "passed": true,
+          "evidence": { "queued": "completed", "workers": 0 }
+        },
+        {
+          "name": "关闭后执行、排队和计时器全部释放",
+          "passed": true,
+          "evidence": {
+            "frontendRunning": 0,
+            "frontendQueued": 0,
+            "workerRunning": 0,
+            "workerQueued": 0,
+            "timers": 0
+          }
+        }
+      ],
+      "closed": {
+        "frontendRunning": 0,
+        "frontendQueued": 0,
+        "workerRunning": 0,
+        "workerQueued": 0,
+        "timers": 0
+      },
+      "counts": { "frontend": 2, "worker": 0, "summary": 0 },
+      "tasks": [
+        {
+          "taskId": "21b847d4-009a-48e7-837f-11d7fd2ee3b3",
+          "status": "cancelled",
+          "phase": "terminal",
+          "summaryAttempts": 0
+        },
+        {
+          "taskId": "7bda56fb-dc3f-4d7a-a3e1-4a44042ae901",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 0
+        }
+      ]
+    },
+    {
+      "id": "F08",
+      "version": 1,
+      "name": "首次前台与结果整理交替",
+      "status": "passed",
+      "durationMs": 20.87,
+      "checks": [
+        { "name": "首次输入与结果整理同时排队", "passed": true, "evidence": { "queued": 3 } },
+        {
+          "name": "首次前台、整理、首次前台按顺序交替",
+          "passed": true,
+          "evidence": { "order": ["frontend:普通甲", "summary:长任务乙", "frontend:普通乙"] }
+        },
+        {
+          "name": "排队的普通请求和结果全部完成，无额外 worker",
+          "passed": true,
+          "evidence": {
+            "counts": { "frontend": 4, "worker": 2, "summary": 2 },
+            "statuses": ["completed", "completed", "completed", "completed"]
+          }
+        },
+        {
+          "name": "关闭后执行、排队和计时器全部释放",
+          "passed": true,
+          "evidence": {
+            "frontendRunning": 0,
+            "frontendQueued": 0,
+            "workerRunning": 0,
+            "workerQueued": 0,
+            "timers": 0
+          }
+        }
+      ],
+      "closed": {
+        "frontendRunning": 0,
+        "frontendQueued": 0,
+        "workerRunning": 0,
+        "workerQueued": 0,
+        "timers": 0
+      },
+      "counts": { "frontend": 4, "worker": 2, "summary": 2 },
+      "tasks": [
+        {
+          "taskId": "c6689472-51d5-43ee-95db-618dae9a6f77",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "07e60360-622f-4951-92d0-1ba2aee30db0",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 1,
+          "workerStatus": "completed"
+        },
+        {
+          "taskId": "eed5ff03-b8cb-4088-84b5-1cfe272f16ba",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 0
+        },
+        {
+          "taskId": "510741a8-ec15-436f-a415-ab793702ff06",
+          "status": "completed",
+          "phase": "terminal",
+          "summaryAttempts": 0
+        }
+      ]
+    },
+    {
+      "id": "F09",
+      "version": 1,
+      "name": "固定回复与独立附件持久交付",
+      "status": "passed",
+      "durationMs": 14.24,
+      "checks": [
+        {
+          "name": "执行完成与等待送达状态分开，附件已保存独立副本",
+          "passed": true,
+          "evidence": {
+            "execution": "completed",
+            "deliveryPending": true,
+            "independentCopy": true,
+            "copied": "name,total\nA,20\n"
+          }
+        },
+        {
+          "name": "任务清理保留固定消息，不再次调用 worker 或整理",
+          "passed": true,
+          "evidence": {
+            "taskRemoved": true,
+            "counts": { "frontend": 1, "worker": 1, "summary": 1 }
+          }
+        },
+        {
+          "name": "原文件删除后附件完整送达一次",
+          "passed": true,
+          "evidence": {
+            "attachments": [
+              {
+                "fileName": "report.csv",
+                "text": "name,total\nA,20\n",
+                "sha256": "59b7c4d6b7efc883a78e70e0b42bb6aef103520c261a4b05f8da85070e2905e6"
+              }
+            ],
+            "pending": false
+          }
+        },
+        {
+          "name": "关闭后执行、排队和计时器全部释放",
+          "passed": true,
+          "evidence": {
+            "frontendRunning": 0,
+            "frontendQueued": 0,
+            "workerRunning": 0,
+            "workerQueued": 0,
+            "timers": 0
+          }
+        }
+      ],
+      "closed": {
+        "frontendRunning": 0,
+        "frontendQueued": 0,
+        "workerRunning": 0,
+        "workerQueued": 0,
+        "timers": 0
+      },
+      "counts": { "frontend": 1, "worker": 1, "summary": 1 },
+      "tasks": []
+    }
+  ]
+}

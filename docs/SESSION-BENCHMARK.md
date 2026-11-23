@@ -1,8 +1,14 @@
-# SessionActor 应答链路 benchmark
+# 前台/worker 与历史 SessionActor benchmark
 
 决策见 [ADR-005](adr/005-session-response-benchmark.md)。这里描述 benchmark 内部契约与目标验收；生产现状仍以 [架构](ARCHITECTURE.md) 和生成的 [模块契约](MODULE-CONTRACTS.md) 为准。
 
-## 运行与配置
+## 现行 V3 离线验证
+
+生产路径使用 [ADR-017](adr/017-frontend-events-dynamic-worker.md) 的前台事件调度与动态 worker。运行 `npm run bench:tasks-v3`，使用注入 runner、连接器、时钟和真实本地文件验证新任务链路，报告与历史 Session benchmark 分开保存。普通请求及进度查询不创建 worker；派发后前台可接收新输入；worker 正文交由前台整理，最终 reply ID 固定后幂等入队。
+
+V3 真实模型与独立裁判的费用评测尚未运行，需要另外授权。下面的 `bench:session` 和 `bench:session:live` 保留固定双 lane 的 V2 历史回归、报告及坏样本校准；它们使用旧快慢协作规则。现行生产验证优先运行 V3 命令和当前公共接口测试，历史报告保留原版本及结论。
+
+## 历史 V2 运行与配置
 
 `npm run bench:session` 运行全部离线场景和固定种子混合负载；`npm test` 同样执行离线验收。`npm run bench:session:live` 显式调用真实 DSH 与独立语义裁判。独立 Vitest 配置只匹配 `session.bench.ts`，在线入口不匹配 `*.test.ts`。
 

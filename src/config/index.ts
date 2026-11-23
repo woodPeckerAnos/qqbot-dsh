@@ -36,15 +36,19 @@ import {
   describeConfig as describeConfigImplementation,
 } from '../config.js';
 export const loadConfig: import('@qqbot/contracts').loadConfig = loadConfigImplementation;
+export const loadConfigV3: import('@qqbot/contracts').loadConfigV3 = loadConfigImplementation;
 export const resolveLoggingSettings: import('@qqbot/contracts').resolveLoggingSettings =
   resolveLoggingSettingsImplementation;
 export const describeConfig: import('@qqbot/contracts').describeConfig =
+  describeConfigImplementation;
+export const describeConfigV3: import('@qqbot/contracts').describeConfigV3 =
   describeConfigImplementation;
 export { DEFAULT_OFFPEAK_WINDOWS } from '../config.js';
 import {
   parseModelApiSection as parseModelApiSectionImplementation,
   assertModelApiConfig as assertModelApiConfigImplementation,
   assertFastLaneModelConfig as assertFastLaneModelConfigImplementation,
+  assertTaskModelConfig as assertTaskModelConfigImplementation,
   resolveAuxRoute as resolveAuxRouteImplementation,
   renderModelApiPatch as renderModelApiPatchImplementation,
   writeModelApiPatch as writeModelApiPatchImplementation,
@@ -55,6 +59,8 @@ export const assertModelApiConfig: import('@qqbot/contracts').assertModelApiConf
   assertModelApiConfigImplementation;
 export const assertFastLaneModelConfig: import('@qqbot/contracts').assertFastLaneModelConfig =
   assertFastLaneModelConfigImplementation;
+export const assertTaskModelConfig: import('@qqbot/contracts').assertTaskModelConfig =
+  assertTaskModelConfigImplementation;
 export const resolveAuxRoute: import('@qqbot/contracts').resolveAuxRoute =
   resolveAuxRouteImplementation;
 export const renderModelApiPatch: import('@qqbot/contracts').renderModelApiPatch =

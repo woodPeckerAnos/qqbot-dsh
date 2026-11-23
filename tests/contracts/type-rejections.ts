@@ -45,6 +45,25 @@ export function verifyTaskSnapshots(
   }
 }
 
+export function verifyTaskSnapshotsV3(
+  task: DeepReadonly<import('@qqbot/contracts').TaskSnapshotV3>,
+  manager: import('@qqbot/contracts').TaskLifeCycleManagerV3,
+  actor: import('@qqbot/contracts').SessionActorV3
+): void {
+  // @ts-expect-error Only the lifecycle owner changes execution phases.
+  task.phase = 'summary-running';
+  // @ts-expect-error Worker business results remain immutable after saving.
+  task.worker!.result!.text = 'rewritten';
+  // @ts-expect-error Frozen input references cannot be replaced by a consumer.
+  task.input.reference.messageId = 'replacement';
+  // @ts-expect-error Saved frontend replies keep their fixed identity.
+  task.finalReply!.replyId = 'replacement';
+  // @ts-expect-error Job lists are read-only and carry no claim-write capability.
+  manager.pendingJobs().push(task.frontend.initialJob);
+  // @ts-expect-error Scheduler observations cannot be used to change capacity.
+  actor.snapshot().frontend.running = 10;
+}
+
 export function verifyDelivery(
   queue: import('@qqbot/contracts').MessageQueue,
   actor: import('@qqbot/contracts').SessionActorV2,

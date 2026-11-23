@@ -5,7 +5,7 @@
 
 **当前状态**：仓库只提供可选加载机制，不随附真实的 `models.yml` /
 `overrides.yml`，也没有 `*.example.yml` 模板。两个文件都不存在时，程序使用
-代码内置默认（`deepseek-official` + `deepseek-flash`），启动不受影响。
+共享任务模型默认（`deepseek-official` + `deepseek-flash`，显式 `high`），启动不受影响。
 
 ## 文件约定
 
@@ -45,3 +45,9 @@ include:
 - 容器以非 root 用户（uid 10001）运行。宿主机上新建的文件若权限是 600，
   容器会读不到；需要时执行 `chmod 644 config/local/*.yml`。
 - 改完配置执行 `docker compose restart qqbot` 生效；不需要重建镜像。
+
+## 任务模型选择
+
+在本机 `models.yml` 中设置 `tasks.taskProvider / taskModel / reasoningEffort`，前台和 worker 共用该模型。未设置 provider/model 时分别继承旧 `tasks.slowProvider / slowModel`，再继承 `dsh.provider / model`；每项环境变量覆盖对应文件值。`tasks.fastProvider / fastModel` 已弃用，生产路径忽略。
+
+默认思考档位是 `high`。显式模型目录必须提供所选档位的真实 `reasoningEfforts` 拼写；缺能力、禁用思考或不支持该档位会拒绝启动。只覆写 DSH 目录模型容量时可使用 `modelOverrides` 保留目录能力。配置示例与环境变量见 [共享任务模型能力](../../docs/CONFIG.md#共享任务模型能力)。

@@ -29,6 +29,7 @@ import { parseConfigFileText } from '../src/config-file.js';
 import {
   assertModelApiConfig,
   assertFastLaneModelConfig,
+  assertTaskModelConfig,
   MODEL_API_PATCH_FILENAME,
   parseModelApiSection,
   renderModelApiPatch,
@@ -44,7 +45,7 @@ const baseEnv = {
   DEEPSEEK_API_KEY: 'sk-test',
 };
 
-describe('快 lane 模型能力启动校验', () => {
+describe('共享任务模型能力启动校验', () => {
   const arkConfig = (capability = '') =>
     parseConfigFileText(`
 dsh:
@@ -65,18 +66,32 @@ models:
   it.each([
     '',
     'reasoningEfforts: false',
-    'reasoningEfforts: { high: high }',
+    'reasoningEfforts: { low: low }',
     'reasoningEfforts: { off: null }',
-    'reasoningEfforts: { off: "", high: high }',
-  ])('在创建 Task 前拦住不兼容的 Ark 快路由：%s', (capability) => {
+  ])('在创建 Task 前拦住不兼容的共享路由：%s', (capability) => {
     expect(() => loadConfig(env, arkConfig(capability))).toThrow(
       /arc-code\/ark-code-latest.*models\.providers\.arc-code\.models\[0\]\.reasoningEfforts/
     );
   });
 
+  it('共享模型只需声明所选 high，无需声明 off', () => {
+    const config = loadConfig(env, arkConfig('reasoningEfforts: { high: high }'));
+    expect(config.tasks).toMatchObject({
+      taskProvider: 'arc-code',
+      taskModel: 'ark-code-latest',
+      reasoningEffort: 'high',
+    });
+  });
+
+  it('拒绝没有线上拼写的思考档位', () => {
+    expect(() => arkConfig('reasoningEfforts: { high: "" }')).toThrow(
+      /reasoningEfforts.high.*线上拼写/
+    );
+  });
+
   it.each([null, 'disabled'])('保留声明过的 off 线上语义：%s', (off) => {
     const config = loadConfig(env, arkConfig(`reasoningEfforts: { off: ${off}, high: high }`));
-    expect(config.tasks.fastProvider).toBe('arc-code');
+    expect(config.tasks.taskProvider).toBe('arc-code');
     const patch = parseYaml(renderModelApiPatch(config.modelApi)!);
     expect(patch[0].config.providers['arc-code'].models[0].reasoningEfforts).toEqual({
       off,
@@ -84,52 +99,97 @@ models:
     });
   });
 
-  it('快路由独立切换 DeepSeek 时，慢路由可保留原始 Ark 配置', () => {
+  it('共享选择优先于 slow 和 dsh，弃用 fast 选择不影响生产校验', () => {
     const config = loadConfig(
-      { ...env, BOT_FAST_PROVIDER: 'deepseek-official', BOT_FAST_MODEL: 'deepseek-flash' },
+      {
+        ...env,
+        BOT_TASK_PROVIDER: 'deepseek-official',
+        BOT_TASK_MODEL: 'deepseek-flash',
+        BOT_FAST_PROVIDER: 'missing-route',
+        BOT_FAST_MODEL: 'missing-model',
+      },
       arkConfig()
     );
-    expect(config.tasks.fastProvider).toBe('deepseek-official');
+    expect(config.tasks.taskProvider).toBe('deepseek-official');
     expect(config.tasks.slowProvider).toBe('arc-code');
     expect(config.tasks.slowModel).toBe('ark-code-latest');
-    expect(() => loadConfig({ ...env, BOT_FAST_MODEL: 'missing-model' }, arkConfig())).toThrow(
-      /tasks.fastModel.*missing-model/
+    expect(() => loadConfig({ ...env, BOT_TASK_MODEL: 'missing-model' }, arkConfig())).toThrow(
+      /tasks.taskModel.*missing-model/
     );
   });
 
-  it('校验环境覆盖后的模型，并不要求未选中模型声明 off', () => {
+  it('校验环境覆盖后的模型，并保留未选中模型原配置', () => {
     const file = arkConfig();
     file.models!.providers['arc-code'].models!.push({
-      id: 'ark-fast',
-      reasoningEfforts: { off: null, high: 'high' },
+      id: 'ark-shared',
+      reasoningEfforts: { high: 'high' },
     });
-    const config = loadConfig({ ...env, DSH_MODEL: 'ark-fast' }, file);
-    expect(config.tasks.fastModel).toBe('ark-fast');
-    expect(() => loadConfig({ ...env, BOT_FAST_MODEL: 'ark-code-latest' }, file)).toThrow(
+    const config = loadConfig({ ...env, BOT_TASK_MODEL: 'ark-shared' }, file);
+    expect(config.tasks.taskModel).toBe('ark-shared');
+    expect(() => loadConfig({ ...env, BOT_TASK_MODEL: 'ark-code-latest' }, file)).toThrow(
       /arc-code\/ark-code-latest/
     );
   });
 
-  it('目录继承与带外路由保留 DSH 校验；显式能力覆写受 off 约束', () => {
+  it('目录继承与带外路由保留 DSH 校验；显式覆写必须支持所选档位', () => {
     expect(() => {
-      assertFastLaneModelConfig({ providers: {} }, 'external', 'm');
+      assertTaskModelConfig({ providers: {} }, 'external', 'm', 'high');
     }).not.toThrow();
     expect(() => {
-      assertFastLaneModelConfig(
+      assertTaskModelConfig(
         { providers: { openai: { modelOverrides: { m: { maxTokens: 1000 } } } } },
         'openai',
-        'm'
+        'm',
+        'high'
       );
     }).not.toThrow();
-    for (const efforts of [false, { high: 'high' }, { off: null }] as const) {
+    for (const efforts of [false, { low: 'low' }, { off: null }] as const) {
       expect(() => {
-        assertFastLaneModelConfig(
+        assertTaskModelConfig(
           { providers: { openai: { modelOverrides: { m: { reasoningEfforts: efforts } } } } },
           'openai',
-          'm'
+          'm',
+          'high'
         );
       }).toThrow(/modelOverrides.m.reasoningEfforts/);
     }
+  });
+
+  it('显式选择非默认档位时按该档位校验', () => {
+    const file = arkConfig('reasoningEfforts: { low: low }');
+    expect(
+      loadConfig({ ...env, BOT_TASK_REASONING_EFFORT: 'low' }, file).tasks.reasoningEffort
+    ).toBe('low');
+    expect(() => loadConfig(env, file)).toThrow(/reasoningEffort=high/);
+  });
+
+  it('原生 DeepSeek 禁用思考或不支持所选档位时拒绝启动', () => {
+    expect(() => {
+      assertTaskModelConfig(
+        { deepseek: { thinking: 'disabled' }, providers: {} },
+        'deepseek-official',
+        'deepseek-flash',
+        'high'
+      );
+    }).toThrow(/禁用了思考/);
+    expect(() => {
+      assertTaskModelConfig({ providers: {} }, 'deepseek-official', 'deepseek-flash', 'medium');
+    }).toThrow(/不支持.*medium/);
+    expect(() => {
+      assertTaskModelConfig(
+        { deepseek: { models: [{ id: 'm' }] }, providers: {} },
+        'deepseek-official',
+        'missing',
+        'high'
+      );
+    }).toThrow(/tasks.taskModel.*models.deepseek.models/);
+  });
+
+  it('保留旧快 lane 公共校验函数的 off 语义', () => {
+    const config = arkConfig('reasoningEfforts: { high: high }');
+    expect(() => {
+      assertFastLaneModelConfig(config.models!, 'arc-code', 'ark-code-latest');
+    }).toThrow(/固定请求 reasoningEffort=off/);
   });
 });
 

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
-import { contractExamples } from '../packages/contracts/dist/examples.js';
+import { contractExamples, contractExamplesV3 } from '../packages/contracts/dist/examples.js';
 import * as config from '../dist/config/index.js';
 import * as content from '../dist/content/index.js';
 import * as connectors from '../dist/connectors/index.js';
@@ -527,8 +527,95 @@ function protocolFailure(frame) {
 }
 
 export const smokeModuleIds = Object.freeze(Object.keys(runners));
+async function executeTaskV3(example) {
+  let notifications = 0;
+  const manager = task.createTaskLifeCycleManagerV3({
+    now: () => example.input.now,
+    logger: loggerDouble(),
+    ...(example.input.failWrite
+      ? {
+          store: {
+            domain: 'tasks',
+            load: () => [],
+            save() {
+              throw new Error('Injected task persistence failure');
+            },
+          },
+        }
+      : {}),
+  });
+  const off = manager.onChange(() => {
+    notifications++;
+  });
+  try {
+    const created = manager.create(taskInputDouble(), example.input.taskId);
+    if (!created.ok)
+      return { ok: false, code: created.error.code, tasks: manager.list().length, notifications };
+    const handle = created.value;
+    const job = manager.pendingJobs()[0];
+    const claimed = manager.claimJob(job.jobId);
+    assert.equal(claimed.ok, true);
+    const execution = {
+      jobId: job.jobId,
+      executionId: 'fixture-execution',
+      runtimeGeneration: 'fixture-runtime',
+      sessionId: 'fixture-session',
+    };
+    assert.equal(manager.bindExecution(handle.taskId, job.jobId, execution).ok, true);
+    let done = false;
+    const completion = handle.done.then(() => {
+      done = true;
+    });
+    if (example.input.assignment) {
+      assert.equal(
+        manager.acceptWorker({
+          taskId: handle.taskId,
+          jobId: job.jobId,
+          execution,
+          assignment: example.input.assignment,
+        }).ok,
+        true
+      );
+      assert.equal(
+        manager.finishFrontend(handle.taskId, job.jobId, {
+          ok: true,
+          value: { kind: 'dispatched' },
+        }).ok,
+        true
+      );
+      const snapshot = manager.get(handle.taskId);
+      return {
+        status: snapshot.status,
+        phase: snapshot.phase,
+        workerStatus: snapshot.worker.receipt.status,
+        frontendEnded: snapshot.frontend.initialEndedAt !== undefined,
+        done,
+      };
+    }
+    assert.equal(
+      manager.finishFrontend(handle.taskId, job.jobId, {
+        ok: true,
+        value: { kind: 'reply', reply: example.input.reply },
+      }).ok,
+      true
+    );
+    const replyId = manager.get(handle.taskId).finalReply.replyId;
+    assert.equal(manager.confirmEnqueued(handle.taskId, replyId).ok, true);
+    await completion;
+    const snapshot = manager.get(handle.taskId);
+    return {
+      status: snapshot.status,
+      phase: snapshot.phase,
+      replyId,
+      done,
+      workers: manager.list().filter((item) => item.worker).length,
+    };
+  } finally {
+    off();
+  }
+}
 export async function executeExample(example) {
-  const runner = runners[example.module];
+  const runner = example.version === 3 ? executeTaskV3 : runners[example.module];
   if (!runner) throw new Error(`Unknown contract module: ${example.module}`);
   const actual = await runner(example);
   assert.deepEqual(actual, example.expected, example.id);
@@ -537,7 +624,9 @@ export async function executeExample(example) {
 export async function smokeContracts(moduleId) {
   if (moduleId && !smokeModuleIds.includes(moduleId))
     throw new Error(`Unknown module ${moduleId}; choose ${smokeModuleIds.join(', ')}`);
-  const selected = contractExamples.filter((example) => !moduleId || example.module === moduleId);
+  const selected = [...contractExamples, ...contractExamplesV3].filter(
+    (example) => !moduleId || example.module === moduleId
+  );
   for (const example of selected) {
     await executeExample(example);
     console.log(`PASS ${example.id}`);

@@ -100,3 +100,5 @@ export interface PersonaStore {
   restoreAll(): void;
 }
 export type createPersonaStoreFactory = (options: PersonaStoreOptions) => PersonaStore;
+/** 纯文本拆分；business 保留 Task 冻结约束，persona 用于替换表达区块。 */
+export type splitPersonaSections = (content: string) => { business: string; persona: string };

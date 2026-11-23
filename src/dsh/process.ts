@@ -13,6 +13,7 @@ import type { DshRuntimeOptions, DshRuntimeState } from '@qqbot/contracts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Duplex } from 'node:stream';
+import { TaskControlQueueV3 } from './task-control-channel-v3.js';
 
 import { LoggedError } from '@qqbot/contracts';
 
@@ -95,59 +96,63 @@ export class DshRuntime extends EventEmitter {
     if (options.taskControl || options.taskCooperation) {
       const control = child.stdio[3] as Duplex;
       this.taskChannel = control;
-      const channelAbort = new AbortController();
-      const close = () => {
-        if (channelAbort.signal.aborted) return;
-        channelAbort.abort();
-        this.emit('task.channel.closed');
-      };
-      control.on('close', close);
-      let buffer = '';
-      control.setEncoding('utf8');
-      control.on('data', (chunk: string) => {
-        buffer += chunk;
-        if (buffer.length > 65536) {
-          control.destroy();
-          return;
-        }
-        let newline: number;
-        while ((newline = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, newline);
-          buffer = buffer.slice(newline + 1);
-          try {
-            const request = JSON.parse(line) as {
-              id: string;
-              action: string;
-              taskId?: string;
-              sessionId?: string;
-              executionId: string;
-              runtimeGeneration: string;
-            };
-            const work = request.action.startsWith('cooperation-')
-              ? options.taskCooperation?.(
-                  request as import('@qqbot/contracts').TaskCooperationRequest,
-                  channelAbort.signal
-                )
-              : options.taskControl?.(request);
-            void Promise.resolve(work).then(
-              (value) => {
-                if (!control.destroyed)
-                  control.write(JSON.stringify({ id: request.id, value }) + '\n');
-              },
-              (error: unknown) => {
-                if (!control.destroyed)
-                  control.write(JSON.stringify({ id: request.id, error: String(error) }) + '\n');
-              }
-            );
-          } catch (error) {
-            options.logger.warn('Task 控制请求失败', { error: String(error) });
+      if (options.env?.QQBOT_ROLE === 'frontend') {
+        new TaskControlQueueV3(control, options, () => this.emit('task.channel.closed'));
+      } else {
+        const channelAbort = new AbortController();
+        const close = () => {
+          if (channelAbort.signal.aborted) return;
+          channelAbort.abort();
+          this.emit('task.channel.closed');
+        };
+        control.on('close', close);
+        let buffer = '';
+        control.setEncoding('utf8');
+        control.on('data', (chunk: string) => {
+          buffer += chunk;
+          if (buffer.length > 65536) {
+            control.destroy();
+            return;
           }
-        }
-      });
-      control.on('error', (error) => {
-        close();
-        options.logger.warn('Task 控制通道关闭', { error: error.message });
-      });
+          let newline: number;
+          while ((newline = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, newline);
+            buffer = buffer.slice(newline + 1);
+            try {
+              const request = JSON.parse(line) as {
+                id: string;
+                action: string;
+                taskId?: string;
+                sessionId?: string;
+                executionId: string;
+                runtimeGeneration: string;
+              };
+              const work = request.action.startsWith('cooperation-')
+                ? options.taskCooperation?.(
+                    request as import('@qqbot/contracts').TaskCooperationRequest,
+                    channelAbort.signal
+                  )
+                : options.taskControl?.(request);
+              void Promise.resolve(work).then(
+                (value) => {
+                  if (!control.destroyed)
+                    control.write(JSON.stringify({ id: request.id, value }) + '\n');
+                },
+                (error: unknown) => {
+                  if (!control.destroyed)
+                    control.write(JSON.stringify({ id: request.id, error: String(error) }) + '\n');
+                }
+              );
+            } catch (error) {
+              options.logger.warn('Task 控制请求失败', { error: String(error) });
+            }
+          }
+        });
+        control.on('error', (error) => {
+          close();
+          options.logger.warn('Task 控制通道关闭', { error: error.message });
+        });
+      }
     }
 
     this.exitPromise = new Promise<void>((resolve) => {

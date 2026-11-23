@@ -52,6 +52,14 @@ const BLOCK_RE = /\n?<!-- qqbot-persona:begin[^>]*-->[\s\S]*?<!-- qqbot-persona:
 /** 工作区里写人设区块的目标文件名（dsh-agent-instructions 自动加载它）。 */
 const AGENTS_FILE = 'AGENTS.md';
 
+/** 分离表达区块与业务约束，供 worker 冻结规则和前台更新人设。 */
+export function splitPersonaSections(content: string): { business: string; persona: string } {
+  return {
+    business: content.replace(BLOCK_RE, '\n'),
+    persona: content.match(BLOCK_RE)?.[0].trim() ?? '',
+  };
+}
+
 export type { PersonaApplyOk } from '@qqbot/contracts';
 export type { PersonaApplyFail } from '@qqbot/contracts';
 export type { PersonaApplyResult } from '@qqbot/contracts';

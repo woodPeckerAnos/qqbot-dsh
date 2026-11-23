@@ -11,11 +11,11 @@
  * 配置错误是最"安静"的故障模式（进程在跑、日志正常、就是不干活），
  * 所以每一项硬约束都要有测试守着。
  */
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { ConfigError, describeConfig, loadConfig } from '../src/config.js';
-import { loadConfigFile, parseConfigFileText } from '../src/config-file.js';
+import { parseConfigFileText } from '../src/config-file.js';
+import { loadRepositoryConfigFile } from './helpers/repository-config.js';
 import { DEFAULT_INTENTS, Intent, describeIntents } from '../src/adapters/qq-official/types.js';
 
 const baseEnv = {
@@ -25,7 +25,70 @@ const baseEnv = {
 };
 
 describe('loadConfig', () => {
-  it('Task 默认值、独立模型路由与 runtime 硬上限', () => {
+  it('共享模型、思考、step 与排队设置按环境变量优先合并', () => {
+    const file = parseConfigFileText(`
+tasks:
+  slowProvider: external
+  slowModel: slow-model
+  taskProvider: file-provider
+  taskModel: file-model
+  reasoningEffort: low
+  frontendMaxSteps: 2
+  queueTimeoutMs: 60000
+`);
+    expect(loadConfig(baseEnv, file).tasks).toMatchObject({
+      taskProvider: 'file-provider',
+      taskModel: 'file-model',
+      reasoningEffort: 'low',
+      frontendMaxSteps: 2,
+      queueTimeoutMs: 60000,
+    });
+    expect(
+      loadConfig(
+        {
+          ...baseEnv,
+          BOT_TASK_PROVIDER: 'env-provider',
+          BOT_TASK_MODEL: 'env-model',
+          BOT_TASK_REASONING_EFFORT: 'max',
+          BOT_FRONTEND_MAX_STEPS: '5',
+          BOT_TASK_QUEUE_TIMEOUT_MS: '120000',
+        },
+        file
+      ).tasks
+    ).toMatchObject({
+      taskProvider: 'env-provider',
+      taskModel: 'env-model',
+      reasoningEffort: 'max',
+      frontendMaxSteps: 5,
+      queueTimeoutMs: 120000,
+    });
+  });
+
+  it.each([
+    { BOT_TASK_REASONING_EFFORT: 'off' },
+    { BOT_TASK_REASONING_EFFORT: 'turbo' },
+    { BOT_FRONTEND_MAX_STEPS: '0' },
+    { BOT_FRONTEND_MAX_STEPS: '1.5' },
+    { BOT_TASK_QUEUE_TIMEOUT_MS: '99' },
+  ])('拒绝非法前台与排队设置：%j', (override) => {
+    expect(() => loadConfig({ ...baseEnv, ...override })).toThrow(ConfigError);
+  });
+
+  it('未使用的旧 fast 路由不再要求 DeepSeek 凭证', () => {
+    const config = loadConfig({
+      BOT_CONNECTORS: 'onebot',
+      ONEBOT_ACCESS_TOKEN: 'test',
+      DSH_PROVIDER: 'external',
+      BOT_TOPIC_ENABLED: 'false',
+      BOT_FAST_PROVIDER: 'deepseek-official',
+    });
+    expect(config.tasks.taskProvider).toBe('external');
+    expect((describeConfig(config).deprecated as { ignored: string[] }).ignored).toContain(
+      'tasks.fastProvider'
+    );
+  });
+
+  it('Task 默认值、共享模型继承与 runtime 硬上限', () => {
     const config = loadConfig(baseEnv);
     expect(config.tasks).toMatchObject({
       fastTimeoutMs: 30_000,
@@ -36,6 +99,11 @@ describe('loadConfig', () => {
       maxGlobal: 128,
       retentionMs: 7 * 86400_000,
       reminderMs: 300_000,
+      taskProvider: 'deepseek-official',
+      taskModel: 'deepseek-flash',
+      reasoningEffort: 'high',
+      frontendMaxSteps: 3,
+      queueTimeoutMs: 1_800_000,
     });
     const separate = loadConfig({
       ...baseEnv,
@@ -45,6 +113,7 @@ describe('loadConfig', () => {
     });
     expect(separate.tasks.fastModel).toBe('fast-model');
     expect(separate.tasks.slowModel).toBe('slow-model');
+    expect(separate.tasks.taskModel).toBe('slow-model');
     expect(separate.tasks.fastRuntimes + separate.tasks.slowRuntimes).toBe(2);
     expect(() => loadConfig({ ...baseEnv, QQ_MAX_RUNTIMES: '1' })).toThrow();
     expect(() =>
@@ -756,8 +825,7 @@ offpeak:
     // 四个密钥都给上，这样无论默认配置启用哪些接入都能通过加载；
     // 只断言"对任何合法取值都成立"的结构性事实——qqbot.yml 是给人改的，
     // 断言具体取值会让用户改完配置后测试反而失败。
-    const entry = fileURLToPath(new URL('../qqbot.yml', import.meta.url));
-    const loaded = loadConfigFile({ QQ_CONFIG_FILE: entry });
+    const loaded = loadRepositoryConfigFile();
     // include 展开后必须包含全部共享模块；安全配置类文件是可选的，不在此断言。
     for (const module of [
       'connectors',
@@ -788,19 +856,17 @@ offpeak:
 });
 
 describe('personas 与 hints（三层合并）', () => {
-  it('两个 lane 路由采用相同启动校验，未知声明和缺失凭证在准入前报错', () => {
-    for (const key of ['fastProvider', 'slowProvider'] as const) {
-      expect(() =>
-        loadConfig(baseEnv, { models: { providers: {} }, tasks: { [key]: 'missing-route' } })
-      ).toThrow(`tasks.${key}`);
-    }
+  it('共享路由未知声明和缺失凭证在准入前报错', () => {
+    expect(() =>
+      loadConfig(baseEnv, { models: { providers: {} }, tasks: { taskProvider: 'missing-route' } })
+    ).toThrow('tasks.taskProvider');
     expect(() =>
       loadConfig({
         BOT_CONNECTORS: 'onebot',
         ONEBOT_ACCESS_TOKEN: 'test',
         DSH_PROVIDER: 'external',
         BOT_TOPIC_ENABLED: 'false',
-        BOT_FAST_PROVIDER: 'deepseek-official',
+        BOT_TASK_PROVIDER: 'deepseek-official',
       })
     ).toThrow('DEEPSEEK_API_KEY');
   });

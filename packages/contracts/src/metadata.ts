@@ -19,7 +19,7 @@ export const modules = immutableConstant([
     responsibility: '解析合并、校验、模型路由与 patch；不决定执行或发送',
     invariants: [
       '有效配置在启动期固定，密钥只来自 env',
-      '显式快 lane 模型目录必须声明 off 与至少一个非 off 档位；未覆写的 DSH 目录能力留给 DSH 校验',
+      '共享任务模型必须支持所选思考档位；默认 high，未覆写能力由 DSH 初始化核对',
     ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
@@ -249,6 +249,7 @@ export const modules = immutableConstant([
       'src/dsh/process.ts',
       'src/dsh/protocol.ts',
       'src/dsh/turns.ts',
+      'src/dsh/task-control-channel-v3.ts',
       'src/runtime/index.ts',
     ],
     dependencies: ['observability'],
@@ -289,9 +290,14 @@ export const modules = immutableConstant([
   {
     id: 'task',
     title: 'Task',
-    version: '2.0.0',
+    version: '3.0.0',
     owner: '项目维护者',
     entry: 'src/task/index.ts',
+    examplesV3: [
+      { id: 'task.v3.normal', kind: 'normal', version: 3 },
+      { id: 'task.v3.edge', kind: 'edge', version: 3 },
+      { id: 'task.v3.failure', kind: 'failure', version: 3 },
+    ],
     files: [
       'src/task/budget.ts',
       'src/task/business-outcome.ts',
@@ -307,18 +313,26 @@ export const modules = immutableConstant([
       'src/task/session-actor.ts',
       'src/task/system.ts',
       'src/task/types.ts',
+      'src/task/lifecycle-v3.ts',
+      'src/task/job-scheduler.ts',
+      'src/task/session-actor-v3.ts',
+      'src/task/dsh-task-runner-v3.ts',
+      'src/task/prompt-preparer-v3.ts',
+      'src/task/control-bridge-v3.ts',
+      'src/task/system-v3.ts',
     ],
     dependencies: ['runtime', 'media', 'store', 'delivery', 'observability', 'content', 'session'],
     capabilities: ['node:crypto', 'node:fs', 'node:fs/promises', 'node:path', 'node:url'],
-    responsibility: 'Actor、执行状态、lane、预算、控制、输入准备及装配；不写投递状态',
+    responsibility:
+      'Actor、V3 前台与按需 worker、执行状态、预算、控制、输入准备及装配；不写投递状态',
     invariants: [
-      '每输入一个 Task，双 lane 终结，短事务无整轮锁，预算守恒；慢结束钩子保持 running 等待同 Task 快执行和原始正文终结',
-      'lane、Task ID、outbox 和工作区路径仅用于内部协作，用户回复以处理进度和实际交付物描述衔接',
-      'prompt 区分历史背景与当前 Task 输入；其他 Task 未完成承诺不触发当前执行接管旧任务或生成旧附件',
-      '无增量静默只比较同 Task 快 lane 已成功送达正文；明确复述旧结果须完成当前答复，承接语和旧 Task 送达不能替代',
-      '关联追问查询 completed 仅证明执行完成；缺 delivery 时明确执行已完成且送达未核实，不使用已全部完成或推断投递状态',
-      '强烈提醒标记仅首行转成内部意图，所有长度普通回复保留原引用且不自动提及；只能提及真实原消息作者',
-      'record 能力下成功 NO_REPLY 带附件转为无正文 reply 并交付，旧平台继续要求说明；失败和空结果不能冒充成功交付；工具正文 toolCallId 与 source.callId 核对，追踪不作为业务收口依据',
+      '每输入一个 Task，普通输入只执行前台；每 Task 最多接受一个 worker',
+      '领取、派发、结果和最终回复先保存后通知；job 与 runtime 身份拒绝重复和迟到事件',
+      '同 Session 首次前台和整理交替，worker 串行；worker 完成后不占执行额度等待整理',
+      '首次前台彻底退出后才领取整理，整理最多两回合；只补已固定结果保存和回复入队，不重复业务',
+      '取消优先于交接，stop 保留尚未开始首次处理的排队 Task；new 取消所有未完成阶段',
+      '最终回复入队确认后结束 Task；业务结果、前台整理和实际送达状态分别展示',
+      '持久输入、引用、附件、交接、阶段和执行身份先校验；未知版本和重复会话记录明确报错',
     ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
@@ -350,7 +364,12 @@ export const modules = immutableConstant([
     version: '1.0.0',
     owner: '项目维护者',
     entry: 'src/session/index.ts',
-    files: ['src/session/index.ts', 'src/session/context.ts', 'src/session/follow-up.ts'],
+    files: [
+      'src/session/index.ts',
+      'src/session/context.ts',
+      'src/session/follow-up.ts',
+      'src/session/context-v3.ts',
+    ],
     dependencies: ['content'],
     capabilities: [],
     responsibility:
@@ -377,7 +396,7 @@ export const modules = immutableConstant([
   {
     id: 'delivery',
     title: '投递',
-    version: '2.0.0',
+    version: '3.0.0',
     owner: '项目维护者',
     entry: 'src/delivery/index.ts',
     files: [
@@ -386,6 +405,7 @@ export const modules = immutableConstant([
       'src/pipeline/egress/responder.ts',
       'src/task/message-queue.ts',
       'src/task/output-coordinator.ts',
+      'src/task/output-coordinator-v3.ts',
     ],
     dependencies: ['content', 'media', 'observability'],
     capabilities: ['node:crypto', 'node:fs/promises', 'node:path'],
@@ -609,13 +629,16 @@ export const modules = immutableConstant([
 ] as const);
 
 export const compositionRoots = immutableConstant(['src/main.ts'] as const);
-export const stateProvisioners = immutableConstant(['src/task/system.ts'] as const);
+export const stateProvisioners = immutableConstant([
+  'src/task/system.ts',
+  'src/task/system-v3.ts',
+] as const);
 export const stateWrites = immutableConstant([
   {
     type: 'TaskStateWriter',
     domain: 'tasks',
     methods: ['save'],
-    owners: ['src/task/lifecycle.ts'],
+    owners: ['src/task/lifecycle.ts', 'src/task/lifecycle-v3.ts'],
   },
   {
     type: 'MessageStateWriter',
@@ -633,6 +656,6 @@ export const stateWrites = immutableConstant([
     type: 'SessionStateWriter',
     domain: 'task-sessions',
     methods: ['save'],
-    owners: ['src/task/session-actor.ts'],
+    owners: ['src/task/session-actor.ts', 'src/task/session-actor-v3.ts'],
   },
 ] as const);

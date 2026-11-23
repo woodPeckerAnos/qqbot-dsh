@@ -22,9 +22,13 @@ import type { ProactiveWatcher } from '@qqbot/contracts';
  */
 import { join } from 'node:path';
 
-import { resolveLoggingSettings, loadConfig, describeConfig } from './config/index.js';
+import {
+  resolveLoggingSettings,
+  loadConfigV3 as loadConfig,
+  describeConfigV3 as describeConfig,
+} from './config/index.js';
 import { ConfigError } from '@qqbot/contracts';
-import type { Config } from '@qqbot/contracts';
+import type { ConfigV3 as Config } from '@qqbot/contracts';
 import { loadConfigFile } from './config/index.js';
 import { createQqOfficialConnector } from './connectors/index.js';
 import { QQ_OFFICIAL_PLATFORM } from '@qqbot/contracts';
@@ -35,7 +39,7 @@ import { installLoggingReload } from './observability/index.js';
 import { createLogger } from './observability/index.js';
 import { CN_HOLIDAYS_2026 } from '@qqbot/contracts';
 import { createOffpeakGate } from './offpeak/index.js';
-import { createTaskSystemV2 } from './task/index.js';
+import { createTaskSystemV3 } from './task/index.js';
 import { createDocumentExtractor } from './media/index.js';
 import { writeModelApiPatch } from './config/index.js';
 import { createResponder } from './delivery/index.js';
@@ -304,7 +308,7 @@ async function main(): Promise<void> {
     logger: logger.child({ component: 'offpeak' }),
   });
 
-  const taskSystem = createTaskSystemV2({
+  const taskSystem = createTaskSystemV3({
     config,
     logger: logger.child({ component: 'tasks' }),
     paths,
@@ -641,13 +645,13 @@ async function main(): Promise<void> {
           [...connectors.entries()].map(([name, connector]) => [name, connector.health()])
         ),
         runtime: {
-          size: taskSystem.pools.fast.size + taskSystem.pools.slow.size,
+          size: taskSystem.pools.frontend.size + taskSystem.pools.worker.size,
           activeConversationKeys: [
-            ...taskSystem.pools.fast.activeConversationKeys(),
-            ...taskSystem.pools.slow.activeConversationKeys(),
+            ...taskSystem.pools.frontend.activeConversationKeys(),
+            ...taskSystem.pools.worker.activeConversationKeys(),
           ],
           activeSubagents:
-            taskSystem.pools.fast.activeSubagents() + taskSystem.pools.slow.activeSubagents(),
+            taskSystem.pools.frontend.activeSubagents() + taskSystem.pools.worker.activeSubagents(),
         },
         tasks: taskSystem.actor.snapshot(),
         messages: taskSystem.queue.snapshot(),

@@ -1,6 +1,9 @@
 /** Public module boundary. Consumers receive contract interfaces. */
 import { ConversationStore } from './conversations.js';
-import { PersonaStore } from './personas.js';
+import {
+  PersonaStore,
+  splitPersonaSections as splitPersonaSectionsImplementation,
+} from './personas.js';
 import { SeenStore } from './seen.js';
 import { SessionStore } from './sessions.js';
 import { ObservationWindow } from './window.js';
@@ -10,6 +13,8 @@ export const createConversationStore: import('@qqbot/contracts').createConversat
 ) => new ConversationStore(...args);
 export const createPersonaStore: import('@qqbot/contracts').createPersonaStoreFactory = (...args) =>
   new PersonaStore(...args);
+export const splitPersonaSections: import('@qqbot/contracts').splitPersonaSections =
+  splitPersonaSectionsImplementation;
 export const createSeenStore: import('@qqbot/contracts').createSeenStoreFactory = (...args) =>
   new SeenStore(...args);
 export const createSessionStore: import('@qqbot/contracts').createSessionStoreFactory = (...args) =>

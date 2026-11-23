@@ -52,7 +52,14 @@ export interface DshRuntimeOptions {
   model: string;
   reasoningEffort?: string;
   /** Dedicated fd 3 channel; authorization is bound by the parent, never by model args. */
-  taskControl?: (request: { action: string; taskId?: string; sessionId?: string }) => unknown;
+  taskControl?: (request: {
+    action: string;
+    taskId?: string;
+    sessionId?: string;
+    assignment?: import('../task/types-v3.js').WorkerAssignment;
+    executionId?: string;
+    runtimeGeneration?: string;
+  }) => unknown;
   taskCooperation?: (
     request: import('../task/cooperation.js').TaskCooperationRequest,
     signal: AbortSignal

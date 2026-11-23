@@ -25,8 +25,9 @@ import { collectWindowMedia, latestPendingRecord, renderWindowBlock } from '../s
 import type { MessageContext } from '@qqbot/contracts';
 import type { PipelineStats } from '@qqbot/contracts';
 import type { TopicJudge } from '@qqbot/contracts';
-import type { TaskSnapshotV2 as TaskSnapshot, TaskInput } from '@qqbot/contracts';
+import type { TaskSnapshotV2, TaskInput } from '@qqbot/contracts';
 import type { TaskClock } from '@qqbot/contracts';
+type TaskSnapshot = Pick<TaskSnapshotV2, 'taskId' | 'input'>;
 interface PreparedPrompt {
   blocks: PromptContentBlock[];
   /** 这条消息里一共认出几张图 */

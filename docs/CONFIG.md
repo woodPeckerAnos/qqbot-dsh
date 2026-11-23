@@ -136,63 +136,71 @@ include:
 - 如果旧 `qqbot.yml` 有你自己的改动：把差异挪到 `config/local/overrides.yml`
   （或对应模块），不要让入口重新变成大杂烩。
 
-## 10. Task 与双 lane 配置迁移
+## 10. 前台与 worker 配置
 
-| 配置键                                  | 默认                  | 环境变量                                      |
-| --------------------------------------- | --------------------- | --------------------------------------------- |
-| `tasks.fastTimeoutMs` / `slowTimeoutMs` | 30000 / 1800000       | `BOT_FAST_TIMEOUT_MS` / `BOT_SLOW_TIMEOUT_MS` |
-| `tasks.fastProvider` / `slowProvider`   | 继承 `dsh.provider`   | `BOT_FAST_PROVIDER` / `BOT_SLOW_PROVIDER`     |
-| `tasks.fastModel` / `slowModel`         | 继承 `dsh.model`      | `BOT_FAST_MODEL` / `BOT_SLOW_MODEL`           |
-| `tasks.fastRuntimes` / `slowRuntimes`   | 各 4                  | `BOT_FAST_RUNTIMES` / `BOT_SLOW_RUNTIMES`     |
-| `tasks.maxPerSession` / `maxGlobal`     | 32 / 128              | `BOT_TASKS_PER_SESSION` / `BOT_TASKS_GLOBAL`  |
-| `tasks.retentionMs`                     | 604800000（7 天）     | `BOT_TASK_RETENTION_MS`                       |
-| `tasks.reminderMs`                      | 300000（最小 5 分钟） | `BOT_TASK_REMINDER_MS`                        |
-| `pool.maxRuntimes`                      | 8（至少 2）           | `QQ_MAX_RUNTIMES`                             |
+前台和 worker 共用一个任务模型；普通请求只执行前台，长任务保存派发请求后按需创建 worker。旧双 lane 执行规则、固定 `off` 思考和两个独立模型选择属于历史方案。
 
-两个 lane 容量均至少 1，之和不得超过总硬上限；降低总上限时同步调整各 lane。排队、摄取与 runtime 初始化不计执行超时。快 lane 固定 `reasoningEffort=off`，只开放 Task 查询和取消；慢 lane 前台等待所有子代理。两 lane 模型路由与 dsh.provider 使用相同声明和凭证校验。自定义 `dsh.profilePatch` 后仍自动追加内置 `dsh-profile/lanes.patch.yml`，部署必须包含该文件和插件。
+| 配置键                                     | 默认与用途                                                                               | 环境变量                                                 |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `tasks.taskProvider` / `taskModel`         | 共享模型；分别继承有效 `slowProvider` / `slowModel`，再继承 `dsh.provider` / `dsh.model` | `BOT_TASK_PROVIDER` / `BOT_TASK_MODEL`                   |
+| `tasks.reasoningEffort`                    | `high`；允许 minimal / low / medium / high / xhigh / max，按模型实际能力选择             | `BOT_TASK_REASONING_EFFORT`                              |
+| `tasks.frontendMaxSteps`                   | 首次前台最多 3 个模型 step，范围 1–100；整理回合不运行工具循环                           | `BOT_FRONTEND_MAX_STEPS`                                 |
+| `tasks.queueTimeoutMs`                     | 前台和 worker 排队各 1800000；范围 100–86400000 毫秒                                     | `BOT_TASK_QUEUE_TIMEOUT_MS`                              |
+| `tasks.fastTimeoutMs` / `slowTimeoutMs`    | 前台回合 30000 / worker 模型执行 1800000 毫秒                                            | `BOT_FAST_TIMEOUT_MS` / `BOT_SLOW_TIMEOUT_MS`            |
+| `tasks.fastRuntimes` / `slowRuntimes`      | 前台 / worker 容量各 4                                                                   | `BOT_FAST_RUNTIMES` / `BOT_SLOW_RUNTIMES`                |
+| `tasks.maxPerSession` / `maxGlobal`        | 未完成 Task 32 / 128                                                                     | `BOT_TASKS_PER_SESSION` / `BOT_TASKS_GLOBAL`             |
+| `tasks.retentionMs`                        | 结果和工作区保留 604800000 毫秒（7 天）                                                  | `BOT_TASK_RETENTION_MS`                                  |
+| `tasks.reminderMs`                         | 存活提醒等待 300000 毫秒，最小 5 分钟                                                    | `BOT_TASK_REMINDER_MS`                                   |
+| `pool.maxRuntimes`                         | 前台与 worker 合计 8，至少 2                                                             | `QQ_MAX_RUNTIMES`                                        |
+| `dsh.startTimeoutMs` / `shutdownTimeoutMs` | 初始化 60000 / 关闭 15000 毫秒                                                           | `QQ_DSH_START_TIMEOUT_MS` / `QQ_DSH_SHUTDOWN_TIMEOUT_MS` |
 
-### 快 lane 模型能力
+环境变量先覆盖对应文件项，再解析共享路由的继承关系。配置了 `tasks.taskProvider / taskModel` 后，旧 slow 选择只提供缺省来源；`tasks.fastProvider / fastModel` 及对应环境变量已弃用，生产路径忽略。旧 fast/slow 容量和超时键继续生效，分别表示前台和 worker；两类容量均至少 1，之和不得超过总 runtime 上限。
 
-快 lane 的路由与模型以环境变量覆盖后的值为准。若所选模型来自显式 `models.providers.<路由>.models` 列表，启动期要求该模型声明 `reasoningEfforts.off` 和至少一个非 off 档位。`reasoningEfforts: false`、缺少 off 或只有 off 都不能接受固定的关闭思考请求。所选模型不在该列表时也在启动期拒绝。`modelOverrides` 未覆写能力、仅继承 DSH 内置目录或带外配置时仍由 DSH 校验；只覆盖目录模型容量可用 `modelOverrides` 避免重写能力。
+排队与模型执行独立计时，输入摄取和 runtime 初始化不计入模型执行时限。前台未成功派发即超时直接结束 Task，不自动创建 worker。worker 完成后先保存完整结果再排队整理；整理最多两个回合，仅可重试的模型、初始化和超时故障重试一次。整理耗尽保存失败说明，业务结果和附件保留供查询。
 
-部署报告已验证 `arc-code/ark-code-latest` 可在 `config/local/models.yml` 的该模型条目中补充：
+### 共享任务模型能力
 
-```yaml
-reasoningEfforts:
-  off: null
-  high: high
-```
-
-`off: null` 表示支持 off、请求不发送 reasoning 参数；它依赖网关默认关闭思考，并不等同于线上明确下发禁用思考。不要给未验证的模型照抄 high。若网关默认思考不可控，可配置独立快路由：
+生产校验最终共享 provider/model 及所选思考档位。显式 `models.providers.<路由>.models` 中的所选模型必须声明该档位真实线上拼写；目录缺模型、缺能力、`reasoningEfforts: false` 或缺少所选档位均拒绝启动。只声明 `high` 即可供默认任务模型使用，无需增加历史快 lane 的 `off`。例如已验证支持 high 的网关可写：
 
 ```yaml
 tasks:
-  fastProvider: deepseek-official
-  fastModel: deepseek-flash
+  taskProvider: acme
+  taskModel: acme-think
+  reasoningEffort: high
+models:
+  providers:
+    acme:
+      api: openai-completions
+      baseURL: https://gateway.example/v1
+      apiKeyEnv: ACME_API_KEY
+      models:
+        - id: acme-think
+          reasoningEfforts:
+            high: high
 ```
 
-独立快路由需要对应 `apiKeyEnv` 凭证（原生 DeepSeek 默认 `DEEPSEEK_API_KEY`），并使用该提供商计费。仅改 YAML 用 `docker compose restart qqbot`；更新本次代码需 `docker compose up -d --build`；改环境变量用 `docker compose up -d`。
+只覆写目录模型容量时可用 `modelOverrides`，保留 DSH 已安装目录能力；未覆写能力及带外目录由 DSH 初始化核对。原生 DeepSeek 支持 low / high / max，`models.deepseek.thinking: disabled` 会拒绝任务模型显式思考请求。模型声明必须符合实际服务能力，密钥仍只在 `.env` 中设置。
 
-初始化失败会先记录带 Task/lane 身份的 `root.error` 和 errorId，再直接 SIGTERM 回收未就绪进程；只对信号退出保留 `dsh.shutdownTimeoutMs` 宽限，不再先空等一次该时限。根因详情不输出原始协议文本，按 errorId 关联 DSH 诊断和 Task 状态。Task 与投递失败语义不变。决策见 [ADR-004](adr/004-fast-lane-model-capability.md)。
+启用 `models:` 配置层后，最终共享路由必须已声明；声明的 `apiKeyEnv` 引用仍全部检查非空。仅继承带外 DSH 配置时，由 DSH 完成目录及路由校验。初始化失败先记录身份和 errorId，再 SIGTERM 回收未就绪进程；关闭信号宽限继续使用 `dsh.shutdownTimeoutMs`。历史快 lane 能力校验公共函数和旧契约保留供兼容消费方使用。
 
-旧 `pool.maxConcurrentTurns`、平台 `progress*` / `turnTimeoutMs`、`onebot.maxRepliesPerMsg`、`hints.longTask`、`proactive.speakTimeoutMs` 仅保留配置解析兼容，生产路径不使用；请删除并迁移到 `tasks.*`。启动摘要在 `deprecated.ignored` 明示这些键。旧值仍做类型与范围校验，建议升级时移除。QQ 的 `maxRepliesPerMsg` 继续作为平台条数约束；OneBot 不按产物数扣主动预算，`proactive.sessionBudget` 的单位是 Task。
+旧 `pool.maxConcurrentTurns`、平台 `progress*` / `turnTimeoutMs`、`onebot.maxRepliesPerMsg`、`hints.longTask`、`proactive.speakTimeoutMs` 仅解析兼容，生产路径忽略；启动摘要 `deprecated.ignored` 包含这些键及 fast 模型选择。旧值仍做类型和范围校验。QQ 的 `maxRepliesPerMsg` 保留平台条数约束，主动 `sessionBudget` 按 Task 预留一次，首次实际送达提交一次。
 
-上下文 generation 与回放边界在 `stateDir/task-sessions.json`；Task 状态持久化在 `stateDir/tasks.json`，队列在 `messages.json`，预算在 `task-budgets.json`，待发送附件在 `message-files/<Task ID>/`。终态记录及 Task 工作区到期清理，队列和必要附件独立保留。旧 `background-pending.json` 不导入新队列，升级前请检查和交付其待发内容；旧运行任务不会恢复。
+Task 状态位于 `stateDir/tasks.json`，新记录使用 `schemaVersion: 3`。会话 generation 在 `task-sessions.json`，消息、预算和独立附件分别在 `messages.json`、`task-budgets.json`、`message-files/<Task ID>/`。重启恢复未开始的 worker、已保存的结果和最终回复；执行过但缺结果的 worker 记录中断或结果未知，不自动重跑。旧双 lane 未完成记录按历史中断规则处理；旧 `background-pending.json` 不导入。终态和工作区到期清理后，待发送消息及附件副本继续保留。
 
-## 11. SessionContextView 与进度追问（ADR-009）
+## 11. SessionContextView 与进度追问
 
-`config/interaction.yml` 的 `sessionContext` 可选，旧配置加载时自动补齐默认值，不需要数据迁移。仅配置文件提供这组设置，重启生效。
+`config/interaction.yml` 的 `sessionContext` 可选，旧配置自动补齐默认值，仅从配置文件读取，重启生效。
 
-| 配置               | 默认       | 合法值                             |
-| ------------------ | ---------- | ---------------------------------- |
-| mode               | board-only | off / board-only / full            |
-| progressGuard      | true       | 布尔值                             |
-| maxCharsPerTask    | 8000       | 1–100000，两个 lane 正文合计       |
-| maxTotalChars      | 12000      | 1024–1000000，含边界、状态及统计   |
-| maxTasks           | 8          | 1–64                               |
-| maxRecentMessages  | 0          | 0–12，仅 full 生效                 |
-| recentTaskWindowMs | 300000     | 1–86400000，追问候选及近期消息窗口 |
+| 配置               | 默认       | 合法值                                 |
+| ------------------ | ---------- | -------------------------------------- |
+| mode               | board-only | off / board-only / full                |
+| progressGuard      | true       | 布尔值                                 |
+| maxCharsPerTask    | 8000       | 1–100000，当前与历史 Task 结果正文预算 |
+| maxTotalChars      | 12000      | 1024–1000000，含边界、状态及统计       |
+| maxTasks           | 8          | 1–64                                   |
+| maxRecentMessages  | 0          | 0–12，仅 full 生效                     |
+| recentTaskWindowMs | 300000     | 1–86400000，追问候选及近期消息窗口     |
 
-board-only 仅在普通慢 lane 派发前读取旧 Task 增量结果；full 另补近期纯文本背景，不重新摄取媒体。纯进度只认 40 字内整句白名单和唯一同成员用户目标，失败、取消、主动和既有进度 Task 不作候选。引用不完整或有歧义时正常执行双 lane。进度快答需真实 query_tasks，慢 lane 直接静默结算。
+V3 View 分开展示 worker 执行结果、前台整理及投递状态。board-only 提供可核对的 Task 结果，full 另补近期纯文本背景，不重新摄取媒体。纯进度仍只认 40 字内整句白名单和唯一同成员用户目标，失败、取消、主动和既有进度 Task 不作候选；前台实际查询目标，不派发 worker。普通关联请求需要旧结果时引用或复述已有结果，避免重做旧业务。delivery 缺失时回复明确说送达未核实。
 
-回滚全部新增行为设 `sessionContext.mode: off`；只恢复普通双 lane 设 `progressGuard: false`，此时保留追问关联及 View。关闭 View 不取消旧 Task，也不更改已入队消息。
+`sessionContext.mode: off` 关闭 View 与保守关联，`progressGuard: false` 只关闭进度识别；调度仍使用前台和动态 worker。关闭 View 不取消旧 Task，也不更改已入队消息。旧双 lane 的快答与静默慢结果仅保留为历史记录。

@@ -14,7 +14,6 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ConfigError } from '../src/config-error.js';
@@ -24,6 +23,7 @@ import {
   parseConfigFileText,
   resolveConfigFilePath,
 } from '../src/config-file.js';
+import { loadRepositoryConfigFile } from './helpers/repository-config.js';
 
 let dir: string | undefined;
 afterEach(() => {
@@ -37,6 +37,29 @@ function tempDir(): string {
 }
 
 describe('parseConfigFileText', () => {
+  it('解析共享任务模型、前台 step 和排队时限', () => {
+    expect(
+      parseConfigFileText(`
+tasks:
+  taskProvider: route
+  taskModel: model
+  reasoningEffort: high
+  frontendMaxSteps: 3
+  queueTimeoutMs: 1800000
+`).tasks
+    ).toEqual({
+      taskProvider: 'route',
+      taskModel: 'model',
+      reasoningEffort: 'high',
+      frontendMaxSteps: 3,
+      queueTimeoutMs: 1800000,
+    });
+    expect(() => parseConfigFileText('tasks:\n  frontendMaxSteps: "3"')).toThrow(
+      /frontendMaxSteps/
+    );
+    expect(() => parseConfigFileText('tasks:\n  reasoningEffort: true')).toThrow(/reasoningEffort/);
+  });
+
   it('解析完整配置并映射到 FileConfig 字段', () => {
     const config = parseConfigFileText(
       `
@@ -239,8 +262,7 @@ describe('loadConfigFile', () => {
     // qqbot.yml 是随仓库提供的默认配置，也是用户会按机器改的文件，
     // 所以这里只校验"形状合法"（键名、类型），不校验具体取值——
     // 否则用户把 connectors 改成 onebot 之后，测试反而会失败。
-    const entry = fileURLToPath(new URL('../qqbot.yml', import.meta.url));
-    const loaded = loadConfigFile({ QQ_CONFIG_FILE: entry });
+    const loaded = loadRepositoryConfigFile();
     expect(loaded.files?.length).toBeGreaterThan(1);
   });
 });

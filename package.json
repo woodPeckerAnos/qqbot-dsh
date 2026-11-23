@@ -25,6 +25,7 @@
     "test:watch": "vitest",
     "bench:session": "npm run contracts:build && node scripts/session-benchmark.mjs",
     "bench:session:live": "npm run contracts:build && node scripts/session-benchmark.mjs --live",
+    "bench:tasks-v3": "npm run contracts:build && node scripts/tasks-v3-benchmark.mjs",
     "lint": "eslint .",
     "lint:prune": "eslint . --prune-suppressions",
     "format:check": "prettier --check .",

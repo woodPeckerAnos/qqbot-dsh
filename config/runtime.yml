@@ -7,8 +7,9 @@
 # 模型相关的覆盖关系：
 #   - 不创建 config/local/models.yml：使用代码内置默认
 #     （provider=deepseek-official、model=deepseek-flash）；
-#   - 创建后可在那里写 dsh.provider / dsh.model / models:；
-#   - 环境变量 DSH_PROVIDER / DSH_MODEL 仍然优先级最高。
+#   - 创建后可在那里写 tasks.taskProvider / tasks.taskModel / models:；
+#   - 新任务选择未配置时继承原 slow 路由，再退到 dsh.provider / dsh.model；
+#   - 每项环境变量覆盖对应文件值，BOT_TASK_PROVIDER / BOT_TASK_MODEL 选择共享模型。
 #
 # 模块开关：在 qqbot.yml 里注释掉对应 include 行，或写成 enabled: false。
 # ============================================================================
@@ -24,16 +25,21 @@ dsh:
 
 # --- 运行时池 ----------------------------------------------------------------
 pool:
-  # 双 lane 合计硬上限（至少 2），各 lane 容量之和不得超过它
+  # 前台与 worker 合计硬上限（至少 2），两类容量之和不得超过它
   maxRuntimes: 8
   # 空闲 runtime 回收时间（毫秒），回收后该会话下次提问会重建会话并回放历史
   runtimeIdleMs: 1800000
   # 冷启动回放的历史轮数
   replayTurns: 12
 
-# 每个有效输入和主动请求同时进入两个 lane；同 Session 每个 lane 串行。
-# 排队和输入摄取不计入模型执行时限。快 lane 固定关闭 thinking。
+# 每个有效输入和主动请求先运行前台；长任务派发成功后按需创建一个 worker。
+# 同 Session 的前台回合与 worker 分别串行，worker 运行时前台可接收新输入。
+# 排队时限单独计算；输入摄取和 runtime 初始化不计入模型执行时限。
 tasks:
+  reasoningEffort: high
+  frontendMaxSteps: 3
+  queueTimeoutMs: 1800000
+  # 旧字段名保留：fast 表示前台，slow 表示 worker。
   fastRuntimes: 4
   slowRuntimes: 4
   fastTimeoutMs: 30000
@@ -42,11 +48,13 @@ tasks:
   maxGlobal: 128
   retentionMs: 604800000
   reminderMs: 300000
-  # 两个 lane 默认继承 dsh.provider / dsh.model；可在本机 models.yml 分别覆盖。
-  # fastProvider: deepseek-official
-  # fastModel: deepseek-flash
+  # 前台和 worker 共用此路由；未配置时继承原 slow 的最终值。
+  # taskProvider: deepseek-official
+  # taskModel: deepseek-flash
+  # slowProvider / slowModel 保留为共享模型的缺省来源。
   # slowProvider: deepseek-official
   # slowModel: deepseek-flash
+  # fastProvider / fastModel 已弃用，生产路径忽略。
 
 # --- 存储路径 ----------------------------------------------------------------
 # 容器内由 docker-compose 的 environment 指定；这两处要保持一致。

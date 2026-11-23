@@ -1,6 +1,6 @@
 import { DEFAULT_OFFPEAK_WINDOWS } from '@qqbot/contracts';
 import { DEFAULT_SESSION_CONTEXT } from '@qqbot/contracts';
-import type { ConnectorName, Config } from '@qqbot/contracts';
+import type { ConnectorName, Config, ConfigV3 } from '@qqbot/contracts';
 /**
  * 配置层：env（密钥）+ 配置文件（qqbot.yml 入口 + config/ 模块）+ 代码内置默认，
  * 三层合并 + 启动期快速失败。
@@ -29,7 +29,7 @@ import { Intent, DEFAULT_INTENTS } from '@qqbot/contracts';
 import { describeIntents } from './connectors/index.js';
 import {
   assertModelApiConfig,
-  assertFastLaneModelConfig,
+  assertTaskModelConfig,
   resolveAuxRoute,
 } from './dsh/model-config.js';
 import { DEEPSEEK_OFFICIAL_PROVIDER } from '@qqbot/contracts';
@@ -578,7 +578,7 @@ function resolveSessionContext(
   return settings;
 }
 
-export function loadConfig(env: Env = process.env, file: FileConfig = {}): Config {
+export function loadConfig(env: Env = process.env, file: FileConfig = {}): ConfigV3 {
   const hints = ['请复制 .env.example 为 .env 并填写后重试'];
 
   // --- 接入平台选择 ---------------------------------------------------------
@@ -814,13 +814,22 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   const fastProvider = pickString(env, 'BOT_FAST_PROVIDER', taskFile.fastProvider, dshProvider);
   const fastModel = pickString(env, 'BOT_FAST_MODEL', taskFile.fastModel, dshModel);
   const slowProvider = pickString(env, 'BOT_SLOW_PROVIDER', taskFile.slowProvider, dshProvider);
+  const slowModel = pickString(env, 'BOT_SLOW_MODEL', taskFile.slowModel, dshModel);
+  const taskProvider = pickString(env, 'BOT_TASK_PROVIDER', taskFile.taskProvider, slowProvider);
+  const taskModel = pickString(env, 'BOT_TASK_MODEL', taskFile.taskModel, slowModel);
+  const reasoningEffort = pickEnum(
+    env,
+    'BOT_TASK_REASONING_EFFORT',
+    taskFile.reasoningEffort,
+    ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const,
+    'high',
+    'tasks.reasoningEffort'
+  );
   const modelApi: ModelApiConfig = file.models ?? { providers: {} };
   if (file.models !== undefined) {
-    assertModelApiConfig(modelApi, dshProvider, env);
-    assertModelApiConfig(modelApi, fastProvider, env, 'tasks.fastProvider');
-    assertModelApiConfig(modelApi, slowProvider, env, 'tasks.slowProvider');
-    assertFastLaneModelConfig(modelApi, fastProvider, fastModel);
+    assertModelApiConfig(modelApi, taskProvider, env, 'tasks.taskProvider');
   }
+  assertTaskModelConfig(modelApi, taskProvider, taskModel, reasoningEffort);
 
   // --- 判定调用的路由解析（话题判定 + 主动介入判定共用同一端点与凭证） --------
   //
@@ -852,7 +861,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
   // DEEPSEEK_API_KEY 不再无条件必填：主路由与判定都收口到其他提供商时，部署里可以
   // 完全没有它。只来自 env 的纪律不变（requiredSecret 不读配置文件）。
   const requiredSecrets = new Set<string>();
-  if ([dshProvider, fastProvider, slowProvider].includes(DEEPSEEK_OFFICIAL_PROVIDER)) {
+  if (taskProvider === DEEPSEEK_OFFICIAL_PROVIDER) {
     // 原生路由的凭证引用（models.deepseek.apiKeyEnv 改名后按改名的来）
     requiredSecrets.add(modelApi.deepseek?.apiKeyEnv ?? 'DEEPSEEK_API_KEY');
   }
@@ -1084,6 +1093,25 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     modelApi,
     sessionContext: resolveSessionContext(file.sessionContext),
     tasks: {
+      taskProvider,
+      taskModel,
+      reasoningEffort,
+      frontendMaxSteps: pickInt(
+        env,
+        'BOT_FRONTEND_MAX_STEPS',
+        taskFile.frontendMaxSteps,
+        3,
+        { min: 1, max: 100 },
+        'tasks.frontendMaxSteps'
+      ),
+      queueTimeoutMs: pickInt(
+        env,
+        'BOT_TASK_QUEUE_TIMEOUT_MS',
+        taskFile.queueTimeoutMs,
+        1_800_000,
+        { min: 100, max: 86_400_000 },
+        'tasks.queueTimeoutMs'
+      ),
       fastTimeoutMs: pickInt(
         env,
         'BOT_FAST_TIMEOUT_MS',
@@ -1103,7 +1131,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
       fastProvider,
       fastModel,
       slowProvider,
-      slowModel: pickString(env, 'BOT_SLOW_MODEL', taskFile.slowModel, dshModel),
+      slowModel,
       fastRuntimes,
       slowRuntimes,
       maxPerSession: pickInt(
@@ -1566,6 +1594,8 @@ export function describeConfig(config: Config): Record<string, unknown> {
     personas: { dir: config.personas.dir },
     deprecated: {
       ignored: [
+        'tasks.fastProvider',
+        'tasks.fastModel',
         'pool.maxConcurrentTurns',
         'qq-official.progress*',
         'qq-official.turnTimeoutMs',

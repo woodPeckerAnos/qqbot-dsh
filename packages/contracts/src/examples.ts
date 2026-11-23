@@ -14,6 +14,9 @@ export interface ContractExample {
 export interface ContractExampleV2 extends Omit<ContractExample, 'module'> {
   readonly module: ContractModuleIdV2;
 }
+export interface ContractExampleV3 extends ContractExampleV2 {
+  readonly version: 3;
+}
 
 /** 数据夹具由消费者测试和独立离线冒烟共用；此包不包含生产实现。 */
 export const contractExamples = immutableConstant([
@@ -356,3 +359,51 @@ export const contractExamples = immutableConstant([
     expected: { rejected: true, error: 'RangeError', received: 0 },
   },
 ] as const satisfies readonly ContractExampleV2[]);
+
+/** V3 示例独立版本，旧 39 个示例继续验证历史接口。 */
+export const contractExamplesV3 = immutableConstant([
+  {
+    id: 'task.v3.normal',
+    module: 'task',
+    kind: 'normal',
+    version: 3,
+    input: {
+      taskId: 'fixture-task-v3',
+      now: 100,
+      reply: { replyId: 'model-reply', text: '直接答复' },
+    },
+    expected: {
+      status: 'completed',
+      phase: 'terminal',
+      replyId: 'fixture-task-v3:reply:1',
+      done: true,
+      workers: 0,
+    },
+  },
+  {
+    id: 'task.v3.edge',
+    module: 'task',
+    kind: 'edge',
+    version: 3,
+    input: {
+      taskId: 'fixture-task-v3',
+      now: 100,
+      assignment: { instruction: '执行业务计算', deliverables: ['报告'] },
+    },
+    expected: {
+      status: 'running',
+      phase: 'worker-waiting',
+      workerStatus: 'queued',
+      frontendEnded: true,
+      done: false,
+    },
+  },
+  {
+    id: 'task.v3.failure',
+    module: 'task',
+    kind: 'failure',
+    version: 3,
+    input: { taskId: 'fixture-task-v3', now: 100, failWrite: true },
+    expected: { ok: false, code: 'PERSISTENCE_FAILED', tasks: 0, notifications: 0 },
+  },
+] as const satisfies readonly ContractExampleV3[]);

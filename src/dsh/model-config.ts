@@ -890,26 +890,77 @@ export function assertModelApiConfig(
   }
 }
 
-function fastModelCapability(
+function modelCapability(
   provider: PiAiProviderConfig,
   path: string,
-  selectedModel: string
+  selection: { model: string; configKey: string }
 ): { efforts: PiAiModelConfig['reasoningEfforts']; path: string } | undefined {
   if (provider.models !== undefined) {
-    const index = provider.models.findIndex((entry) => entry.id === selectedModel);
+    const index = provider.models.findIndex((entry) => entry.id === selection.model);
     if (index < 0)
       throw new ConfigError(
-        `tasks.fastModel 选中的模型 ${JSON.stringify(selectedModel)} 不在 ${path}.models 中`,
-        ['检查 tasks.fastProvider / tasks.fastModel 及 BOT_FAST_PROVIDER / BOT_FAST_MODEL 的最终值']
+        `${selection.configKey} 选中的模型 ${JSON.stringify(selection.model)} 不在 ${path}.models 中`,
+        [`检查 ${selection.configKey} 及对应环境变量覆盖后的最终值`]
       );
     return {
       efforts: provider.models[index]?.reasoningEfforts,
       path: `${path}.models[${index}].reasoningEfforts`,
     };
   }
-  const efforts = provider.modelOverrides?.[selectedModel]?.reasoningEfforts;
+  const efforts = provider.modelOverrides?.[selection.model]?.reasoningEfforts;
   if (efforts === undefined) return; // 继承目录能力。
-  return { efforts, path: `${path}.modelOverrides.${selectedModel}.reasoningEfforts` };
+  return { efforts, path: `${path}.modelOverrides.${selection.model}.reasoningEfforts` };
+}
+
+function assertDeepSeekTaskModelConfig(
+  route: DeepSeekRouteConfig | undefined,
+  selectedModel: string,
+  reasoningEffort: Exclude<PiAiThinkingLevel, 'off'>
+): void {
+  if (route?.thinking === 'disabled')
+    throw new ConfigError(
+      `任务模型 ${DEEPSEEK_OFFICIAL_PROVIDER}/${selectedModel} 请求 reasoningEffort=${reasoningEffort}，models.deepseek.thinking 禁用了思考`,
+      ['启用 models.deepseek.thinking，或切换到支持所选思考档位的任务模型']
+    );
+  if (!['low', 'high', 'max'].includes(reasoningEffort))
+    throw new ConfigError(
+      `任务模型 ${DEEPSEEK_OFFICIAL_PROVIDER}/${selectedModel} 不支持 tasks.reasoningEffort=${reasoningEffort}`,
+      ['原生 DeepSeek 任务模型支持 low / high / max']
+    );
+  const models = route?.models;
+  if (models !== undefined && !models.some((entry) => entry.id === selectedModel))
+    throw new ConfigError(
+      `tasks.taskModel 选中的模型 ${JSON.stringify(selectedModel)} 不在 models.deepseek.models 中`
+    );
+}
+
+/** 共享任务模型必须接受显式思考档位；未覆写目录能力时由 DSH 初始化校验。 */
+export function assertTaskModelConfig(
+  modelApi: ModelApiConfig,
+  selectedProvider: string,
+  selectedModel: string,
+  reasoningEffort: Exclude<PiAiThinkingLevel, 'off'>
+): void {
+  if (selectedProvider === DEEPSEEK_OFFICIAL_PROVIDER) {
+    assertDeepSeekTaskModelConfig(modelApi.deepseek, selectedModel, reasoningEffort);
+    return;
+  }
+  const provider = modelApi.providers[selectedProvider];
+  if (!provider) return; // 带外目录由 DSH 初始化验证。
+  const capability = modelCapability(provider, `models.providers.${selectedProvider}`, {
+    model: selectedModel,
+    configKey: 'tasks.taskModel',
+  });
+  if (!capability) return;
+  const wire = capability.efforts && capability.efforts[reasoningEffort];
+  if (typeof wire === 'string' && wire.trim() !== '') return;
+  throw new ConfigError(
+    `任务模型 ${selectedProvider}/${selectedModel} 请求 reasoningEffort=${reasoningEffort}，${capability.path} 缺少支持该档位的声明`,
+    [
+      `为已验证的模型在 reasoningEfforts.${reasoningEffort} 声明真实线上拼写；禁用思考或缺少所选档位会拒绝启动`,
+      '只覆写 DSH 目录中的模型容量时可使用 modelOverrides 继承目录能力；修复步骤见 docs/CONFIG.md 的共享任务模型能力说明',
+    ]
+  );
 }
 
 function supportsFastOff(efforts: PiAiModelConfig['reasoningEfforts']): boolean {
@@ -932,11 +983,10 @@ export function assertFastLaneModelConfig(
   if (selectedProvider === DEEPSEEK_OFFICIAL_PROVIDER) return;
   const provider = modelApi.providers[selectedProvider];
   if (!provider) return; // 带外路由仍由 DSH 校验。
-  const capability = fastModelCapability(
-    provider,
-    `models.providers.${selectedProvider}`,
-    selectedModel
-  );
+  const capability = modelCapability(provider, `models.providers.${selectedProvider}`, {
+    model: selectedModel,
+    configKey: 'tasks.fastModel',
+  });
   if (!capability || supportsFastOff(capability.efforts)) return;
   throw new ConfigError(
     `快 lane ${selectedProvider}/${selectedModel} 固定请求 reasoningEffort=off，${capability.path} 必须声明 off 和至少一个非 off 档位`,

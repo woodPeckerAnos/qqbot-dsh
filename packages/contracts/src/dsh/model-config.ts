@@ -249,6 +249,12 @@ export type assertFastLaneModelConfig = (
   selectedProvider: string,
   selectedModel: string
 ) => void;
+export type assertTaskModelConfig = (
+  modelApi: ModelApiConfig,
+  selectedProvider: string,
+  selectedModel: string,
+  reasoningEffort: Exclude<PiAiThinkingLevel, 'off'>
+) => void;
 /**
  * 一条路由给"辅助调用"提供的东西：凭证引用 + chat-completions 端点。
  *
