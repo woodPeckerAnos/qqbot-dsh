@@ -630,7 +630,11 @@ export function checkBoundaries({
       entry: file,
       files: [file],
       dependencies: modules.map((module) => module.id),
-      capabilities: ['node:path'],
+      // 模型启动检查的临时 cwd 由唯一装配入口创建、清理。
+      capabilities: [
+        'node:path',
+        ...(file === 'src/main.ts' ? ['node:fs/promises', 'node:os'] : []),
+      ],
       composition: true,
     }));
   for (const module of composition) {

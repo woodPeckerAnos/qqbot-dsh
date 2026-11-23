@@ -1,11 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { failure, isTaskTerminal, readonlySnapshot } from '@qqbot/contracts';
+import {
+  failure,
+  isTaskTerminal,
+  readonlySnapshot,
+  TASK_RESTART_INTERRUPTION_TEXT,
+} from '@qqbot/contracts';
 import { stripControlChars } from '../content/index.js';
 import { legacyTrace } from '../observability/index.js';
 import type {
   AttachmentReference,
   ContractFailure,
   DeepReadonly,
+  LegacyTaskInterruptionV3,
   FrontendReply,
   FrontendTurnResultV3,
   JobExecutionV3,
@@ -51,7 +57,7 @@ const WORKER_STATUSES = new Set([
 /** 唯一执行状态写者。候选先落盘，成功后才提交、通知或完成 handle。 */
 export class TaskLifeCycleManagerV3 implements ManagerContract {
   private readonly tasks = new Map<string, TaskSnapshotV3>();
-  private readonly legacy: unknown[] = [];
+  private readonly legacy: (Record<string, unknown> & LegacyTaskInterruptionV3)[] = [];
   private readonly listeners = new Set<(task: DeepReadonly<TaskSnapshotV3>) => void>();
   private readonly eventListeners = new Set<(event: DeepReadonly<SessionEvent>) => void>();
   private readonly completions = new Map<
@@ -156,6 +162,13 @@ export class TaskLifeCycleManagerV3 implements ManagerContract {
   }
   pendingJobs(): DeepReadonly<TaskJobV3[]> {
     return readonlySnapshot([...this.tasks.values()].flatMap(pendingTaskJobs));
+  }
+  pendingLegacyInterruptions(): DeepReadonly<LegacyTaskInterruptionV3[]> {
+    return readonlySnapshot(
+      this.legacy
+        .filter((task) => task.status === 'pending' || task.status === 'running')
+        .map((task) => ({ taskId: task.taskId, input: task.input }))
+    );
   }
   handoffFailureCount(): number {
     return this.handoffFailures;
@@ -838,7 +851,7 @@ function recordInterruptedLegacy(record: unknown, now: number): boolean {
     lane.endedAt = now;
     lane.result = {
       kind: 'failed',
-      text: '旧任务被重启中断。',
+      text: TASK_RESTART_INTERRUPTION_TEXT,
       error: 'interrupted',
       failure: failure('UNKNOWN_OUTCOME'),
     };
@@ -1396,7 +1409,9 @@ function validOptional(
 ): boolean {
   return value[field] === undefined || predicate(value[field]);
 }
-function validateLegacyTaskRecord(record: Record<string, unknown>): void {
+function validateLegacyTaskRecord(
+  record: Record<string, unknown>
+): asserts record is Record<string, unknown> & LegacyTaskInterruptionV3 {
   if (
     record.schemaVersion !== undefined &&
     record.schemaVersion !== 1 &&

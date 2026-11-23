@@ -145,6 +145,16 @@ export type createJsonRpcResponseErrorFactory = (
   message: string,
   data?: unknown
 ) => JsonRpcResponseError;
+/** 请求尚未返回；初始化检查按 TIMEOUT 失败，不能进入业务恢复。 */
+export class JsonRpcRequestTimeoutError extends Error {
+  constructor(
+    readonly method: HarnessSdkMethod,
+    readonly timeoutMs: number
+  ) {
+    super(`请求 ${method} 超时（${timeoutMs}ms）`);
+    this.name = 'JsonRpcRequestTimeoutError';
+  }
+}
 export class ProtocolViolationError extends Error {
   constructor(
     message: string,
@@ -190,12 +200,14 @@ export interface HarnessSdkClient {
     params: HarnessSdkRequestMap[M]['params'],
     options?: {
       timeoutMs?: number;
+      signal?: AbortSignal;
     }
   ): Promise<HarnessSdkRequestMap[M]['result']>;
   initialize(
     params: InitializeParams,
     options?: {
       timeoutMs?: number;
+      signal?: AbortSignal;
     }
   ): Promise<InitializeResult>;
   prompt(

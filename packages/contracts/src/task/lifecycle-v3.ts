@@ -20,6 +20,10 @@ import type {
 export interface TaskStateWriterV3 extends StateWriter<unknown> {
   readonly domain?: 'tasks';
 }
+export interface LegacyTaskInterruptionV3 {
+  taskId: string;
+  input: TaskInput;
+}
 export interface TaskLifeCycleManagerV3 {
   onChange(listener: (task: DeepReadonly<TaskSnapshotV3>) => void): () => void;
   onEvent(listener: (event: DeepReadonly<SessionEvent>) => void): () => void;
@@ -27,6 +31,8 @@ export interface TaskLifeCycleManagerV3 {
   create(input: TaskInput, taskId?: string): Result<TaskHandleV3>;
   get(taskId: string): DeepReadonly<TaskSnapshotV3> | undefined;
   list(sessionKey?: string): DeepReadonly<TaskSnapshotV3[]>;
+  /** 未完成 V1/V2 输入；装配入口须先保存固定 ID 中断通知，再调用 recover。 */
+  pendingLegacyInterruptions(): DeepReadonly<LegacyTaskInterruptionV3[]>;
   handle(taskId: string): Result<TaskHandleV3>;
   pendingJobs(): DeepReadonly<TaskJobV3[]>;
   /** 已提交派发的失败次数；重复成功回执不计数，协议非法帧由 runtime 诊断。 */

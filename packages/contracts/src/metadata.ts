@@ -19,7 +19,7 @@ export const modules = immutableConstant([
     responsibility: '解析合并、校验、模型路由与 patch；不决定执行或发送',
     invariants: [
       '有效配置在启动期固定，密钥只来自 env',
-      '共享任务模型必须支持所选思考档位；默认 high，未覆写能力由 DSH 初始化核对',
+      '共享任务模型必须支持所选思考档位；默认 high，接入及持久恢复前必须完成一次 DSH 初始化检查，不请求模型',
     ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
@@ -262,7 +262,10 @@ export const modules = immutableConstant([
       '@deepseek-ai/dsh-session',
     ],
     responsibility: 'DSH 协议、进程、只读租约池、累积与事件观察；不投递平台消息',
-    invariants: ['具体租约身份独占，busy/子代理只有池写，旧通知隔离'],
+    invariants: [
+      '具体租约身份独占，busy/子代理只有池写，旧通知隔离',
+      '初始化可取消；协议请求终结清理 pending、计时器和取消监听',
+    ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',
     errors:
@@ -320,6 +323,7 @@ export const modules = immutableConstant([
       'src/task/prompt-preparer-v3.ts',
       'src/task/control-bridge-v3.ts',
       'src/task/system-v3.ts',
+      'src/task/runtime-profile-v3.ts',
     ],
     dependencies: ['runtime', 'media', 'store', 'delivery', 'observability', 'content', 'session'],
     capabilities: ['node:crypto', 'node:fs', 'node:fs/promises', 'node:path', 'node:url'],
@@ -333,6 +337,8 @@ export const modules = immutableConstant([
       '取消优先于交接，stop 保留尚未开始首次处理的排队 Task；new 取消所有未完成阶段',
       '最终回复入队确认后结束 Task；业务结果、前台整理和实际送达状态分别展示',
       '持久输入、引用、附件、交接、阶段和执行身份先校验；未知版本和重复会话记录明确报错',
+      '启动检查与正常执行共用最终模型和 profile；检查失败不恢复业务状态',
+      'V1/V2 未完成任务先保存固定 ID 中断通知，再保存 failed 状态；队列故障不得先终结旧任务',
     ],
     preconditions: '输入通过契约类型与既有配置校验；异步调用带具体身份，调用者只持有分配的能力',
     postconditions: '成功后返回隔离值；状态写入先持久化再提交/通知；已发生平台动作保留未知结果',

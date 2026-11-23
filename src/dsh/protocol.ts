@@ -1,4 +1,8 @@
-import { JsonRpcResponseError, ProtocolViolationError } from '@qqbot/contracts';
+import {
+  JsonRpcRequestTimeoutError,
+  JsonRpcResponseError,
+  ProtocolViolationError,
+} from '@qqbot/contracts';
 import type {
   InitializeParams,
   InitializeResult,
@@ -175,6 +179,7 @@ export type { HarnessSdkMethod } from '@qqbot/contracts';
 export type { JsonRpcError } from '@qqbot/contracts';
 
 export { JsonRpcResponseError } from '@qqbot/contracts';
+export { JsonRpcRequestTimeoutError } from '@qqbot/contracts';
 
 /** stdout 出现非协议内容——属于致命错误，必须让上层看到 */
 export { ProtocolViolationError } from '@qqbot/contracts';
@@ -189,9 +194,11 @@ export type { HarnessSdkClientOptions } from '@qqbot/contracts';
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
+  reject: (error: unknown) => void;
   timer: NodeJS.Timeout;
-  method: string;
+  method: HarnessSdkMethod;
+  signal?: AbortSignal;
+  onAbort?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,12 +211,14 @@ export class HarnessSdkClient {
   private nextId = 1;
   private buffer = '';
   private closed = false;
+  private activeWrites = 0;
 
   constructor(private readonly options: HarnessSdkClientOptions) {
-    options.input.setEncoding?.('utf8');
+    options.input.setEncoding('utf8');
     options.input.on('data', this.onData);
     options.input.on('end', this.onEnd);
     options.input.on('error', this.onStreamError);
+    options.output.on('error', this.onOutputError);
   }
 
   on<E extends keyof HarnessSdkClientEvents>(event: E, listener: HarnessSdkClientEvents[E]): this {
@@ -232,11 +241,12 @@ export class HarnessSdkClient {
   }
 
   /** 发送一次请求。超时与错误响应都会 reject。 */
-  request<M extends HarnessSdkMethod>(
+  async request<M extends HarnessSdkMethod>(
     method: M,
     params: HarnessSdkRequestMap[M]['params'],
-    options: { timeoutMs?: number } = {}
+    options: { timeoutMs?: number; signal?: AbortSignal } = {}
   ): Promise<HarnessSdkRequestMap[M]['result']> {
+    options.signal?.throwIfAborted();
     if (this.closed) {
       return Promise.reject(new Error(`传输已关闭，无法发送 ${method}`));
     }
@@ -244,24 +254,36 @@ export class HarnessSdkClient {
     const timeoutMs = options.timeoutMs ?? this.options.requestTimeoutMs ?? 30_000;
     return new Promise<HarnessSdkRequestMap[M]['result']>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`请求 ${method} 超时（${timeoutMs}ms）`));
+        this.takePending(id)?.reject(new JsonRpcRequestTimeoutError(method, timeoutMs));
       }, timeoutMs);
-      timer.unref?.();
+      timer.unref();
+      const onAbort = options.signal
+        ? () => this.takePending(id)?.reject(options.signal?.reason)
+        : undefined;
       this.pending.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
         timer,
         method,
+        signal: options.signal,
+        onAbort,
       });
-      const frame = JSON.stringify({ jsonrpc: '2.0', id, method, params });
-      this.write(`${frame}\n`);
+      if (onAbort) options.signal?.addEventListener('abort', onAbort, { once: true });
+      try {
+        options.signal?.throwIfAborted();
+        const frame = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+        this.write(`${frame}\n`, (error) => {
+          if (error) this.takePending(id)?.reject(error);
+        });
+      } catch (error) {
+        this.takePending(id)?.reject(error);
+      }
     });
   }
 
   initialize(
     params: InitializeParams,
-    options?: { timeoutMs?: number }
+    options?: { timeoutMs?: number; signal?: AbortSignal }
   ): Promise<InitializeResult> {
     return this.request('initialize', params, options);
   }
@@ -279,15 +301,23 @@ export class HarnessSdkClient {
 
   /** 关闭传输层监听（不销毁底层流，流的所有权在调用方） */
   close(): void {
+    this.closeTransport('closed');
+  }
+
+  private closeTransport(reason: 'closed' | 'stdout-ended' | Error): void {
     if (this.closed) return;
     this.closed = true;
-    this.options.input.off?.('data', this.onData);
-    this.options.input.off?.('end', this.onEnd);
-    this.options.input.off?.('error', this.onStreamError);
-    for (const [id, p] of this.pending) {
-      clearTimeout(p.timer);
-      this.pending.delete(id);
-      p.reject(new Error(`传输已关闭，请求 ${p.method} 未完成`));
+    this.options.input.off('data', this.onData);
+    this.options.input.off('end', this.onEnd);
+    this.options.input.off('error', this.onStreamError);
+    this.detachIdleOutput();
+    const prefix = reason === 'stdout-ended' ? 'DSH runtime 的 stdout 已结束' : '传输已关闭';
+    for (const id of this.pending.keys()) {
+      const pending = this.takePending(id);
+      if (!pending) continue;
+      pending.reject(
+        reason instanceof Error ? reason : new Error(`${prefix}，请求 ${pending.method} 未完成`)
+      );
     }
     this.emitter.emit('close');
     this.emitter.removeAllListeners();
@@ -297,8 +327,34 @@ export class HarnessSdkClient {
   // 内部
   // -------------------------------------------------------------------------
 
-  private write(chunk: string): void {
-    this.options.output.write(chunk);
+  private takePending(id: number): PendingRequest | undefined {
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    if (pending.onAbort) pending.signal?.removeEventListener('abort', pending.onAbort);
+    return pending;
+  }
+
+  private write(chunk: string, callback?: (error?: Error | null) => void): void {
+    this.activeWrites++;
+    try {
+      this.options.output.write(chunk, (error) => {
+        this.activeWrites--;
+        callback?.(error);
+        // write 回调失败后流还会发 error；收到事件后再移除最后的监听。
+        if (!error) this.detachIdleOutput();
+      });
+    } catch (error) {
+      this.activeWrites--;
+      this.detachIdleOutput();
+      throw error;
+    }
+  }
+
+  private detachIdleOutput(): void {
+    if (this.closed && this.activeWrites === 0)
+      this.options.output.off('error', this.onOutputError);
   }
 
   private readonly onData = (chunk: string | Buffer): void => {
@@ -313,12 +369,12 @@ export class HarnessSdkClient {
 
   private readonly onEnd = (): void => {
     // 输入结束：所有在途请求都不可能再有响应。
-    this.closed = true;
-    for (const [id, p] of this.pending) {
-      clearTimeout(p.timer);
-      this.pending.delete(id);
-      p.reject(new Error(`DSH runtime 的 stdout 已结束，请求 ${p.method} 未完成`));
-    }
+    this.closeTransport('stdout-ended');
+  };
+
+  private readonly onOutputError = (error: Error): void => {
+    this.closeTransport(error);
+    this.detachIdleOutput();
   };
 
   private readonly onStreamError = (error: Error): void => {
@@ -383,15 +439,13 @@ export class HarnessSdkClient {
 
   private handleResponse(frame: Record<string, unknown>): void {
     const id = frame['id'] as number;
-    const pending = this.pending.get(id);
+    const pending = this.takePending(id);
     if (pending === undefined) {
       // 迟到的响应（例如已超时）——记录但不崩
       this.emitter.emit('unknown', frame);
       return;
     }
-    this.pending.delete(id);
-    clearTimeout(pending.timer);
-    const error = frame['error'] as JsonRpcError | undefined;
+    const error = frame['error'] as JsonRpcError | null | undefined;
     if (error !== undefined && error !== null) {
       pending.reject(new JsonRpcResponseError(error.code, error.message, error.data));
       return;

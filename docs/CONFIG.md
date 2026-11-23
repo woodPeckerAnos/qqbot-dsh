@@ -14,19 +14,19 @@
 
 ## 2. 文件地图
 
-| 文件                         | 内容                                                                      | 提交到 git |
-| ---------------------------- | ------------------------------------------------------------------------- | ---------- |
-| `qqbot.yml`                  | 入口：include 清单、加载/合并规则、模块开关说明                           | ✅         |
-| `config/connectors.yml`      | `connectors` / `qq-official`（含 `c2c`）/ `onebot`                        | ✅         |
-| `config/runtime.yml`         | `dsh` / `pool` 硬上限 / `tasks` 双 lane / `paths` / `health` / `logLevel` | ✅         |
-| `config/logging.yml`         | `logging` 记录/缓冲预算、agent 诊断目标、有效期与 flush                   | ✅         |
-| `config/media.yml`           | `attachments`（含 `forward`、`files`）/ `media`                           | ✅         |
-| `config/interaction.yml`     | `personas` / `topic` / `observation` / `sessionContext`                   | ✅         |
-| `config/proactive.yml`       | `proactive` 主动发言全部参数                                              | ✅         |
-| `config/offpeak.yml`         | `offpeak` 谷时段闸                                                        | ✅         |
-| `config/local/models.yml`    | 本机模型路由与 `dsh.provider`/`dsh.model`                                 | ❌         |
-| `config/local/overrides.yml` | 其他本机覆盖                                                              | ❌         |
-| `config/local/README.md`     | 本机配置说明                                                              | ✅         |
+| 文件                         | 内容                                                                            | 提交到 git |
+| ---------------------------- | ------------------------------------------------------------------------------- | ---------- |
+| `qqbot.yml`                  | 入口：include 清单、加载/合并规则、模块开关说明                                 | ✅         |
+| `config/connectors.yml`      | `connectors` / `qq-official`（含 `c2c`）/ `onebot`                              | ✅         |
+| `config/runtime.yml`         | `dsh` / `pool` 硬上限 / `tasks` 前台与 worker / `paths` / `health` / `logLevel` | ✅         |
+| `config/logging.yml`         | `logging` 记录/缓冲预算、agent 诊断目标、有效期与 flush                         | ✅         |
+| `config/media.yml`           | `attachments`（含 `forward`、`files`）/ `media`                                 | ✅         |
+| `config/interaction.yml`     | `personas` / `topic` / `observation` / `sessionContext`                         | ✅         |
+| `config/proactive.yml`       | `proactive` 主动发言全部参数                                                    | ✅         |
+| `config/offpeak.yml`         | `offpeak` 谷时段闸                                                              | ✅         |
+| `config/local/models.yml`    | 本机模型路由与 `tasks.taskProvider` / `taskModel` / `reasoningEffort`           | ❌         |
+| `config/local/overrides.yml` | 其他本机覆盖                                                                    | ❌         |
+| `config/local/README.md`     | 本机配置说明                                                                    | ✅         |
 
 > 仓库当前**不随附** `models.yml` / `overrides.yml` 或 `*.example.yml` 模板。
 > 两个文件都不存在时使用代码内置默认；需要本机差异时按本文键名自行创建。
@@ -179,13 +179,28 @@ models:
             high: high
 ```
 
-只覆写目录模型容量时可用 `modelOverrides`，保留 DSH 已安装目录能力；未覆写能力及带外目录由 DSH 初始化核对。原生 DeepSeek 支持 low / high / max，`models.deepseek.thinking: disabled` 会拒绝任务模型显式思考请求。模型声明必须符合实际服务能力，密钥仍只在 `.env` 中设置。
+只覆写目录模型容量时可用 `modelOverrides`，保留 DSH 已安装目录能力；未覆写能力及带外目录由 DSH 初始化核对。原生 DeepSeek 默认 high，支持 low / high / max，`models.deepseek.thinking: disabled` 会拒绝任务模型显式思考请求。模型声明必须符合实际服务能力，密钥仍只在 `.env` 中设置。
 
-启用 `models:` 配置层后，最终共享路由必须已声明；声明的 `apiKeyEnv` 引用仍全部检查非空。仅继承带外 DSH 配置时，由 DSH 完成目录及路由校验。初始化失败先记录身份和 errorId，再 SIGTERM 回收未就绪进程；关闭信号宽限继续使用 `dsh.shutdownTimeoutMs`。历史快 lane 能力校验公共函数和旧契约保留供兼容消费方使用。
+安装目录中 `qwen-token-plan/qwen3.8-flash` 的 `thinkingLevelMap.high` 为 null，支持 low / medium / xhigh。已选择该模型时，在 `config/local/models.yml` 覆盖档位：
+
+```yaml
+tasks:
+  reasoningEffort: medium
+```
+
+共享配置的默认 high 保留。目录的 `thinkingLevelMap` 由 DSH 读取；手写 `reasoningEfforts` 的非 off 档位须使用真实线上拼写，不接受 null。
+
+`models:` 只接受 `deepseek` 和 `providers`，不接受 `webSearch`；旧本机文件中的 `models.webSearch` 段应删除。联网搜索继续走 `dsh-profile/cordis.patch.yml` 中 `web-search-deepseek` 的方舟静态配置。
+
+启用 `models:` 配置层后，最终共享路由必须已声明；声明的 `apiKeyEnv` 引用仍全部检查非空。配置解析或显式能力校验失败退出码为 2。每次启动在人设恢复、TaskSystem 与连接器构造前，用最终共享 provider/model/effort、相同 patch 顺序和实际 frontend profile 执行一次 `initialize`，不发 prompt。成功或失败都关闭临时 runtime 并清理临时工作目录；初始化默认 60000 毫秒、关闭默认 15000 毫秒，取消信号贯穿握手。检查失败退出码为 1，不自动重试或降档；检查通过并完成清理后才继续启动。
+
+初始化失败先记录身份和 errorId，再 SIGTERM 回收未就绪进程；关闭信号宽限继续使用 `dsh.shutdownTimeoutMs`。历史快 lane 能力校验公共函数和旧契约保留供兼容消费方使用。
 
 旧 `pool.maxConcurrentTurns`、平台 `progress*` / `turnTimeoutMs`、`onebot.maxRepliesPerMsg`、`hints.longTask`、`proactive.speakTimeoutMs` 仅解析兼容，生产路径忽略；启动摘要 `deprecated.ignored` 包含这些键及 fast 模型选择。旧值仍做类型和范围校验。QQ 的 `maxRepliesPerMsg` 保留平台条数约束，主动 `sessionBudget` 按 Task 预留一次，首次实际送达提交一次。
 
-Task 状态位于 `stateDir/tasks.json`，新记录使用 `schemaVersion: 3`。会话 generation 在 `task-sessions.json`，消息、预算和独立附件分别在 `messages.json`、`task-budgets.json`、`message-files/<Task ID>/`。重启恢复未开始的 worker、已保存的结果和最终回复；执行过但缺结果的 worker 记录中断或结果未知，不自动重跑。旧双 lane 未完成记录按历史中断规则处理；旧 `background-pending.json` 不导入。终态和工作区到期清理后，待发送消息及附件副本继续保留。
+Task 状态位于 `stateDir/tasks.json`，新记录使用 `schemaVersion: 3`。会话 generation 在 `task-sessions.json`，消息、预算和独立附件分别在 `messages.json`、`task-budgets.json`、`message-files/<Task ID>/`。重启继续排队 worker，保留原排队截止时间；已运行却缺结果的 worker 保存中断或未知结果交前台整理，不自动重跑。已保存结果继续整理，已开始整理计入最多两次的上限，已固定回复只补入队。
+
+未完成 V1/V2 任务先通过 MessageQueue 保存固定 ID `<taskId>:restart-interrupted` 的中断提示，再标记 failed，不转换成 worker；保存通知失败保留旧状态，保存 Task 失败则下次复用该 ID 补状态。旧终态记录不追补通知，旧 `background-pending.json` 不导入。终态和工作区到期清理后，待发送消息及附件副本继续保留。
 
 ## 11. SessionContextView 与进度追问
 

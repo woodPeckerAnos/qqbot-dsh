@@ -3,6 +3,7 @@ import type {
   MessageQueue,
   SessionOutputCoordinatorV2 as SessionOutputCoordinator,
 } from '@qqbot/contracts';
+import { TASK_RESTART_INTERRUPTION_TEXT } from '@qqbot/contracts';
 /**
  * Task 架构装配与资源生命周期：独立状态存储、双 runtime 池、控制桥和出口回调。
  * 恢复先登记一次中断产物，再结算旧执行，最后释放孤立预算与到期工作区。
@@ -258,7 +259,7 @@ export class TaskSystem {
           lane: 'slow',
           message: task.input.message,
           reference: task.input.reference,
-          text: '任务因服务重启而中断，请重新提交。',
+          text: TASK_RESTART_INTERRUPTION_TEXT,
           kind: 'error',
         },
         `${task.taskId}:restart-interrupted`

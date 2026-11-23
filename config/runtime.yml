@@ -20,6 +20,8 @@ dsh:
   profilePatch: /app/dsh-profile/cordis.patch.yml
   # dsh 可执行文件；默认从 PATH 解析
   bin: dsh
+  # 启动期共享任务模型 initialize 检查也使用这两个时限；不发送 prompt。
+  # 检查成功失败都关闭临时 runtime 并清理 cwd；失败退出，不重试或降档。
   startTimeoutMs: 60000
   shutdownTimeoutMs: 15000
 
@@ -36,6 +38,8 @@ pool:
 # 同 Session 的前台回合与 worker 分别串行，worker 运行时前台可接收新输入。
 # 排队时限单独计算；输入摄取和 runtime 初始化不计入模型执行时限。
 tasks:
+  # 默认 high；按模型实际能力在 config/local/models.yml 覆盖档位。
+  # 能力声明与示例见 docs/CONFIG.md 的“共享任务模型能力”。
   reasoningEffort: high
   frontendMaxSteps: 3
   queueTimeoutMs: 1800000
@@ -47,6 +51,8 @@ tasks:
   maxPerSession: 32
   maxGlobal: 128
   retentionMs: 604800000
+  # worker running 且派发承接语 sent 后，从两者较晚时刻起等 5 分钟，
+  # 仍在执行时最多尝试一次即时提醒；无可用出口时放弃。
   reminderMs: 300000
   # 前台和 worker 共用此路由；未配置时继承原 slow 的最终值。
   # taskProvider: deepseek-official

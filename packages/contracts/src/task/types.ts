@@ -19,6 +19,7 @@ import type { ObservationEntry } from '../store/window.js';
 
 export type Lane = 'fast' | 'slow';
 export const LANES: readonly Lane[] = immutableConstant(['fast', 'slow']);
+export const TASK_RESTART_INTERRUPTION_TEXT = '任务因服务重启而中断，请重新提交。';
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type LaneStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 /** silent 仅表达正常的无需长技能；执行失败和取消必须保留各自结果类型。 */

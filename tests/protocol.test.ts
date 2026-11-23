@@ -15,20 +15,21 @@
  *   - stdout 污染必须被显式报错，而不是静默丢弃；
  *   - 并发请求按 id 正确配对。
  */
-import { PassThrough } from 'node:stream';
-import { describe, expect, it, vi } from 'vitest';
+import { getEventListeners } from 'node:events';
+import { PassThrough, Writable } from 'node:stream';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   HarnessSdkClient,
+  JsonRpcRequestTimeoutError,
   JsonRpcResponseError,
   ProtocolViolationError,
 } from '../src/dsh/protocol.js';
 import { extractAssistantText, TurnAccumulator } from '../src/dsh/turns.js';
 
 /** 建一个客户端 + 可写的"服务端"流。 */
-function makeClient() {
+function makeClient(fromClient: Writable = new PassThrough()) {
   const toClient = new PassThrough();
-  const fromClient = new PassThrough();
   const written: string[] = [];
   fromClient.on('data', (chunk: Buffer) => written.push(chunk.toString('utf8')));
 
@@ -47,6 +48,7 @@ function makeClient() {
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+afterEach(() => vi.useRealTimers());
 
 describe('HarnessSdkClient', () => {
   it('按 id 配对响应到对应请求', async () => {
@@ -216,12 +218,184 @@ describe('HarnessSdkClient', () => {
   });
 
   it('请求超时会 reject 并清理在途请求', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { client } = makeClient();
-    await expect(
-      client.initialize({ cwd: '/w', provider: 'p', model: 'm' }, { timeoutMs: 30 })
-    ).rejects.toThrow(/超时/);
+    const controller = new AbortController();
+    const pending = client.initialize(
+      { cwd: '/w', provider: 'p', model: 'm' },
+      { timeoutMs: 30, signal: controller.signal }
+    );
+    const rejection = expect(pending).rejects.toBeInstanceOf(JsonRpcRequestTimeoutError);
+    await vi.advanceTimersByTimeAsync(30);
+    await rejection;
+    await expect(pending).rejects.toMatchObject({ method: 'initialize', timeoutMs: 30 });
     expect(client.pendingCount).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
     client.close();
+  });
+
+  it('已取消的信号保留取消原因，且不会写出请求或留下计时器', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { client, written } = makeClient();
+    const controller = new AbortController();
+    const reason = new Error('取消启动');
+    controller.abort(reason);
+    await expect(
+      client.initialize({ cwd: '/w', provider: 'p', model: 'm' }, { signal: controller.signal })
+    ).rejects.toBe(reason);
+    expect(written).toEqual([]);
+    expect(client.pendingCount).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+    client.close();
+  });
+
+  it('取消只清理所属请求，迟到响应不影响其他请求', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { client, reply } = makeClient();
+    const controller = new AbortController();
+    const unknown = vi.fn();
+    client.on('unknown', unknown);
+    const first = client.initialize(
+      { cwd: '/w', provider: 'p', model: 'm' },
+      { signal: controller.signal }
+    );
+    const second = client.prompt({ sessionId: 's', contentBlocks: [] });
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(1);
+    controller.abort();
+    await expect(first).rejects.toBe(controller.signal.reason);
+    expect(controller.signal.reason).toMatchObject({ name: 'AbortError' });
+    expect(client.pendingCount).toBe(1);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(1);
+    const lateResponse = { jsonrpc: '2.0', id: 1, result: { serverInfo: {} } };
+    reply(lateResponse);
+    expect(unknown).toHaveBeenCalledWith(lateResponse);
+    reply({ jsonrpc: '2.0', id: 2, result: { messageId: 'm-2' } });
+    await expect(second).resolves.toEqual({ messageId: 'm-2' });
+    expect(client.pendingCount).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    client.close();
+  });
+
+  it.each(['success', 'error'])('响应 %s 后移除取消监听和计时器', async (outcome) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { client, reply } = makeClient();
+    const controller = new AbortController();
+    const pending = client.initialize(
+      { cwd: '/w', provider: 'p', model: 'm' },
+      { signal: controller.signal }
+    );
+    const result = { serverInfo: { name: 'n', version: 'v' } };
+    reply({
+      jsonrpc: '2.0',
+      id: 1,
+      ...(outcome === 'success' ? { result } : { error: { code: -32603, message: 'boom' } }),
+    });
+    if (outcome === 'success') await expect(pending).resolves.toEqual(result);
+    else await expect(pending).rejects.toBeInstanceOf(JsonRpcResponseError);
+    expect(client.pendingCount).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+    controller.abort();
+    client.close();
+  });
+
+  it.each(['close', 'stdout end'])('%s 后清理所有请求和流监听', async (outcome) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { client, toClient, fromClient } = makeClient();
+    const controllers = [new AbortController(), new AbortController()];
+    const pending = controllers.map((controller) =>
+      client.initialize({ cwd: '/w', provider: 'p', model: 'm' }, { signal: controller.signal })
+    );
+    const failures = pending.map((request) => expect(request).rejects.toThrow(/未完成/));
+    if (outcome === 'close') client.close();
+    else {
+      toClient.end();
+      await settle();
+    }
+    await Promise.all(failures);
+    await settle();
+    expect(client.isClosed).toBe(true);
+    expect(client.pendingCount).toBe(0);
+    for (const controller of controllers)
+      expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    for (const event of ['data', 'end', 'error']) expect(toClient.listenerCount(event)).toBe(0);
+    expect(fromClient.listenerCount('error')).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    client.close();
+  });
+
+  it('同步 write 抛错也清理所属请求、取消监听和计时器', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { client, fromClient } = makeClient();
+    const controller = new AbortController();
+    const error = new Error('write failed');
+    vi.spyOn(fromClient, 'write').mockImplementation(() => {
+      throw error;
+    });
+    await expect(
+      client.initialize({ cwd: '/w', provider: 'p', model: 'm' }, { signal: controller.signal })
+    ).rejects.toBe(error);
+    expect(client.pendingCount).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+    client.close();
+  });
+
+  it('异步 write 失败会关闭传输并清理全部请求', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const error = new Error('write failed');
+    const output = new Writable({
+      write(_chunk, _encoding, callback) {
+        setImmediate(() => {
+          callback(error);
+        });
+      },
+    });
+    const { client, toClient } = makeClient(output);
+    const controller = new AbortController();
+    const first = client.initialize(
+      { cwd: '/w', provider: 'p', model: 'm' },
+      { signal: controller.signal }
+    );
+    const second = client.prompt({ sessionId: 's', contentBlocks: [] });
+    const failures = [expect(first).rejects.toBe(error), expect(second).rejects.toBe(error)];
+    await settle();
+    await Promise.all(failures);
+    expect(client.isClosed).toBe(true);
+    expect(client.pendingCount).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    expect(toClient.listenerCount('data')).toBe(0);
+    expect(output.listenerCount('error')).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('取消并关闭后迟到的 write 错误仍被接收，写入结束后释放监听', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const error = new Error('late write failed');
+    const output = new Writable({
+      write(_chunk, _encoding, callback) {
+        setImmediate(() => {
+          callback(error);
+        });
+      },
+    });
+    const { client } = makeClient(output);
+    const controller = new AbortController();
+    const pending = client.initialize(
+      { cwd: '/w', provider: 'p', model: 'm' },
+      { signal: controller.signal }
+    );
+    controller.abort();
+    client.close();
+    await expect(pending).rejects.toBe(controller.signal.reason);
+    expect(client.pendingCount).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+    await settle();
+    expect(output.listenerCount('error')).toBe(0);
   });
 
   it('服务端若发来请求，回 -32601 而不是挂等', async () => {

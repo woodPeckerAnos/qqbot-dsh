@@ -8,7 +8,7 @@ import type {
  * close 先取消执行并等待 runtime 收尾，再解绑出口，保留持久化待发消息。
  */
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { TASK_RESTART_INTERRUPTION_TEXT } from '@qqbot/contracts';
 import type { ConfigV3 as Config } from '@qqbot/contracts';
 import type { BotConnector, NormalizedMessage } from '@qqbot/contracts';
 import { createRuntimePool } from '../runtime/index.js';
@@ -37,6 +37,7 @@ import { TaskControlBridgeV3 } from './control-bridge-v3.js';
 import { DshTaskRunnerV3 } from './dsh-task-runner-v3.js';
 import type { TaskRunnerV3 as LaneRunner } from '@qqbot/contracts';
 import { SessionActorV3 } from './session-actor-v3.js';
+import { buildTaskRuntimeBaseV3 } from './runtime-profile-v3.js';
 import type { SessionContextState } from '@qqbot/contracts';
 import { ProactiveTaskAdapter } from './proactive-adapter.js';
 import type { TaskClock } from '@qqbot/contracts';
@@ -107,20 +108,7 @@ export class TaskSystemV3 {
           createRuntimePool({
             maxRuntimes: config.tasks[lane === 'frontend' ? 'fastRuntimes' : 'slowRuntimes'],
             runtimeIdleMs: 0,
-            base: {
-              bin: config.dsh.bin,
-              profilePatch: config.dsh.profilePatch,
-              patches: [
-                ...(options.modelPatches ?? []),
-                fileURLToPath(new URL('../../dsh-profile/tasks-v3.patch.yml', import.meta.url)),
-              ],
-              dshHome: config.paths.dshHome,
-              provider: config.tasks.taskProvider,
-              model: config.tasks.taskModel,
-              reasoningEffort: config.tasks.reasoningEffort,
-              startTimeoutMs: config.dsh.runtimeStartTimeoutMs,
-              shutdownTimeoutMs: config.dsh.runtimeShutdownTimeoutMs,
-            },
+            base: buildTaskRuntimeBaseV3(config, options.modelPatches),
             logger: logger.child({ role: lane }),
             runtimeFactory: options.runtimeFactory,
           }),
@@ -224,6 +212,21 @@ export class TaskSystemV3 {
         responder: createResponder({ message, queue: this.queue, trace }),
       }),
     });
+    for (const task of this.manager.pendingLegacyInterruptions()) {
+      this.queue.enqueue(
+        {
+          taskId: task.taskId,
+          trace: task.input.trace,
+          lane: 'slow',
+          message: task.input.message,
+          reference: task.input.reference,
+          text: TASK_RESTART_INTERRUPTION_TEXT,
+          kind: 'error',
+          notification: true,
+        },
+        `${task.taskId}:restart-interrupted`
+      );
+    }
     const recovery = actor.recover();
     if (!recovery.ok) throw new Error('恢复任务失败', { cause: recovery.error });
     this.reconcileBudgets();

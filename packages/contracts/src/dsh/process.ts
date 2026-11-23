@@ -94,7 +94,7 @@ export interface DshRuntime extends EventEmitter {
   /** 最近若干行 stderr，用于错误信息里带上真正的原因（例如 cordis 加载失败） */
   get recentStderr(): readonly string[];
   /** 启动进程并完成 initialize 握手。失败时自动清理进程。 */
-  start(): Promise<InitializeResult>;
+  start(signal?: AbortSignal): Promise<InitializeResult>;
   /**
    * 派发一次提示。返回入队回执；结果通过 session.event 流出。
    *

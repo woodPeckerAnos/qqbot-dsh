@@ -15,6 +15,7 @@ export const unitTests = {
     'tests/task-v3-runtime.test.ts',
     'tests/task-v3-plugin.test.ts',
     'tests/task-v3-channel.test.ts',
+    'tests/task-v3-profile.test.ts',
   ],
   session: [
     'tests/session-context.test.ts',
@@ -26,6 +27,8 @@ export const unitTests = {
     'tests/task-system.test.ts',
     'tests/task-v3-state.test.ts',
     'tests/task-v3-system.test.ts',
+    'tests/task-v3-startup.test.ts',
+    'tests/task-v3-legacy-recovery.test.ts',
   ],
   delivery: [
     'tests/task-state-contract.test.ts',

@@ -121,4 +121,5 @@ export * from './task/prompt-preparer-v3.js';
 export * from './task/control-bridge-v3.js';
 export * from './task/proactive-adapter-v3.js';
 export * from './task/system-v3.js';
+export * from './task/runtime-profile-v3.js';
 export * from './session/context-v3.js';

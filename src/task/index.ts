@@ -63,4 +63,9 @@ export const createProactiveTaskAdapterV3: import('@qqbot/contracts').createProa
   (...args) => new ProactiveTaskAdapter(...args);
 export { SYSTEM_CLOCK } from './clock.js';
 export { TaskAdmissionError } from './lifecycle.js';
+export {
+  buildTaskRuntimeBaseV3,
+  buildTaskRuntimeEnvironmentV3,
+  startTaskRuntimeCheckV3,
+} from './runtime-profile-v3.js';
 export { LANES, isTaskTerminal, isLaneTerminal, readonlySnapshot } from './types.js';

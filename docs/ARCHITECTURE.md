@@ -1,6 +1,6 @@
 # 现行架构
 
-每个有效输入和已授权的主动请求创建一个 Task，先由唯一前台 agent 理解和答复。需要业务工具或多步执行时，前台保存 worker 派发请求后结束本回合；worker 按需创建独立 DSH 实例，结果保存后再由前台组织最终回复。前台和 worker 共用同一模型路由，默认显式使用 `high`。固定快慢双 lane 属于历史方案，见 ADR-005、ADR-006；现行行为由 V3 契约和[ADR-017](adr/017-frontend-events-dynamic-worker.md) 约束。
+每个有效输入和已授权的主动请求创建一个 Task，先由唯一前台 agent 理解和答复。需要业务工具或多步执行时，前台保存 worker 派发请求后结束本回合；worker 按需创建独立 DSH 实例，结果保存后再由前台组织最终回复。前台和 worker 共用同一模型路由，默认显式使用 `high`，按[模型实际能力](CONFIG.md#共享任务模型能力)选择档位。固定快慢双 lane 属于历史方案，见 ADR-005、ADR-006；现行行为由 V3 契约、[ADR-017](adr/017-frontend-events-dynamic-worker.md) 和 [ADR-018](adr/018-startup-model-check-and-legacy-notification.md) 约束。
 
 ```mermaid
 flowchart LR
@@ -39,7 +39,7 @@ SessionContextView 为只读 V3 投影，分别展示 worker 结果、前台整�
 
 角色卡只决定前台表达，worker 业务输入移除角色卡表达区块，保留历史和观察背景。查询及答复明确区分业务执行、前台整理、消息入队与实际送达；delivery 缺失时直说送达未核实。完整结果不可用或部分失败时如实说明，不虚构完成。旧同 Task 快答增量比较、慢 lane 的 `NO_REPLY` 和结束前等待快答送达不进入 V3 路径。进度与结果复用的背景决策见 [ADR-009](adr/009-session-context-view.md)、[ADR-014](adr/014-follow-up-result-reuse.md)、[ADR-016](adr/016-progress-completion-qualification.md)。
 
-派发确认后可尝试即时承接语；无合法出口或正文通道忙时放弃，避免排队后变成过时提示。worker 执行且承接语实际送达后，沿用 5 分钟最多一次的即时存活提醒。最终正文和选择的附件持久排队。原消息引用与可用平台出口锚点分开保存，后来的话题变化不撤销已授权工作。
+派发确认后可尝试即时承接语；无合法出口或正文通道忙时放弃，避免排队后变成过时提示。worker 为 running 且派发承接语实际 sent 后，从 worker 开始与承接语送达的较晚时刻起等 5 分钟，仍在执行时最多尝试一次即时存活提醒；无可用出口时放弃。最终正文和选择的附件持久排队。原消息引用与可用平台出口锚点分开保存，后来的话题变化不撤销已授权工作。
 
 OneBot 继续按 [ADR-007](adr/007-output-record-delivery.md) 归并输出：短正文直接发送；长正文用提示与一条平铺记录；多图片/MP4 视频和正文在同一记录；普通多文件或混合附件进入一个 ZIP。单附件保留原文件，官方 QQ 保留既有方式。记录上限 100 MiB，文件及 ZIP 沿用 maxFileBytes，超限明确失败。附件副本先准备，整组持久保存后按序尝试，正文、记录和附件通道独立。
 
@@ -47,11 +47,13 @@ OneBot 继续按 [ADR-007](adr/007-output-record-delivery.md) 归并输出：短
 
 ## 恢复与资源
 
-完成通知用于立即唤醒；启动恢复和每 30 秒维护检查待派发 worker、待整理结果及待入队回复，统一经过领取、截止时间、取消、身份与结果版本校验。任务存储沿用外层格式，新记录 `schemaVersion: 3`；旧双 lane 记录保留历史，未完成旧任务按中断处理，不转换成新 worker。
+完成通知用于立即唤醒；启动恢复和每 30 秒维护检查待派发 worker、待整理结果及待入队回复，统一经过领取、截止时间、取消、身份与结果版本校验。任务存储沿用外层格式，新记录 `schemaVersion: 3`；旧双 lane 记录保留历史。未完成 V1/V2 任务先通过 MessageQueue 保存固定 ID `<taskId>:restart-interrupted` 的中断提示，再由 TaskLifeCycleManager 标记 failed，不转换成 worker。队列保存失败保留旧状态；Task 保存失败时，下次启动复用消息 ID 补状态。已完成 lane 的结果保留，旧终态记录不追补提示；实际投递由 MessageQueue 推进。
 
 重启后尚未开始的 worker 保留原排队截止时间；已经领取并开始启动但缺终态结果的 worker 记录中断或结果未知，不自动重跑。已保存结果恢复整理，曾经执行过的整理计入两次上限；固定最终回复只恢复入队。入队成功但 Task 未确认时提交相同 reply ID。普通话题变化保留旧 Task；`/stop` 取消已经开始首次前台的 Task，包括等待 worker、worker 执行与等待整理，保留尚未开始首次前台的排队 Task；`/new` 取消全部未完成 Task 并重置上下文。
 
-默认前台和 worker 各 4，总 runtime 上限 8；前台排队与 worker 排队最多 30 分钟，worker 模型执行另计 30 分钟。初始化 60 秒、关闭 15 秒；输入摄取和初始化不计入模型执行时限。每 Session 32、全局 128 个未完成 Task；终态结果与工作区保留 7 天，待发送消息及文件独立保存。配置键的旧 fast/slow 名分别表示前台/worker，模型选择改用 `tasks.taskProvider / taskModel / reasoningEffort`；未配共享模型时继承有效 slow 路由。显式目录缺少能力、禁用思考或不支持所选档位时报配置错误，未覆写 DSH 目录在初始化校验。
+默认前台和 worker 各 4，总 runtime 上限 8；前台排队与 worker 排队最多 30 分钟，worker 模型执行另计 30 分钟。初始化 60 秒、关闭 15 秒；输入摄取和初始化不计入模型执行时限。每 Session 32、全局 128 个未完成 Task；终态结果与工作区保留 7 天，待发送消息及文件独立保存。配置键的旧 fast/slow 名分别表示前台/worker，模型选择改用 `tasks.taskProvider / taskModel / reasoningEffort`；未配共享模型时继承有效 slow 路由。显式目录缺少能力、禁用思考或不支持所选档位时报配置错误，退出码为 2。
+
+每次启动在人设恢复、TaskSystem 和连接器构造前，用最终共享 provider/model/effort、相同 patch 顺序和实际 frontend profile 执行一次 `initialize`，不调用 prompt。检查成功或失败都关闭临时 runtime 并清理临时工作目录；初始化默认 60 秒、关闭默认 15 秒，取消信号贯穿握手。检查失败退出码为 1，不自动重试或降低档位；成功清理后才继续启动。
 
 ## 模块边界与观察
 
@@ -75,6 +77,7 @@ Logger 的只读 TraceContext 沿输入、Task、角色、job、worker、DSH 父
 - patch 五件事：覆盖 persona（群助手 + 输出纪律）、钉死 `approval.policy = ask` 并挂 auto-approve 桩、钉死 `sandbox-policy.mode = workspace-write`、只 `disabled` 掉纯叶子 `tool-jobs`、插入本地插件。
 - 两个实测坑：`!!js` 的值会被 `eval`，表达式必须写在一行，换行用 `String.fromCharCode(10)`；不能 `disabled` 提供服务器的行，否则依赖方永远 pending（boot 报 "entries did not activate"）。
 - `/persona <名>` 把预设写进该会话工作区 `AGENTS.md` 的标记区块，DSH 每步探测 mtime，下一个 turn 生效，不重建 runtime。预设只放风格与口径，身份、安全与派发纪律在 `personaPrefix`。
+- `models:` 只接受 `deepseek` 和 `providers`，不接受 `webSearch`。联网搜索继续使用 `cordis.patch.yml` 中 `web-search-deepseek` 的方舟静态配置，与共享任务模型选择独立。
 
 ## 安全边界
 

@@ -71,10 +71,11 @@ export class DshRuntime extends EventEmitter {
   }
 
   /** 启动进程并完成 initialize 握手。失败时自动清理进程。 */
-  async start(): Promise<InitializeResult> {
+  async start(signal?: AbortSignal): Promise<InitializeResult> {
     if (this._state !== 'starting') {
       throw new Error(`runtime 状态为 ${this._state}，不能再次 start()`);
     }
+    signal?.throwIfAborted();
     const { options } = this;
     const spawnImpl = options.spawnImpl ?? spawn;
 
@@ -228,8 +229,9 @@ export class DshRuntime extends EventEmitter {
           model: options.model,
           ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
         },
-        { timeoutMs: options.startTimeoutMs }
+        { timeoutMs: options.startTimeoutMs, signal }
       );
+      signal?.throwIfAborted();
       // 协议漂移检测：服务端身份是 wire-stable 的，变了说明协议不兼容。
       if (result?.serverInfo?.name !== SDK_SERVER_INFO_NAME) {
         throw new Error(
@@ -237,13 +239,21 @@ export class DshRuntime extends EventEmitter {
             `预期 name=${SDK_SERVER_INFO_NAME}。DSH 版本可能不兼容。`
         );
       }
+      signal?.throwIfAborted();
       this._serverInfo = result.serverInfo;
       this._state = 'ready';
       options.logger.event('runtime.ready', { version: result.serverInfo.version, pid: child.pid });
       return result;
     } catch (error) {
       this.errorId ??= options.logger.cause(error, 'runtime-initialize');
-      await this.dispose().catch(() => {});
+      try {
+        await this.dispose();
+      } catch (cleanupError) {
+        // 保留初始化根因；关闭故障独立记录，不能覆盖原始错误。
+        options.logger.warn('初始化失败后关闭 runtime 失败', {
+          error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        });
+      }
       throw new LoggedError(
         this.errorId,
         `DSH runtime initialize 失败（errorId=${this.errorId}）`,
@@ -288,7 +298,10 @@ export class DshRuntime extends EventEmitter {
    */
   async dispose(): Promise<void> {
     this.taskChannel?.destroy();
-    if (this._state === 'closed') return;
+    if (this._state === 'closed') {
+      this.client?.close();
+      return;
+    }
     if (this._state === 'closing') {
       await this.exitPromise;
       return;

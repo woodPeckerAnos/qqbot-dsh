@@ -243,9 +243,6 @@
     }
   },
   "src/dsh/protocol.ts": {
-    "@typescript-eslint/no-unnecessary-condition": {
-      "count": 6
-    },
     "max-statements": {
       "count": 2
     }

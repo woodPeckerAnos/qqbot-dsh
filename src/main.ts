@@ -6,11 +6,10 @@ import type { ProactiveWatcher } from '@qqbot/contracts';
  * 顺序很重要：
  *   1. 解析配置（失败立刻退出，并打印修复提示）
  *   2. 准备存储目录
- *   3. 建健康检查服务（先起来，这样启动失败也能被探针看到）
- *   4. 按 BOT_CONNECTORS 建接入层连接器（官方 / OneBot 可并存）
- *   5. 建 DSH 池与编排器，把两侧接起来
+ *   3. 生成模型 patch，初始化一次 DSH 验证最终模型选择并关闭
+ *   4. 恢复存储、按 BOT_CONNECTORS 建连接器与 TaskSystem
+ *   5. 建编排器与健康检查服务，挂信号处理
  *   6. 启动全部连接器
- *   7. 挂信号处理，优雅退出
  *
  * 多接入模型：
  *   每个连接器一条事件通道，共享同一个编排器、runtime 池与存储。
@@ -21,13 +20,15 @@ import type { ProactiveWatcher } from '@qqbot/contracts';
  * 粗暴退出会让 DSH 的会话日志留半条记录，而那正是我们排障的依据。
  */
 import { join } from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 
 import {
   resolveLoggingSettings,
   loadConfigV3 as loadConfig,
   describeConfigV3 as describeConfig,
 } from './config/index.js';
-import { ConfigError } from '@qqbot/contracts';
+import { ConfigError, failure, LoggedError } from '@qqbot/contracts';
 import type { ConfigV3 as Config } from '@qqbot/contracts';
 import { loadConfigFile } from './config/index.js';
 import { createQqOfficialConnector } from './connectors/index.js';
@@ -39,7 +40,13 @@ import { installLoggingReload } from './observability/index.js';
 import { createLogger } from './observability/index.js';
 import { CN_HOLIDAYS_2026 } from '@qqbot/contracts';
 import { createOffpeakGate } from './offpeak/index.js';
-import { createTaskSystemV3 } from './task/index.js';
+import {
+  createTaskSystemV3,
+  buildTaskRuntimeBaseV3,
+  buildTaskRuntimeEnvironmentV3,
+  startTaskRuntimeCheckV3,
+} from './task/index.js';
+import { createDshRuntime } from './runtime/index.js';
 import { createDocumentExtractor } from './media/index.js';
 import { writeModelApiPatch } from './config/index.js';
 import { createResponder } from './delivery/index.js';
@@ -218,6 +225,70 @@ async function main(): Promise<void> {
   ensureStoreDirs(paths);
   logger.info('存储目录就绪', { ...paths });
 
+  // 目录继承的模型能力只能由 DSH 验证；检查成功后才恢复业务持久状态。
+  let modelApiPatch: string | undefined;
+  const startupAbort = new AbortController();
+  const abortStartup = () => {
+    startupAbort.abort();
+  };
+  process.on('SIGTERM', abortStartup);
+  process.on('SIGINT', abortStartup);
+  let checkDirectory: string | undefined;
+  try {
+    try {
+      modelApiPatch = writeModelApiPatch(config.modelApi, paths.stateDir);
+      checkDirectory = await mkdtemp(join(tmpdir(), 'qqbot-model-check-'));
+      const runtime = createDshRuntime({
+        ...buildTaskRuntimeBaseV3(config, modelApiPatch ? [modelApiPatch] : []),
+        cwd: checkDirectory,
+        logger: logger.child({ component: 'task-model-check', role: 'frontend' }),
+        env: buildTaskRuntimeEnvironmentV3(
+          'frontend',
+          {
+            taskId: 'startup-model-check',
+            executionId: 'startup-model-check',
+            sessionId: 'startup-model-check',
+          },
+          config.tasks.frontendMaxSteps
+        ),
+        taskControl: () => ({ ok: false, error: failure('CANCELLED') }),
+      });
+      const checked = await startTaskRuntimeCheckV3(runtime, startupAbort.signal);
+      if (!checked.ok) {
+        const errorId =
+          checked.error.errorId ?? logger.cause(checked.error.cause, 'task-model-check');
+        throw new LoggedError(errorId, '任务模型初始化检查失败', { cause: checked.error });
+      }
+    } finally {
+      if (checkDirectory) await rm(checkDirectory, { recursive: true, force: true });
+    }
+    startupAbort.signal.throwIfAborted();
+  } catch (error) {
+    const errorId =
+      error instanceof LoggedError ? error.errorId : logger.cause(error, 'task-model-check');
+    logger.error(
+      '任务模型初始化检查失败，请检查 tasks.taskProvider / taskModel / reasoningEffort',
+      {
+        provider: config.tasks.taskProvider,
+        model: config.tasks.taskModel,
+        reasoningEffort: config.tasks.reasoningEffort,
+        errorId,
+      }
+    );
+    stopLoggingReload();
+    await logger.flush();
+    process.exitCode = 1;
+    return;
+  } finally {
+    process.off('SIGTERM', abortStartup);
+    process.off('SIGINT', abortStartup);
+  }
+  logger.info('任务模型初始化检查通过', {
+    provider: config.tasks.taskProvider,
+    model: config.tasks.taskModel,
+    reasoningEffort: config.tasks.reasoningEffort,
+  });
+
   const conversations = createConversationStore(paths, logger);
   const seen = createSeenStore({ paths, logger });
 
@@ -269,12 +340,7 @@ async function main(): Promise<void> {
 
   // --- DSH runtime 池 --------------------------------------------------------
   //
-  // 模型 API 配置层（配置文件的 models: 段，推荐 config/local/models.yml）在这里
-  // 物化成一份生成的 patch 文件，
-  // 作为第二个 --patch 叠加在 profile patch 之后传给每个 dsh 子进程
-  // （--patch 可重复、按 argv 顺序应用）。不配 models: 段时返回 undefined，
-  // 启动参数与历史行为完全一致。
-  const modelApiPatch = writeModelApiPatch(config.modelApi, paths.stateDir);
+  // 复用启动检查之前生成的模型 patch，各 Task 按相同顺序加载。
   if (modelApiPatch !== undefined) {
     logger.info('模型路由 patch 已生成', {
       path: modelApiPatch,

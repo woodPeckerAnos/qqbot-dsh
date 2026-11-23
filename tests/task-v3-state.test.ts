@@ -494,9 +494,15 @@ describe('V3 重启与排队截止', () => {
       },
     ];
     const manager = createTaskLifeCycleManagerV3({ store, now: () => 200 });
+    const interruptions = manager.pendingLegacyInterruptions();
+    expect(interruptions).toEqual([{ taskId: 'legacy', input: input() }]);
+    expect(Object.isFrozen(interruptions[0]?.input.message.target)).toBe(true);
+    expect(manager.list()).toEqual([]);
+    expect(manager.get('legacy')).toBeUndefined();
     store.reject = () => true;
     expect(manager.recover()).toMatchObject({ ok: false, error: { code: 'PERSISTENCE_FAILED' } });
     expect(store.records[0]).toMatchObject({ status: 'running' });
+    expect(manager.pendingLegacyInterruptions()).toEqual(interruptions);
     store.reject = () => false;
     unwrap(manager.recover());
     expect(store.records[0]).toMatchObject({
@@ -507,6 +513,7 @@ describe('V3 重启与排队截止', () => {
       },
     });
     expect(manager.pendingJobs()).toEqual([]);
+    expect(manager.pendingLegacyInterruptions()).toEqual([]);
   });
   it('等待整理超过排队截止时固定失败说明，不消耗整理次数', () => {
     let now = 100;

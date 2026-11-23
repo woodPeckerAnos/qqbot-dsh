@@ -119,6 +119,14 @@ docker compose run --rm --entrypoint dsh qqbot --profile sdk \
 配置文件语法错误会在这里明确报出来。注意 `!!js` 的写法约束（见
 `docs/ARCHITECTURE.md` 的「DSH profile 与 persona」），改 patch 时最容易踩。
 
+### 1.5 任务模型初始化检查失败
+
+日志 `任务模型初始化检查失败` 会列出最终 provider、model、reasoningEffort 和 errorId。先核对 `tasks.taskProvider / taskModel / reasoningEffort` 及对应环境变量；默认 high，按[模型实际能力](CONFIG.md#共享任务模型能力)选择档位。
+
+每次启动在人设恢复、TaskSystem 和连接器构造前，使用最终共享模型、相同 patch 顺序和实际 frontend profile 执行一次 `initialize`，不发 prompt。成功失败都关闭临时 runtime 并清理临时工作目录；初始化默认 60 秒、关闭默认 15 秒，取消信号贯穿握手。失败退出码为 1，不自动重试或降档；配置解析或显式能力校验失败退出码为 2。修复配置后重新启动，日志 `任务模型初始化检查通过` 后才进入业务恢复与连接器构造。
+
+`models:` 只接受 deepseek/providers，旧本机 `models.webSearch` 段应删除。搜索继续使用 `dsh-profile/cordis.patch.yml` 中 `web-search-deepseek` 的方舟静态配置。
+
 ---
 
 ## 2. 连不上 QQ 网关
@@ -322,7 +330,7 @@ docker compose run --rm --entrypoint dsh qqbot --profile sdk \
 
 #### 前台或 worker 持续初始化失败
 
-先核对最终 `tasks.taskProvider / taskModel / reasoningEffort`。前台和 worker 共用任务模型，默认显式 `high`；手写 `models` 目录必须提供所选档位的 `reasoningEfforts` 线上拼写。缺模型、缺能力、禁用思考或档位不支持会启动报错并指出配置路径，修复说明见 [共享任务模型能力](CONFIG.md#共享任务模型能力)。仅继承 DSH 已安装目录时，在 runtime 初始化核对能力。
+先核对最终 `tasks.taskProvider / taskModel / reasoningEffort`。前台和 worker 共用任务模型，默认显式 `high`；手写 `models` 目录必须提供所选档位的 `reasoningEfforts` 线上拼写。缺模型、缺能力、禁用思考或档位不支持会启动报错，修复说明见 [共享任务模型能力](CONFIG.md#共享任务模型能力)。仅继承 DSH 已安装目录时，每次启动的 frontend initialize 检查核对能力，步骤与退出码见 §1.5。
 
 `tasks.fastProvider / fastModel` 已弃用，切换旧 fast 路由不会改变生产前台模型。历史 fast failed / slow completed 与固定 `off` 请求问题见 [ADR-004](adr/004-fast-lane-model-capability.md)；旧记录继续保留，不用于判断 V3 的执行阶段。
 
@@ -337,13 +345,13 @@ docker compose exec qqbot node dist/health-probe.js
 
 ### 4.4 模型调用失败
 
-日志里 `turn/end` 的 reason 是 `error` 时，用户会看到错误摘要。常见：
+日志里 `turn/end` 的 reason 是 `error` 时，按 Task、角色和 job ID 区分失败阶段：首次前台未派发就失败会结束 Task；worker 失败先保存结果，再交前台整理；整理最多两个回合。常见：
 
-| 情况                         | 表现                                        |
-| ---------------------------- | ------------------------------------------- |
-| `DEEPSEEK_API_KEY` 无效/欠费 | turn 立刻 error                             |
-| 模型名不存在                 | `initialize` 阶段就失败（`DSH_MODEL` 拼错） |
-| 网络不通                     | 容器内 `curl https://api.deepseek.com` 测试 |
+| 情况                         | 表现                                           |
+| ---------------------------- | ---------------------------------------------- |
+| `DEEPSEEK_API_KEY` 无效/欠费 | turn 立刻 error                                |
+| 模型名不存在                 | 启动 initialize 检查失败，核对最终共享任务模型 |
+| 网络不通                     | 容器内 `curl https://api.deepseek.com` 测试    |
 
 手工验证网络：
 
@@ -425,18 +433,22 @@ fetch('http://127.0.0.1:8080/metrics').then(r=>r.json()).then(m=>console.log(m.d
 
 ### 4.6 长任务与重启恢复
 
-慢 lane 在所属执行及前台子代理结束后才结算，快 lane 独立推进。默认快 30 秒、慢 30 分钟；无增量 NO_REPLY 是正常成功（成功工具执行后也允许），工具失败、未收口或空结果属于失败。主动快正文完整送达后可省略慢错误正文，Task 与慢 lane 仍 failed，附件及必要说明继续交付。
+每条有效输入先执行前台，派发请求保存后才按需创建 worker，并释放前台名额。默认前台每回合 30 秒，worker 模型执行 30 分钟，两类排队各 30 分钟；输入摄取和 runtime 初始化另计时。worker 保存正文、证据、附件和未完成事项，失败与结果未知也交前台整理；整理最多两个回合，仅可重试故障允许第二次，耗尽后固定失败说明并保留业务结果供查询。最终回复固定后只补入队，实际送达由 MessageQueue 推进。固定双 lane、慢 lane NO_REPLY 和主动快答送达后省略慢错误正文均属于历史规则。
 
-| 现象                       | 检查与处理                                                                                         |
-| -------------------------- | -------------------------------------------------------------------------------------------------- |
-| 要停止当前工作             | 管理员 `/stop` 取消正在执行的 Task，其他排队 Task 保留；自然语言请求通过输入身份绑定的 cancel_task |
-| 要清空未完成工作并开新话题 | 管理员 `/new`；已完成 Task 的待发消息仍保留                                                        |
-| 旧 Task 在新话题仍发出结果 | 正常；新输入及自动话题切换不取消旧 Task，旧结果引用原消息                                          |
-| 没有周期进度               | 正常；快回复成功且慢 lane 开始后至少 5 分钟，仍在执行时最多一次存活提醒；无即时出口放弃            |
-| 重启后旧任务没有继续跑     | 正常；未完成 Task 中断失败，形成一次失败结果，不重跑模型                                           |
-| 重启后消息没有重发         | 发送中且结果不明的消息标 failed；未尝试消息保留 pending                                            |
+| 现象                       | 检查与处理                                                                                                                                                              |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 要停止当前工作             | 管理员 `/stop` 取消已开始首次前台的全部未完成阶段，包括等待 worker、worker 执行和等待整理；首次前台尚未开始的排队 Task 保留。自然语言请求使用输入身份绑定的 cancel_task |
+| 要清空未完成工作并开新话题 | 管理员 `/new` 取消全部未完成 Task 并重置上下文；已入队消息继续按队列规则发送                                                                                            |
+| 旧 Task 在新话题仍发出结果 | 正常；新输入及自动话题切换保留旧 Task，旧结果引用原消息                                                                                                                 |
+| 没有周期进度               | worker running 且派发承接语 sent 后，从两者较晚时刻起等 5 分钟，仍在执行时最多尝试一次即时提醒；无可用出口时放弃                                                        |
+| 重启后 worker 没有重新执行 | 尚未开始的 worker 继续排队并保留截止时间；已运行却缺结果的 worker 保存中断或未知结果交前台整理，不自动重跑                                                              |
+| 重启后结果还在等待整理     | 已保存结果继续整理，已开始的整理计入两次上限；固定回复只补入队                                                                                                          |
+| 重启后 V1/V2 任务变为失败  | 先保存 `<taskId>:restart-interrupted` 中断提示，再标记 failed，不转换成 worker；旧终态记录不追补提示                                                                    |
+| 重启后消息没有重发         | 发送中且结果不明的消息标 failed；未尝试消息保留 pending                                                                                                                 |
 
-持久文件：`tasks.json`、`task-sessions.json`、`messages.json`、`task-budgets.json` 位于 stateDir，稳定待发附件在 `message-files/<Task ID>/`。不要按 Task 完成状态清理队列附件。Task 终态默认保留 7 天，到期删除其工作区；待发送消息及必要文件独立保存。旧版 `background-pending.json` 不自动导入，升级前应检查其中待发内容。
+V1/V2 中断提示先由 MessageQueue 保存，TaskLifeCycleManager 再保存 failed 状态，随后结算预算。队列保存失败保留旧状态；Task 保存失败时，下次启动复用固定消息 ID 补状态。已完成 lane 的结果保留，通知投递失败不派生额外通知。
+
+持久文件：`tasks.json`、`task-sessions.json`、`messages.json`、`task-budgets.json` 位于 stateDir，新 Task 使用 `schemaVersion: 3`，稳定待发附件在 `message-files/<Task ID>/`。不要按 Task 完成状态清理队列附件。Task 终态默认保留 7 天，到期删除其工作区；待发送消息及必要文件独立保存。旧版 `background-pending.json` 不自动导入，升级前应检查其中待发内容。
 
 ### 4.7 转发消息块 / 文件读不到
 
@@ -722,16 +734,16 @@ docker version > /tmp/docker-version.txt
 
 waitInvalidTargetsByReason 区分 missing、forged、closed；前两类计无效目标，closed 按 stale 处理，都不算上游判定失败。持续无效引用先核对实际提示是否提供完整 q:<id>，采纳前再查实时台账。wait 票据仍满足 created = resolved + spent + stale + unchanged + pending。
 
-主动慢失败正文只在快 lane 成功、存在原始正文且全部 sent 时抑制；部分、失败、待发和静默均继续反馈，用户 Task 仍反馈。检查 Task/lane 的失败状态与 errorId，不能用群里有没有补发错误判断执行是否成功。工具结果用 message.content[].toolCallId 并核对 source.callId，追踪与业务收口分开；b4d70d53、a886db8e 具体根因仍未确认。
+当前 V3 的 worker 失败先保存业务结果，再由前台整理；整理失败耗尽两次机会后保存固定失败说明，保留结果和附件供查询。按 Task、worker、整理阶段与 errorId 查看失败，实际投递另查 MessageQueue。主动快答完整送达后抑制慢错误正文属于历史双 lane 规则。工具结果用 message.content[].toolCallId 并核对 source.callId，追踪与业务收口分开；b4d70d53、a886db8e 具体根因仍未确认。
 
-普通回复各长度不自动 @，原引用保留。强烈提醒必须由最终正文首行 [REPLY_ATTENTION:strong] 转为内部意图，只可提及真实原作者；附件和后续分段不重复提醒。上线使用 docker compose up -d --build 重建并重启，观察话题降级、计数一致性、熔断恢复和无效引用比例。
+普通回复各长度不自动 @，原引用保留。首次前台正文首行 [REPLY_ATTENTION:strong]、整理回合的 attention: strong 均转为最终回复的内部提醒意图，只可提及真实原作者；附件和后续分段不重复提醒。上线使用 docker compose up -d --build 重建并重启，观察话题降级、计数一致性、熔断恢复和无效引用比例。
 
 ## SessionContextView 与进度追问排查
 
-进度追问没有慢执行是 ADR-009 的正常路径：TaskInput 有 progressOnly/followUpOf，慢 lane 已完成且 result=silent/no-increment，没有慢 runtime、队列名额、附件或提醒。快答需真实查询原任务；query_tasks 尚无 delivery，完成不等于送达。原任务继续按自己的引用交付。
+进度追问只执行前台并实际 query_tasks，不派发 worker。TaskInput 有 progressOnly/followUpOf；V3 View 分别提供 worker 执行结果、前台整理和实际投递状态。delivery 缺失时说明送达未核实，原任务继续按自己的引用交付。慢 lane 的 silent/no-increment 属于历史 ADR-009 路径。
 
-重复执行先核对配置 mode/progressGuard、发送者与 generation、候选是否唯一、引用是否完整，以及输入是否包含重做、补充、媒体或混合请求。这些保守回退都会正常执行双 lane。连续进度 Task 不作候选，主动 Task 仅作为完成结果背景。
+重复执行先核对配置 mode/progressGuard、发送者与 generation、候选是否唯一、引用是否完整，以及输入是否包含重做、补充、媒体或混合请求。保守回退创建普通 Task，先执行前台，由前台决定是否派发 worker；普通关联输入需要旧结果时引用或复述已有结果。连续进度 Task 不作候选，主动 Task 仅作为完成结果背景。
 
-普通慢 lane 的 `SessionContextView 已读取` 日志只有范围、数量、字符数和省略统计；`读取降级` 表示追加块为空，执行和投递状态继续独立推进。检查历史读取、Task/Queue 只读能力，不将 unknown 投递改成 sent，不重发未知消息。静默保存失败由维护循环 flushSettlements 只补保存，不能重新启动 runner。
+`SessionContextView 已读取` 日志只有范围、数量、字符数和省略统计；`读取降级` 表示追加块为空，执行和投递状态继续独立推进。检查历史读取与 Task/Queue 只读能力，不将 unknown 投递改成 sent，不重发未知消息。V3 已保存 worker 结果只继续整理，固定回复只补入队；flushSettlements 补存静默结果是历史双 lane 规则。
 
-需要回滚时在配置设置 sessionContext.mode: off 后重启；无需迁移或删除 Task/消息记录。只排查 guard 可设置 progressGuard: false。live 语义与 localhost WebSocket 检查分开运行，发布前至少三次严格 live 回归。
+需要关闭 View 与保守关联时，在配置设置 sessionContext.mode: off 后重启；无需迁移或删除 Task/消息记录，前台与动态 worker 调度继续生效。只排查 guard 可设置 progressGuard: false。V3 离线验证使用 npm run bench:tasks-v3，历史双 lane 使用 bench:session；真实模型检查与 localhost WebSocket 检查分开运行。

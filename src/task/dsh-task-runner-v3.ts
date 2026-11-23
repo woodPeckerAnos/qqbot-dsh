@@ -35,6 +35,7 @@ import { splitPersonaSections } from '../store/index.js';
 import { createTurnAccumulator } from '../runtime/index.js';
 import { renderSessionContextViewV3 } from '../session/index.js';
 import { legacyTrace, traceSpan } from '../observability/index.js';
+import { buildTaskRuntimeEnvironmentV3 } from './runtime-profile-v3.js';
 
 type RunnerOptions = Parameters<createDshTaskRunnerFactoryV3>[0];
 type Task = DeepReadonly<TaskSnapshotV3>;
@@ -314,14 +315,11 @@ function runtimeOptions(
     provider: options.config.tasks.taskProvider,
     model: options.config.tasks.taskModel,
     reasoningEffort: options.config.tasks.reasoningEffort,
-    env: {
-      QQBOT_ROLE: work.job.kind,
-      QQBOT_TASK_CHANNEL: work.job.kind === 'frontend' ? '1' : undefined,
-      QQBOT_TASK_ID: work.task.taskId,
-      QQBOT_EXECUTION_ID: control.executionId,
-      QQBOT_ROOT_SESSION_ID: control.sessionId,
-      QQBOT_FRONTEND_MAX_STEPS: String(options.config.tasks.frontendMaxSteps),
-    },
+    env: buildTaskRuntimeEnvironmentV3(
+      work.job.kind,
+      { taskId: work.task.taskId, executionId: control.executionId, sessionId: control.sessionId },
+      options.config.tasks.frontendMaxSteps
+    ),
     taskControl:
       work.job.kind === 'frontend'
         ? (request) => executeControlRequest(request, control)
