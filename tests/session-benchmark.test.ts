@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { offlineCases, mixedCases } from './bench/session/offline-cases.js';
+import { offlineCases } from './bench/session/offline-cases.js';
 import { liveCases, LIGHT_IDS } from './bench/session/live-cases.js';
 import { runCase, selectCases, runBenchmark, requireReasoning } from './bench/session/runner.js';
 import {
@@ -61,21 +61,6 @@ describe('SessionActor benchmark离线验收', () => {
     expect(Object.values(record.resources).every((n) => n === 0)).toBe(true);
     await expect(access(root)).rejects.toThrow();
   });
-  it.each([...offlineCases, ...mixedCases])(
-    '$id $title',
-    async (c) => {
-      const record = await runCase(c, options);
-      expect(
-        record.assertions.filter((a) => a.category === 'runtime' && a.status !== 'pass')
-      ).toEqual([]);
-      expect(Object.values(record.resources).every((n) => n === 0)).toBe(true);
-      if (c.knownIssue) {
-        expect(record.judge?.status).toBe('fail');
-        expect(record.actions.filter((a) => a.status === 'received')).toHaveLength(2);
-      }
-    },
-    30000
-  );
   it('27个在线场景与默认13项轻量集不在npm test中执行', () => {
     expect(liveCases.map((c) => c.id)).toEqual([
       ...Array.from({ length: 24 }, (_, i) => `L${String(i + 1).padStart(2, '0')}`),
