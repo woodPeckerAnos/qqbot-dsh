@@ -12,7 +12,16 @@ import {
   messageMediaParts as messageMediaPartsImplementation,
   collectForwardRefIds as collectForwardRefIdsImplementation,
   messageForwardRefIds as messageForwardRefIdsImplementation,
+  sanitizeReferenceExcerpt as sanitizeReferenceExcerptImplementation,
+  referenceSenderName as referenceSenderNameImplementation,
+  renderReference as renderReferenceImplementation,
 } from '../core/content.js';
+export const sanitizeReferenceExcerpt: import('@qqbot/contracts').sanitizeReferenceExcerpt =
+  sanitizeReferenceExcerptImplementation;
+export const referenceSenderName: import('@qqbot/contracts').referenceSenderName =
+  referenceSenderNameImplementation;
+export const renderReference: import('@qqbot/contracts').renderReference =
+  renderReferenceImplementation;
 export const messageParts: import('@qqbot/contracts').messageParts = messagePartsImplementation;
 export const flattenParts: import('@qqbot/contracts').flattenParts = flattenPartsImplementation;
 export const guardUntrustedText: import('@qqbot/contracts').guardUntrustedText =
@@ -42,7 +51,10 @@ import {
   defuseMentions as defuseMentionsImplementation,
   toPlainText as toPlainTextImplementation,
   sanitizeMarkdown as sanitizeMarkdownImplementation,
+  renderReplyText as renderReplyTextImplementation,
 } from '../pipeline/markdown.js';
+export const renderReplyText: import('@qqbot/contracts').renderReplyText =
+  renderReplyTextImplementation;
 export const stripControlChars: import('@qqbot/contracts').stripControlChars =
   stripControlCharsImplementation;
 export const normalizeWhitespace: import('@qqbot/contracts').normalizeWhitespace =

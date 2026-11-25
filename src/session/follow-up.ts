@@ -85,21 +85,56 @@ function requestText(message: FollowUpOptions['message']): string | undefined {
 }
 
 /** Exact rules only: uncertain references and mixed requests retain normal execution. */
-function classifyReference(options: FollowUpOptions): ReturnType<classifyTaskFollowUp> {
+function classifyReference(options: FollowUpOptions): ReturnType<classifyTaskFollowUpV3> {
   const input = inputText(options.message);
   if (!input) return {};
+  const retry =
+    options.tasks.some((task) => 'schemaVersion' in task) && explicitRetryRequested(input.text);
+  const selected = referenceTargets(options, input, retry);
+  const target = selected[0];
+  if (selected.length !== 1 || !target) return {};
+  const progressOnly = pureProgress(input.text);
+  if (!progressOnly && !retry && !referenceText(input)) return {};
+  return {
+    followUpOf: target.taskId,
+    ...(progressOnly ? { progressOnly: true } : {}),
+    ...(retry ? { retryOf: target.taskId } : {}),
+  };
+}
+function explicitRetryRequested(text: string): boolean {
+  return (
+    /(?:重试|重新(?:执行|查|搜|调查|核实|做)|再(?:试一次|查一次|查一下|搜一次|做一次))/u.test(
+      text
+    ) &&
+    !/["'“”‘’「」『』`]/u.test(text) &&
+    !/(?:不要|不用|别|无需|不许|禁止|不想|不需要).*(?:重试|重新|再)/u.test(text)
+  );
+}
+function referenceTargets(
+  options: FollowUpOptions,
+  input: { text: string; quote?: string },
+  retry: boolean
+): Task[] {
   const targets = options.tasks
-    .filter((task) => candidate(task, options))
+    .filter((task) =>
+      retry
+        ? sameIdentity(task, options) && task.input.source === 'user' && task.status === 'failed'
+        : candidate(task, options)
+    )
     .filter(
       (task) =>
         input.quote === undefined ||
         [task.input.message.content.trim(), ...replyTexts(task)].includes(input.quote)
     );
-  const target = targets[0];
-  if (targets.length !== 1 || !target) return {};
-  const progressOnly = input.text.length <= 40 && PROGRESS.test(input.text);
-  if (!progressOnly && !input.quote && !POINTER.test(input.text)) return {};
-  return { followUpOf: target.taskId, ...(progressOnly ? { progressOnly: true } : {}) };
+  const named = retry ? targets.filter((task) => input.text.includes(task.taskId)) : [];
+  return named.length ? named : targets;
 }
 export const classifyFollowUp: classifyTaskFollowUp = classifyReference;
 export const classifyFollowUpV3: classifyTaskFollowUpV3 = classifyReference;
+
+function pureProgress(text: string): boolean {
+  return text.length <= 40 && PROGRESS.test(text);
+}
+function referenceText(input: { text: string; quote?: string }): boolean {
+  return !!input.quote || POINTER.test(input.text);
+}

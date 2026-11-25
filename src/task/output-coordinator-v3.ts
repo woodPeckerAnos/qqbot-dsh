@@ -16,7 +16,7 @@ import type {
   WorkerReceipt,
   OutgoingAttachment,
 } from '@qqbot/contracts';
-import { segmentText, stripControlChars } from '../content/index.js';
+import { renderReplyText, renderReference } from '../content/index.js';
 import { originalSlices, prepareRecordDelivery } from '../delivery/record.js';
 
 type Task = DeepReadonly<TaskSnapshotV3>;
@@ -61,7 +61,9 @@ export class SessionOutputCoordinatorV3 {
         .some((r) => r.candidate.delivery?.groupId === groupId)
     )
       return;
-    const text = stripControlChars(reply.text).trim();
+    const policy = this.options.policy?.(task);
+    const textFormat = policy?.textFormat;
+    const text = renderReplyText(reply.text, textFormat);
     if (!text) throw new Error('前台回复正文为空');
     const base: ReplyCandidate = {
       trace: task.input.trace,
@@ -75,7 +77,6 @@ export class SessionOutputCoordinatorV3 {
       kind: task.finalStatus === 'failed' ? 'error' : 'final',
     };
     const attachments = reply.attachments ?? [];
-    const policy = this.options.policy?.(task);
     const candidates = policy?.record
       ? await prepareRecordDelivery(
           base,
@@ -87,7 +88,11 @@ export class SessionOutputCoordinatorV3 {
       : await this.prepareLegacyDelivery(task, base, reply.replyId, text, attachments);
     const entries = candidates.map((candidate, index) => ({
       id: `${groupId}:${index}`,
-      candidate: { ...candidate, delivery: { groupId, index } },
+      candidate: {
+        ...candidate,
+        body: candidate.body ? { ...candidate.body, textFormat: textFormat ?? 'plain' } : undefined,
+        delivery: { groupId, index },
+      },
     }));
     if (!this.options.queue.enqueueGroup) throw new Error('V3 交付需要支持整组保存的消息队列');
     this.options.queue.enqueueGroup(entries);
@@ -106,7 +111,7 @@ export class SessionOutputCoordinatorV3 {
       message: task.input.message,
       reference: task.input.reference,
       quote: true,
-      text: stripControlChars(text).trim(),
+      text,
       kind: 'progress',
       immediateOnly: true,
     };
@@ -121,18 +126,16 @@ export class SessionOutputCoordinatorV3 {
     attachments: readonly OutgoingAttachment[]
   ): Promise<ReplyCandidate[]> {
     const reference = task.input.reference;
-    const body = reference.messageId
-      ? text
-      : `（关于 ${reference.senderName ?? reference.senderId} 的「${reference.excerpt.slice(0, 120)}」）\n${text}`;
-    const candidates: ReplyCandidate[] = segmentText(body, {
-      maxChars: this.options.maxChars(task),
-      maxSegments: Math.max(1, body.length),
-    }).segments.map((text, index) => ({
-      ...base,
-      text,
-      mention: index === 0 ? base.mention : undefined,
-      body: { id: replyId, index },
-    }));
+    const prefix = reference.messageId ? '' : renderReference(reference);
+    const body = prefix ? `${prefix}\n${text}` : text;
+    const candidates: ReplyCandidate[] = originalSlices(body, this.options.maxChars(task)).map(
+      (text, index) => ({
+        ...base,
+        text,
+        mention: index === 0 ? base.mention : undefined,
+        body: { id: replyId, index },
+      })
+    );
     const directory = join(this.options.filesDir, task.taskId);
     if (attachments.length) await mkdir(directory, { recursive: true });
     for (const [index, attachment] of attachments.entries()) {
@@ -144,21 +147,22 @@ export class SessionOutputCoordinatorV3 {
         `${createHash('sha256').update(`${replyId}:${index}`).digest('hex')}-${basename(attachment.fileName)}`
       );
       await copyFile(attachment.absPath, absPath);
-      const copied = await stat(absPath);
-      if (copied.size > (this.options.maxFileBytes ?? Infinity))
-        throw new Error('交付附件超过容量');
-      candidates.push({
-        ...base,
-        mention: undefined,
-        text: `附件「${attachment.fileName}」对应「${reference.excerpt.slice(0, 100)}」。`,
-      });
-      candidates.push({
-        ...base,
-        mention: undefined,
-        quote: false,
-        text: '',
-        attachment: { ...attachment, absPath, sizeBytes: copied.size },
-      });
+      const { size: sizeBytes } = await stat(absPath);
+      if (sizeBytes > (this.options.maxFileBytes ?? Infinity)) throw new Error('交付附件超过容量');
+      candidates.push(
+        {
+          ...base,
+          mention: undefined,
+          text: `附件「${attachment.fileName}」${renderReference(reference)}。`,
+        },
+        {
+          ...base,
+          mention: undefined,
+          quote: false,
+          text: '',
+          attachment: { ...attachment, absPath, sizeBytes },
+        }
+      );
     }
     return candidates;
   }

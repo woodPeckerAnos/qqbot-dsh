@@ -42,7 +42,7 @@ import type {
   ReplyPolicy,
 } from '@qqbot/contracts';
 import { flattenParts } from '../../content/index.js';
-import { normalizeWhitespace, stripControlChars, toPlainText } from '../../content/index.js';
+import { renderReplyText } from '../../content/index.js';
 
 import {
   normalizeOneBotEvent,
@@ -172,6 +172,7 @@ export class OnebotConnector implements BotConnector {
   policy(_kind: ConversationKind): ReplyPolicy {
     return {
       ...this.options.replyPolicy,
+      textFormat: 'plain',
       record: { maxPayloadBytes: this.recordLimit(), videoExtensions: ['mp4'] },
     };
   }
@@ -323,13 +324,21 @@ export class OnebotConnector implements BotConnector {
     }
     const attachments = out.attachments ?? [];
 
-    // Task records use the branch above. Legacy callers still send text/attachments separately.
-    const text = out.preserveText
-      ? out.text
-      : normalizeWhitespace(stripControlChars(toPlainText(out.text)));
+    // 图片可以与正文共用一次普通消息；资料上传继续独立发送。
+    const text = out.preserveText ? out.text : renderReplyText(out.text, 'plain');
+    if (attachments.length && attachments.every((attachment) => attachment.kind === 'image')) {
+      const images = await Promise.all(
+        attachments.map(async (attachment) => ({
+          type: 'image',
+          data: { file: await this.encodeAttachment(attachment) },
+        }))
+      );
+      await this.sendText(session, ctx, { ...out, text }, images);
+      return;
+    }
     // 无附件时保持旧行为（哪怕空文本也发，交给平台判定）；有附件时空文本不再发。
     if (text !== '' || attachments.length === 0) {
-      await this.sendText(session, ctx, text, out.reference?.messageId, out.mention);
+      await this.sendText(session, ctx, { ...out, text });
     }
     for (const attachment of attachments) {
       await this.sendAttachment(session, ctx, attachment);
@@ -374,14 +383,17 @@ export class OnebotConnector implements BotConnector {
   private async sendText(
     session: Session,
     ctx: ReplyContext,
-    text: string,
-    quoteMessageId?: string,
-    mention?: string
+    out: OutgoingMessage,
+    images: readonly { type: string; data: { file: string } }[] = []
   ): Promise<void> {
+    ctx.signal?.throwIfAborted();
+    const { text, mention } = out;
+    const quoteMessageId = out.reference?.messageId;
     const message = [
       ...(quoteMessageId ? [{ type: 'reply', data: { id: quoteMessageId } }] : []),
       ...(mention && ctx.target.kind === 'group' ? [{ type: 'at', data: { qq: mention } }] : []),
-      { type: 'text', data: { text } },
+      ...(text ? [{ type: 'text', data: { text } }] : []),
+      ...images,
     ];
     const data =
       ctx.target.kind === 'c2c'

@@ -5,7 +5,11 @@
     "./**/*.ts",
     "../session-benchmark.test.ts",
     "../output-delivery.test.ts",
-    "../*v3*.test.ts"
+    "../*v3*.test.ts",
+    "../delivery-boundaries.test.ts",
+    "../session-command.test.ts",
+    "../search-service.test.ts",
+    "../worker-service-channel.test.ts"
   ],
   "exclude": []
 }

@@ -113,7 +113,7 @@ const REJECTED_KEYS: Record<string, string[]> = {
 // ---------------------------------------------------------------------------
 
 /** 标量字段种类。`windowSpec` 额外接受字符串数组。 */
-type Kind = 'string' | 'int' | 'bool' | 'stringList' | 'windowSpec';
+type Kind = 'string' | 'int' | 'number' | 'bool' | 'stringList' | 'windowSpec';
 type SectionSpec = Record<string, Kind>;
 
 const QQ_OFFICIAL_SPEC: SectionSpec = {
@@ -155,6 +155,8 @@ const DSH_SPEC: SectionSpec = {
   shutdownTimeoutMs: 'int',
 };
 const TASKS_SPEC: SectionSpec = {
+  workerMaxSteps: 'int',
+  workerSoftTimeoutRatio: 'number',
   taskProvider: 'string',
   taskModel: 'string',
   reasoningEffort: 'string',
@@ -302,6 +304,18 @@ const TOP_SCALARS: SectionSpec = {
 
 /** 顶层 section：YAML 里的键名 → FileConfig 里的字段名。 */
 const TOP_SECTIONS: Array<{ yamlKey: string; field: keyof FileConfig; spec: SectionSpec }> = [
+  {
+    yamlKey: 'search',
+    field: 'search',
+    spec: {
+      baseURL: 'string',
+      model: 'string',
+      apiKeyEnv: 'string',
+      maxTokens: 'int',
+      maxUses: 'int',
+      timeoutMs: 'int',
+    },
+  },
   { yamlKey: 'qq-official', field: 'qqOfficial', spec: QQ_OFFICIAL_SPEC },
   { yamlKey: 'onebot', field: 'onebot', spec: ONEBOT_SPEC },
   { yamlKey: 'dsh', field: 'dsh', spec: DSH_SPEC },
@@ -341,18 +355,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function coerceScalar(value: unknown, path: string, kind: Kind): unknown {
   if (value === undefined || value === null) return undefined;
   switch (kind) {
+    case 'number':
+      return coerceNumericScalar(value, path, kind);
     case 'string':
       if (typeof value !== 'string') {
         throw new ConfigError(`${path} 必须是字符串，收到 ${describeValue(value)}`);
       }
       return value;
     case 'int':
-      if (typeof value !== 'number' || !Number.isInteger(value)) {
-        throw new ConfigError(`${path} 必须是整数，收到 ${describeValue(value)}`, [
-          'YAML 里直接写数字，不要加引号：port: 6700（而不是 port: "6700"）',
-        ]);
-      }
-      return value;
+      return coerceNumericScalar(value, path, kind);
     case 'bool':
       if (typeof value !== 'boolean') {
         throw new ConfigError(`${path} 必须是 true / false，收到 ${describeValue(value)}`);
@@ -381,6 +392,21 @@ function coerceScalar(value: unknown, path: string, kind: Kind): unknown {
   }
 }
 
+function coerceNumericScalar(value: unknown, path: string, kind: 'number' | 'int'): number {
+  if (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    (kind === 'number' || Number.isInteger(value))
+  )
+    return value;
+  const expected = kind === 'int' ? '整数' : '有限数字';
+  throw new ConfigError(
+    `${path} 必须是${expected}，收到 ${describeValue(value)}`,
+    kind === 'int'
+      ? ['YAML 里直接写数字，不要加引号：port: 6700（而不是 port: "6700"）']
+      : undefined
+  );
+}
 function describeValue(value: unknown): string {
   if (Array.isArray(value)) return `数组 [${value.map((v) => JSON.stringify(v)).join(', ')}]`;
   if (isPlainObject(value)) return `映射 {${Object.keys(value).join(', ')}}`;

@@ -1,5 +1,10 @@
 import { failure } from '@qqbot/contracts';
-import type { DshRuntimeOptions, WorkerAssignment } from '@qqbot/contracts';
+import type {
+  DshRuntimeOptions,
+  WorkerAssignment,
+  TaskQueryRequestV1,
+  TaskResultRequestV1,
+} from '@qqbot/contracts';
 import type { Duplex } from 'node:stream';
 
 type ControlRequest = Parameters<NonNullable<DshRuntimeOptions['taskControl']>>[0] & { id: string };
@@ -96,8 +101,8 @@ function parseRequest(line: string): ControlRequest | undefined {
   }
   if (!isControlFrame(value)) return;
   if (value.taskId !== undefined && typeof value.taskId !== 'string') return;
-  const assignment = value.assignment === undefined ? undefined : parseAssignment(value.assignment);
-  if (value.assignment !== undefined && !assignment) return;
+  const payload = parseControlPayload(value);
+  if (!payload) return;
   return {
     id: value.id,
     action: value.action,
@@ -105,7 +110,7 @@ function parseRequest(line: string): ControlRequest | undefined {
     sessionId: value.sessionId,
     executionId: value.executionId,
     runtimeGeneration: value.runtimeGeneration,
-    assignment,
+    ...payload,
   };
 }
 
@@ -134,10 +139,73 @@ function parseAssignment(value: unknown): WorkerAssignment | undefined {
   )
     return;
   if (value.acknowledgement !== undefined && typeof value.acknowledgement !== 'string') return;
+  const policy = parseAssignmentPolicy(value);
+  if (!policy) return;
   return {
     instruction: value.instruction,
     deliverables: value.deliverables as string[],
     acknowledgement: value.acknowledgement,
+    ...policy,
+  };
+}
+
+function parseControlPayload(
+  value: Record<string, unknown>
+): Pick<ControlRequest, 'assignment' | 'query' | 'resultRequest'> | undefined {
+  const assignment = value.assignment === undefined ? undefined : parseAssignment(value.assignment);
+  const query = value.query === undefined ? undefined : parseQuery(value.query);
+  const resultRequest =
+    value.resultRequest === undefined ? undefined : parseResultRequest(value.resultRequest);
+  if (
+    (value.assignment !== undefined && !assignment) ||
+    (value.query !== undefined && !query) ||
+    (value.resultRequest !== undefined && !resultRequest)
+  )
+    return undefined;
+  return { assignment, query, resultRequest };
+}
+function parseAssignmentPolicy(
+  value: Record<string, unknown>
+): Pick<WorkerAssignment, 'deliveryIntent' | 'retryOf' | 'requiredCapabilities'> | undefined {
+  if (
+    value.deliveryIntent !== undefined &&
+    value.deliveryIntent !== 'chat' &&
+    value.deliveryIntent !== 'text-document'
+  )
+    return undefined;
+  if (value.retryOf !== undefined && typeof value.retryOf !== 'string') return undefined;
+  if (
+    value.requiredCapabilities !== undefined &&
+    (!Array.isArray(value.requiredCapabilities) ||
+      !value.requiredCapabilities.every((capability) => capability === 'web-search'))
+  )
+    return undefined;
+  return {
+    deliveryIntent: value.deliveryIntent,
+    retryOf: value.retryOf,
+    requiredCapabilities: value.requiredCapabilities as WorkerAssignment['requiredCapabilities'],
+  };
+}
+function parseQuery(value: unknown): TaskQueryRequestV1 | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.taskId !== undefined && typeof value.taskId !== 'string') return undefined;
+  if (value.limit !== undefined && typeof value.limit !== 'number') return undefined;
+  return { taskId: value.taskId, limit: value.limit };
+}
+function parseResultRequest(value: unknown): TaskResultRequestV1 | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.taskId !== 'string' ||
+    typeof value.resultVersion !== 'number' ||
+    !['worker', 'reply'].includes(String(value.source))
+  )
+    return undefined;
+  if (value.offset !== undefined && typeof value.offset !== 'number') return undefined;
+  return {
+    taskId: value.taskId,
+    resultVersion: value.resultVersion,
+    source: value.source as TaskResultRequestV1['source'],
+    offset: value.offset,
   };
 }
 

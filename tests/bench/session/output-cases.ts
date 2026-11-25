@@ -1,5 +1,6 @@
 import { OnebotProbe, digest } from './onebot-probe.js';
 import type { BenchmarkCase } from './types.js';
+import { renderReplyText } from '../../../src/content/index.js';
 
 const long = '结果完整交付。'.repeat(1500);
 const definitions: {
@@ -23,15 +24,15 @@ const definitions: {
   { title: '中文与emoji', text: '中文👩‍💻🙂'.repeat(400), target: 2, record: true },
   { title: '短代码块', text: '```ts\nconst answer = 42;\n```', target: 1 },
   { title: '单图', text: '', files: ['图.png'], target: 1 },
-  { title: '短文单图', text: '图片说明', files: ['图.png'], target: 2 },
+  { title: '短文单图', text: '图片说明', files: ['图.png'], target: 1 },
   { title: '长文单图', text: long, files: ['图.png'], target: 2, record: true },
   { title: '多图', text: '', files: ['甲.png', '乙.jpg'], target: 1, record: true },
   { title: '正文多图', text: '媒体说明', files: ['甲.png', '乙.jpg'], target: 2, record: true },
-  { title: '多视频', text: '', files: ['甲.mp4', '乙.mp4'], target: 1, record: true },
-  { title: '图片视频', text: '媒体说明', files: ['甲.png', '乙.mp4'], target: 2, record: true },
-  { title: '单视频', text: '', files: ['甲.mp4'], target: 1 },
-  { title: '长文单视频', text: long, files: ['甲.mp4'], target: 2, record: true },
-  { title: '单文件', text: '', files: ['说明.txt'], target: 1 },
+  { title: '多视频', text: '', files: ['甲.mp4', '乙.mp4'], target: 1, zip: true },
+  { title: '图片视频', text: '媒体说明', files: ['甲.png', '乙.mp4'], target: 2, zip: true },
+  { title: '单视频', text: '', files: ['甲.mp4'], target: 1, zip: true },
+  { title: '长文单视频', text: long, files: ['甲.mp4'], target: 3, record: true, zip: true },
+  { title: '单文件', text: '', files: ['说明.txt'], target: 1, zip: true },
   { title: '普通多文件', text: '文件说明', files: ['甲.txt', '乙.csv'], target: 2, zip: true },
   { title: '混合附件', text: '文件说明', files: ['图.png', '说明.txt'], target: 2, zip: true },
   { title: '长文ZIP', text: long, files: ['甲.txt', '乙.csv'], target: 3, zip: true, record: true },
@@ -41,11 +42,12 @@ const definitions: {
 export const outputCases: BenchmarkCase[] = definitions.flatMap((d, index) =>
   ['group', 'private'].map((kind): BenchmarkCase => ({
     id: `D${String(index + 1).padStart(2, '0')}${kind === 'group' ? 'G' : 'P'}`,
-    version: 1,
+    version: 2,
     group: '输出交付',
     title: `${kind}/${d.title}`,
     steps: [{ text: d.title }],
-    expectation: '展示规则、原始正文与全部附件字节完整；外部条数按实际OneBot动作计',
+    expectation:
+      '按plain格式转换完整正文再交付，图片独立且其他资料进入一个ZIP；全部附件字节完整，外部条数按实际OneBot动作计',
     run: async (h) => {
       h.connector.recordCapable = true;
       const probe = new OnebotProbe(h.connector);
@@ -80,26 +82,33 @@ export const outputCases: BenchmarkCase[] = definitions.flatMap((d, index) =>
           )
           .join('');
         const entries = probe.actions.flatMap((a) => a.zipEntries ?? []);
-        const media = probe.actions.flatMap((a) => a.nodes.flat().filter((n) => n.sha256));
+        const media = probe.actions.flatMap((a) =>
+          a.nodes.flat().filter((n) => n.type === 'image')
+        );
+        const imageFiles = files.filter((file) => mediaType(file.name) === 'image');
+        const archiveFiles = files.filter((file) => mediaType(file.name) === 'file');
         const filesComplete =
           files.every((file) =>
-            (d.zip ? entries : media).some(
+            (mediaType(file.name) === 'image' ? media : entries).some(
               (n) =>
                 n.sha256 === digest(file.bytes) && n.sizeBytes === Buffer.byteLength(file.bytes)
             )
-          ) && (d.zip ? entries.length : media.length) === files.length;
+          ) &&
+          entries.length === archiveFiles.length &&
+          media.length === imageFiles.length;
         const records = probe.actions.filter((a) => a.action.includes('forward'));
         const slowResult = h.task(t.taskId).lanes.slow.result;
         const originalFiles =
           slowResult && 'attachments' in slowResult ? (slowResult.attachments ?? []) : [];
-        const expectedMedia = originalFiles.map((f) => ({
-          type: mediaType(f.fileName),
-          sha256: digest(files.find((input) => input.name === f.fileName)!.bytes),
-        }));
+        const expectedMedia = originalFiles
+          .filter((file) => file.kind === 'image')
+          .map((f) => ({
+            type: mediaType(f.fileName),
+            sha256: digest(files.find((input) => input.name === f.fileName)!.bytes),
+          }));
         const mediaOrderPass =
-          d.zip ||
           JSON.stringify(media.map(({ type, sha256 }) => ({ type, sha256 }))) ===
-            JSON.stringify(expectedMedia);
+          JSON.stringify(expectedMedia);
         const flatPass = records.every(
           (a) =>
             a.nodes.every(
@@ -119,7 +128,7 @@ export const outputCases: BenchmarkCase[] = definitions.flatMap((d, index) =>
         const displayPass =
           probe.actions.length === d.target &&
           records.length === Number(!!d.record) &&
-          (d.zip ? entries.length === files.length : !entries.length) &&
+          entries.length === archiveFiles.length &&
           mediaOrderPass &&
           flatPass &&
           routePass &&
@@ -137,19 +146,22 @@ export const outputCases: BenchmarkCase[] = definitions.flatMap((d, index) =>
         );
         h.check(
           'output-body-complete',
-          actualBody === d.text,
-          { expectedHash: digest(d.text), actualHash: digest(actualBody) },
+          actualBody === renderReplyText(d.text, 'plain'),
+          {
+            expectedHash: digest(renderReplyText(d.text, 'plain')),
+            actualHash: digest(actualBody),
+          },
           'semantic'
         );
         h.check('output-files-complete', filesComplete, { files, media, entries }, 'semantic');
         h.outputDelivery = {
-          version: 1,
+          version: 2,
           inputHash: digest(JSON.stringify({ text: d.text, files })),
           externalMessages: probe.actions.length,
           targetMessages: d.target,
           internalNodes: records.reduce((sum, a) => sum + a.nodes.length, 0),
           actions: probe.actions,
-          bodyComplete: actualBody === d.text,
+          bodyComplete: actualBody === renderReplyText(d.text, 'plain'),
           filesComplete,
           displayPass,
           preparationMs,
@@ -170,5 +182,5 @@ export const outputCases: BenchmarkCase[] = definitions.flatMap((d, index) =>
 
 function mediaType(fileName: string) {
   if (/\.(png|jpg)$/i.test(fileName)) return 'image';
-  return /\.mp4$/i.test(fileName) ? 'video' : 'file';
+  return 'file';
 }

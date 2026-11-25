@@ -42,6 +42,8 @@ export interface TaskInput {
   /** Verified association at admission; old records omit both fields. */
   followUpOf?: string;
   progressOnly?: boolean;
+  /** Bound from an explicit current-user request, never from worker arguments. */
+  retryOf?: string;
   trace?: TraceContext;
   message: NormalizedMessage;
   /** 由 Ingress 身份白名单绑定，不能由模型提供。 */
@@ -96,6 +98,8 @@ export interface TaskHandle {
 }
 /** 可交付产物；一旦入队，后续 Task 取消或终结均不撤回它。 */
 export interface ReplyCandidate {
+  /** Inline image delivery shares the body action and its persisted copies. */
+  inlineAttachments?: readonly OutgoingAttachment[];
   trace?: TraceContext;
   taskId: string;
   lane: Lane;
@@ -106,6 +110,8 @@ export interface ReplyCandidate {
   text: string;
   /** Original body marker excludes attachment descriptions, reminders and notices. */
   body?: {
+    /** Persist the selected rendering format for delivery verification. */
+    textFormat?: 'plain' | 'markdown';
     id: string;
     index: number;
     /** Original slices in order; nodeIndex maps each slice to the flat record. */

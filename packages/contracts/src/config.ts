@@ -514,12 +514,15 @@ type Env = Record<string, string | undefined>;
 export type loadConfig = (env?: Env, file?: FileConfig) => Config;
 /** V3 任务模型及排队设置必填；V1/V2 的 Config 保留原任务字段。 */
 export interface ConfigV3 extends Omit<Config, 'tasks'> {
+  search: import('./task/search.js').SearchConfig;
   tasks: Config['tasks'] & {
     taskProvider: string;
     taskModel: string;
     reasoningEffort: Exclude<import('./dsh/model-config.js').PiAiThinkingLevel, 'off'>;
     frontendMaxSteps: number;
     queueTimeoutMs: number;
+    workerMaxSteps: number;
+    workerSoftTimeoutRatio: number;
   };
 }
 export type loadConfigV3 = (env?: Env, file?: FileConfig) => ConfigV3;

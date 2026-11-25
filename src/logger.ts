@@ -8,7 +8,7 @@ import type {
 } from '@qqbot/contracts';
 /** 核心日志：所有子 logger 共享配置、预算和 stderr JSONL 出口。 */
 import { randomUUID } from 'node:crypto';
-import { EVENTS } from './logging/events.js';
+import { EVENTS_V2 as EVENTS } from './logging/events.js';
 import { LOG_CATEGORIES } from '@qqbot/contracts';
 import type { EventName, EventFields, LogCategory } from '@qqbot/contracts';
 import { loggingSettings } from './logging/settings.js';

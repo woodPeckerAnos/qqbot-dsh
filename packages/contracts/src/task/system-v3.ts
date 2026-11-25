@@ -10,6 +10,7 @@ export interface TaskSystemV3 extends Omit<
   TaskSystemV2,
   'manager' | 'pools' | 'actor' | 'output' | 'cooperation' | 'proactive'
 > {
+  readonly search: import('./search.js').SearchService;
   readonly manager: TaskLifeCycleManagerV3;
   readonly pools: { frontend: RuntimePool; worker: RuntimePool };
   readonly actor: SessionActorV3;
@@ -21,5 +22,6 @@ export type createTaskSystemFactoryV3 = (
     config: ConfigV3;
     pools?: { frontend: RuntimePool; worker: RuntimePool };
     runner?: TaskRunnerV3;
+    search?: import('./search.js').SearchService;
   }
 ) => TaskSystemV3;

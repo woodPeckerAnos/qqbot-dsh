@@ -233,13 +233,12 @@ export class TaskLifeCycleManagerV3 implements ManagerContract {
         ok: false,
         error: failure(source.cancelAccepted ? 'CANCELLED' : 'CONFLICT', request.jobId),
       };
+    if (!validWorkerAuthorization(source, request.assignment))
+      return { ok: false, error: failure('INVALID_INPUT', '进度查询或重试目标没有本次执行授权') };
     const prepared = createWorkerHandoff(source.input, request);
     if (!prepared.ok) return prepared;
     const { handoff, assignmentKey } = prepared.value;
-    if (source.worker)
-      return source.worker.assignmentKey === assignmentKey
-        ? { ok: true, value: structuredClone(source.worker.receipt) }
-        : { ok: false, error: failure('CONFLICT', source.worker.receipt.workerId) };
+    if (source.worker) return existingWorkerReceipt(source.worker, assignmentKey);
     const task = structuredClone(source);
     const acceptedAt = this.now();
     const receipt: WorkerReceipt = {
@@ -634,11 +633,12 @@ function logTaskTransition(logger: Logger | undefined, transition: TaskTransitio
       status: task.status,
       resultKind: task.worker?.receipt.status,
     });
-  if (isTaskTerminal(task) && !isPreviousTerminal(transition.previous))
-    scoped.event('task.terminal', {
+  if (isTaskTerminal(task) && !isPreviousTerminal(transition.previous)) {
+    scoped.child(terminalFailureMetadata(task)).event('task.terminal', {
       status: task.status,
       durationMs: transition.at - task.createdAt,
     });
+  }
 }
 function isPreviousTerminal(task: TaskSnapshotV3 | undefined): boolean {
   return task !== undefined && isTaskTerminal(task);
@@ -837,6 +837,13 @@ function createWorkerHandoff(
 function normalizedAssignment(assignment: WorkerAssignment): WorkerAssignment {
   return {
     instruction: assignment.instruction.trim(),
+    ...(assignment.deliveryIntent === undefined
+      ? {}
+      : { deliveryIntent: assignment.deliveryIntent }),
+    ...(assignment.retryOf === undefined ? {} : { retryOf: assignment.retryOf }),
+    ...(assignment.requiredCapabilities === undefined
+      ? {}
+      : { requiredCapabilities: [...new Set(assignment.requiredCapabilities)].sort() }),
     deliverables: assignment.deliverables.map((item) => item.trim()),
     ...(assignment.acknowledgement === undefined
       ? {}
@@ -893,13 +900,33 @@ function canonicalDispatch(value: unknown): string {
 function validAssignment(value: unknown): value is WorkerAssignment {
   return (
     isRecord(value) &&
-    typeof value.instruction === 'string' &&
-    value.instruction.trim().length > 0 &&
-    Array.isArray(value.deliverables) &&
-    value.deliverables.every((item) => typeof item === 'string' && item.trim().length > 0) &&
-    (value.acknowledgement === undefined || typeof value.acknowledgement === 'string')
+    validBusinessText(value.instruction) &&
+    validDeliverables(value.deliverables) &&
+    validOptionalStrings(value, ['acknowledgement']) &&
+    validOptional(value, 'retryOf', validNonemptyString) &&
+    validAssignmentCapabilities(value)
   );
 }
+function validDeliverables(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(validBusinessText);
+}
+function validAssignmentCapabilities(value: Record<string, unknown>): boolean {
+  return (
+    (value.deliveryIntent === undefined ||
+      value.deliveryIntent === 'chat' ||
+      value.deliveryIntent === 'text-document') &&
+    (value.requiredCapabilities === undefined ||
+      (Array.isArray(value.requiredCapabilities) &&
+        value.requiredCapabilities.every((item) => item === 'web-search')))
+  );
+}
+function validWorkerAuthorization(source: TaskSnapshotV3, assignment: WorkerAssignment): boolean {
+  return !source.input.progressOnly && source.input.retryOf === assignment.retryOf;
+}
+function taskFailure(task: TaskSnapshotV3): ContractFailure | undefined {
+  return task.worker?.result?.failure ?? task.frontend.failure;
+}
+
 function validReply(value: unknown): value is FrontendReply {
   return (
     isRecord(value) &&
@@ -1209,7 +1236,7 @@ function validInput(value: unknown): value is TaskInput {
 }
 function validInputOptions(value: Record<string, unknown>): boolean {
   return (
-    validOptionalStrings(value, ['followUpOf']) &&
+    validOptionalStrings(value, ['followUpOf', 'retryOf']) &&
     validOptionalBooleans(value, ['progressOnly']) &&
     validOptional(value, 'proactive', validProactiveInput) &&
     validOptional(value, 'trace', validTrace)
@@ -1454,4 +1481,30 @@ function validateLegacyTaskRecord(
     !STATUSES.has(String(record.status))
   )
     throw new Error('无法读取旧 Task 持久记录');
+}
+
+function terminalCauseKind(task: TaskSnapshotV3): string | undefined {
+  const cause = taskFailure(task)?.cause;
+  return isRecord(cause) && typeof cause.kind === 'string' ? cause.kind : undefined;
+}
+
+function existingWorkerReceipt(
+  worker: WorkerSnapshotV3,
+  assignmentKey: string
+): Result<WorkerReceipt> {
+  return worker.assignmentKey === assignmentKey
+    ? { ok: true, value: structuredClone(worker.receipt) }
+    : { ok: false, error: failure('CONFLICT', worker.receipt.workerId) };
+}
+function terminalFailureMetadata(task: TaskSnapshotV3): Record<string, unknown> {
+  const error = taskFailure(task);
+  return {
+    code: error?.code,
+    retry: error?.retry,
+    errorId: error?.errorId,
+    causeKind: terminalCauseKind(task),
+  };
+}
+function validBusinessText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }

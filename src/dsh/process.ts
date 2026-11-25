@@ -14,6 +14,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Duplex } from 'node:stream';
 import { TaskControlQueueV3 } from './task-control-channel-v3.js';
+import { WorkerServiceChannel } from './worker-service-channel.js';
 
 import { LoggedError } from '@qqbot/contracts';
 
@@ -31,6 +32,7 @@ export class DshRuntime extends EventEmitter {
   private client: HarnessSdkClient | undefined;
   private child: ChildProcessWithoutNullStreams | undefined;
   private taskChannel?: Duplex;
+  private workerChannel?: WorkerServiceChannel;
   private _state: DshRuntimeState = 'starting';
   private _serverInfo: InitializeResult['serverInfo'] | undefined;
   private stderrTail: string[] = [];
@@ -87,17 +89,21 @@ export class DshRuntime extends EventEmitter {
         ...options.env,
       },
       stdio:
-        options.taskControl || options.taskCooperation
+        options.taskControl || options.taskCooperation || options.workerServices
           ? ['pipe', 'pipe', 'pipe', 'pipe']
           : ['pipe', 'pipe', 'pipe'],
     });
 
     this.child = child;
     options.logger.event('runtime.started', { pid: child.pid });
-    if (options.taskControl || options.taskCooperation) {
+    if (options.taskControl || options.taskCooperation || options.workerServices) {
       const control = child.stdio[3] as Duplex;
       this.taskChannel = control;
-      if (options.env?.QQBOT_ROLE === 'frontend') {
+      if (options.workerServices) {
+        this.workerChannel = new WorkerServiceChannel(control, options, () =>
+          this.emit('task.channel.closed')
+        );
+      } else if (options.env?.QQBOT_ROLE === 'frontend') {
         new TaskControlQueueV3(control, options, () => this.emit('task.channel.closed'));
       } else {
         const channelAbort = new AbortController();
@@ -265,6 +271,11 @@ export class DshRuntime extends EventEmitter {
   notifyTaskCooperation(update: import('@qqbot/contracts').TaskCooperationUpdate): void {
     if (this.taskChannel && !this.taskChannel.destroyed)
       this.taskChannel.write(JSON.stringify(update) + '\n');
+  }
+  notifyWorkerBudget(update: import('@qqbot/contracts').WorkerBudgetUpdate): void {
+    if (this.workerChannel) this.workerChannel.notify(update);
+    else if (this.taskChannel && !this.taskChannel.destroyed)
+      this.taskChannel.write(JSON.stringify({ type: 'worker-budget', update }) + '\n');
   }
   onTaskChannelClose(listener: () => void): () => void {
     this.on('task.channel.closed', listener);

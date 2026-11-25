@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { TASK_RESTART_INTERRUPTION_TEXT } from '@qqbot/contracts';
 import type { ConfigV3 as Config } from '@qqbot/contracts';
 import type { BotConnector, NormalizedMessage } from '@qqbot/contracts';
-import { createRuntimePool } from '../runtime/index.js';
+import { createRuntimePool, createSearchProvider } from '../runtime/index.js';
+import { SearchRequestQueue } from './search-service.js';
 import type { RuntimePoolOptions } from '@qqbot/contracts';
 import type { DocumentExtractor } from '@qqbot/contracts';
 import { createTrace } from '../observability/index.js';
@@ -43,6 +44,7 @@ import { ProactiveTaskAdapter } from './proactive-adapter.js';
 import type { TaskClock } from '@qqbot/contracts';
 
 export class TaskSystemV3 {
+  readonly search: import('@qqbot/contracts').SearchService;
   readonly manager: TaskLifeCycleManagerV3;
   readonly budget: TaskBudget;
   readonly queue: MessageQueue;
@@ -71,10 +73,21 @@ export class TaskSystemV3 {
       runner?: LaneRunner;
       clock?: TaskClock;
       runtimeFactory?: RuntimePoolOptions['runtimeFactory'];
+      search?: import('@qqbot/contracts').SearchService;
     }
   ) {
     const { config, logger, paths } = options;
     const clock = options.clock;
+    this.search =
+      options.search ??
+      new SearchRequestQueue(
+        createSearchProvider({
+          config: config.search,
+          apiKey: process.env[config.search.apiKeyEnv],
+          clock,
+          logger,
+        })
+      );
     this.manager = new TaskLifeCycleManagerV3({
       store: createStateWriter<unknown, 'tasks'>('tasks', join(paths.stateDir, 'tasks.json')),
       now: clock === undefined ? undefined : () => clock.now(),
@@ -119,7 +132,8 @@ export class TaskSystemV3 {
       (id) => {
         this.actor.cancelExecution(id);
       },
-      this.queue
+      this.queue,
+      { clock, search: this.search }
     );
     this.output = createSessionOutputCoordinatorV3({
       manager: this.manager,
@@ -166,6 +180,7 @@ export class TaskSystemV3 {
           window: (key) => options.windows.read(key),
           now: clock === undefined ? undefined : () => clock.now(),
         }),
+        search: this.search,
       });
     const actor = new SessionActorV3({
       manager: this.manager,
@@ -348,6 +363,7 @@ export class TaskSystemV3 {
   }
   async close(): Promise<void> {
     clearInterval(this.maintenance);
+    this.search.close();
     await this.actor.close();
     await Promise.allSettled(Object.values(this.pools).map((pool) => pool.disposeAll()));
     this.output.close();

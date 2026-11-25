@@ -488,6 +488,8 @@ export interface ReplyContext {
  *     turnTimeoutMs 可以放宽到任务真正需要的时长。
  */
 export interface ReplyPolicy {
+  /** Absent on historical callers means plain. */
+  textFormat?: 'plain' | 'markdown';
   /** Optional flat record support; absent keeps the legacy delivery behavior. */
   record?: { maxPayloadBytes: number; videoExtensions: readonly string[] };
   /** 单条消息最大字符数（分段依据） */

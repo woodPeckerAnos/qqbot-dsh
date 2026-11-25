@@ -93,6 +93,8 @@ export interface DshFileConfig {
   shutdownTimeoutMs?: number;
 }
 export interface TasksFileConfig {
+  workerMaxSteps?: number;
+  workerSoftTimeoutRatio?: number;
   taskProvider?: string;
   taskModel?: string;
   reasoningEffort?: string;
@@ -281,6 +283,7 @@ export interface LoggingFileConfig {
   flushTimeoutMs?: number;
 }
 export interface FileConfig {
+  search?: Partial<import('./task/search.js').SearchConfig>;
   sessionContext?: Partial<import('./session/context.js').SessionContextSettings>;
   logging?: LoggingFileConfig;
   connectors?: string[];

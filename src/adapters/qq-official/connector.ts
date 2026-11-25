@@ -98,7 +98,10 @@ export class QqOfficialConnector implements BotConnector {
   }
 
   policy(kind: ConversationKind): ReplyPolicy {
-    return kind === 'c2c' ? this.options.c2cPolicy : this.options.groupPolicy;
+    return {
+      ...(kind === 'c2c' ? this.options.c2cPolicy : this.options.groupPolicy),
+      textFormat: this.options.msgType === 2 ? 'markdown' : 'plain',
+    };
   }
 
   async reply(ctx: ReplyContext, out: OutgoingMessage): Promise<void> {
@@ -129,6 +132,7 @@ export class QqOfficialConnector implements BotConnector {
       msgType: this.options.msgType,
       msgSeq: ctx.seq,
       quoteMessageId: out.reference?.messageId,
+      preserveText: out.preserveText,
       ...(ctx.msgId !== undefined && ctx.msgId !== '' ? { msgId: ctx.msgId } : {}),
       ...(ctx.eventId !== undefined && ctx.eventId !== '' ? { eventId: ctx.eventId } : {}),
     });

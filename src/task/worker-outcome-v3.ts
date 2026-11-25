@@ -4,6 +4,7 @@ import type { ContractFailure, DeepReadonly, WorkerResult } from '@qqbot/contrac
 export interface TurnDataV3 {
   text: string;
   evidence: string[];
+  unfinished?: string[];
 }
 
 export type TurnResultV3 =
@@ -13,6 +14,10 @@ export type TurnResultV3 =
 
 /** 诊断只留在失败契约中；这些说明可以交给整理模型和用户。 */
 export function workerFailureMessage(error: DeepReadonly<ContractFailure>): string {
+  const cause = error.cause;
+  if (isFailureCause(cause, 'quota-exhausted')) return quotaMessage(cause);
+  if (isFailureCause(cause, 'execution-budget'))
+    return `达到处理${cause.reason === 'step-budget' ? '调用次数' : '时间'}上限，已保留现有结果和未完成说明。`;
   switch (error.code) {
     case 'CANCELLED':
       return '已按要求停止，现有内容已保留。';
@@ -53,7 +58,7 @@ export function failedWorker(
     text: partialData.text.trim(),
     evidence: [...partialData.evidence],
     attachments: [],
-    unfinished: [workerFailureMessage(error)],
+    unfinished: [...(partialData.unfinished ?? []), workerFailureMessage(error)],
     failure: structuredClone(error),
   };
 }
@@ -66,7 +71,7 @@ export function workerResultFromTurn(turn: TurnResultV3): WorkerResult {
     text: turn.data.text.trim(),
     evidence: [...turn.data.evidence],
     attachments: [],
-    unfinished: [],
+    unfinished: [...(turn.data.unfinished ?? [])],
   };
 }
 
@@ -86,4 +91,11 @@ export function workerResultMessage(result: DeepReadonly<WorkerResult>): string 
   if (result.status === 'unknown') return workerFailureMessage(failure('UNKNOWN_OUTCOME'));
   if (result.status === 'cancelled') return workerFailureMessage(failure('CANCELLED'));
   return workerFailureMessage(failure('UPSTREAM_FAILED'));
+}
+
+function isFailureCause(cause: unknown, kind: string): cause is Record<string, unknown> {
+  return typeof cause === 'object' && cause !== null && 'kind' in cause && cause.kind === kind;
+}
+function quotaMessage(cause: Record<string, unknown>): string {
+  return `搜索额度已用完。${typeof cause.message === 'string' ? cause.message : ''}${typeof cause.resetAt === 'string' ? ` 预计重置时间：${cause.resetAt}。` : ''}`;
 }

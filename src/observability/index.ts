@@ -18,7 +18,7 @@ import {
 export const createLogger: import('@qqbot/contracts').createLogger = createLoggerImplementation;
 export const createNullLogger: import('@qqbot/contracts').createNullLogger =
   createNullLoggerImplementation;
-export { LOG_CATEGORIES, EVENTS } from '../logging/events.js';
+export { LOG_CATEGORIES, EVENTS, EVENTS_V2 } from '../logging/events.js';
 import { installLoggingReload as installLoggingReloadImplementation } from '../logging/reload.js';
 export const installLoggingReload: import('@qqbot/contracts').installLoggingReload =
   installLoggingReloadImplementation;

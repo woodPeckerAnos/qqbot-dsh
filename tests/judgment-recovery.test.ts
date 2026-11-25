@@ -52,6 +52,23 @@ function client(fetchImpl: typeof fetch, timeoutMs = 5000) {
 }
 
 describe('话题判定请求及元数据', () => {
+  it('主动判定请求关闭推理并限制1024token且保持原响应解析', async () => {
+    let body: unknown;
+    const chat = client(async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return completion('判定输出');
+    });
+    expect(await chat.completeResult([{ role: 'user', content: '判定输入' }])).toMatchObject({
+      ok: true,
+      value: '判定输出',
+    });
+    expect(body).toMatchObject({
+      model: 'request-model',
+      temperature: 0,
+      reasoning_effort: 'none',
+      max_tokens: 1024,
+    });
+  });
   it.each([false, true])('两种请求 ask=%s 均关闭推理且保留 token 上限', async (ask) => {
     const request = vi.fn(async () =>
       completion(ask ? '{"related":false,"mentions_chat_record":true}' : '{"related":true}')

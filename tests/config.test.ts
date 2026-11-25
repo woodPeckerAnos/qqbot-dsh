@@ -25,6 +25,29 @@ const baseEnv = {
 };
 
 describe('loadConfig', () => {
+  it('搜索配置只引用密钥名称，软截止比例与搜索限制启动期校验', () => {
+    const parsed = parseConfigFileText(
+      'tasks:\n  workerSoftTimeoutRatio: 0.75\nsearch:\n  baseURL: https://search.example/v1\n  apiKeyEnv: SEARCH_KEY\n  maxUses: 2\n'
+    );
+    const config = loadConfig(baseEnv, parsed);
+    expect(config.tasks.workerSoftTimeoutRatio).toBe(0.75);
+    expect(config.search).toMatchObject({
+      baseURL: 'https://search.example/v1',
+      apiKeyEnv: 'SEARCH_KEY',
+      maxUses: 2,
+    });
+    expect(() => loadConfig(baseEnv, { tasks: { workerSoftTimeoutRatio: 1 } })).toThrow(
+      ConfigError
+    );
+    expect(() => loadConfig(baseEnv, { tasks: { workerSoftTimeoutRatio: 0 } })).toThrow(
+      ConfigError
+    );
+    expect(() => loadConfig(baseEnv, { search: { baseURL: 'file:///tmp/search' } })).toThrow(
+      ConfigError
+    );
+    expect(() => loadConfig(baseEnv, { search: { maxUses: 0 } })).toThrow(ConfigError);
+    expect(() => parseConfigFileText('search:\n  apiKey: literal-secret\n')).toThrow(ConfigError);
+  });
   it('共享模型、思考、step 与排队设置按环境变量优先合并', () => {
     const file = parseConfigFileText(`
 tasks:
@@ -91,7 +114,7 @@ tasks:
   it('Task 默认值、共享模型继承与 runtime 硬上限', () => {
     const config = loadConfig(baseEnv);
     expect(config.tasks).toMatchObject({
-      fastTimeoutMs: 30_000,
+      fastTimeoutMs: 90_000,
       slowTimeoutMs: 1_800_000,
       fastRuntimes: 4,
       slowRuntimes: 4,
@@ -102,7 +125,9 @@ tasks:
       taskProvider: 'deepseek-official',
       taskModel: 'deepseek-flash',
       reasoningEffort: 'high',
-      frontendMaxSteps: 3,
+      frontendMaxSteps: 5,
+      workerMaxSteps: 40,
+      workerSoftTimeoutRatio: 0.8,
       queueTimeoutMs: 1_800_000,
     });
     const separate = loadConfig({

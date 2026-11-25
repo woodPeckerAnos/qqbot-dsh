@@ -9,13 +9,7 @@ import type { RenderOptions } from '@qqbot/contracts';
  *   - `0` 纯文本：剥掉 Markdown 标记。最稳，默认。
  *   - `2` Markdown：保留基础结构（标题/列表/代码块），做最小清洗。
  */
-import {
-  defuseMentions,
-  normalizeWhitespace,
-  sanitizeMarkdown,
-  stripControlChars,
-  toPlainText,
-} from '../../content/index.js';
+import { defuseMentions, renderReplyText } from '../../content/index.js';
 import { MsgType } from '@qqbot/contracts';
 import type { SendMessageRequest } from '@qqbot/contracts';
 
@@ -29,17 +23,18 @@ export type { RenderOptions } from '@qqbot/contracts';
  * 所以这里不需要知道消息发往哪里。
  */
 export function renderMessage(text: string, options: RenderOptions): SendMessageRequest {
-  const cleaned = defuseMentions(normalizeWhitespace(stripControlChars(text)));
+  const format = options.msgType === 2 ? 'markdown' : 'plain';
+  const cleaned = defuseMentions(options.preserveText ? text : renderReplyText(text, format));
 
   const body: SendMessageRequest = {
-    msg_type: options.msgType === 2 ? MsgType.MARKDOWN : MsgType.TEXT,
+    msg_type: options.msgType,
     msg_seq: options.msgSeq,
   };
 
   if (options.msgType === 2) {
-    body.markdown = { content: sanitizeMarkdown(cleaned) };
+    body.markdown = { content: cleaned };
   } else {
-    body.content = toPlainText(cleaned);
+    body.content = cleaned;
   }
 
   // msg_id 与 event_id 互斥：优先 msg_id（被动回复提问）

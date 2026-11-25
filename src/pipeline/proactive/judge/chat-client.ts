@@ -75,7 +75,13 @@ class ChatRequest {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${this.options.apiKey}`,
           },
-          body: JSON.stringify({ model: this.options.model, messages, temperature: 0 }),
+          body: JSON.stringify({
+            model: this.options.model,
+            messages,
+            temperature: 0,
+            reasoning_effort: 'none',
+            max_tokens: 1024,
+          }),
           signal: this.controller.signal,
         }
       );

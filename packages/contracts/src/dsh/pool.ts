@@ -48,6 +48,7 @@ export interface RuntimeHandle {
   readonly lastErrorId: string | undefined;
   prompt(sessionId: string, blocks: PromptContentBlock[]): Promise<SessionPromptResult>;
   notifyTaskCooperation?(update: import('../task/cooperation.js').TaskCooperationUpdate): void;
+  notifyWorkerBudget?(update: import('../task/search.js').WorkerBudgetUpdate): void;
   onTaskChannelClose?(listener: () => void): () => void;
   on<K extends keyof DshRuntimeEvents>(event: K, listener: DshRuntimeEvents[K]): void;
   off<K extends keyof DshRuntimeEvents>(event: K, listener: DshRuntimeEvents[K]): void;

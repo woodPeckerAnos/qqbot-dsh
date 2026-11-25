@@ -48,4 +48,4 @@ export type classifyTaskFollowUpV3 = (
   options: Omit<Parameters<classifyTaskFollowUp>[0], 'tasks'> & {
     tasks: DeepReadonly<TaskSnapshotV3[]>;
   }
-) => Readonly<{ followUpOf?: string; progressOnly?: boolean }>;
+) => Readonly<{ followUpOf?: string; progressOnly?: boolean; retryOf?: string }>;

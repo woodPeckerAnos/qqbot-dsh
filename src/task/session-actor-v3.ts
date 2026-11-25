@@ -293,6 +293,7 @@ export class SessionActorV3 implements ActorContract {
     });
     return {
       followUpOf: followUp.followUpOf,
+      retryOf: followUp.retryOf,
       progressOnly: settings.progressGuard ? followUp.progressOnly : undefined,
     };
   }
@@ -394,7 +395,7 @@ function validSessionState(value: unknown): value is SessionContextState {
 function createAdmissionInput(
   context: MessageContext,
   request: {
-    followUp: { followUpOf?: string; progressOnly?: boolean };
+    followUp: { followUpOf?: string; progressOnly?: boolean; retryOf?: string };
     generation: number;
     captured: TaskInput['context'];
     proactive?: TaskInput['proactive'];

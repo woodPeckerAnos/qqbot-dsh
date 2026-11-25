@@ -28,6 +28,10 @@ export interface WorkerAssignment {
   instruction: string;
   deliverables: string[];
   acknowledgement?: string;
+  /** Only the frontend may request text documents; absence means chat output. */
+  deliveryIntent?: 'chat' | 'text-document';
+  retryOf?: string;
+  requiredCapabilities?: 'web-search'[];
 }
 export interface AttachmentReference {
   id: string;
@@ -65,7 +69,7 @@ export interface FrontendReply {
   replyId: string;
   text: string;
   attention?: 'strong';
-  /** V3 整理回复由程序加入本次已保存并再次校验通过的全部附件。 */
+  /** 程序按已保存的交付意图加入有效附件。 */
   attachments?: OutgoingAttachment[];
 }
 export type FrontendTurnResultV3 = { kind: 'reply'; reply: FrontendReply } | { kind: 'dispatched' };
@@ -131,6 +135,58 @@ export interface TaskQueryV3 extends TaskSnapshotV3 {
     status: 'none' | 'pending' | 'sending' | 'sent' | 'failed' | 'unknown';
     asOf: number;
   };
+}
+
+/** Versioned model-facing projection. Never contains raw input, handoff or file paths. */
+export interface TaskQueryRequestV1 {
+  taskId?: string;
+  limit?: number;
+}
+export interface TaskSummaryV1 {
+  taskId: string;
+  status: TaskStatus;
+  phase: TaskPhaseV3;
+  createdAt: number;
+  endedAt?: number;
+  question: string;
+  questionOriginalChars: number;
+  questionOmittedChars: number;
+  worker?: {
+    status: WorkerReceipt['status'];
+    resultStatus?: WorkerResult['status'];
+    resultVersion: number;
+    text: string;
+    originalChars: number;
+    omittedChars: number;
+    attachments: string[];
+    attachmentCount: number;
+  };
+  reply?: { text: string; originalChars: number; omittedChars: number };
+  failure?: { code: ContractFailure['code']; retry: ContractFailure['retry'] };
+  delivery: TaskQueryV3['delivery'];
+}
+export interface TaskQueryPageV1 {
+  schemaVersion: 1;
+  tasks: TaskSummaryV1[];
+  total: number;
+  truncated: boolean;
+  asOf: number;
+}
+export interface TaskResultRequestV1 {
+  taskId: string;
+  resultVersion: number;
+  source: 'worker' | 'reply';
+  offset?: number;
+}
+export interface TaskResultPageV1 {
+  schemaVersion: 1;
+  taskId: string;
+  resultVersion: number;
+  source: 'worker' | 'reply';
+  offset: number;
+  text: string;
+  nextOffset?: number;
+  originalChars: number;
 }
 
 export type { TaskInput, TaskStatus, ReplyCandidate } from './types.js';

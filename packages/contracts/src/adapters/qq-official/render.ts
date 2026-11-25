@@ -20,6 +20,7 @@
  */
 import type { SendMessageRequest } from './types.js';
 export interface RenderOptions {
+  preserveText?: boolean;
   msgType: 0 | 2;
   /** 被动回复的 msg_id */
   msgId?: string;

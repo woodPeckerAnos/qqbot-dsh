@@ -44,4 +44,5 @@ export type createDshTaskRunnerFactoryV3 = (options: {
   logger: Logger;
   clock?: TaskClock;
   contextView?: ReturnType<import('../session/context-v3.js').createSessionContextViewFactoryV3>;
+  search?: import('./search.js').SearchService;
 }) => TaskRunnerV3;

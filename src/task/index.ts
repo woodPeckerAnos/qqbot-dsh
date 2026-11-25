@@ -1,4 +1,8 @@
 /** Public module boundary. Consumers receive contract interfaces. */
+import { SearchRequestQueue } from './search-service.js';
+export const createSearchService: import('@qqbot/contracts').createSearchServiceFactory = (
+  provider
+) => new SearchRequestQueue(provider);
 import { TaskBudget } from './budget.js';
 import { TaskControlBridge } from './control-bridge.js';
 import { DshLaneRunner } from './dsh-lane-runner.js';

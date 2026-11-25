@@ -35,6 +35,7 @@ function signatures(module) {
     );
   if (module.id === 'media') files.push('media-result.d.ts');
   if (module.id === 'task') files.push('task/types-v3.d.ts', 'task/task-runner-v3.d.ts');
+  if (module.id === 'task' || module.id === 'runtime') files.push('task/search.d.ts');
   return compiledSignatures([...new Set(files)]);
 }
 

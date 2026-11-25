@@ -10,7 +10,7 @@ import { originalSlices, prepareRecordDelivery } from '../delivery/record.js';
 import type { ReplyPolicy } from '@qqbot/contracts';
 import { traceSpan, legacyTrace } from '../observability/index.js';
 import { createHash } from 'node:crypto';
-import { normalizeWhitespace, stripControlChars } from '../content/index.js';
+import { renderReplyText, renderReference } from '../content/index.js';
 import { segmentText } from '../content/index.js';
 import type { TaskBudget } from '@qqbot/contracts';
 import { SYSTEM_CLOCK } from '@qqbot/contracts';
@@ -149,7 +149,7 @@ export class SessionOutputCoordinator {
   ): Promise<void> {
     const text =
       result.kind === 'reply' || result.kind === 'failed'
-        ? normalizeWhitespace(stripControlChars(result.text)).trim()
+        ? renderReplyText(result.text, this.options.policy?.(task).textFormat ?? 'plain')
         : '';
     const kind = result.kind === 'failed' ? 'error' : 'final';
     const reference = task.input.reference;
@@ -177,9 +177,8 @@ export class SessionOutputCoordinator {
     if (text) {
       let i = 0;
       let mention = this.mention(task, result);
-      const spokenText = !reference.messageId
-        ? `（关于 ${reference.senderName ?? reference.senderId} 的「${reference.excerpt.slice(0, 120)}」）\n${text}`
-        : text;
+      const prefix = reference.messageId ? '' : renderReference(reference);
+      const spokenText = prefix ? `${prefix}\n${text}` : text;
       const delivered = deliveredBodyCounts(this.options.queue.messages(task.taskId), lane);
       for (const part of segmentText(spokenText, {
         maxChars: this.options.maxChars(task),
@@ -233,7 +232,10 @@ export class SessionOutputCoordinator {
     policy: ReplyPolicy,
     resultId?: string
   ): Promise<void> {
-    const text = result.kind === 'reply' || result.kind === 'failed' ? result.text.trim() : '';
+    const text =
+      result.kind === 'reply' || result.kind === 'failed'
+        ? renderReplyText(result.text, policy.textFormat ?? 'plain')
+        : '';
     const bodyId = `${task.taskId}:${lane}:body:${resultId ?? createHash('sha256').update(text).digest('hex')}`;
     // Stable original slices are chosen before deduplication or wrapping. Never repair fences or drop separators.
     const delivered = deliveredBodyCounts(this.options.queue.messages(task.taskId), lane);

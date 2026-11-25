@@ -3,6 +3,7 @@ import {
   DEFAULT_OBSERVATION_MAX_AGE_MS,
   WINDOW_BLOCK_MAX_CHARS,
 } from '@qqbot/contracts';
+import { renderReference, referenceSenderName } from '../content/index.js';
 import type {
   ObservationEntry,
   ObservationPolicy,
@@ -593,9 +594,8 @@ export function renderWindowBlock(
     // 判据失效（调用方据此回退到"只有当前这条"）
     .filter((entry) => entry.text.trim() !== '')
     .map((entry) => {
-      const who = entry.isBot === true ? botLabel : (entry.senderName ?? entry.senderId);
-      const ref = entry.reference;
-      const quote = ref ? `（引用 ${ref.senderName ?? ref.senderId} 的「${ref.excerpt}」）` : '';
+      const who = entry.isBot === true ? botLabel : referenceSenderName(entry);
+      const quote = renderReference(entry.reference);
       return `[${who}] ${quote}${entry.text}`.trimEnd();
     });
 

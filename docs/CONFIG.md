@@ -144,9 +144,9 @@ include:
 | ------------------------------------------ | ---------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `tasks.taskProvider` / `taskModel`         | 共享模型；分别继承有效 `slowProvider` / `slowModel`，再继承 `dsh.provider` / `dsh.model` | `BOT_TASK_PROVIDER` / `BOT_TASK_MODEL`                   |
 | `tasks.reasoningEffort`                    | `high`；允许 minimal / low / medium / high / xhigh / max，按模型实际能力选择             | `BOT_TASK_REASONING_EFFORT`                              |
-| `tasks.frontendMaxSteps`                   | 首次前台最多 3 个模型 step，范围 1–100；整理回合不运行工具循环                           | `BOT_FRONTEND_MAX_STEPS`                                 |
+| `tasks.frontendMaxSteps`                   | 首次前台最多 5 次模型调用，范围 1–100；最后一次无工具，整理不运行业务工具                | `BOT_FRONTEND_MAX_STEPS`                                 |
 | `tasks.queueTimeoutMs`                     | 前台和 worker 排队各 1800000；范围 100–86400000 毫秒                                     | `BOT_TASK_QUEUE_TIMEOUT_MS`                              |
-| `tasks.fastTimeoutMs` / `slowTimeoutMs`    | 前台回合 30000 / worker 模型执行 1800000 毫秒                                            | `BOT_FAST_TIMEOUT_MS` / `BOT_SLOW_TIMEOUT_MS`            |
+| `tasks.fastTimeoutMs` / `slowTimeoutMs`    | 前台回合 90000 / worker 模型执行 1800000 毫秒                                            | `BOT_FAST_TIMEOUT_MS` / `BOT_SLOW_TIMEOUT_MS`            |
 | `tasks.fastRuntimes` / `slowRuntimes`      | 前台 / worker 容量各 4                                                                   | `BOT_FAST_RUNTIMES` / `BOT_SLOW_RUNTIMES`                |
 | `tasks.maxPerSession` / `maxGlobal`        | 未完成 Task 32 / 128                                                                     | `BOT_TASKS_PER_SESSION` / `BOT_TASKS_GLOBAL`             |
 | `tasks.retentionMs`                        | 结果和工作区保留 604800000 毫秒（7 天）                                                  | `BOT_TASK_RETENTION_MS`                                  |
@@ -190,7 +190,7 @@ tasks:
 
 共享配置的默认 high 保留。目录的 `thinkingLevelMap` 由 DSH 读取；手写 `reasoningEfforts` 的非 off 档位须使用真实线上拼写，不接受 null。
 
-`models:` 只接受 `deepseek` 和 `providers`，不接受 `webSearch`；旧本机文件中的 `models.webSearch` 段应删除。联网搜索继续走 `dsh-profile/cordis.patch.yml` 中 `web-search-deepseek` 的方舟静态配置。
+`models:` 只接受 `deepseek` 和 `providers`，不接受 `webSearch`；旧本机文件中的 `models.webSearch` 段应删除。联网搜索使用 `search` 段的 baseURL、model、apiKeyEnv、maxTokens、maxUses、timeoutMs；apiKeyEnv 只保存环境变量名称，密钥仍放环境变量。
 
 启用 `models:` 配置层后，最终共享路由必须已声明；声明的 `apiKeyEnv` 引用仍全部检查非空。配置解析或显式能力校验失败退出码为 2。每次启动在人设恢复、TaskSystem 与连接器构造前，用最终共享 provider/model/effort、相同 patch 顺序和实际 frontend profile 执行一次 `initialize`，不发 prompt。成功或失败都关闭临时 runtime 并清理临时工作目录；初始化默认 60000 毫秒、关闭默认 15000 毫秒，取消信号贯穿握手。检查失败退出码为 1，不自动重试或降档；检查通过并完成清理后才继续启动。
 
@@ -215,6 +215,8 @@ Task 状态位于 `stateDir/tasks.json`，新记录使用 `schemaVersion: 3`。�
 | maxTasks           | 8          | 1–64                                   |
 | maxRecentMessages  | 0          | 0–12，仅 full 生效                     |
 | recentTaskWindowMs | 300000     | 1–86400000，追问候选及近期消息窗口     |
+
+`tasks.workerMaxSteps` 默认 40，根与子代理共用，另允许根一次无工具收尾；`tasks.workerSoftTimeoutRatio` 默认 0.8，必须大于 0 且小于 1。明确搜索月度额度耗尽后，本次进程一直复用首次错误，重启清空；普通 429 不进入额度缓存。
 
 V3 View 分开展示 worker 执行结果、前台整理及投递状态。board-only 提供可核对的 Task 结果，full 另补近期纯文本背景，不重新摄取媒体。纯进度仍只认 40 字内整句白名单和唯一同成员用户目标，失败、取消、主动和既有进度 Task 不作候选；前台实际查询目标，不派发 worker。普通关联请求需要旧结果时引用或复述已有结果，避免重做旧业务。delivery 缺失时回复明确说送达未核实。
 

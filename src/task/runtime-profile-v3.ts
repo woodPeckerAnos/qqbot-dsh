@@ -30,6 +30,7 @@ export const buildTaskRuntimeEnvironmentV3: BuildEnvironment = (
 ) => ({
   QQBOT_ROLE: role,
   QQBOT_TASK_CHANNEL: role === 'frontend' ? '1' : undefined,
+  QQBOT_WORKER_CHANNEL: role === 'worker' ? '1' : undefined,
   QQBOT_TASK_ID: identity.taskId,
   QQBOT_EXECUTION_ID: identity.executionId,
   QQBOT_ROOT_SESSION_ID: identity.sessionId,

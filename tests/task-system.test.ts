@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { zipEntries, digest } from './bench/session/onebot-probe.js';
 import { mkdtempSync } from 'node:fs';
 import { writeFile, rm, readFile, mkdir, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -481,7 +482,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     const queued = h.system.queue.messages().find((r) => r.candidate.attachment);
     expect(queued?.candidate.attachment).toBeDefined();
     const attachment = queued!.candidate.attachment;
-    expect(await readFile(attachment.absPath, 'utf8')).toBe('Task A 内容');
+    expect(zipEntries(await readFile(attachment.absPath))).toEqual([
+      { name: 'A.txt', sha256: digest('Task A 内容'), sizeBytes: Buffer.byteLength('Task A 内容') },
+    ]);
     h.mock.input(2, 'B');
     (await h.runtime('fast', 1)).finish('B 快回复');
     (await h.runtime('slow', 1)).finish('NO_REPLY');
@@ -690,7 +693,9 @@ describe('双 lane Task 生产装配（模拟 DSH + 统一 OneBot mock，无端�
     await h.system.prune();
     expect(h.system.manager.list()).toEqual([]);
     await expect(access(dirname(slow.options.cwd))).rejects.toThrow();
-    expect(await readFile(attachment.absPath, 'utf8')).toBe('可靠内容');
+    expect(zipEntries(await readFile(attachment.absPath))).toEqual([
+      { name: 'report.txt', sha256: digest('可靠内容'), sizeBytes: Buffer.byteLength('可靠内容') },
+    ]);
     await h.connector.start();
     h.system.queue.wake();
     await vi.waitFor(() => {

@@ -2,9 +2,19 @@ import type { SessionActorV2 as SessionActor } from '@qqbot/contracts';
 import type { PipelineStats } from '@qqbot/contracts';
 import { logInputShortcut } from './types.js';
 import type { IngressStage } from '@qqbot/contracts';
+import type { MessagePart } from '@qqbot/contracts';
 /** 整句匹配控制命令，兼容官方 @ 前缀；/reset 是 /new 的别名。 */
-export function parseSessionCommand(content: string): 'stop' | 'new' | undefined {
-  const text = content
+export function parseSessionCommand(
+  content: string,
+  parts?: readonly MessagePart[]
+): 'stop' | 'new' | undefined {
+  const topLevel = parts?.filter((part) => part.type !== 'quote');
+  if (topLevel?.some((part) => part.type !== 'text')) return undefined;
+  const text = (
+    !parts?.length
+      ? content
+      : (topLevel ?? []).map((part) => (part.type === 'text' ? part.text : '')).join('')
+  )
     .trim()
     .replace(/^<@!\d+>\s*/, '')
     .toLowerCase();
@@ -22,7 +32,7 @@ export class SessionCommandRouter {
   ) {}
   stage(): IngressStage {
     return async (context, next) => {
-      const command = parseSessionCommand(context.message.content);
+      const command = parseSessionCommand(context.message.content, context.message.parts);
       if (!command) return next();
       if (!context.isAdmin) {
         logInputShortcut(context, 'session-command', 'permission-denied');

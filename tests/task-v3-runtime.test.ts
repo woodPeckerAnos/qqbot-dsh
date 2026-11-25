@@ -25,7 +25,7 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       const worker = await h.started('worker');
       const outbox = join(worker.options.cwd, h.config.media.outboxDir);
       await mkdir(outbox, { recursive: true });
-      await writeFile(join(outbox, 'partial.txt'), '已完成第一项');
+      await writeFile(join(outbox, 'partial.csv'), '已完成第一项');
       worker.event('tool/call', { name: 'bash' });
       worker.event('assistant/message', {
         message: { content: [{ type: 'text', text: '已完成第一项，后续尚未完成。' }] },
@@ -80,7 +80,7 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
     }
   });
 
-  it('说明加合法围栏JSON保留完整正文、运行证据和result.txt并实际发送', async () => {
+  it('说明加合法围栏JSON保留完整正文、运行证据和result.csv并实际发送', async () => {
     const h = await createRuntimeHarness();
     try {
       const body = await readFile(
@@ -93,7 +93,7 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       const outbox = join(worker.options.cwd, h.config.media.outboxDir);
       await mkdir(outbox, { recursive: true });
       const content = '12+8=20\n完整计算报告\n';
-      await writeFile(join(outbox, 'result.txt'), content);
+      await writeFile(join(outbox, 'result.csv'), content);
       worker.event('tool/call', { name: 'bash' });
       worker.finish(body);
       const summary = await h.started('summary');
@@ -102,7 +102,7 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       expect(result.text).toBe(body.trim());
       expect(result.evidence).toContain('执行正常结束。');
       expect(result.evidence).toContain('已记录工具调用：1次。');
-      expect(result.evidence.join(' ')).toContain('result.txt');
+      expect(result.evidence.join(' ')).toContain('result.csv');
       expect(summary.prompts[0]?.blocks[0]).toMatchObject({
         text: expect.stringContaining(JSON.stringify(body.trim())),
       });
@@ -110,7 +110,7 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       expect((await handle.done).status).toBe('completed');
       await h.sent(handle.taskId);
       expect(h.connector.actions.flatMap((action) => action.attachments)).toContainEqual(
-        expect.objectContaining({ fileName: 'result.txt', text: content })
+        expect.objectContaining({ fileName: 'result.csv', text: content })
       );
       expect(h.system.queue.taskDelivery(handle.taskId)).toMatchObject({
         success: true,
@@ -154,7 +154,7 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       if (hasFile) {
         const outbox = join(worker.options.cwd, h.config.media.outboxDir);
         await mkdir(outbox, { recursive: true });
-        await writeFile(join(outbox, 'only.txt'), '只有附件');
+        await writeFile(join(outbox, 'only.csv'), '只有附件');
       }
       worker.finish('  \n ');
       const summary = await h.started('summary');
@@ -164,7 +164,7 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       });
       const prompt = summary.prompts[0]!.blocks[0]!;
       expect(prompt).toMatchObject({
-        text: expect.stringContaining(hasFile ? 'only.txt' : '本次没有返回正文或附件'),
+        text: expect.stringContaining(hasFile ? 'only.csv' : '本次没有返回正文或附件'),
       });
       summary.finish(hasFile ? '文件已返回，见附件。' : '这次没有返回结果。');
       const task = await handle.done;
@@ -185,7 +185,7 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
         const worker = await h.started('worker');
         const outbox = join(worker.options.cwd, h.config.media.outboxDir);
         await mkdir(outbox, { recursive: true });
-        await writeFile(join(outbox, 'partial.txt'), '已完成第一项');
+        await writeFile(join(outbox, 'partial.csv'), '已完成第一项');
         worker.event('tool/call', { name: 'bash' });
         if (mode === 'timeout') {
           worker.event('assistant/message', {
@@ -203,7 +203,7 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
         expect(result.failure?.code).toBe(mode === 'timeout' ? 'TIMEOUT' : 'UPSTREAM_FAILED');
         expect(result.text).toBe('已完成第一项，第二项未完成。');
         expect(result.evidence).toContain('已记录工具调用：1次。');
-        expect(result.attachments[0]?.fileName).toBe('partial.txt');
+        expect(result.attachments[0]?.fileName).toBe('partial.csv');
         summary.finish('已完成第一项，第二项未完成，现有文件见附件。');
         expect((await handle.done).status).toBe('failed');
       } finally {
@@ -383,16 +383,15 @@ describe('V3真实运行编排、注入DSH事件与本地文件', () => {
       const worker = await h.started('worker');
       const owned = join(worker.options.cwd, 'deliverables');
       await mkdir(owned, { recursive: true });
-      await writeFile(join(owned, 'report.txt'), '报告');
-      await symlink(join(owned, 'report.txt'), join(owned, 'copy.txt'));
+      await writeFile(join(owned, 'report.csv'), '报告');
+      await symlink(join(owned, 'report.csv'), join(owned, 'copy.csv'));
       await symlink(owned, join(worker.options.cwd, h.config.media.outboxDir));
       worker.finish('报告已完成。');
       (await h.started('summary')).finish('报告见附件。');
       const task = await handle.done;
       expect(task.status).toBe('completed');
       expect(task.finalReply?.attachments?.map((attachment) => attachment.fileName)).toEqual([
-        'copy.txt',
-        'report.txt',
+        'copy.csv',
       ]);
     } finally {
       await h.close();

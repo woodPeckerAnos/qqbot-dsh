@@ -1092,15 +1092,25 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
     },
     modelApi,
     sessionContext: resolveSessionContext(file.sessionContext),
+    search: resolveSearchConfig(env, file.search),
     tasks: {
       taskProvider,
       taskModel,
       reasoningEffort,
+      workerMaxSteps: pickInt(
+        env,
+        'BOT_WORKER_MAX_STEPS',
+        taskFile.workerMaxSteps,
+        40,
+        { min: 1, max: 1000 },
+        'tasks.workerMaxSteps'
+      ),
+      workerSoftTimeoutRatio: resolveWorkerSoftTimeoutRatio(taskFile.workerSoftTimeoutRatio),
       frontendMaxSteps: pickInt(
         env,
         'BOT_FRONTEND_MAX_STEPS',
         taskFile.frontendMaxSteps,
-        3,
+        5,
         { min: 1, max: 100 },
         'tasks.frontendMaxSteps'
       ),
@@ -1116,7 +1126,7 @@ export function loadConfig(env: Env = process.env, file: FileConfig = {}): Confi
         env,
         'BOT_FAST_TIMEOUT_MS',
         taskFile.fastTimeoutMs,
-        30_000,
+        90_000,
         { min: 100, max: 3_600_000 },
         'tasks.fastTimeoutMs'
       ),
@@ -1505,6 +1515,58 @@ function buildLongTaskHintConfig(
 }
 
 /** 供日志/health 展示的配置摘要（不含任何密钥） */
+function resolveWorkerSoftTimeoutRatio(value = 0.8): number {
+  if (!Number.isFinite(value) || value <= 0 || value >= 1)
+    throw new ConfigError('tasks.workerSoftTimeoutRatio 必须大于 0 且小于 1');
+  return value;
+}
+
+function resolveSearchConfig(
+  env: Record<string, string | undefined>,
+  file: FileConfig['search'] = {}
+): import('@qqbot/contracts').SearchConfig {
+  const baseURL = pickString(
+    env,
+    'BOT_SEARCH_BASE_URL',
+    file.baseURL,
+    'https://ark.cn-beijing.volces.com/api/plan/v1'
+  ).replace(/\/$/u, '');
+  if (!URL.canParse(baseURL) || !['https:', 'http:'].includes(new URL(baseURL).protocol))
+    throw new ConfigError('search.baseURL 必须是 HTTP(S) URL');
+  const apiKeyEnv = file.apiKeyEnv ?? 'ARC_CODE_API_KEY';
+  if (!/^[A-Z][A-Z0-9_]*$/u.test(apiKeyEnv))
+    throw new ConfigError('search.apiKeyEnv 必须是环境变量名称');
+  return {
+    baseURL,
+    apiKeyEnv,
+    model: file.model ?? 'ark-code-latest',
+    maxTokens: pickInt(
+      env,
+      'BOT_SEARCH_MAX_TOKENS',
+      file.maxTokens,
+      4096,
+      { min: 128, max: 32768 },
+      'search.maxTokens'
+    ),
+    maxUses: pickInt(
+      env,
+      'BOT_SEARCH_MAX_USES',
+      file.maxUses,
+      5,
+      { min: 1, max: 10 },
+      'search.maxUses'
+    ),
+    timeoutMs: pickInt(
+      env,
+      'BOT_SEARCH_TIMEOUT_MS',
+      file.timeoutMs,
+      30000,
+      { min: 100, max: 120000 },
+      'search.timeoutMs'
+    ),
+  };
+}
+
 export function describeConfig(config: Config): Record<string, unknown> {
   return {
     connectors: config.connectors,

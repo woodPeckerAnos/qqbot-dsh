@@ -44,6 +44,7 @@ import {
 } from '../src/pipeline/proactive/scene/watcher.js';
 import { ObservationWindowStore } from '../src/store/window.js';
 import { parseInterestPool } from '../src/pipeline/proactive/interests/pool.js';
+import type { ProactiveWatcherDeps, ProactiveTaskRequest } from '@qqbot/contracts';
 
 const GROUP_KEY = 'ob11:g8888';
 
@@ -128,7 +129,12 @@ interface JudgeOptions {
 
 function setup(
   overrides: Partial<ProactiveWatcherConfig> = {},
-  options: { proactive?: boolean; compose?: ProactiveCompose } = {}
+  options: {
+    proactive?: boolean;
+    compose?: ProactiveCompose;
+    windows?: ObservationWindowStore;
+    submitTask?: ProactiveWatcherDeps['submitTask'];
+  } = {}
 ): Harness {
   let clock = 1_700_000_000_000;
   const timers: Array<{ at: number; fn: () => void; cancelled: boolean }> = [];
@@ -159,6 +165,7 @@ function setup(
           satisfied: hit,
           confidence: hit ? 0.9 : 0.1,
           reason: hit ? '判定成立' : '判定不成立',
+          ...(evidence === undefined ? {} : { evidence }),
           ...(reason === undefined
             ? {}
             : {
@@ -218,7 +225,8 @@ function setup(
     speaker,
     judge,
     ...(options.compose === undefined ? {} : { compose: options.compose }),
-    windows: windowsFor(config.whitelistGroups),
+    windows: options.windows ?? windowsFor(config.whitelistGroups),
+    submitTask: options.submitTask,
     interests: parseInterestPool(
       'interests:\n  - {id: plotting, topic: 画图, keywords: [折线图]}',
       'test.yml'
@@ -300,6 +308,84 @@ async function settle(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+describe('真实问题引用边界', () => {
+  it('问题台账在窗口淘汰后仍给出真实作者正文和时间', async () => {
+    const requests: ProactiveTaskRequest[] = [];
+    const windows = new ObservationWindowStore({ allowlist: [GROUP_KEY], maxMessages: 1 });
+    const h = setup(
+      {},
+      {
+        windows,
+        submitTask: async (request) => {
+          requests.push(request);
+          return true;
+        },
+      }
+    );
+    h.observe('10001', '接口分页参数怎么传？');
+    const questionId = h.questionIdOf('10001', 0);
+    h.advanceSilently(1);
+    h.observe('10002', '我先看下文档');
+    h.setVerdicts(['scene-3'], { waitEvidence: `q:${questionId}` });
+    h.advance(90_000);
+    await settle();
+    expect(windows.read(GROUP_KEY).some((entry) => entry.senderId === '10001')).toBe(false);
+    expect(requests[0]?.reference).toMatchObject({
+      senderId: '10001',
+      content: '接口分页参数怎么传？',
+      msgId: makeObserved('10001', '', 1_700_000_000_000).msgId,
+      ts: 1_700_000_000_000,
+    });
+    expect(requests[0]?.reference?.content).not.toContain('q:');
+  });
+
+  it('问题台账淘汰后按消息号和时间精确回查而不会选择同正文的另一作者', async () => {
+    const requests: ProactiveTaskRequest[] = [];
+    const h = setup(
+      { stateOptions: { maxQuestions: 1 } },
+      {
+        submitTask: async (request) => {
+          requests.push(request);
+          return true;
+        },
+      }
+    );
+    h.observe('10001', '接口分页参数怎么传？');
+    const questionId = h.questionIdOf('10001', 0);
+    h.advanceSilently(1);
+    h.observe('10002', '接口分页参数怎么传？');
+    h.setVerdicts(['scene-3'], { waitEvidence: `q:${questionId}` });
+    h.advance(90_000);
+    await settle();
+    expect(requests[0]?.reference).toMatchObject({
+      senderId: '10001',
+      content: '接口分页参数怎么传？',
+      ts: 1_700_000_000_000,
+    });
+  });
+
+  it('错误问题号和时间只能引用真实群聊上下文且不发送判定evidence', async () => {
+    const requests: ProactiveTaskRequest[] = [];
+    const h = setup(
+      {},
+      {
+        submitTask: async (request) => {
+          requests.push(request);
+          return true;
+        },
+      }
+    );
+    h.observe('10001', '接口分页参数怎么传？');
+    const wrong = h.questionIdOf('10001', 0).replace(/@\d+$/, '@1');
+    h.setVerdicts(['scene-3'], { waitEvidence: `q:${wrong}` });
+    h.advance(90_000);
+    await settle();
+    expect(requests[0]?.reference).toMatchObject({ senderId: 'context', msgId: '' });
+    expect(requests[0]?.reference?.content).toContain('[10001] 接口分页参数怎么传？');
+    expect(requests[0]?.reference?.content).not.toContain(wrong);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // 1. 成本闸

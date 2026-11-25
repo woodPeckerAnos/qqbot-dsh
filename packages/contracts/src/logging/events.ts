@@ -142,6 +142,18 @@ export const EVENTS = immutableConstant({
   'logging.reload_failed': spec('warn', 'system', '日志配置重载失败，保留原配置', ['errorClass']),
 } as const);
 export type EventName = keyof typeof EVENTS;
+/** V2 adds terminal diagnostics while the historical V1 tuple remains unchanged. */
+export const EVENTS_V2 = immutableConstant({
+  ...EVENTS,
+  'task.terminal': spec('info', 'task', 'Task 执行已终结', [
+    'status',
+    'durationMs',
+    'code',
+    'retry',
+    'causeKind',
+    'errorId',
+  ]),
+} as const);
 export type EventFields = Record<string, unknown>;
 
 export type EventFieldsFor<Name extends EventName> = Partial<

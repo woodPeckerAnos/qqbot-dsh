@@ -119,6 +119,7 @@ export * from './task/session-actor-v3.js';
 export * from './task/output-coordinator-v3.js';
 export * from './task/prompt-preparer-v3.js';
 export * from './task/control-bridge-v3.js';
+export * from './task/search.js';
 export * from './task/proactive-adapter-v3.js';
 export * from './task/system-v3.js';
 export * from './task/runtime-profile-v3.js';

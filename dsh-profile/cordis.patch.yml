@@ -103,7 +103,5 @@
 #   maxUses: 2      # 每次工具调用最多几次服务端搜索（默认 5）
 #   maxTokens: 1024 # 只限制总结文本；DSH 只解析搜索块，不看这段文本（默认 4096）
 - id: web-search-deepseek
-  config:
-    baseURL: https://ark.cn-beijing.volces.com/api/plan/v1
-    apiKeyEnv: ARC_CODE_API_KEY
-    model: ark-code-latest
+  # V3 使用主服务的搜索代理；端点、凭证引用和限制统一在 config/runtime.yml search。
+  disabled: true

@@ -41,12 +41,14 @@ tasks:
   # 默认 high；按模型实际能力在 config/local/models.yml 覆盖档位。
   # 能力声明与示例见 docs/CONFIG.md 的“共享任务模型能力”。
   reasoningEffort: high
-  frontendMaxSteps: 3
+  frontendMaxSteps: 5
+  workerMaxSteps: 40
+  workerSoftTimeoutRatio: 0.8
   queueTimeoutMs: 1800000
   # 旧字段名保留：fast 表示前台，slow 表示 worker。
   fastRuntimes: 4
   slowRuntimes: 4
-  fastTimeoutMs: 30000
+  fastTimeoutMs: 90000
   slowTimeoutMs: 1800000
   maxPerSession: 32
   maxGlobal: 128
@@ -63,6 +65,14 @@ tasks:
   # fastProvider / fastModel 已弃用，生产路径忽略。
 
 # --- 存储路径 ----------------------------------------------------------------
+search:
+  baseURL: https://ark.cn-beijing.volces.com/api/plan/v1
+  apiKeyEnv: ARC_CODE_API_KEY
+  model: ark-code-latest
+  maxTokens: 4096
+  maxUses: 5
+  timeoutMs: 30000
+
 # 容器内由 docker-compose 的 environment 指定；这两处要保持一致。
 paths:
   dshHome: /data/dsh

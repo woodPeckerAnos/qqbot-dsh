@@ -130,7 +130,7 @@ npm run typecheck
 npm run lint             # ESLint（类型感知；存量债务基线见 docs/LINTING.md）
 npm run format:check     # Prettier 只读校验
 npm test                 # 离线 mock；含本地文件/子进程桩，不请求真实模型
-npm run bench:tasks-v3   # 现行前台/worker 离线 benchmark，注入依赖和真实文件
+npm run bench:tasks-v3   # V3 v2 离线 benchmark，覆盖真实执行、控制通道、交付和故障边界
 npm run bench:session    # 固定双 lane 的历史 V2 回归，保留历史报告
 npm run bench:session:live # 显式真实 DSH + 独立裁判，需要配置与凭证
 npm run test:integration # 独立 localhost WebSocket 回路，无已部署客户端
@@ -144,7 +144,7 @@ npm run check            # 类型、契约、lint、格式、测试、冒烟与 
 
 现行 V3 验证使用 `npm run bench:tasks-v3`，覆盖前台、动态 worker 与固定回复交付。进度追问不重做、引用旧结果和执行/投递状态分离继续沿用。C01–C10 [历史任务衔接基线](docs/SESSION-BENCHMARK.md#任务衔接基线adr-009--adr-011) 保留原 V2 版本及报告，可用 `bench:session` 单独回归。V3 真实模型费用评测尚未运行。
 
-OneBot 的长文和多媒体使用一条平铺消息记录，普通多文件及混合附件合为一个 ZIP。输出交付的真实适配器离线动作比较可运行 `npm run bench:session -- --cases 输出交付 --strict`，官方 QQ 保留既有交付方式。
+OneBot 的长文、多图与正文使用一条平铺转发记录；单图直接发送，可与简短正文合并。图片保持消息形式，其他资料最多一份 ZIP 独立上传；正文文件只在用户明确要求时发送。输出交付的真实适配器离线动作比较可运行 `npm run bench:session -- --cases 输出交付 --strict`，官方 QQ 保留既有交付方式。
 
 格式由 Prettier 统一（`npm run format` 写入）；提交时 husky 会跑 `lint-staged`。
 ESLint 的存量违规记录在 `eslint-suppressions.json`，`npm run lint` 只拦新增违规，

@@ -55,6 +55,8 @@ function profileRuntime(
       ),
     },
     taskControl: role === 'frontend' ? () => ({ ok: true, value: [] }) : undefined,
+    workerServices:
+      role === 'worker' ? async () => ({ ok: true, value: { kind: 'execute' } }) : undefined,
   });
 }
 

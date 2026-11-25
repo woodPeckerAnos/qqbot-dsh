@@ -4,7 +4,9 @@
 
 ## 现行 V3 离线验证
 
-生产路径使用 [ADR-017](adr/017-frontend-events-dynamic-worker.md) 的前台事件调度与动态 worker。运行 `npm run bench:tasks-v3`，使用注入 runner、连接器、时钟和真实本地文件验证新任务链路，报告与历史 Session benchmark 分开保存。普通请求及进度查询不创建 worker；派发后前台可接收新输入；worker 正文交由前台整理，最终 reply ID 固定后幂等入队。
+生产路径使用 [ADR-017](adr/017-frontend-events-dynamic-worker.md) 的前台事件调度与动态 worker。当前 `npm run bench:tasks-v3` 运行 [v2 场景和报告规则](TASKS-V3-BENCHMARK-V2.md)，默认写入 `tmp/benchmarks/tasks-v3-v2`，支持 `--output` 和 `--cases F01,F10`。F01–F09 保留注入 runner 的编排检查；F10–F19 实际运行生产 runner、控制通道、插件、搜索服务、交付适配器和公开入口的目标测试。每个场景明确记录实际覆盖的所有者，必需用例缺失、跳过、失败或报告未完成都返回非零。原 [`tasks-v3-v1`](benchmarks/tasks-v3-v1/) 报告保留历史。
+
+`npm run bench:tasks-v3:live` 是独立现行 V3 入口，默认只写 `unrun` 准备报告，不发模型请求。费用授权后手动传 `--run`，使用生产 TaskSystem、真实 DSH、独立模型裁判、注入 QQ 连接器和确定性搜索额度响应，支持 `--repeat 1` 到 `3`。未运行时模型语义为 `unknown`。离线 scripted 回复和 prompt 字串检查只验证程序边界。
 
 V3 真实模型与独立裁判的费用评测尚未运行，需要另外授权。下面的 `bench:session` 和 `bench:session:live` 保留固定双 lane 的 V2 历史回归、报告及坏样本校准；它们使用旧快慢协作规则。现行生产验证优先运行 V3 命令和当前公共接口测试，历史报告保留原版本及结论。
 

@@ -260,7 +260,18 @@ export class Harness {
             m.status === 'sending' &&
             m.candidate.message.target.key === ctx.target.key &&
             m.candidate.text === out.text &&
-            m.candidate.attachment?.fileName === out.attachments?.[0]?.fileName
+            JSON.stringify(
+              (m.candidate.attachment
+                ? [m.candidate.attachment]
+                : (m.candidate.inlineAttachments ?? [])
+              ).map((attachment) => [attachment.absPath, attachment.fileName])
+            ) ===
+              JSON.stringify(
+                (out.attachments ?? []).map((attachment) => [
+                  attachment.absPath,
+                  attachment.fileName,
+                ])
+              )
         );
       return { taskId: row?.candidate.taskId, lane: row?.candidate.lane, messageId: row?.id };
     };

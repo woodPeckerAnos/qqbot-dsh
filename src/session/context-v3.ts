@@ -10,7 +10,7 @@ import type {
   SessionContextViewValueV3,
   createSessionContextViewFactoryV3,
 } from '@qqbot/contracts';
-import { guardUntrustedText } from '../content/index.js';
+import { guardUntrustedText, renderReplyText } from '../content/index.js';
 
 type Task = DeepReadonly<TaskSnapshotV3>;
 type Options = Parameters<createSessionContextViewFactoryV3>[0];
@@ -50,6 +50,8 @@ function delivery(text: string, rows: DeepReadonly<QueuedMessage[]>): ContextDel
   if (bodies.some((row) => row.status === 'pending')) return 'pending';
   if (bodies.some((row) => row.status === 'sending')) return 'sending';
   if (bodies.some((row) => row.status === 'failed' || row.status === 'discarded')) return 'failed';
+  const expected = renderedDeliveryBody(text, bodies);
+  if (expected === undefined) return 'unknown';
   const actual = bodies
     .flatMap(
       (row) =>
@@ -61,9 +63,19 @@ function delivery(text: string, rows: DeepReadonly<QueuedMessage[]>): ContextDel
     .map((part) => part.text)
     .join('');
   return bodies.every((row) => row.status === 'sent') &&
-    actual.replace(/\s/gu, '') === text.replace(/\s/gu, '')
+    actual.replace(/\s/gu, '') === expected.replace(/\s/gu, '')
     ? 'sent'
     : 'unknown';
+}
+
+function renderedDeliveryBody(
+  text: string,
+  rows: DeepReadonly<QueuedMessage[]>
+): string | undefined {
+  const formats = new Set(rows.map((row) => row.candidate.body?.textFormat ?? 'plain'));
+  return formats.size === 1
+    ? renderReplyText(text, rows[0]?.candidate.body?.textFormat)
+    : undefined;
 }
 
 function project(task: Task, current: Task, options: Options): ContextTaskV3 {
@@ -323,9 +335,12 @@ function taskBoard(
     );
   view.tasks = tasks.slice(0, settings.maxTasks).map((entry) => {
     const projected = project(entry, task, options);
-    trimResult(projected.frontend, settings.maxCharsPerTask);
-    if (projected.worker)
-      trimResult(projected.worker, settings.maxCharsPerTask - projected.frontend.text.length);
+    const maxChars =
+      entry.status === 'failed'
+        ? Math.min(settings.maxCharsPerTask, 500)
+        : settings.maxCharsPerTask;
+    trimResult(projected.frontend, maxChars);
+    if (projected.worker) trimResult(projected.worker, maxChars - projected.frontend.text.length);
     return projected;
   });
   return { tasks: tasks.slice(0, settings.maxTasks), omitted };

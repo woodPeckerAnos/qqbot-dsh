@@ -170,7 +170,7 @@ export class OnebotProbe extends EventEmitter {
 async function fileBytes(file: string) {
   return file.startsWith('base64://') ? Buffer.from(file.slice(9), 'base64') : readFile(file);
 }
-function zipEntries(bytes: Buffer) {
+export function zipEntries(bytes: Buffer) {
   const entries: { name: string; sha256: string; sizeBytes: number }[] = [];
   let offset = 0;
   while (bytes.readUInt32LE(offset) === 0x04034b50) {

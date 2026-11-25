@@ -28,3 +28,9 @@ export type defuseMentions = (text: string) => string;
 export type toPlainText = (markdown: string) => string;
 /** Markdown 模式：最小清洗，保留结构。 */
 export type sanitizeMarkdown = (markdown: string) => string;
+export type renderReplyText = (text: string, format?: 'plain' | 'markdown') => string;
+export type sanitizeReferenceExcerpt = (excerpt: string) => string;
+export type referenceSenderName = (reference: { senderId: string; senderName?: string }) => string;
+export type renderReference = (
+  reference: import('../core/connector.js').OriginalMessageReference | undefined
+) => string;

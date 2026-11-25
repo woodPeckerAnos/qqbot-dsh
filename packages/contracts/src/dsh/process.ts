@@ -55,11 +55,18 @@ export interface DshRuntimeOptions {
   taskControl?: (request: {
     action: string;
     taskId?: string;
+    query?: import('../task/types-v3.js').TaskQueryRequestV1;
+    resultRequest?: import('../task/types-v3.js').TaskResultRequestV1;
     sessionId?: string;
     assignment?: import('../task/types-v3.js').WorkerAssignment;
     executionId?: string;
     runtimeGeneration?: string;
   }) => unknown;
+  /** Dedicated worker fd3 capabilities; no frontend task-control authority. */
+  workerServices?: (
+    request: import('../task/search.js').WorkerServiceRequest,
+    signal: AbortSignal
+  ) => Promise<unknown>;
   taskCooperation?: (
     request: import('../task/cooperation.js').TaskCooperationRequest,
     signal: AbortSignal
@@ -103,6 +110,7 @@ export interface DshRuntime extends EventEmitter {
    */
   prompt(sessionId: string, blocks: PromptContentBlock[]): Promise<SessionPromptResult>;
   notifyTaskCooperation?(update: import('../task/cooperation.js').TaskCooperationUpdate): void;
+  notifyWorkerBudget?(update: import('../task/search.js').WorkerBudgetUpdate): void;
   onTaskChannelClose?(listener: () => void): () => void;
   /** 是否已就绪且可接受新提示 */
   get isReady(): boolean;

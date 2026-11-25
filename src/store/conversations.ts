@@ -1,4 +1,5 @@
 import type { ConversationTurn, ConversationReadSnapshot } from '@qqbot/contracts';
+import { renderReference } from '../content/index.js';
 /**
  * 对话记录：每个会话（群聊/单聊）一个只追加的 JSONL 文件。
  *
@@ -136,8 +137,7 @@ export function renderReplay(turns: readonly ConversationTurn[], maxChars = 6000
     const who = turn.role === 'assistant' ? '你' : turn.speaker;
     const text = turn.text.replace(/\s+/g, ' ').trim();
     if (text === '') continue;
-    const ref = turn.reference;
-    const quote = ref ? `（引用 ${ref.senderName ?? ref.senderId} 的「${ref.excerpt}」）` : '';
+    const quote = renderReference(turn.reference);
     lines.push(`[${who}] ${quote}${text}`);
   }
   let body = lines.join('\n');

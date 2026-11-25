@@ -4,6 +4,10 @@ import { RuntimePool } from '../dsh/pool.js';
 import { DshRuntime } from '../dsh/process.js';
 import { HarnessSdkClient } from '../dsh/protocol.js';
 import { TurnAccumulator } from '../dsh/turns.js';
+import { SearchHttpProvider } from '../dsh/search-provider.js';
+export const createSearchProvider: import('@qqbot/contracts').createSearchProviderFactory = (
+  options
+) => new SearchHttpProvider(options);
 export const createAgentTraceObserver: import('@qqbot/contracts').createAgentTraceObserverFactory =
   (...args) => new AgentTraceObserver(...args);
 export const createRuntimePool: import('@qqbot/contracts').createRuntimePoolFactory = (...args) =>

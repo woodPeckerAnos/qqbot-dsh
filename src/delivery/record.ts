@@ -8,6 +8,7 @@ import type {
   ReplyPolicy,
 } from '@qqbot/contracts';
 import { packFiles } from '../media/index.js';
+import { renderReference, sanitizeReferenceExcerpt } from '../content/index.js';
 
 interface BodyPart {
   index: number;
@@ -55,17 +56,18 @@ export async function prepareRecordDelivery(
       attachments,
       options.maxFileBytes
     );
-    let media = copied.map((attachment) =>
-      classify(attachment, options.policy.record?.videoExtensions ?? [])
-    );
-    if (media.length > 1 && media.some((m) => m.type === 'file')) {
+    const media: Media[] = copied
+      .filter((attachment) => attachment.kind === 'image')
+      .map((attachment) => ({ type: 'image', attachment }));
+    const files = copied.filter((attachment) => attachment.kind !== 'image');
+    if (files.length) {
       const archive = await prepareZip(
         join(options.filesDir, base.taskId),
         groupId,
-        copied,
+        files,
         options.maxFileBytes
       );
-      media = [{ type: 'file', attachment: archive }];
+      media.push({ type: 'file', attachment: archive });
     }
     return buildCandidates(base, bodyId, parts, media, options.policy.maxChars);
   } catch (error) {
@@ -77,12 +79,6 @@ export async function prepareRecordDelivery(
       },
     ];
   }
-}
-
-function classify(attachment: OutgoingAttachment, videoExtensions: readonly string[]): Media {
-  if (attachment.kind === 'image') return { type: 'image', attachment };
-  const extension = extname(attachment.fileName).slice(1).toLowerCase();
-  return { type: videoExtensions.includes(extension) ? 'video' : 'file', attachment };
 }
 
 function buildCandidates(
@@ -97,36 +93,50 @@ function buildCandidates(
   const record = body.length > maxChars || inline.length > 1;
   const candidates: ReplyCandidate[] = [];
   if (record) {
-    if (body) candidates.push(shortTip(base));
+    if (recordNeedsReferenceTip(base, body)) candidates.push(shortTip(base));
     candidates.push(recordCandidate(base, bodyId, parts, inline));
-  } else if (body) {
-    candidates.push({
-      ...base,
-      text: body,
-      body: { id: bodyId, index: parts.at(0)?.index ?? 0, segments: parts },
-    });
+  } else if (body || inline.length) {
+    candidates.push(ordinaryCandidate(base, bodyId, parts, inline));
   }
-  const separate = record ? media.filter((m) => m.type === 'file') : media;
+  const separate = media.filter((m) => m.type === 'file');
   return [
     ...candidates,
     ...separate.map((m) => ({
       ...base,
       quote: false,
       mention: undefined,
+      text: '',
       attachment: m.attachment,
     })),
   ];
 }
 
-function shortTip(base: ReplyCandidate): ReplyCandidate {
-  const reference = base.reference;
+function recordNeedsReferenceTip(base: ReplyCandidate, body: string): boolean {
+  return !!((body && base.reference?.messageId) || base.mention);
+}
+
+function ordinaryCandidate(
+  base: ReplyCandidate,
+  bodyId: string,
+  parts: BodyPart[],
+  media: Media[]
+): ReplyCandidate {
+  const body = parts.map((part) => part.text).join('');
+  const reference = !base.reference?.messageId ? renderReference(base.reference) : '';
   return {
     ...base,
-    quote: true,
-    text: reference?.messageId
-      ? '结果已整理，请查看下面的消息。'
-      : `关于「${reference?.excerpt.slice(0, 120) ?? ''}」的结果，请查看下面的消息。`,
+    text: reference ? `${reference}\n${body}` : body,
+    inlineAttachments: media.map((m) => m.attachment),
+    body: body ? { id: bodyId, index: parts.at(0)?.index ?? 0, segments: parts } : undefined,
   };
+}
+
+function shortTip(base: ReplyCandidate): ReplyCandidate {
+  const reference = base.reference;
+  let prefix = '';
+  if (!reference?.messageId && sanitizeReferenceExcerpt(reference?.excerpt ?? ''))
+    prefix = renderReference(reference);
+  return { ...base, quote: true, text: `${prefix}结果已整理，请查看下面的消息。` };
 }
 
 function recordCandidate(
@@ -137,6 +147,8 @@ function recordCandidate(
 ): ReplyCandidate {
   const text = parts.map((part) => part.text).join('');
   const nodes: OutgoingRecordNode[] = parts.map((part) => ({ type: 'text', text: part.text }));
+  const reference = !base.reference?.messageId ? renderReference(base.reference) : '';
+  if (reference) nodes.unshift({ type: 'text', text: reference });
   for (const m of media) {
     if (m.type !== 'file') nodes.push({ type: m.type, attachment: m.attachment });
   }
@@ -150,7 +162,10 @@ function recordCandidate(
       ? {
           id: bodyId,
           index: parts.at(0)?.index ?? 0,
-          segments: parts.map((part, nodeIndex) => ({ ...part, nodeIndex })),
+          segments: parts.map((part, nodeIndex) => ({
+            ...part,
+            nodeIndex: nodeIndex + (reference ? 1 : 0),
+          })),
         }
       : undefined,
   };
@@ -165,7 +180,9 @@ async function copyAttachments(
   if (attachments.length) await mkdir(directory, { recursive: true });
   const copied: OutgoingAttachment[] = [];
   for (const [index, attachment] of attachments.entries()) {
-    checkFileSize(attachment, (await stat(attachment.absPath)).size, maxFileBytes);
+    const source = await stat(attachment.absPath);
+    if (!source.isFile()) throw new Error(`附件「${attachment.fileName}」不是文件，未发送`);
+    checkFileSize(attachment, source.size, maxFileBytes);
     const absPath = join(
       directory,
       `${hash(`${groupId}:${index}`)}-${basename(attachment.fileName)}`

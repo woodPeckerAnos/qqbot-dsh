@@ -8,6 +8,8 @@ export class BenchmarkRuntime extends EventEmitter {
   disposed = 0;
   seq = 0;
   cooperation?: CooperationDriver;
+  readonly workerBudgets: import('@qqbot/contracts').WorkerBudgetUpdate[] = [];
+  onDispose?: () => Promise<void> | void;
   prompts: { sessionId: string; blocks: PromptContentBlock[] }[] = [];
   startGate: Promise<void> | undefined;
   constructor(readonly options: DshRuntimeOptions) {
@@ -61,6 +63,9 @@ export class BenchmarkRuntime extends EventEmitter {
   notifyTaskCooperation(update: import('@qqbot/contracts').TaskCooperationUpdate) {
     this.cooperation?.receive(update);
   }
+  notifyWorkerBudget(update: import('@qqbot/contracts').WorkerBudgetUpdate) {
+    this.workerBudgets.push(update);
+  }
   onTaskChannelClose(listener: () => void) {
     this.on('task.channel.closed', listener);
     return () => {
@@ -68,6 +73,7 @@ export class BenchmarkRuntime extends EventEmitter {
     };
   }
   async dispose() {
+    await this.onDispose?.();
     this.cooperation?.close();
     if (!this.ready) return;
     this.ready = false;

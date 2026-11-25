@@ -72,6 +72,7 @@ import type { TraceContext } from '@qqbot/contracts';
 
 import { matchesGroupAllowlist } from '../../../store/index.js';
 import type { ObservationEntry, ObservationWindowStore } from '@qqbot/contracts';
+import { referenceSenderName } from '../../../content/index.js';
 
 import { buildSceneEvidence, collectCandidates } from './collect.js';
 import { ConversationStateStore } from './state.js';
@@ -1507,42 +1508,62 @@ export class ProactiveWatcher {
       if (!state.session) this.openTopicSession(convKey, now, decision.scene);
       const scope = state.taskBudgetScope(this.sessionBudget);
       const entries = this.windows.read(convKey).filter((e) => !e.isBot);
-      const entry =
-        entries.findLast(
+      const questionId = extractWaitTargetId(decision.evidence);
+      const question = questionId ? state.questionsById.get(questionId) : undefined;
+      const separator = questionId?.lastIndexOf('@') ?? -1;
+      let entry: (typeof entries)[number] | undefined;
+      if (questionId) {
+        entry = entries.findLast(
           (e) =>
-            !!decision.evidence &&
-            e.text &&
-            (e.text.includes(decision.evidence) || decision.evidence.includes(e.text))
-        ) ??
-        (decision.scene === 'scene-1' || decision.scene === 'scene-4' ? entries.at(-1) : undefined);
-      const reference: NormalizedMessage | undefined = entry
-        ? {
-            kind: 'group-message',
-            target,
-            eventId: entry.eventId,
-            msgId: entry.msgId,
-            senderId: entry.senderId,
-            username: entry.senderName,
-            content: entry.text,
-            ts: entry.ts,
-            raw: {},
-          }
-        : {
-            kind: 'group-message',
-            target,
-            eventId: '',
-            msgId: '',
-            senderId: 'context',
-            username: '触发时的群聊上下文',
-            content:
-              decision.evidence ??
-              entries
-                .slice(-4)
-                .map((e) => `[${e.senderName ?? e.senderId}] ${e.text}`)
-                .join('\n'),
-            ts: now,
-            raw: {},
-          };
+            separator >= 0 &&
+            e.msgId === questionId.slice(0, separator) &&
+            e.ts === Number(questionId.slice(separator + 1))
+        );
+      } else if (decision.scene === 'scene-1' || decision.scene === 'scene-4') {
+        entry = entries.at(-1);
+      }
+      let reference: NormalizedMessage;
+      if (question) {
+        reference = {
+          kind: 'group-message',
+          target,
+          eventId: question.msgId,
+          msgId: question.msgId,
+          senderId: question.askerId,
+          username: question.askerName,
+          content: question.text,
+          ts: question.askedAt,
+          raw: {},
+        };
+      } else if (entry) {
+        reference = {
+          kind: 'group-message',
+          target,
+          eventId: entry.eventId,
+          msgId: entry.msgId,
+          senderId: entry.senderId,
+          username: entry.senderName,
+          content: entry.text,
+          ts: entry.ts,
+          raw: {},
+        };
+      } else {
+        reference = {
+          kind: 'group-message',
+          target,
+          eventId: '',
+          msgId: '',
+          senderId: 'context',
+          username: '触发时的群聊上下文',
+          content:
+            entries
+              .slice(-4)
+              .map((e) => `[${referenceSenderName(e)}] ${e.text}`)
+              .join('\n') || '触发时没有可引用的群聊消息',
+          ts: now,
+          raw: {},
+        };
+      }
       const accepted = await this.deps.submitTask({
         trace,
         input: {

@@ -169,7 +169,7 @@ export class MessageQueue {
     this.log(record).event('delivery.enqueued', {
       kind: c.kind,
       contentLength: c.text.length,
-      attachmentCount: c.attachment ? 1 : 0,
+      attachmentCount: c.attachment ? 1 : (c.inlineAttachments?.length ?? 0),
       notification: !!c.notification,
     });
   }
@@ -344,12 +344,12 @@ export class MessageQueue {
                 text: record.candidate.text,
                 record: record.candidate.record,
                 mention: record.candidate.mention,
-                preserveText: record.candidate.body?.segments !== undefined,
+                preserveText: record.candidate.body !== undefined,
                 reference:
                   record.candidate.quote === false ? undefined : record.candidate.reference,
-                ...(record.candidate.attachment
-                  ? { attachments: [record.candidate.attachment] }
-                  : {}),
+                attachments: record.candidate.attachment
+                  ? [record.candidate.attachment]
+                  : record.candidate.inlineAttachments,
               })
             )
       );
@@ -422,6 +422,7 @@ export class MessageQueue {
         ...c,
         trace,
         attachment: undefined,
+        inlineAttachments: undefined,
         record: undefined,
         delivery: undefined,
         preparationError: undefined,

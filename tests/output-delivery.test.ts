@@ -10,6 +10,7 @@ import { Harness, until } from './bench/session/harness.js';
 import { OnebotProbe, digest } from './bench/session/onebot-probe.js';
 import { outputCases } from './bench/session/output-cases.js';
 import { runCase } from './bench/session/runner.js';
+import { renderReplyText } from '../src/content/index.js';
 
 const active: { h: Harness; probe: OnebotProbe }[] = [];
 afterEach(async () => {
@@ -85,7 +86,7 @@ describe('记录、队列与正文所有权', () => {
       'upload_group_file',
     ]);
   });
-  it('长文单普通文件保留原文件，正文仅一条记录，交付组按序送达', async () => {
+  it('长文单普通文件完整装入ZIP，正文仅一条记录，交付组按序送达', async () => {
     const { h, probe } = await harness();
     const t = await h.submit({ text: '原请求', sender: '10001' });
     await h.artifact(t, 'single-file', '答复.txt');
@@ -95,8 +96,9 @@ describe('记录、队列与正文所有权', () => {
       'send_group_forward_msg',
       'upload_group_file',
     ]);
-    expect(probe.actions.at(-1)?.nodes[0]?.[0]?.sha256).toBe(digest('single-file'));
-    expect(probe.actions.at(-1)?.zipEntries).toBeUndefined();
+    expect(probe.actions.at(-1)?.zipEntries?.map((entry) => [entry.name, entry.sha256])).toEqual([
+      ['答复.txt', digest('single-file')],
+    ]);
   });
   it('记录上传阻塞时新 Task 快正文推进，ZIP 等记录终结后尝试', async () => {
     const { h, probe } = await harness();
@@ -134,7 +136,7 @@ describe('记录、队列与正文所有权', () => {
       fast.finish(long);
       await until(() => cooperation.read(t.taskId).ready);
       const snapshot = cooperation.read(t.taskId);
-      expect(snapshot.delivered.map((p) => p.text).join('')).toBe(long.trim());
+      expect(snapshot.delivered.map((p) => p.text).join('')).toBe(renderReplyText(long, 'plain'));
       expect(snapshot.delivered.length).toBeGreaterThan(1);
       expect(snapshot.delivered.every((p) => !p.text.includes('结果已整理'))).toBe(true);
       expect(h.preparer.capture(h.message({ text: '后续' })).replay).toContain('const answer = 42');
@@ -143,8 +145,10 @@ describe('记录、队列与正文所有权', () => {
       await h.idle();
       const bodies = h.system.queue.messages(t.taskId).filter((r) => r.candidate.body);
       expect(bodies).toHaveLength(1);
-      expect(bodies[0]?.candidate.text).toBe(long.trim());
-      expect(bodies[0]?.candidate.body?.segments?.map((s) => s.text).join('')).toBe(long.trim());
+      expect(bodies[0]?.candidate.text).toBe(renderReplyText(long, 'plain'));
+      expect(bodies[0]?.candidate.body?.segments?.map((s) => s.text).join('')).toBe(
+        renderReplyText(long, 'plain')
+      );
     } finally {
       cooperation.close();
     }
@@ -246,7 +250,7 @@ describe('记录、队列与正文所有权', () => {
     const { h, probe } = await harness({ fileTransport: 'path' });
     h.connector.connected = false;
     const t = await h.submit({ text: '待发附件' });
-    const names = kind === 'record' ? ['a.png', 'b.mp4'] : ['a.txt', 'b.csv'];
+    const names = kind === 'record' ? ['a.png', 'b.png'] : ['a.txt', 'b.csv'];
     for (const name of names) await h.artifact(t, `content:${name}`, name);
     await h.finish(t, 'NO_REPLY', '附件结果');
     const task = h.task(t.taskId);

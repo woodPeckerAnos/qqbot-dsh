@@ -12,7 +12,7 @@
 | 存储           | `src/store/index.ts`         | 1.0.0 |
 | 媒体           | `src/media/index.ts`         | 1.0.0 |
 | Runtime        | `src/runtime/index.ts`       | 1.0.0 |
-| Task           | `src/task/index.ts`          | 3.1.0 |
+| Task           | `src/task/index.ts`          | 3.2.0 |
 | Session 上下文 | `src/session/index.ts`       | 1.0.0 |
 | 投递           | `src/delivery/index.ts`      | 3.0.0 |
 | Ingress        | `src/ingress/index.ts`       | 1.0.0 |
@@ -183,6 +183,8 @@ export interface DshFileConfig {
   shutdownTimeoutMs?: number;
 }
 export interface TasksFileConfig {
+  workerMaxSteps?: number;
+  workerSoftTimeoutRatio?: number;
   taskProvider?: string;
   taskModel?: string;
   reasoningEffort?: string;
@@ -316,6 +318,7 @@ export interface LoggingFileConfig {
   flushTimeoutMs?: number;
 }
 export interface FileConfig {
+  search?: Partial<import('./task/search.js').SearchConfig>;
   sessionContext?: Partial<import('./session/context.js').SessionContextSettings>;
   logging?: LoggingFileConfig;
   connectors?: string[];
@@ -550,12 +553,15 @@ export interface FilesConfig {
 type Env = Record<string, string | undefined>;
 export type loadConfig = (env?: Env, file?: FileConfig) => Config;
 export interface ConfigV3 extends Omit<Config, 'tasks'> {
+  search: import('./task/search.js').SearchConfig;
   tasks: Config['tasks'] & {
     taskProvider: string;
     taskModel: string;
     reasoningEffort: Exclude<import('./dsh/model-config.js').PiAiThinkingLevel, 'off'>;
     frontendMaxSteps: number;
     queueTimeoutMs: number;
+    workerMaxSteps: number;
+    workerSoftTimeoutRatio: number;
   };
 }
 export type loadConfigV3 = (env?: Env, file?: FileConfig) => ConfigV3;
@@ -857,6 +863,12 @@ export type normalizeWhitespace = (text: string) => string;
 export type defuseMentions = (text: string) => string;
 export type toPlainText = (markdown: string) => string;
 export type sanitizeMarkdown = (markdown: string) => string;
+export type renderReplyText = (text: string, format?: 'plain' | 'markdown') => string;
+export type sanitizeReferenceExcerpt = (excerpt: string) => string;
+export type referenceSenderName = (reference: { senderId: string; senderName?: string }) => string;
+export type renderReference = (
+  reference: import('../core/connector.js').OriginalMessageReference | undefined
+) => string;
 ```
 
 ### 3. 不变量
@@ -1305,6 +1317,7 @@ export interface QqGateway {
 export type createQqGatewayFactory = (options: QqGatewayOptions) => QqGateway;
 export type parseTimestamp = (value: unknown) => number | undefined;
 export interface RenderOptions {
+  preserveText?: boolean;
   msgType: 0 | 2;
   msgId?: string;
   eventId?: string;
@@ -1763,6 +1776,7 @@ export interface ReplyContext {
   signal?: AbortSignal;
 }
 export interface ReplyPolicy {
+  textFormat?: 'plain' | 'markdown';
   record?: {
     maxPayloadBytes: number;
     videoExtensions: readonly string[];
@@ -2648,6 +2662,7 @@ export interface RuntimeHandle {
   readonly lastErrorId: string | undefined;
   prompt(sessionId: string, blocks: PromptContentBlock[]): Promise<SessionPromptResult>;
   notifyTaskCooperation?(update: import('../task/cooperation.js').TaskCooperationUpdate): void;
+  notifyWorkerBudget?(update: import('../task/search.js').WorkerBudgetUpdate): void;
   onTaskChannelClose?(listener: () => void): () => void;
   on<K extends keyof DshRuntimeEvents>(event: K, listener: DshRuntimeEvents[K]): void;
   off<K extends keyof DshRuntimeEvents>(event: K, listener: DshRuntimeEvents[K]): void;
@@ -2728,11 +2743,17 @@ export interface DshRuntimeOptions {
   taskControl?: (request: {
     action: string;
     taskId?: string;
+    query?: import('../task/types-v3.js').TaskQueryRequestV1;
+    resultRequest?: import('../task/types-v3.js').TaskResultRequestV1;
     sessionId?: string;
     assignment?: import('../task/types-v3.js').WorkerAssignment;
     executionId?: string;
     runtimeGeneration?: string;
   }) => unknown;
+  workerServices?: (
+    request: import('../task/search.js').WorkerServiceRequest,
+    signal: AbortSignal
+  ) => Promise<unknown>;
   taskCooperation?: (
     request: import('../task/cooperation.js').TaskCooperationRequest,
     signal: AbortSignal
@@ -2764,6 +2785,7 @@ export interface DshRuntime extends EventEmitter {
   start(signal?: AbortSignal): Promise<InitializeResult>;
   prompt(sessionId: string, blocks: PromptContentBlock[]): Promise<SessionPromptResult>;
   notifyTaskCooperation?(update: import('../task/cooperation.js').TaskCooperationUpdate): void;
+  notifyWorkerBudget?(update: import('../task/search.js').WorkerBudgetUpdate): void;
   onTaskChannelClose?(listener: () => void): () => void;
   get isReady(): boolean;
   dispose(): Promise<void>;
@@ -2967,6 +2989,68 @@ export interface TurnAccumulator {
   forceAbort(): void;
 }
 export type createTurnAccumulatorFactory = (sessionId: string) => TurnAccumulator;
+export interface SearchConfig {
+  baseURL: string;
+  model: string;
+  apiKeyEnv: string;
+  maxTokens: number;
+  maxUses: number;
+  timeoutMs: number;
+}
+export interface SearchRequest {
+  query: string;
+  maxResults?: number;
+}
+export interface SearchSource {
+  url: string;
+  title?: string;
+  snippet?: string;
+  publishedAt?: string;
+}
+export interface SearchResult {
+  sources: SearchSource[];
+  truncated: boolean;
+}
+export interface SearchFailureCause {
+  kind: 'quota-exhausted' | 'service-error';
+  provider: string;
+  httpStatus?: number;
+  providerCode?: string;
+  message: string;
+  resetAt?: string;
+}
+export interface SearchProvider {
+  search(request: SearchRequest, signal: AbortSignal): Promise<Result<SearchResult>>;
+}
+export interface SearchService extends SearchProvider {
+  quotaFailure(): ContractFailure | undefined;
+  close(): void;
+}
+export type createSearchProviderFactory = (options: {
+  config: SearchConfig;
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+  clock?: TaskClock;
+  logger: Logger;
+}) => SearchProvider;
+export type createSearchServiceFactory = (provider: SearchProvider) => SearchService;
+export interface WorkerServiceRequest {
+  action: 'search' | 'authorize-step' | 'authorize-fetch';
+  sessionId: string;
+  executionId: string;
+  runtimeGeneration: string;
+  request?: SearchRequest;
+  url?: string;
+  step?: number;
+  turn?: number;
+}
+export interface WorkerBudgetUpdate {
+  kind: 'finish';
+  reason: 'time-budget' | 'step-budget' | 'quota-exhausted';
+  sessionId: string;
+  executionId: string;
+  runtimeGeneration: string;
+}
 ```
 
 ### 3. 不变量
@@ -2985,7 +3069,7 @@ export type createTurnAccumulatorFactory = (sessionId: string) => TurnAccumulato
 
 ### 6. 副作用与能力
 
-允许的注入能力和默认适配器：`node:child_process`、`node:events`、`node:stream`、`node:crypto`、`@deepseek-ai/dsh-llm-retry`、`@deepseek-ai/dsh-session`。文件范围为配置、状态目录、所属 Task 工作区和队列独立文件目录，依接口参数绑定。
+允许的注入能力和默认适配器：`node:child_process`、`node:events`、`node:stream`、`node:crypto`、`@deepseek-ai/dsh-llm-retry`、`@deepseek-ai/dsh-session`、`fetch`。文件范围为配置、状态目录、所属 Task 工作区和队列独立文件目录，依接口参数绑定。
 
 模块依赖：`observability`。
 
@@ -3064,7 +3148,7 @@ v1 只增不改；破坏性签名先添加新版本，迁移生产消费者后�
 
 ## Task
 
-版本：3.1.0；Owner：项目维护者；公共入口：`src/task/index.ts`。
+版本：3.2.0；Owner：项目维护者；公共入口：`src/task/index.ts`。
 
 ### 1. 职责边界
 
@@ -3411,6 +3495,7 @@ export type LaneResult = (
 export interface TaskInput {
   followUpOf?: string;
   progressOnly?: boolean;
+  retryOf?: string;
   trace?: TraceContext;
   message: NormalizedMessage;
   isAdmin: boolean;
@@ -3464,6 +3549,7 @@ export interface TaskHandle {
   done: Promise<DeepReadonly<TaskSnapshot>>;
 }
 export interface ReplyCandidate {
+  inlineAttachments?: readonly OutgoingAttachment[];
   trace?: TraceContext;
   taskId: string;
   lane: Lane;
@@ -3472,6 +3558,7 @@ export interface ReplyCandidate {
   quote?: boolean;
   text: string;
   body?: {
+    textFormat?: 'plain' | 'markdown';
     id: string;
     index: number;
     segments?: readonly {
@@ -3651,6 +3738,8 @@ export interface TaskControlBridgeV3 {
     }
   ): {
     query(taskId?: string): Result<DeepReadonly<TaskQueryV3[]>>;
+    querySummary(request?: TaskQueryRequestV1): Result<DeepReadonly<TaskQueryPageV1>>;
+    readResult(request: TaskResultRequestV1): Result<DeepReadonly<TaskResultPageV1>>;
     cancel(taskId: string): Result<boolean>;
     startWorker(assignment: WorkerAssignment): Result<WorkerReceipt>;
   };
@@ -3658,12 +3747,17 @@ export interface TaskControlBridgeV3 {
 export type createTaskControlBridgeFactoryV3 = (
   manager: TaskLifeCycleManagerV3,
   cancelTask: (taskId: string) => void,
-  queue?: import('./message-queue.js').MessageQueue
+  queue?: import('./message-queue.js').MessageQueue,
+  services?: {
+    clock?: import('./clock.js').TaskClock;
+    search?: import('./search.js').SearchService;
+  }
 ) => TaskControlBridgeV3;
 export interface TaskSystemV3 extends Omit<
   TaskSystemV2,
   'manager' | 'pools' | 'actor' | 'output' | 'cooperation' | 'proactive'
 > {
+  readonly search: import('./search.js').SearchService;
   readonly manager: TaskLifeCycleManagerV3;
   readonly pools: {
     frontend: RuntimePool;
@@ -3681,6 +3775,7 @@ export type createTaskSystemFactoryV3 = (
       worker: RuntimePool;
     };
     runner?: TaskRunnerV3;
+    search?: import('./search.js').SearchService;
   }
 ) => TaskSystemV3;
 export type buildTaskRuntimeBaseV3 = (
@@ -4005,6 +4100,9 @@ export interface WorkerAssignment {
   instruction: string;
   deliverables: string[];
   acknowledgement?: string;
+  deliveryIntent?: 'chat' | 'text-document';
+  retryOf?: string;
+  requiredCapabilities?: 'web-search'[];
 }
 export interface AttachmentReference {
   id: string;
@@ -4118,6 +4216,63 @@ export interface TaskQueryV3 extends TaskSnapshotV3 {
     asOf: number;
   };
 }
+export interface TaskQueryRequestV1 {
+  taskId?: string;
+  limit?: number;
+}
+export interface TaskSummaryV1 {
+  taskId: string;
+  status: TaskStatus;
+  phase: TaskPhaseV3;
+  createdAt: number;
+  endedAt?: number;
+  question: string;
+  questionOriginalChars: number;
+  questionOmittedChars: number;
+  worker?: {
+    status: WorkerReceipt['status'];
+    resultStatus?: WorkerResult['status'];
+    resultVersion: number;
+    text: string;
+    originalChars: number;
+    omittedChars: number;
+    attachments: string[];
+    attachmentCount: number;
+  };
+  reply?: {
+    text: string;
+    originalChars: number;
+    omittedChars: number;
+  };
+  failure?: {
+    code: ContractFailure['code'];
+    retry: ContractFailure['retry'];
+  };
+  delivery: TaskQueryV3['delivery'];
+}
+export interface TaskQueryPageV1 {
+  schemaVersion: 1;
+  tasks: TaskSummaryV1[];
+  total: number;
+  truncated: boolean;
+  asOf: number;
+}
+export interface TaskResultRequestV1 {
+  taskId: string;
+  resultVersion: number;
+  source: 'worker' | 'reply';
+  offset?: number;
+}
+export interface TaskResultPageV1 {
+  schemaVersion: 1;
+  taskId: string;
+  resultVersion: number;
+  source: 'worker' | 'reply';
+  offset: number;
+  text: string;
+  nextOffset?: number;
+  originalChars: number;
+}
 export interface TaskRunnerV3 {
   runFrontend(
     task: DeepReadonly<TaskSnapshotV3>,
@@ -4150,12 +4305,75 @@ export type createDshTaskRunnerFactoryV3 = (options: {
   logger: Logger;
   clock?: TaskClock;
   contextView?: ReturnType<import('../session/context-v3.js').createSessionContextViewFactoryV3>;
+  search?: import('./search.js').SearchService;
 }) => TaskRunnerV3;
+export interface SearchConfig {
+  baseURL: string;
+  model: string;
+  apiKeyEnv: string;
+  maxTokens: number;
+  maxUses: number;
+  timeoutMs: number;
+}
+export interface SearchRequest {
+  query: string;
+  maxResults?: number;
+}
+export interface SearchSource {
+  url: string;
+  title?: string;
+  snippet?: string;
+  publishedAt?: string;
+}
+export interface SearchResult {
+  sources: SearchSource[];
+  truncated: boolean;
+}
+export interface SearchFailureCause {
+  kind: 'quota-exhausted' | 'service-error';
+  provider: string;
+  httpStatus?: number;
+  providerCode?: string;
+  message: string;
+  resetAt?: string;
+}
+export interface SearchProvider {
+  search(request: SearchRequest, signal: AbortSignal): Promise<Result<SearchResult>>;
+}
+export interface SearchService extends SearchProvider {
+  quotaFailure(): ContractFailure | undefined;
+  close(): void;
+}
+export type createSearchProviderFactory = (options: {
+  config: SearchConfig;
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+  clock?: TaskClock;
+  logger: Logger;
+}) => SearchProvider;
+export type createSearchServiceFactory = (provider: SearchProvider) => SearchService;
+export interface WorkerServiceRequest {
+  action: 'search' | 'authorize-step' | 'authorize-fetch';
+  sessionId: string;
+  executionId: string;
+  runtimeGeneration: string;
+  request?: SearchRequest;
+  url?: string;
+  step?: number;
+  turn?: number;
+}
+export interface WorkerBudgetUpdate {
+  kind: 'finish';
+  reason: 'time-budget' | 'step-budget' | 'quota-exhausted';
+  sessionId: string;
+  executionId: string;
+  runtimeGeneration: string;
+}
 ```
 
 ### 3. 不变量
 
-每输入一个 Task，普通输入只执行前台；每 Task 最多接受一个 worker；领取、派发、结果和最终回复先保存后通知；job 与 runtime 身份拒绝重复和迟到事件；同 Session 首次前台和整理交替，worker 串行；worker 完成后不占执行额度等待整理；首次前台彻底退出后才领取整理，整理最多两回合；只补已固定结果保存和回复入队，不重复业务；取消优先于交接，stop 保留尚未开始首次处理的排队 Task；new 取消所有未完成阶段；最终回复入队确认后结束 Task；业务结果、前台整理和实际送达状态分别展示；worker 正文直接保存为内容，执行分类由程序生成；自然语言、Markdown 和正文里的 JSON 不决定成功或失败；正常结束的空正文仍进入整理；新 worker evidence 只记录运行事实和文件检查，业务证据及未完成说明保留原文；运行故障保留部分正文和有效附件；取消后同一已绑定 worker 的 cancelled 收尾只补存空占位结果的材料，重复提交幂等，不改变终态、取消时间或重启整理和投递；整理直接返回非空正文，程序交付本次全部已保存并再次校验的附件；整理保留正文、已有证据和未完成补充材料，排除原始异常及内部校验诊断，使用面向用户的运行说明；收集和整理都核对 outbox 规范目录仍属本 worker 工作区，附件规范路径仍属合法 outbox，拒绝跨任务目录链接和外来附件；持久输入、引用、附件、交接、阶段和执行身份先校验；未知版本和重复会话记录明确报错；启动检查与正常执行共用最终模型和 profile；检查失败不恢复业务状态；V1/V2 未完成任务先保存固定 ID 中断通知，再保存 failed 状态；队列故障不得先终结旧任务。
+每输入一个 Task，普通输入只执行前台；每 Task 最多接受一个 worker；领取、派发、结果和最终回复先保存后通知；job 与 runtime 身份拒绝重复和迟到事件；同 Session 首次前台和整理交替，worker 串行；worker 完成后不占执行额度等待整理；首次前台彻底退出后才领取整理，整理最多两回合；只补已固定结果保存和回复入队，不重复业务；取消优先于交接，stop 保留尚未开始首次处理的排队 Task；new 取消所有未完成阶段；最终回复入队确认后结束 Task；业务结果、前台整理和实际送达状态分别展示；worker 正文直接保存为内容，执行分类由程序生成；自然语言、Markdown 和正文里的 JSON 不决定成功或失败；正常结束的空正文仍进入整理；新 worker evidence 只记录运行事实和文件检查，业务证据及未完成说明保留原文；运行故障保留部分正文和有效附件；取消后同一已绑定 worker 的 cancelled 收尾只补存空占位结果的材料，重复提交幂等，不改变终态、取消时间或重启整理和投递；整理直接返回非空正文，程序按当前请求交付意图筛选有效附件；未要求正文文件时不交付正文副本，图片与资料分别组织，保留正文中的未完成说明；查询使用同会话同代次紧凑投影，48KiB内显式省略；完整正文分段读取绑定结果版本，不将raw/handoff/trace/路径提供给模型；进度没有业务派发权限；历史失败重跑绑定当前用户明文重试；worker共用根与子代理执行预算，先收尾再硬截止，关闭材料不覆盖失败分类；搜索服务独占串行请求队列和进程内首次月度额度错误，后续请求复用错误且不发送HTTP；普通服务错误限量读取3个已知URL；收集和整理都核对 outbox 规范目录仍属本 worker 工作区，附件规范路径仍属合法 outbox，拒绝跨任务目录链接和外来附件；持久输入、引用、附件、交接、阶段和执行身份先校验；未知版本和重复会话记录明确报错；启动检查与正常执行共用最终模型和 profile；检查失败不恢复业务状态；V1/V2 未完成任务先保存固定 ID 中断通知，再保存 failed 状态；队列故障不得先终结旧任务。
 
 持久化写入能力：`tasks` → `TaskStateWriter`（`src/task/lifecycle.ts`, `src/task/lifecycle-v3.ts`）；`task-budgets` → `BudgetStateWriter`（`src/task/budget.ts`）；`task-sessions` → `SessionStateWriter`（`src/task/session-actor.ts`, `src/task/session-actor-v3.ts`）。
 
@@ -4454,6 +4672,7 @@ export type classifyTaskFollowUpV3 = (
 ) => Readonly<{
   followUpOf?: string;
   progressOnly?: boolean;
+  retryOf?: string;
 }>;
 ```
 
@@ -4837,7 +5056,10 @@ export type createPersonaCommandRouterFactory = (deps: {
   stats: PipelineStats;
 }) => PersonaCommandRouter;
 export type createRecordStage = (deps: { conversations: ConversationStore }) => IngressStage;
-export type parseSessionCommand = (content: string) => 'stop' | 'new' | undefined;
+export type parseSessionCommand = (
+  content: string,
+  parts?: readonly import('../../core/connector.js').MessagePart[]
+) => 'stop' | 'new' | undefined;
 export interface SessionCommandRouter {
   stage(): IngressStage;
 }
@@ -6404,6 +6626,280 @@ export declare const EVENTS: {
   };
 };
 export type EventName = keyof typeof EVENTS;
+export declare const EVENTS_V2: {
+  readonly 'task.terminal': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['status', 'durationMs', 'code', 'retry', 'causeKind', 'errorId'];
+    diagnostic: boolean;
+  };
+  readonly 'input.received': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['source', 'contentLength', 'attachmentCount'];
+    diagnostic: boolean;
+  };
+  readonly 'input.decision': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['related', 'mentionsChatRecord'];
+    diagnostic: boolean;
+  };
+  readonly 'input.shortcut': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['reason', 'stage'];
+    diagnostic: boolean;
+  };
+  readonly 'input.rejected': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['reason', 'errorId'];
+    diagnostic: boolean;
+  };
+  readonly 'proactive.evaluation': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['trigger', 'candidateCount'];
+    diagnostic: boolean;
+  };
+  readonly 'proactive.decision': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['action', 'reason', 'scene', 'trigger'];
+    diagnostic: boolean;
+  };
+  readonly 'proactive.wait': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['action', 'targetId'];
+    diagnostic: boolean;
+  };
+  readonly 'task.created': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['source', 'generation'];
+    diagnostic: boolean;
+  };
+  readonly 'task.lane': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['status', 'resultKind', 'errorId', 'errorClass'];
+    diagnostic: boolean;
+  };
+  readonly 'task.cancel': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['initiatorTraceId', 'initiatorSpanId', 'initiatorTaskId'];
+    diagnostic: boolean;
+  };
+  readonly 'execution.started': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly [];
+    diagnostic: boolean;
+  };
+  readonly 'execution.ended': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['resultKind', 'durationMs', 'errorId', 'errorClass'];
+    diagnostic: boolean;
+  };
+  readonly 'artifact.prepared': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['resultKind', 'contentLength', 'attachmentCount', 'durationMs', 'errorId'];
+    diagnostic: boolean;
+  };
+  readonly 'agent.detail': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly [
+      'dshSeq',
+      'eventType',
+      'turn',
+      'step',
+      'toolClass',
+      'durationMs',
+      'inputTokens',
+      'outputTokens',
+    ];
+    diagnostic: boolean;
+  };
+  readonly 'agent.started': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['parentDshSessionId'];
+    diagnostic: boolean;
+  };
+  readonly 'agent.ended': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['parentDshSessionId', 'status', 'dshSeq'];
+    diagnostic: boolean;
+  };
+  readonly 'agent.summary': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly [
+      'dshSeq',
+      'turns',
+      'steps',
+      'tools',
+      'retries',
+      'subagents',
+      'usage',
+      'toolCounts',
+      'errors',
+      'suppressed',
+      'invalid',
+      'unknown',
+      'late',
+      'duplicate',
+      'overflow',
+      'incomplete',
+    ];
+    diagnostic: boolean;
+  };
+  readonly 'delivery.enqueued': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly [
+      'kind',
+      'contentLength',
+      'attachmentCount',
+      'notification',
+      'sourceMessageId',
+    ];
+    diagnostic: boolean;
+  };
+  readonly 'delivery.attempt': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['anchorMessageId', 'seq'];
+    diagnostic: boolean;
+  };
+  readonly 'delivery.terminal': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['status', 'durationMs', 'errorId', 'errorClass', 'recovered'];
+    diagnostic: boolean;
+  };
+  readonly 'delivery.notice': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['sourceMessageId', 'errorId'];
+    diagnostic: boolean;
+  };
+  readonly 'runtime.started': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['pid'];
+    diagnostic: boolean;
+  };
+  readonly 'runtime.ready': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['pid', 'version'];
+    diagnostic: boolean;
+  };
+  readonly 'runtime.stderr': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['bytes', 'lines'];
+    diagnostic: boolean;
+  };
+  readonly 'runtime.notification': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['reason'];
+    diagnostic: boolean;
+  };
+  readonly 'root.error': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['errorId', 'errorClass', 'code', 'signal', 'bytes'];
+    diagnostic: boolean;
+  };
+  readonly 'logging.suppressed': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['counts', 'executionId'];
+    diagnostic: boolean;
+  };
+  readonly 'logging.configured': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['diagnosticTargets', 'expiresAt'];
+    diagnostic: boolean;
+  };
+  readonly 'logging.reload_failed': {
+    level: LogLevel;
+    component:
+      'input' | 'proactive' | 'task' | 'agent' | 'runtime' | 'delivery' | 'system' | 'legacy';
+    msg: string;
+    fields: readonly ['errorClass'];
+    diagnostic: boolean;
+  };
+};
 export type EventFields = Record<string, unknown>;
 export type EventFieldsFor<Name extends EventName> = Partial<
   Record<(typeof EVENTS)[Name]['fields'][number], unknown>

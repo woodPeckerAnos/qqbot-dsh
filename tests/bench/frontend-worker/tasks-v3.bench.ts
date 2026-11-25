@@ -1,40 +1,16 @@
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { format, resolveConfig } from 'prettier';
 import { failure } from '@qqbot/contracts';
 import type { TaskHandleV3, TaskRunnerV3, WorkerResult } from '@qqbot/contracts';
 import { createHarness, deferred } from './harness.js';
+import { records, isSelected, writeReport, type ScenarioRecord } from './report.js';
+import { registry } from './registry.js';
+import { productionGroups, runProductionGroup } from './production-groups.js';
+import { readStoredZip, deliveredArchiveMatches } from './zip-evidence.js';
+import { OnebotProbe } from '../session/onebot-probe.js';
 
 type Harness = Awaited<ReturnType<typeof createHarness>>;
-interface Check {
-  name: string;
-  passed: boolean;
-  evidence: unknown;
-}
-interface ScenarioRecord {
-  id: string;
-  version: 1;
-  name: string;
-  status: 'passed' | 'failed';
-  durationMs: number;
-  checks: Check[];
-  counts?: Harness['counts'];
-  tasks?: Array<{
-    taskId: string;
-    status: string;
-    phase: string;
-    summaryAttempts: number;
-    workerStatus?: string;
-  }>;
-  closed?: {
-    frontendRunning: number;
-    frontendQueued: number;
-    workerRunning: number;
-    workerQueued: number;
-    timers: number;
-  };
-}
 interface Scenario {
   id: string;
   name: string;
@@ -45,8 +21,6 @@ interface Scenario {
   ): Promise<void>;
 }
 
-const records: ScenarioRecord[] = [];
-const expectedScenarios = ['F01', 'F02', 'F03', 'F04', 'F05', 'F06', 'F07', 'F08', 'F09'];
 const result: WorkerResult = {
   status: 'completed',
   text: '仅供前台读取的业务结果',
@@ -56,10 +30,12 @@ const result: WorkerResult = {
 };
 
 async function runScenario(scenario: Scenario): Promise<void> {
+  if (!isSelected(scenario.id)) return;
   const startedAt = performance.now();
   const record: ScenarioRecord = {
     id: scenario.id,
-    version: 1,
+    version: 2,
+    coverage: registry.find((entry) => entry.id === scenario.id)!.coverage,
     name: scenario.name,
     status: 'failed',
     durationMs: 0,
@@ -123,8 +99,8 @@ async function runScenario(scenario: Scenario): Promise<void> {
   if (failed) throw failed.error;
 }
 
-describe('前台/worker V3 离线 benchmark v1', () => {
-  it('F01 普通输入只创建前台，最终回复固定并实际送达', async () => {
+describe('前台/worker V3 离线 benchmark v2', () => {
+  it.runIf(isSelected('F01'))('F01 普通输入只创建前台，最终回复固定并实际送达', async () => {
     await runScenario({
       id: 'F01',
       name: '普通请求 worker 为零',
@@ -169,67 +145,70 @@ describe('前台/worker V3 离线 benchmark v1', () => {
     });
   });
 
-  it('F02 worker 运行期间普通输入和进度追问推进，内部正文不外发', async () => {
-    const gate = deferred<undefined>();
-    await runScenario({
-      id: 'F02',
-      name: '长任务与前台新输入交错',
-      hooks: {
-        async runWorker() {
-          await gate.promise;
-          return { ok: true, value: result };
+  it.runIf(isSelected('F02'))(
+    'F02 worker 运行期间普通输入和进度追问推进，内部正文不外发',
+    async () => {
+      const gate = deferred<undefined>();
+      await runScenario({
+        id: 'F02',
+        name: '长任务与前台新输入交错',
+        hooks: {
+          async runWorker() {
+            await gate.promise;
+            return { ok: true, value: result };
+          },
         },
-      },
-      async run(h, check) {
-        try {
-          const long = await h.submit('长任务');
-          await h.observe(
-            (task) => task.taskId === long.taskId && task.worker?.receipt.status === 'running'
-          );
-          const progress = await h.submit('进度怎么样？');
-          const progressTask = await progress.done;
-          await h.delivery(progress.taskId);
-          const ordinary = await h.submit('你好');
-          const ordinaryTask = await ordinary.done;
-          await h.delivery(ordinary.taskId);
-          const running = h.system.manager.get(long.taskId);
-          check(
-            'worker 未结束时新普通请求已完成',
-            running?.worker?.receipt.status === 'running' && ordinaryTask.status === 'completed',
-            { worker: running?.worker?.receipt.status, ordinary: ordinaryTask.status }
-          );
-          check(
-            '进度关联原 Task 且不创建新 worker',
-            progressTask.input.progressOnly === true &&
-              progressTask.input.followUpOf === long.taskId &&
-              h.counts.worker === 1,
-            {
-              progressOnly: progressTask.input.progressOnly,
-              followUpMatches: progressTask.input.followUpOf === long.taskId,
-              workers: h.counts.worker,
-            }
-          );
-          gate.resolve(undefined);
-          const task = await long.done;
-          await h.delivery(task.taskId);
-          check(
-            '结果交回前台整理一次',
-            task.status === 'completed' && h.counts.summary === 1 && h.counts.worker === 1,
-            h.counts
-          );
-          check(
-            '业务内部正文未直接发送',
-            h.connector.actions.every((action) => action.text !== result.text),
-            h.connector.actions.map((action) => action.text)
-          );
-        } finally {
-          gate.resolve(undefined);
-        }
-      },
-    });
-  });
+        async run(h, check) {
+          try {
+            const long = await h.submit('长任务');
+            await h.observe(
+              (task) => task.taskId === long.taskId && task.worker?.receipt.status === 'running'
+            );
+            const progress = await h.submit('进度怎么样？');
+            const progressTask = await progress.done;
+            await h.delivery(progress.taskId);
+            const ordinary = await h.submit('你好');
+            const ordinaryTask = await ordinary.done;
+            await h.delivery(ordinary.taskId);
+            const running = h.system.manager.get(long.taskId);
+            check(
+              'worker 未结束时新普通请求已完成',
+              running?.worker?.receipt.status === 'running' && ordinaryTask.status === 'completed',
+              { worker: running?.worker?.receipt.status, ordinary: ordinaryTask.status }
+            );
+            check(
+              '进度关联原 Task 且不创建新 worker',
+              progressTask.input.progressOnly === true &&
+                progressTask.input.followUpOf === long.taskId &&
+                h.counts.worker === 1,
+              {
+                progressOnly: progressTask.input.progressOnly,
+                followUpMatches: progressTask.input.followUpOf === long.taskId,
+                workers: h.counts.worker,
+              }
+            );
+            gate.resolve(undefined);
+            const task = await long.done;
+            await h.delivery(task.taskId);
+            check(
+              '结果交回前台整理一次',
+              task.status === 'completed' && h.counts.summary === 1 && h.counts.worker === 1,
+              h.counts
+            );
+            check(
+              '业务内部正文未直接发送',
+              h.connector.actions.every((action) => action.text !== result.text),
+              h.connector.actions.map((action) => action.text)
+            );
+          } finally {
+            gate.resolve(undefined);
+          }
+        },
+      });
+    }
+  );
 
-  it('F03 整理重试耗尽保留业务结果，worker 不重跑', async () => {
+  it.runIf(isSelected('F03'))('F03 整理重试耗尽保留业务结果，worker 不重跑', async () => {
     await runScenario({
       id: 'F03',
       name: '两次整理失败保留结果',
@@ -263,85 +242,88 @@ describe('前台/worker V3 离线 benchmark v1', () => {
     });
   });
 
-  it('F04 多会话同时排队遵守 worker 并发上限，完成后释放全部资源', async () => {
-    const gate = deferred<undefined>();
-    const capacityReached = deferred<undefined>();
-    let active = 0;
-    let peak = 0;
-    await runScenario({
-      id: 'F04',
-      name: '多会话容量上限',
-      hooks: {
-        async runWorker() {
-          active++;
-          peak = Math.max(peak, active);
-          if (active === 4) capacityReached.resolve(undefined);
+  it.runIf(isSelected('F04'))(
+    'F04 多会话同时排队遵守 worker 并发上限，完成后释放全部资源',
+    async () => {
+      const gate = deferred<undefined>();
+      const capacityReached = deferred<undefined>();
+      let active = 0;
+      let peak = 0;
+      await runScenario({
+        id: 'F04',
+        name: '多会话容量上限',
+        hooks: {
+          async runWorker() {
+            active++;
+            peak = Math.max(peak, active);
+            if (active === 4) capacityReached.resolve(undefined);
+            try {
+              await gate.promise;
+              return { ok: true, value: result };
+            } finally {
+              active--;
+            }
+          },
+        },
+        async run(h, check) {
           try {
-            await gate.promise;
-            return { ok: true, value: result };
+            const tasks: TaskHandleV3[] = [];
+            for (let i = 0; i < 10; i++) tasks.push(await h.submit('长任务', `capacity-${i}`));
+            await capacityReached.promise;
+            const last = tasks.at(-1)!;
+            await h.observe(
+              (task) => task.taskId === last.taskId && task.frontend.initialEndedAt !== undefined
+            );
+            const snapshot = h.system.actor.snapshot();
+            check(
+              '最多四个 worker 执行，其余六个排队',
+              active === 4 &&
+                peak === 4 &&
+                snapshot.worker.running === 4 &&
+                snapshot.worker.queued === 6,
+              {
+                active,
+                peak,
+                scheduler: { running: snapshot.worker.running, queued: snapshot.worker.queued },
+              }
+            );
+            const initialEnded = tasks.every(
+              (task) => h.system.manager.get(task.taskId)?.frontend.initialEndedAt !== undefined
+            );
+            check(
+              '运行总量不超过八个，全部首次前台已保存结束状态',
+              snapshot.frontend.running + snapshot.worker.running <= 8 &&
+                h.counts.frontend === 10 &&
+                initialEnded,
+              {
+                frontendRunning: snapshot.frontend.running,
+                workerRunning: snapshot.worker.running,
+                frontends: h.counts.frontend,
+                initialEnded,
+              }
+            );
+            gate.resolve(undefined);
+            const completed = await Promise.all(tasks.map((task) => task.done));
+            await Promise.all(tasks.map((task) => h.delivery(task.taskId)));
+            check(
+              '十个任务均完成且峰值始终不超限',
+              completed.every((task) => task.status === 'completed') && peak === 4 && active === 0,
+              {
+                completed: completed.filter((task) => task.status === 'completed').length,
+                peak,
+                active,
+              }
+            );
           } finally {
-            active--;
+            gate.resolve(undefined);
+            capacityReached.resolve(undefined);
           }
         },
-      },
-      async run(h, check) {
-        try {
-          const tasks: TaskHandleV3[] = [];
-          for (let i = 0; i < 10; i++) tasks.push(await h.submit('长任务', `capacity-${i}`));
-          await capacityReached.promise;
-          const last = tasks.at(-1)!;
-          await h.observe(
-            (task) => task.taskId === last.taskId && task.frontend.initialEndedAt !== undefined
-          );
-          const snapshot = h.system.actor.snapshot();
-          check(
-            '最多四个 worker 执行，其余六个排队',
-            active === 4 &&
-              peak === 4 &&
-              snapshot.worker.running === 4 &&
-              snapshot.worker.queued === 6,
-            {
-              active,
-              peak,
-              scheduler: { running: snapshot.worker.running, queued: snapshot.worker.queued },
-            }
-          );
-          const initialEnded = tasks.every(
-            (task) => h.system.manager.get(task.taskId)?.frontend.initialEndedAt !== undefined
-          );
-          check(
-            '运行总量不超过八个，全部首次前台已保存结束状态',
-            snapshot.frontend.running + snapshot.worker.running <= 8 &&
-              h.counts.frontend === 10 &&
-              initialEnded,
-            {
-              frontendRunning: snapshot.frontend.running,
-              workerRunning: snapshot.worker.running,
-              frontends: h.counts.frontend,
-              initialEnded,
-            }
-          );
-          gate.resolve(undefined);
-          const completed = await Promise.all(tasks.map((task) => task.done));
-          await Promise.all(tasks.map((task) => h.delivery(task.taskId)));
-          check(
-            '十个任务均完成且峰值始终不超限',
-            completed.every((task) => task.status === 'completed') && peak === 4 && active === 0,
-            {
-              completed: completed.filter((task) => task.status === 'completed').length,
-              peak,
-              active,
-            }
-          );
-        } finally {
-          gate.resolve(undefined);
-          capacityReached.resolve(undefined);
-        }
-      },
-    });
-  });
+      });
+    }
+  );
 
-  it('F05 一个会话 worker 串行积压时，其他会话继续推进', async () => {
+  it.runIf(isSelected('F05'))('F05 一个会话 worker 串行积压时，其他会话继续推进', async () => {
     const gate = deferred<undefined>();
     const started: string[] = [];
     await runScenario({
@@ -387,7 +369,7 @@ describe('前台/worker V3 离线 benchmark v1', () => {
     });
   });
 
-  it('F06 取消执行中的 worker 贯穿等待，禁止结果整理', async () => {
+  it.runIf(isSelected('F06'))('F06 取消执行中的 worker 贯穿等待，禁止结果整理', async () => {
     const stopped = deferred<WorkerResult>();
     const started = deferred<undefined>();
     await runScenario({
@@ -444,7 +426,7 @@ describe('前台/worker V3 离线 benchmark v1', () => {
     });
   });
 
-  it('F07 stop 只取消已开始前台，保留尚未开始的排队输入', async () => {
+  it.runIf(isSelected('F07'))('F07 stop 只取消已开始前台，保留尚未开始的排队输入', async () => {
     const gate = deferred<undefined>();
     const started = deferred<undefined>();
     await runScenario({
@@ -500,7 +482,7 @@ describe('前台/worker V3 离线 benchmark v1', () => {
     });
   });
 
-  it('F08 同会话首次前台与待整理结果交替，均能得到额度', async () => {
+  it.runIf(isSelected('F08'))('F08 同会话首次前台与待整理结果交替，均能得到额度', async () => {
     const workerGate = deferred<undefined>();
     const summaryGate = deferred<undefined>();
     const summaryStarted = deferred<undefined>();
@@ -584,155 +566,120 @@ describe('前台/worker V3 离线 benchmark v1', () => {
     });
   });
 
-  it('F09 固定回复等待连接器，任务和原文件清理后独立附件副本仍可送达', async () => {
-    const workerResult = deferred<WorkerResult>();
-    await runScenario({
-      id: 'F09',
-      name: '固定回复与独立附件持久交付',
-      hooks: {
-        async runWorker() {
-          return { ok: true, value: await workerResult.promise };
+  it.runIf(isSelected('F09'))(
+    'F09 固定回复等待连接器，任务和原文件清理后独立附件副本仍可送达',
+    async () => {
+      const workerResult = deferred<WorkerResult>();
+      let probe: OnebotProbe | undefined;
+      await runScenario({
+        id: 'F09',
+        name: '固定回复与独立附件持久交付',
+        hooks: {
+          async runWorker() {
+            return { ok: true, value: await workerResult.promise };
+          },
         },
-      },
-      async run(h, check) {
-        try {
-          const handle = await h.submit('长任务');
-          await h.observe(
-            (task) => task.taskId === handle.taskId && task.worker?.receipt.status === 'running'
-          );
-          h.connector.connected = false;
-          const original = join(h.root, 'report.csv');
-          const contents = 'name,total\nA,20\n';
-          await writeFile(original, contents);
-          workerResult.resolve({
-            ...result,
-            attachments: [
+        async run(h, check) {
+          try {
+            h.connector.recordCapable = true;
+            probe = new OnebotProbe(h.connector);
+            await probe.start();
+            const handle = await h.submit('长任务');
+            await h.observe(
+              (task) => task.taskId === handle.taskId && task.worker?.receipt.status === 'running'
+            );
+            h.connector.connected = false;
+            const original = join(h.root, 'report.csv');
+            const contents = 'name,total\nA,20\n';
+            await writeFile(original, contents);
+            workerResult.resolve({
+              ...result,
+              attachments: [
+                {
+                  kind: 'file',
+                  absPath: original,
+                  fileName: 'report.csv',
+                  sizeBytes: Buffer.byteLength(contents),
+                },
+              ],
+            });
+            const task = await handle.done;
+            const messages = h.system.queue.messages(task.taskId);
+            const attachment = messages.find((row) => row.candidate.attachment)?.candidate
+              .attachment;
+            const copied = attachment ? readStoredZip(await readFile(attachment.absPath)) : [];
+            check(
+              '执行完成与等待送达状态分开，附件已保存独立副本',
+              task.status === 'completed' &&
+                h.system.queue.taskDelivery(task.taskId).pending &&
+                attachment?.absPath !== original &&
+                attachment?.fileName.endsWith('.zip') === true &&
+                copied.length === 1 &&
+                copied[0]?.name === 'report.csv' &&
+                copied[0]?.text === contents,
               {
-                kind: 'file',
-                absPath: original,
-                fileName: 'report.csv',
-                sizeBytes: Buffer.byteLength(contents),
-              },
-            ],
-          });
-          const task = await handle.done;
-          const messages = h.system.queue.messages(task.taskId);
-          const attachment = messages.find((row) => row.candidate.attachment)?.candidate.attachment;
-          const copied = attachment ? await readFile(attachment.absPath, 'utf8') : undefined;
-          check(
-            '执行完成与等待送达状态分开，附件已保存独立副本',
-            task.status === 'completed' &&
-              h.system.queue.taskDelivery(task.taskId).pending &&
-              attachment?.absPath !== original &&
-              copied === contents,
-            {
-              execution: task.status,
-              deliveryPending: h.system.queue.taskDelivery(task.taskId).pending,
-              independentCopy: attachment?.absPath !== original,
-              copied,
-            }
-          );
-          const ids = messages.map((row) => row.id).sort();
-          h.system.actor.flushSettlements();
-          h.clock.advance(8 * 86400000);
-          await h.system.prune();
-          await unlink(original);
-          check(
-            '任务清理保留固定消息，不再次调用 worker 或整理',
-            h.system.manager.get(task.taskId) === undefined &&
-              h.system.queue
-                .messages(task.taskId)
-                .map((row) => row.id)
-                .sort()
-                .join(',') === ids.join(',') &&
-              h.counts.worker === 1 &&
-              h.counts.summary === 1,
-            { taskRemoved: h.system.manager.get(task.taskId) === undefined, counts: h.counts }
-          );
-          h.connector.connected = true;
-          h.system.queue.wake();
-          await h.delivery(task.taskId);
-          const sent = h.connector.actions.filter((action) => action.status === 'received');
-          check(
-            '原文件删除后附件完整送达一次',
-            sent.flatMap((action) => action.attachments).filter((file) => file.text === contents)
-              .length === 1 && !h.system.queue.taskDelivery(task.taskId).pending,
-            {
-              attachments: sent
-                .flatMap((action) => action.attachments)
-                .map((file) => ({
-                  fileName: file.fileName,
-                  text: file.text,
-                  sha256: file.sha256,
-                })),
-              pending: h.system.queue.taskDelivery(task.taskId).pending,
-            }
-          );
-        } finally {
-          workerResult.resolve({ ...result, status: 'cancelled' });
-        }
-      },
-    });
-  });
+                execution: task.status,
+                deliveryPending: h.system.queue.taskDelivery(task.taskId).pending,
+                independentCopy: attachment?.absPath !== original,
+                copied,
+              }
+            );
+            const ids = messages.map((row) => row.id).sort();
+            h.system.actor.flushSettlements();
+            h.clock.advance(8 * 86400000);
+            await h.system.prune();
+            await unlink(original);
+            check(
+              '任务清理保留固定消息，不再次调用 worker 或整理',
+              h.system.manager.get(task.taskId) === undefined &&
+                h.system.queue
+                  .messages(task.taskId)
+                  .map((row) => row.id)
+                  .sort()
+                  .join(',') === ids.join(',') &&
+                h.counts.worker === 1 &&
+                h.counts.summary === 1,
+              { taskRemoved: h.system.manager.get(task.taskId) === undefined, counts: h.counts }
+            );
+            h.connector.connected = true;
+            h.system.queue.wake();
+            await h.delivery(task.taskId);
+            const sent = h.connector.actions.filter((action) => action.status === 'received');
+            check(
+              '原文件删除后附件完整送达一次',
+              deliveredArchiveMatches(
+                probe.actions.flatMap((action) => action.zipEntries ?? []),
+                copied
+              ) && !h.system.queue.taskDelivery(task.taskId).pending,
+              {
+                attachments: sent
+                  .flatMap((action) => action.attachments)
+                  .map((file) => ({
+                    fileName: file.fileName,
+                    text: file.text,
+                    sha256: file.sha256,
+                  })),
+                pending: h.system.queue.taskDelivery(task.taskId).pending,
+                zipEntries: probe.actions.flatMap((action) => action.zipEntries ?? []),
+                payloadBytes: probe.actions.map((action) => action.payloadBytes),
+              }
+            );
+          } finally {
+            await probe?.stop();
+            workerResult.resolve({ ...result, status: 'cancelled' });
+          }
+        },
+      });
+    }
+  );
 });
 
+for (const group of productionGroups) {
+  it(`${group.id} ${group.name}`, async () => {
+    if (isSelected(group.id)) await runProductionGroup(group);
+  }, 120_000);
+}
+
 afterAll(async () => {
-  const output = resolve(process.env['TASKS_V3_BENCHMARK_OUTPUT'] ?? 'docs/benchmarks/tasks-v3-v1');
-  await mkdir(output, { recursive: true });
-  const scenarios = [...records].sort((a, b) => a.id.localeCompare(b.id));
-  const complete = expectedScenarios.every((id) => scenarios.some((record) => record.id === id));
-  const passed = complete && scenarios.every((record) => record.status === 'passed');
-  const report = {
-    schemaVersion: 1,
-    architectureVersion: 3,
-    benchmarkVersion: 'tasks-v3-v1',
-    mode: 'offline',
-    generatedAt: new Date().toISOString(),
-    status: passed ? 'passed' : 'failed',
-    expectedScenarios,
-    coverage: {
-      productionTaskSystem: true,
-      productionSchedulers: true,
-      productionMessageQueue: true,
-      injectedRunner: true,
-      injectedConnector: true,
-      injectedClock: true,
-      realLocalFiles: true,
-    },
-    modelEvaluation: {
-      performed: false,
-      reason: '正文和业务执行由注入 runner 给定；真实 DSH 模型和独立语义裁判未运行。',
-      apiRequests: 0,
-    },
-    summary: {
-      scenarios: scenarios.length,
-      passed: scenarios.filter((record) => record.status === 'passed').length,
-      checks: scenarios.reduce((sum, record) => sum + record.checks.length, 0),
-    },
-    scenarios,
-  };
-  const formatting = await resolveConfig(resolve(output, 'report.json'));
-  await writeFile(
-    resolve(output, 'report.json'),
-    await format(JSON.stringify(report), { ...formatting, parser: 'json' })
-  );
-  const rows = scenarios
-    .map(
-      (record) =>
-        `| ${record.id} | ${record.name} | ${record.status} | ${record.counts?.frontend ?? 0}/${record.counts?.worker ?? 0}/${record.counts?.summary ?? 0} | ${record.checks.filter((check) => check.passed).length}/${record.checks.length} | ${record.durationMs} |`
-    )
-    .join('\n');
-  const details = scenarios
-    .map(
-      (record) =>
-        `### ${record.id} ${record.name}\n\n${record.checks.map((check) => `- ${check.passed ? '通过' : '失败'}：${check.name}；证据：${JSON.stringify(check.evidence)}`).join('\n')}\n`
-    )
-    .join('\n');
-  await writeFile(
-    resolve(output, 'report.md'),
-    await format(
-      `# 前台/worker V3 离线 benchmark v1\n\n架构版本 3，报告 schemaVersion 1。${report.summary.passed}/${report.summary.scenarios} 场景通过，${report.summary.checks} 项检查。\n\n使用生产 TaskSystem、调度器和消息队列，注入 runner、连接器和时钟，真实本地文件保存状态。正文与业务结果由脚本给定；真实模型及独立语义裁判未评测，API 请求为 0。历史 V2 benchmark 与报告保持独立。\n\n| 场景 | 行为 | 状态 | 前台/worker/整理次数 | 检查 | 耗时 ms |\n| --- | --- | --- | --- | --- | --- |\n${rows}\n\n${details}`,
-      { ...formatting, parser: 'markdown' }
-    )
-  );
+  await writeReport(registry);
 });

@@ -15,7 +15,34 @@ import type {
   MessagePart,
   MessageQuotePart,
   NormalizedMessage,
+  OriginalMessageReference,
 } from '@qqbot/contracts';
+
+/** 旧数据中的内部问题号和任务号没有可引用的用户正文。只排除整段内部标识。 */
+export function sanitizeReferenceExcerpt(excerpt: string): string {
+  const text = excerpt.trim();
+  const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+  if (
+    /^q:[^\s]+$/i.test(text) ||
+    new RegExp(`^(?:task(?:Id|_id|-id)?[=:：\\s]+)?${uuid}$`, 'i').test(text)
+  )
+    return '';
+  return text;
+}
+
+export function referenceSenderName(reference: { senderId: string; senderName?: string }): string {
+  const name = reference.senderName?.trim();
+  if (name) return name;
+  if (/^\d+$/.test(reference.senderId)) return `QQ ${reference.senderId}`;
+  return reference.senderId === 'context' ? '群聊上下文' : '群友';
+}
+
+/** 投递、历史和观察窗口共用原引用文案。 */
+export function renderReference(reference: OriginalMessageReference | undefined): string {
+  if (!reference) return '';
+  const excerpt = sanitizeReferenceExcerpt(reference.excerpt);
+  return excerpt ? `（引用 ${referenceSenderName(reference)} 的「${excerpt}」）` : '';
+}
 
 /** 一条消息的全部片段；适配器没给 parts 时退回单一文本片段。 */
 export function messageParts(message: NormalizedMessage): MessagePart[] {

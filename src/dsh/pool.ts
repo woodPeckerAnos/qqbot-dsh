@@ -393,6 +393,8 @@ export class RuntimePool extends EventEmitter {
         runtime.prompt(sessionId, structuredClone(blocks)),
       notifyTaskCooperation: (update: import('@qqbot/contracts').TaskCooperationUpdate) =>
         runtime.notifyTaskCooperation?.(structuredClone(update)),
+      notifyWorkerBudget: (update: import('@qqbot/contracts').WorkerBudgetUpdate) =>
+        runtime.notifyWorkerBudget?.(structuredClone(update)),
       onTaskChannelClose: (listener: () => void) =>
         runtime.onTaskChannelClose?.(listener) ?? (() => {}),
       on: <K extends keyof DshRuntimeEvents>(event: K, listener: DshRuntimeEvents[K]): void => {

@@ -8,6 +8,7 @@ import type {
   TaskSnapshotV3,
   DeepReadonly,
   FileConfig,
+  SearchService,
 } from '@qqbot/contracts';
 import { createTaskSystemV3 } from '../../src/task/index.js';
 import { loadConfigV3 as loadConfig } from '../../src/config/index.js';
@@ -23,6 +24,7 @@ import { BenchmarkRuntime } from '../bench/session/mock-runtime.js';
 import { MemoryConnector } from '../bench/session/connector.js';
 import { BenchmarkClock } from '../bench/session/clock.js';
 import { deferred } from '../bench/frontend-worker/harness.js';
+import { recordBenchmarkEvidence } from '../bench/frontend-worker/evidence.js';
 
 class RuntimeFeed {
   private readonly waiting = new Map<string, ReturnType<typeof deferred<BenchmarkRuntime>>[]>();
@@ -58,7 +60,8 @@ class ObservedRuntime extends BenchmarkRuntime {
 
 export async function createRuntimeHarness(
   configuration?: FileConfig,
-  savedTasks?: readonly unknown[]
+  savedTasks?: readonly unknown[],
+  search?: SearchService
 ) {
   const root = await mkdtemp(join(tmpdir(), 'task-v3-runtime-'));
   const config = loadConfig(
@@ -79,7 +82,13 @@ export async function createRuntimeHarness(
       savedTasks
     );
   config.paths.dshHome = join(root, 'dsh');
-  const logger = createLogger({ autoTick: false, sink: () => {} });
+  const logRecords: Record<string, unknown>[] = [];
+  const logger = createLogger({
+    autoTick: false,
+    sink: (record) => {
+      logRecords.push(JSON.parse(record) as Record<string, unknown>);
+    },
+  });
   const connector = new MemoryConnector();
   const clock = new BenchmarkClock();
   const feed = new RuntimeFeed();
@@ -88,6 +97,7 @@ export async function createRuntimeHarness(
     config,
     paths,
     logger,
+    search,
     clock,
     connectors: new Map([['onebot', connector]]),
     conversations: createConversationStore(paths, logger),
@@ -102,6 +112,7 @@ export async function createRuntimeHarness(
   let sequence = 0;
   return {
     root,
+    logRecords,
     config,
     paths,
     connector,
@@ -153,19 +164,36 @@ export async function createRuntimeHarness(
     async close() {
       await system.close();
       await connector.stop();
+      await recordBenchmarkEvidence('runtime-closed', {
+        runtimes: runtimes.reduce<Record<string, number>>((counts, runtime) => {
+          const role = runtime.options.env?.QQBOT_ROLE ?? 'unknown';
+          counts[role] = (counts[role] ?? 0) + 1;
+          return counts;
+        }, {}),
+        workerDispatches: system.manager.list().filter((task) => task.worker).length,
+        scheduler: system.actor.snapshot(),
+        timers: clock.pending,
+        disposed: runtimes.map((runtime) => runtime.disposed),
+      });
       await rm(root, { recursive: true, force: true });
     },
   };
 }
 
-export function startWorker(runtime: BenchmarkRuntime) {
+export function startWorker(
+  runtime: BenchmarkRuntime,
+  assignment: import('@qqbot/contracts').WorkerAssignment = {
+    instruction: '制作完整报告',
+    deliverables: ['报告和CSV文件'],
+  }
+) {
   const env = runtime.options.env!;
   return runtime.options.taskControl!({
     action: 'start-worker',
     sessionId: runtime.prompts[0]!.sessionId,
     executionId: env.QQBOT_EXECUTION_ID,
     runtimeGeneration: env.QQBOT_RUNTIME_GENERATION,
-    assignment: { instruction: '制作完整报告', deliverables: ['报告和CSV文件'] },
+    assignment,
   });
 }
 
