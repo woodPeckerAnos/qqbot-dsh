@@ -177,16 +177,20 @@ function queryDeliveryStatus(rows: DeepReadonly<QueuedMessage[]> | undefined) {
   return 'sent' as const;
 }
 
-function canCancel(
+export function canCancel(
   caller: DeepReadonly<TaskSnapshotV3>,
   target: DeepReadonly<TaskSnapshotV3> | undefined
 ): boolean {
+  if (!target || target.cancelAccepted) return false;
+  if (target.input.message.target.key !== caller.input.message.target.key) return false;
+  if (target.creationSequence >= caller.creationSequence) return false;
+  if (caller.input.isAdmin) return true;
+  // 主动 Task 没有“发起用户”：它的 sender 是触发时选中的原消息或合成上下文，
+  // 与当前说“别查了”的人通常不同。同一会话内允许普通成员停止机器人尚未
+  // 回复的主动工作，否则只能由管理员兜底。用户发起的 Task 仍只允许本人。
   return (
-    !!target &&
-    target.input.message.target.key === caller.input.message.target.key &&
-    target.creationSequence < caller.creationSequence &&
-    target.input.generation === caller.input.generation &&
-    (caller.input.isAdmin || target.input.message.senderId === caller.input.message.senderId)
+    target.input.source === 'proactive' ||
+    target.input.message.senderId === caller.input.message.senderId
   );
 }
 

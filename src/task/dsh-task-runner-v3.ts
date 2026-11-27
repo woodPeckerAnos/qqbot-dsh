@@ -860,7 +860,7 @@ function frontendInstruction(task: Task): string {
       followup = `本次用户明确授权重试失败任务${task.input.retryOf}，派发必须填写retryOf=${task.input.retryOf}。`;
     followup += `本次关联旧任务${task.input.followUpOf}，先调用query_tasks读取摘要，需要正文时按resultVersion调用read_task_result；${request}`;
   }
-  return `你负责本次输入的理解与答复。简单请求直接给最终正文；需要业务工具、文件、研究、多步执行或深度推理时调用start_worker，给出完整指令、交付要求及可选简短承接语，成功后立即结束。查询与取消工具必须顺序执行，派发时服务器补入原始输入、附件、业务规则及已经执行的控制操作。${followup}执行状态和投递状态分别说明，缺少投递记录时说送达未核实。只处理当前Task，历史与观察仅作背景。`;
+  return `你负责本次输入的理解与答复。简单请求直接给最终正文；需要业务工具、文件、研究、多步执行或深度推理时调用start_worker，给出完整指令、交付要求及可选简短承接语，成功后立即结束。查询与取消工具必须顺序执行，派发时服务器补入原始输入、附件、业务规则及已经执行的控制操作。取消只停止未完成执行；已入队或已在途消息仍可能送达。取消成功时只能说已请求停止或已停止后续执行，不得承诺不会再有结果或已彻底停掉；返回 value=false 表示任务已结束或没有可停止执行，按真实状态说明。${followup}执行状态和投递状态分别说明，缺少投递记录时说送达未核实。只处理当前Task，历史与观察仅作背景。`;
 }
 
 function workerInstruction(task: Task, workspace: string, outbox: string): string {

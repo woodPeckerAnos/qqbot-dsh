@@ -424,7 +424,8 @@ function registerControlTools(ctx, call, onDispatch) {
   ctx.tools.register(
     defineTool({
       name: 'cancel_task',
-      description: '取消旧任务的未完成执行；已入队消息继续投递。普通成员只能取消自己发起的旧任务。',
+      description:
+        '取消旧任务的未完成执行；已入队消息继续投递。普通成员只能取消自己发起的任务，或本会话中尚未回复的主动任务；管理员可取消全部。',
       parameters: { taskId: { type: 'string', required: true } },
       output,
       execute: (args, exec) => call('cancel', { taskId: args.taskId }, exec),
