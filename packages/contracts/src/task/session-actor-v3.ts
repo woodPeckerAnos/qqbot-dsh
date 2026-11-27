@@ -24,7 +24,7 @@ export interface SessionActorV3 {
   ): Promise<TaskHandleV3>;
   cancel(taskId: string, initiator?: TraceContext): boolean;
   cancelExecution(taskId: string): void;
-  stop(sessionKey: string, initiator?: TraceContext): number;
+  stop(sessionKey: string, initiator?: TraceContext, senderId?: string): number;
   reset(sessionKey: string, initiator?: TraceContext): number;
   notify(event: DeepReadonly<SessionEvent>): void;
   snapshot(): DeepReadonly<{

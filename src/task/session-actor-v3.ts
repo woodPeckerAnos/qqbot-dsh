@@ -133,10 +133,17 @@ export class SessionActorV3 implements ActorContract {
     this.options.schedulers.frontend.cancel(taskId);
     this.options.schedulers.worker.cancel(taskId);
   }
-  stop(sessionKey: string, initiator?: TraceContext): number {
+  stop(sessionKey: string, initiator?: TraceContext, senderId?: string): number {
     const tasks = this.options.manager
       .list(sessionKey)
-      .filter((task) => !isTaskTerminal(task) && task.frontend.initialStartedAt !== undefined);
+      .filter(
+        (task) =>
+          !isTaskTerminal(task) &&
+          task.frontend.initialStartedAt !== undefined &&
+          (senderId === undefined ||
+            task.input.message.senderId === senderId ||
+            task.input.source === 'proactive')
+      );
     for (const task of tasks) this.cancel(task.taskId, initiator);
     return tasks.length;
   }
