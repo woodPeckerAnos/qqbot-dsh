@@ -7,6 +7,7 @@ import {
 } from '@qqbot/contracts';
 import { stripControlChars } from '../content/index.js';
 import { legacyTrace } from '../observability/index.js';
+import { isContentSafetyFailure } from './failure-kind.js';
 import { failedWorker } from './worker-outcome-v3.js';
 import type {
   AttachmentReference,
@@ -279,7 +280,7 @@ export class TaskLifeCycleManagerV3 implements ManagerContract {
     else {
       const reply = frontendReplyFromOutcome(result);
       if (reply.ok) this.fixReply(task, reply.value, 'completed');
-      else this.fixFailureReply(task, reply.error, '前台处理失败，请稍后重试。');
+      else this.fixFailureReply(task, reply.error, frontendFailureText(reply.error));
     }
     return this.commit(task, { type: 'frontend-finished', taskId, jobId });
   }
@@ -855,6 +856,17 @@ function frontendReplyFromOutcome(result: Result<FrontendTurnResultV3>): Result<
   if (result.value.kind === 'reply' && validReply(result.value.reply))
     return { ok: true, value: result.value.reply };
   return { ok: false, error: failure('INVALID_INPUT', '首次前台未返回答复或有效派发') };
+}
+/**
+ * 前台失败的用户可见说明。内容安全过滤是可预期的一类上游结果，不应该和
+ * 进程故障共用「前台处理失败」，否则用户只会看到一句无法行动的重试提示。
+ * 这里只匹配分类关键词，不展示 provider、原始响应或内部错误文本。
+ */
+function frontendFailureText(error: ContractFailure): string {
+  if (isContentSafetyFailure(error.cause))
+    return '这条内容触发了内容安全限制，我无法继续处理。可以打码或换个问法后再试。';
+  if (error.code === 'TIMEOUT') return '处理超时，已停止本次回复；请稍后重试或拆成更小的请求。';
+  return '前台处理失败，请稍后重试。';
 }
 function workerResultFromOutcome(result: Result<WorkerResult>): WorkerResult {
   if (!result.ok) return failedWorker(result.error);

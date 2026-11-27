@@ -365,6 +365,29 @@ describe('真实问题引用边界', () => {
     });
   });
 
+  it('主动 Task 准入后同一挂起问题不再生成第二个 Task', async () => {
+    const requests: ProactiveTaskRequest[] = [];
+    const h = setup(
+      {},
+      {
+        submitTask: async (request) => {
+          requests.push(request);
+          return true;
+        },
+      }
+    );
+    h.observe('10001', '接口分页参数怎么传？');
+    const questionId = h.questionIdOf('10001', 0);
+    h.setVerdicts(['scene-3'], { waitEvidence: `q:${questionId}` });
+    h.advance(90_000);
+    await settle();
+    expect(requests).toHaveLength(1);
+    h.observe('10002', '收到，知道了');
+    h.advance(90_000);
+    await settle();
+    expect(requests).toHaveLength(1);
+  });
+
   it('错误问题号和时间只能引用真实群聊上下文且不发送判定evidence', async () => {
     const requests: ProactiveTaskRequest[] = [];
     const h = setup(

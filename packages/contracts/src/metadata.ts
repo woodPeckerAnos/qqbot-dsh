@@ -328,6 +328,7 @@ export const modules = immutableConstant([
       'src/task/system-v3.ts',
       'src/task/runtime-profile-v3.ts',
       'src/task/worker-outcome-v3.ts',
+      'src/task/failure-kind.ts',
       'src/task/search-service.ts',
     ],
     dependencies: ['runtime', 'media', 'store', 'delivery', 'observability', 'content', 'session'],

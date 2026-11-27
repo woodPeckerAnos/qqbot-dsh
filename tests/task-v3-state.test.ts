@@ -223,6 +223,22 @@ describe('V3 执行状态持久化', () => {
     });
     expect(manager.pendingJobs().filter((job) => job.kind === 'worker')).toHaveLength(1);
   });
+  it('前台内容安全失败给出可操作说明，而不是通用失败文案', () => {
+    const manager = createTaskLifeCycleManagerV3({ now: () => 100 });
+    const state = started(manager);
+    unwrap(
+      manager.finishFrontend('task', state.job.jobId, {
+        ok: false,
+        error: failure('UPSTREAM_FAILED', {
+          kind: 'turn-failure',
+          reason: 'error',
+          message: 'Output data may contain inappropriate content.',
+        }),
+      })
+    );
+    expect(manager.get('task')?.finalReply?.text).toContain('内容安全限制');
+    expect(manager.get('task')?.finalReply?.text).not.toBe('前台处理失败，请稍后重试。');
+  });
   it('worker 提前完成只保存结果，首次前台退出后才可领取整理，重复结果不增加版本', () => {
     const manager = createTaskLifeCycleManagerV3({ now: () => 100 });
     const state = started(manager);

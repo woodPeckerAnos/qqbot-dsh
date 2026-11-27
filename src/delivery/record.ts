@@ -93,7 +93,7 @@ function buildCandidates(
   const record = body.length > maxChars || inline.length > 1;
   const candidates: ReplyCandidate[] = [];
   if (record) {
-    if (recordNeedsReferenceTip(base, body)) candidates.push(shortTip(base));
+    if (recordNeedsReferenceTip(base, body)) candidates.push(shortTip(base, body));
     candidates.push(recordCandidate(base, bodyId, parts, inline));
   } else if (body || inline.length) {
     candidates.push(ordinaryCandidate(base, bodyId, parts, inline));
@@ -131,12 +131,57 @@ function ordinaryCandidate(
   };
 }
 
-function shortTip(base: ReplyCandidate): ReplyCandidate {
+/**
+ * 长正文的记录前置提示。固定文案「请查看下面的消息」把重点全部推给记录，
+ * 群里看不到任何结论；这里用正文自身的首条结论和章节标题做索引。
+ * 索引只摘录、不改写，完整论据仍在记录里。
+ */
+function shortTip(base: ReplyCandidate, body: string): ReplyCandidate {
   const reference = base.reference;
   let prefix = '';
   if (!reference?.messageId && sanitizeReferenceExcerpt(reference?.excerpt ?? ''))
     prefix = renderReference(reference);
-  return { ...base, quote: true, text: `${prefix}结果已整理，请查看下面的消息。` };
+  return { ...base, quote: true, text: `${prefix}${replyIndex(body)}` };
+}
+
+const INDEX_HEADING =
+  /^(?:#{1,6}\s|[一二三四五六七八九十]+、|\d+[.、]\s*|[（(][一二三四五六七八九十]+[）)]|第[一二三四五六七八九十]+[步章部分])/u;
+
+function replyIndex(body: string): string {
+  const lines = body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  const headingText = (line: string) =>
+    clip(
+      line
+        .replace(/^#{1,6}\s*/u, '')
+        .replace(/\*\*/gu, '')
+        .replace(/^[-*]\s+/u, ''),
+      50
+    );
+  const headings = lines
+    .filter((line) => INDEX_HEADING.test(line))
+    .slice(0, 5)
+    .map(headingText);
+  const conclusionLine = lines.find((line) => !INDEX_HEADING.test(line)) ?? lines[0] ?? '';
+  const conclusion = clip(
+    conclusionLine
+      .replace(/^#{1,6}\s*/u, '')
+      .replace(/\*\*/gu, '')
+      .replace(/^[-*]\s+/u, ''),
+    100
+  );
+  const parts = [`结果已整理：${conclusion || '正文已生成'}`];
+  if (headings.length >= 2) parts.push(`要点：${headings.join('；')}`);
+  parts.push('完整正文与论据见下方合并转发。');
+  const text = parts.join('\n');
+  return text.length > 500 ? `${text.slice(0, 500)}…` : text;
+}
+
+function clip(text: string, max: number): string {
+  const value = text.replace(/\s+/gu, ' ').trim();
+  return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
 function recordCandidate(

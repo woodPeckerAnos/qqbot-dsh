@@ -22,6 +22,7 @@ import type {
   createSessionActorFactoryV3,
 } from '@qqbot/contracts';
 import { classifyTaskFollowUpV3 } from '../session/index.js';
+import { isContentSafetyFailure } from './failure-kind.js';
 import { createTrace } from '../observability/index.js';
 
 /** 只串行输入判定与准入，整轮执行和消息发送均在队列之外。 */
@@ -67,9 +68,22 @@ export class SessionActorV3 implements ActorContract {
       }),
       options.manager.onChange((task) => {
         if (isTaskTerminal(task)) {
+          const context = this.contexts.get(task.taskId);
+          const active = this.contexts.delete(task.taskId);
           this.options.output.reconcile(task.taskId);
-          this.contexts.delete(task.taskId);
           this.options.preparer.release(task.taskId);
+          // 内容安全过滤失败时，出错输入仍留在会话历史和观察窗口里；不刷新
+          // 边界的话，窗口过期前每条新消息都会再次携带它，形成反复失败。
+          // 前台直接失败和 worker 结果失败都要覆盖。
+          const unsafe =
+            isContentSafetyFailure(task.frontend.failure?.cause) ||
+            isContentSafetyFailure(task.worker?.result?.failure?.cause);
+          if (active && unsafe)
+            this.refreshContext(
+              task.input.message.target.key,
+              task.input.message.ts,
+              context?.logger
+            );
         }
         this.scheduleWake();
       }),
@@ -365,6 +379,26 @@ export class SessionActorV3 implements ActorContract {
       });
     this.enqueuing.set(task.taskId, completion);
   }
+  /** 内容安全失败后把上下文边界推到该条输入之后；不取消其他未完成任务。 */
+  private refreshContext(
+    sessionKey: string,
+    inputTs: number,
+    logger: MessageContext['logger'] | undefined
+  ): void {
+    const current = this.generations.get(sessionKey) ?? { generation: 1, sinceTs: 0 };
+    const boundary = Math.max(this.options.clock?.now() ?? Date.now(), inputTs + 1);
+    if (boundary <= current.sinceTs) return;
+    try {
+      this.saveGeneration(sessionKey, { generation: current.generation + 1, sinceTs: boundary });
+      logger?.debug('内容安全失败后刷新会话上下文', { conversation: sessionKey });
+    } catch (error) {
+      logger?.warn('内容安全失败后刷新会话上下文失败', {
+        conversation: sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private saveGeneration(sessionKey: string, state: { generation: number; sinceTs: number }): void {
     const next = new Map(this.generations);
     next.set(sessionKey, state);

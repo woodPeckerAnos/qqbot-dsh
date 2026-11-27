@@ -373,6 +373,44 @@ describe('测试环境交付边界', () => {
       ).not.toContain(excerpt);
     }
   });
+  it('长正文记录前置提示给出结论要点和完整正文入口', async () => {
+    const h = await deliveryHarness();
+    try {
+      const body = [
+        '结论：这是一段需要先看的结论。',
+        '',
+        '一、第一项依据',
+        '这里是第一项的长论据。'.repeat(120),
+        '',
+        '二、第二项依据',
+        '这里是第二项的长论据。'.repeat(120),
+      ].join('\n');
+      await h.send({ replyId: 'long-index', text: body });
+      const tip = h.queue
+        .messages()
+        .find((row) => row.candidate.text.includes('结果已整理：结论：这是一段需要先看的结论。'));
+      expect(tip).toBeDefined();
+      expect(tip?.candidate.text).toContain('要点：一、第一项依据；二、第二项依据');
+      expect(tip?.candidate.text).toContain('完整正文与论据见下方合并转发。');
+      expect(tip?.candidate.text).not.toBe('结果已整理，请查看下面的消息。');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('引用摘录压成单行并截断，不把整段上下文带进回复', () => {
+    const long = `${'第一段引用内容 '.repeat(20)}\n第二段\n第三段`;
+    const quote = renderReference({
+      senderId: 'context',
+      senderName: '触发时的群聊上下文',
+      excerpt: long,
+      ts: 1,
+    });
+    expect(quote).toContain('…');
+    expect(quote).not.toContain('\n');
+    expect(quote.length).toBeLessThan(180);
+  });
+
   it('图片编码期间取消不会发出普通图文消息', async () => {
     const h = await deliveryHarness();
     try {

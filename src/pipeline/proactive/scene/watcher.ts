@@ -1519,9 +1519,19 @@ export class ProactiveWatcher {
             e.msgId === questionId.slice(0, separator) &&
             e.ts === Number(questionId.slice(separator + 1))
         );
-      } else if (decision.scene === 'scene-1' || decision.scene === 'scene-4') {
-        entry = entries.at(-1);
+      } else if (decision.evidence !== undefined) {
+        // 判定依据通常是被纠错/被补充的原文片段；先按它回查，避免 scene-1
+        // 引用最后一条无关消息、scene-2 退回整段合成上下文。
+        const evidence = referenceEvidenceText(decision.evidence);
+        if (evidence !== undefined && evidence.length >= 4)
+          entry = entries.findLast(
+            (e) =>
+              e.text.trim().length >= 4 &&
+              (e.text.includes(evidence) || evidence.includes(e.text.trim()))
+          );
       }
+      if (!entry && (decision.scene === 'scene-1' || decision.scene === 'scene-4'))
+        entry = entries.at(-1);
       let reference: NormalizedMessage;
       if (question) {
         reference = {
@@ -1582,7 +1592,12 @@ export class ProactiveWatcher {
           if (scope.isCurrent()) this.armSessionIdle(convKey);
         },
       });
-      if (!accepted) {
+      if (accepted) {
+        // 主动 Task 已准入就等于「这个问题已经有一次发言在路上了」；不关闭它，
+        // 探针与后续人类消息会反复武装，同一问题数分钟内会生成多个 Task。
+        // 准入失败不关闭，保留重试机会。
+        if (questionId) state.markSilenced(questionId);
+      } else {
         this.bump(this.counters.deliveryDegraded, 'task-rejected');
         this.metrics.deliveryDegraded('task-rejected', decision.scene);
       }
@@ -1654,6 +1669,21 @@ export class ProactiveWatcher {
 /** 场景 id → 投递层的 trigger 标签（进指标与日志）。 */
 export function sceneTriggerName(scene: SceneId): ProactiveTrigger {
   return `intervention:${scene}` as ProactiveTrigger;
+}
+
+/**
+ * 判定 evidence 去掉「(对我说的)」「发送者：」这类包装后用于消息回查。
+ *
+ * 只用于引用定位，不改变写进 Task 的 evidence 原文；去掉发送者前缀是因为
+ * 窗口里的消息正文通常不带发言人，直接包含匹配会永远失败。
+ */
+function referenceEvidenceText(evidence: string | undefined): string | undefined {
+  if (evidence === undefined) return undefined;
+  const text = evidence
+    .replace(/^[（(]对我说的[）)]\s*/u, '')
+    .replace(/^[^：:\n]{1,24}[：:]\s*/u, '')
+    .trim();
+  return text === '' ? undefined : text;
 }
 
 function circuitState(

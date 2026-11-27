@@ -795,6 +795,11 @@ class TurnEventsV3 {
       this.fail('UPSTREAM_FAILED', {
         kind: this.childFailed ? 'child-failure' : 'turn-failure',
         reason: outcome.reason,
+        // 上游给的原因要带到前台，才能在内容安全过滤等场景给出可理解的说明；
+        // 不记录原始响应或提示词，只保留 DSH 的简短错误消息。
+        ...(outcome.kind === 'error' && outcome.errorMessage !== undefined
+          ? { message: outcome.errorMessage }
+          : {}),
       });
     else
       this.done.resolve({

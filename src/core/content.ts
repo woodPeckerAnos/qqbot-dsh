@@ -18,16 +18,20 @@ import type {
   OriginalMessageReference,
 } from '@qqbot/contracts';
 
-/** 旧数据中的内部问题号和任务号没有可引用的用户正文。只排除整段内部标识。 */
+/**
+ * 旧数据中的内部问题号和任务号没有可引用的用户正文。只排除整段内部标识。
+ * 渲染用的摘录压成单行并截断：引用只负责给上下文，完整正文应在原消息里查看，
+ * 否则 scene-2 的合成上下文会把整段窗口内联进回复。
+ */
 export function sanitizeReferenceExcerpt(excerpt: string): string {
-  const text = excerpt.trim();
+  const text = excerpt.replace(/\s+/gu, ' ').trim();
   const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
   if (
     /^q:[^\s]+$/i.test(text) ||
     new RegExp(`^(?:task(?:Id|_id|-id)?[=:：\\s]+)?${uuid}$`, 'i').test(text)
   )
     return '';
-  return text;
+  return text.length > 120 ? `${text.slice(0, 120)}…` : text;
 }
 
 export function referenceSenderName(reference: { senderId: string; senderName?: string }): string {

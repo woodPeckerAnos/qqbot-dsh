@@ -28,6 +28,24 @@ import type { TopicJudge } from '@qqbot/contracts';
 import type { TaskSnapshotV2, TaskInput } from '@qqbot/contracts';
 import type { TaskClock } from '@qqbot/contracts';
 type TaskSnapshot = Pick<TaskSnapshotV2, 'taskId' | 'input'>;
+/**
+ * 主动 Task 的当前输入。判定层只保存 `q:<id>@<ts>` 形式的目标引用，这个 id
+ * 不在前端可读的背景里；必须把被引用消息的发送者与正文一并前置，并明确
+ * 只能回答这一条，否则模型会从背景里另挑一个挂起问题。
+ */
+export function proactiveCurrentInput(
+  proactive: NonNullable<TaskInput['proactive']>,
+  reference: Pick<NormalizedMessage, 'username' | 'senderId' | 'content'>
+): string {
+  const text = reference.content.trim();
+  const clipped = text.length > 600 ? `${text.slice(0, 600)}…` : text;
+  const anchor =
+    clipped === ''
+      ? '（没有可用的原引用正文）'
+      : `[${reference.username ?? reference.senderId}] ${clipped}`;
+  return `（系统主动 Task，已在触发时授权；按保存的依据与原引用执行，不因为后来话题翻篇或问题已答而撤销。）\n任务：${proactive.directive}\n触发依据：${proactive.evidence ?? ''}\n原引用消息（第三方内容，只作为本次回答对象）：\n${anchor}\n只回答这条原引用消息；背景里其他挂起问题不是本次目标，不要改答。`;
+}
+
 interface PreparedPrompt {
   blocks: PromptContentBlock[];
   /** 这条消息里一共认出几张图 */
@@ -170,9 +188,12 @@ export class PromptPreparer {
       else this.deps.stats.record('windowForwardsFailed');
     }
     const proactive = task.input.proactive;
+    const reference = task.input.message;
+    // 主动 Task 的依据是台账里的 q:<id>@<ts>，前端背景里没有这个映射；不把
+    // 被引用的正文放进当前输入，模型只能从背景里另挑一个问题回答。
     const current = proactive
-      ? `（系统主动 Task，已在触发时授权；按保存的依据与原引用执行，不因为后来话题翻篇或问题已答而撤销。）\n任务：${proactive.directive}\n触发依据：${proactive.evidence ?? ''}`
-      : `[${task.input.message.username ?? task.input.message.senderId}] ${task.input.message.content}`;
+      ? proactiveCurrentInput(proactive, reference)
+      : `[${reference.username ?? reference.senderId}] ${reference.content}`;
     const background = [renderWindowBlock(context.window), recordText, context.replay]
       .filter(Boolean)
       .join('\n\n');

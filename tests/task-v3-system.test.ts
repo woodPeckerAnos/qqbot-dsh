@@ -234,6 +234,43 @@ describe('V3 前台与 worker 生产装配', () => {
     }
   });
 
+  it('前台内容安全失败后刷新上下文，下一条输入进入新 generation', async () => {
+    const h = await createHarness({
+      runFrontend: async (task) =>
+        task.input.message.content === '敏感内容'
+          ? {
+              ok: false,
+              error: failure('UPSTREAM_FAILED', {
+                kind: 'turn-failure',
+                reason: 'error',
+                message: 'Output data may contain inappropriate content.',
+              }),
+            }
+          : {
+              ok: true,
+              value: {
+                kind: 'reply',
+                reply: { replyId: `${task.taskId}:reply`, text: '正常回复' },
+              },
+            },
+    });
+    try {
+      expect(h.system.actor.sinceTs('onebot:group:group')).toBe(0);
+      const first = await h.submit('敏感内容');
+      const firstTask = await first.done;
+      expect(firstTask.finalReply?.text).toContain('内容安全限制');
+      expect(h.system.actor.sinceTs('onebot:group:group')).toBeGreaterThan(
+        firstTask.input.message.ts
+      );
+      const second = await h.submit('新问题');
+      const secondTask = await second.done;
+      expect(secondTask.input.generation).toBe(firstTask.input.generation + 1);
+    } finally {
+      await h.close();
+      await h.remove();
+    }
+  });
+
   it('结果投影分开显示 worker、整理和送达，限定渲染预算', async () => {
     const h = await createHarness();
     try {
